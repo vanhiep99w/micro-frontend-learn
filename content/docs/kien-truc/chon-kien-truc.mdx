@@ -1,18 +1,391 @@
 ---
 title: "Chọn kiến trúc bằng trade-off"
-description: "So sánh phương án theo team autonomy, UX, vận hành và chi phí thay đổi."
+description: "Chọn cách ghép frontend theo ranh giới release, team autonomy, UX, năng lực vận hành và chi phí thay đổi; kiểm chứng bằng pilot và ADR."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử team catalog muốn đưa bộ lọc mới lên production ngay, còn team cart đang giữ bản ổn định cho một đợt bán hàng. Bạn có thể tách catalog thành package, tải nó như một remote, hoặc để server ghép HTML từ các domain. Cả ba đều tạo được giao diện, nhưng chỉ nhìn màn hình chạy đúng thì chưa biết phương án nào giải quyết được chuyện hai team cần release khác nhịp.
+
+Câu hỏi cần trả lời không phải “tool nào mạnh nhất?”, mà là “mình cần phần nào độc lập, và chấp nhận trả chi phí ở đâu?”. Build-time composition giữ nhiều vấn đề tích hợp trong pipeline; runtime composition đưa một phần sang browser; server-side composition đưa chúng sang đường xử lý request và cache.
+
+**Mặc định mình chọn modular frontend với release chung, rồi chỉ tách đơn vị deploy khi có nhu cầu và owner rõ.** Đó không phải lựa chọn kém hiện đại hơn. Nó giữ chi phí vận hành thấp khi sự độc lập chưa mang lại lợi ích đủ lớn.
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài giúp bạn chọn kiến trúc, không hướng dẫn cấu hình một bundler cụ thể. Shop, route, trọng số và điểm đánh giá bên dưới đều là ví dụ giả định, không phải benchmark hoặc chức năng đã có trong repository. Sơ đồ dùng text để hiển thị với cấu hình Fumadocs hiện tại. Bạn nên đọc [Chia domain và ranh giới](/docs/kien-truc/chia-domain) trước nếu chưa xác định domain nào cần tách.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Bắt đầu từ thay đổi đang bị chặn](#bắt-đầu-từ-thay-đổi-đang-bị-chặn)
+- [Tách các trục quyết định](#tách-các-trục-quyết-định)
+  - [Ranh giới nghiệp vụ và độ hạt](#ranh-giới-nghiệp-vụ-và-độ-hạt)
+  - [Ranh giới release và nơi ghép giao diện](#ranh-giới-release-và-nơi-ghép-giao-diện)
+  - [Cơ chế tải code không phải toàn bộ kiến trúc](#cơ-chế-tải-code-không-phải-toàn-bộ-kiến-trúc)
+- [Lọc yêu cầu bắt buộc trước khi chấm điểm](#lọc-yêu-cầu-bắt-buộc-trước-khi-chấm-điểm)
+- [So sánh các phương án](#so-sánh-các-phương-án)
+  - [Ma trận trade-off](#ma-trận-trade-off)
+  - [Đọc ma trận theo bối cảnh](#đọc-ma-trận-theo-bối-cảnh)
+- [Đánh giá theo bốn nhóm tiêu chí](#đánh-giá-theo-bốn-nhóm-tiêu-chí)
+  - [Team autonomy là quyền đi cùng trách nhiệm](#team-autonomy-là-quyền-đi-cùng-trách-nhiệm)
+  - [UX được đo trên hành trình người dùng](#ux-được-đo-trên-hành-trình-người-dùng)
+  - [Vận hành bao gồm trạng thái lỗi](#vận-hành-bao-gồm-trạng-thái-lỗi)
+  - [Chi phí thay đổi khác chi phí demo](#chi-phí-thay-đổi-khác-chi-phí-demo)
+- [Quy trình chọn kiến trúc](#quy-trình-chọn-kiến-trúc)
+- [Ví dụ quyết định cho shop](#ví-dụ-quyết-định-cho-shop)
+  - [Bối cảnh và các phương án hợp lệ](#bối-cảnh-và-các-phương-án-hợp-lệ)
+  - [Chấm điểm để lộ giả định](#chấm-điểm-để-lộ-giả-định)
+  - [Nếu catalog trở thành trang public](#nếu-catalog-trở-thành-trang-public)
+- [Pilot phải thử cả release và sự cố](#pilot-phải-thử-cả-release-và-sự-cố)
+- [Ghi quyết định bằng ADR](#ghi-quyết-định-bằng-adr)
+- [Những dấu hiệu cần xem lại kiến trúc](#những-dấu-hiệu-cần-xem-lại-kiến-trúc)
+- [Checklist trước khi chốt](#checklist-trước-khi-chốt)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bắt đầu từ thay đổi đang bị chặn
 
-Bài này sẽ giúp bạn: so sánh phương án theo team autonomy, UX, vận hành và chi phí thay đổi.
+“Frontend lớn” chưa phải một yêu cầu kiến trúc đủ cụ thể. Một ứng dụng lớn có thể chỉ cần dependency rule và build cache tốt hơn; ngược lại, một ứng dụng nhỏ vẫn có thể cần ranh giới riêng vì tích hợp với hệ thống của bên thứ ba.
 
-[Xem các bài trong nhóm Kiến trúc và ranh giới](/docs/kien-truc).
+Hãy chọn một thay đổi thật để phân tích. Ví dụ: catalog thêm bộ lọc nhưng phải chờ cart hoàn tất regression test vì cả hai chung release. Sau đó hỏi vì sao phải chờ: do pipeline gom mọi thứ, do hai bên sửa chung contract, hay do tổ chức yêu cầu tất cả team duyệt mọi bản phát hành?
+
+Ba nguyên nhân đó cần ba cách xử lý khác nhau. Tách artifact có thể giảm release coupling của pipeline, nhưng không làm một breaking change trở nên tương thích. Nó cũng không tự bỏ được quy trình phê duyệt chung.
+
+| Điều bạn quan sát được | Giả thuyết cần kiểm chứng | Việc nên thử trước |
+| --- | --- | --- |
+| Build và test lâu | Pipeline chạy lại cả phần không đổi | Đo critical path, thử cache và test theo phạm vi ảnh hưởng |
+| Một refactor làm nhiều team sửa theo | Import nội bộ hoặc mô hình nghiệp vụ dùng chung quá rộng | Thu nhỏ public API và chỉnh ranh giới domain |
+| Thay đổi tương thích vẫn phải chờ release của team khác | Ranh giới deploy không khớp ownership | Pilot một domain deploy riêng |
+| Nhiều team sửa cùng một màn hình | Domain hoặc workflow bị chia quá nhỏ | Gộp phần thường thay đổi cùng nhau |
+| Trang chậm trên thiết bị yếu | JavaScript, dữ liệu hoặc rendering nằm trên critical path | Profile hành trình trước khi đổi composition |
+
+Mình sẽ viết mục tiêu thành một câu có thể kiểm thử: “Catalog phát hành thay đổi tương thích trong phạm vi route đã có mà không rebuild hoặc deploy shell và cart”. Câu này cụ thể hơn “tăng autonomy”, và cũng không hứa rằng mọi thay đổi route hay contract đều độc lập.
+
+## Tách các trục quyết định
+
+Một bẫy thường gặp là đặt “monorepo”, “Module Federation” và “SSR” vào cùng danh sách rồi chọn một. Chúng trả lời các câu hỏi khác nhau. Bạn có thể dùng monorepo, runtime remote và SSR trong cùng một hệ thống nếu thiết kế và tooling hỗ trợ tổ hợp đó.
+
+### Ranh giới nghiệp vụ và độ hạt
+
+Trước hết, xác định phần nào sở hữu hành trình và quyết định nghiệp vụ. Catalog sở hữu tìm kiếm, lọc và chọn sản phẩm; cart sở hữu trạng thái giỏ và thao tác cập nhật. Shell ghép các phần đó, không trở thành nơi chứa luật nghiệp vụ của cả hai.
+
+Tiếp theo mới chọn độ hạt: một route, một cụm route hay một fragment trên trang. Mình ưu tiên boundary theo route vì nó thường cần ít giao tiếp đồng thời hơn. Tách từng button thành remote làm tăng số contract mà chưa chắc tạo được một đơn vị thay đổi độc lập.
+
+```text
+Ứng dụng
+├── /catalog/*  → Catalog owner
+├── /cart/*     → Cart owner
+└── Navigation → Shell owner
+```
+
+Boundary theo route không bắt buộc mỗi lần chuyển trang phải reload document. Nó có thể chạy trong SPA, hoặc dùng ứng dụng riêng qua route gateway. Đó là quyết định về navigation và composition ở trục tiếp theo.
+
+### Ranh giới release và nơi ghép giao diện
+
+Hai câu hỏi quan trọng nhất là: **ai chọn version của domain, vào lúc nào**, và **thay đổi đó tới người dùng qua artifact nào**?
+
+```text
+Build time:     Domain package → Consumer build → Browser
+Client runtime: Domain artifact → Browser loader → UI
+Server side:    Domain renderer → Composer → HTML → Browser
+```
+
+Trong dòng đầu, publish package mới không đổi consumer đã deploy. Trong dòng thứ hai, domain có thể deploy riêng nếu loader hoặc cấu hình cho phép chọn artifact mới mà không rebuild host. Trong dòng thứ ba, deploy riêng phụ thuộc vào renderer, contract và cách composer chọn version, không chỉ việc có HTML phía server.
+
+SSR cũng không đồng nghĩa với server-side composition giữa các domain deploy riêng. Một ứng dụng duy nhất có thể SSR toàn bộ module từ cùng một build. Ngược lại, domain render ở server vẫn có thể tải code phía client để hydrate và xử lý tương tác.
+
+### Cơ chế tải code không phải toàn bộ kiến trúc
+
+Module Federation giải quyết việc tiêu thụ module giữa các build, bao gồm cơ chế shared dependencies. Import maps điều khiển cách browser resolve module specifier. Orchestrator như single-spa quản lý lifecycle của các ứng dụng. Web Components cung cấp một boundary component và có thể dùng Shadow DOM để giới hạn CSS.
+
+Không cơ chế nào tự quyết định ownership, semantics của event, compatibility policy hay người trực khi release lỗi. Nếu toàn bộ domain vẫn đọc chung một global store và phải nâng version cùng lúc, thay loader chưa giải quyết được coupling đó.
+
+Iframe là lựa chọn khác khi cần cách ly document, và iframe khác origin có thể tạo ranh giới truy cập nhờ same-origin policy. Nhưng vẫn phải thiết kế sandbox, quyền được cấp và `postMessage`; iframe không phải cam kết cách ly CPU hoặc mọi ảnh hưởng tới trải nghiệm. Web Components và remote chạy trong cùng document cũng không phải security sandbox cho code không tin cậy.
+
+## Lọc yêu cầu bắt buộc trước khi chấm điểm
+
+Có những yêu cầu không được đổi lấy điểm tốt ở tiêu chí khác. Nếu code bên thứ ba không được phép truy cập DOM hay session của ứng dụng, phương án tải nó như JavaScript cùng document phải bị loại, dù demo rất mượt.
+
+Phân biệt **điều kiện bắt buộc** với **mục tiêu ưu tiên**. “Nội dung sản phẩm phải có trong HTML đầu tiên” là điều kiện có thể kiểm tra; “SEO tốt” quá rộng. “Domain phải rollback mà không deploy domain khác” là điều kiện cụ thể; “release linh hoạt” chưa đủ để loại phương án.
+
+| Điều kiện bắt buộc nếu hệ thống yêu cầu | Cách kiểm chứng | Phương án cần loại hoặc bổ sung |
+| --- | --- | --- |
+| Deploy thay đổi tương thích mà không rebuild consumer | Phát hành domain mới, giữ nguyên artifact shell | Build-time package làm đơn vị release duy nhất |
+| Nội dung chính có trong response HTML | Kiểm tra HTML với JavaScript phía client không chạy | Client-only rendering cho phần nội dung đó |
+| Code không tin cậy không có quyền truy cập môi trường host | Review origin, sandbox, permissions và đường giao tiếp | Remote cùng document không có boundary bảo mật phù hợp |
+| Không được cache chéo dữ liệu cá nhân | Test hai session qua cùng các lớp cache | Shared HTML cache thiếu policy hoặc cache key phù hợp |
+| Deep link và browser Back hoạt động | Mở URL trực tiếp, refresh, Back và Forward | Thiết kế routing chỉ đúng khi đi từ trang chủ |
+| Có khả năng chẩn đoán và phục hồi release lỗi | Diễn tập fallback, rollback và tìm version gây lỗi | Kiến trúc chưa có owner hoặc đường phục hồi |
+
+Các điều kiện phải phản ánh hệ thống của bạn, không phải một bộ luật bắt mọi dự án tuân theo. Nếu release riêng chỉ là mong muốn tương lai, đừng biến nó thành điều kiện bắt buộc ngay rồi loại hết phương án đơn giản.
+
+<Callout type="warn" title="Tổng điểm không được vượt qua điều kiện loại">
+  Một phương án không đáp ứng yêu cầu bảo mật hoặc release bắt buộc vẫn không hợp lệ khi có tổng điểm cao nhất. Chấm điểm chỉ diễn ra giữa những phương án đã qua bước lọc.
+</Callout>
+
+## So sánh các phương án
+
+Các phương án dưới đây là những thiết kế điển hình, không phải các nhóm loại trừ nhau. “Ghép tại server” và “tải code ở client runtime” có thể cùng xuất hiện trong một hành trình; “ứng dụng theo route” cũng có thể SSR từng route.
+
+### Ma trận trade-off
+
+| Phương án | Ranh giới release | UX và rendering | Chi phí vận hành chính | Mình chọn khi |
+| --- | --- | --- | --- | --- |
+| Modular frontend hoặc domain packages ghép ở build time | Consumer quyết định version; thường release chung | Dễ tích hợp một cây UI, có thể code split và SSR | Pipeline consumer, dependency updates, test tích hợp | Cần ownership rõ nhưng chưa cần deploy riêng |
+| Ứng dụng riêng theo route, gateway chọn đích | Có thể deploy từng ứng dụng nếu route contract ổn định | Mỗi app có thể SSR; navigation giữa app có thể reload document | Route gateway, session, asset path, thống nhất navigation và thiết kế | Hành trình tách tương đối rõ, chấp nhận chuyển document |
+| Client runtime composition trong shell | Có thể deploy domain riêng nếu tham chiếu artifact cập nhật độc lập | Giữ trải nghiệm SPA; phải xử lý load, mount, CSS và state | Loader, manifest, version skew, CDN, telemetry và rollback | Cần release riêng trong cùng trải nghiệm tương tác |
+| Server hoặc edge ghép renderer hay fragment của domain | Có thể deploy riêng khi contract và version resolution cho phép | Nội dung có thể có sớm trong HTML; hydration cần khớp artifact | Fan-out, timeout, cache, status, request context và renderer availability | Cần ghép nội dung phía server từ domain riêng |
+| Tích hợp qua iframe | Ứng dụng nhúng có artifact riêng | Document riêng; tích hợp focus, resize, navigation và accessibility khó hơn | Origin, sandbox, message protocol và session | Cần boundary cách ly phù hợp cho ứng dụng nhúng |
+
+### Đọc ma trận theo bối cảnh
+
+Không thể kết luận “runtime luôn phức tạp hơn server” hoặc “SSR luôn nhanh hơn SPA”. Một hệ thống có platform SSR trưởng thành có thể ghép route phía server ít tốn công hơn viết loader mới; một dashboard chỉ dùng sau đăng nhập có thể không cần phân phối renderer riêng.
+
+Với route tương đối độc lập, mình sẽ cân nhắc ứng dụng riêng sau gateway trước khi ghép nhiều fragment trong một document. Nó không phải lựa chọn phù hợp nếu người dùng cần workflow liên tục với state trong bộ nhớ và navigation không reload, nhưng thường giảm số điểm tích hợp.
+
+Với cùng một màn hình nhiều tương tác, runtime composition có thể giữ trải nghiệm thống nhất. Đổi lại, bạn phải giữ contract ổn định giữa shell cũ và remote mới, không chỉ kiểm thử tất cả phần ở version mới nhất.
+
+Hybrid là lựa chọn có chủ đích khi từng phần có yêu cầu khác nhau. Nếu chỉ dùng hybrid vì mỗi team thích một framework hoặc loader riêng, platform sẽ phải duy trì nhiều đường xử lý mà chưa có lợi ích nghiệp vụ tương ứng.
+
+## Đánh giá theo bốn nhóm tiêu chí
+
+Đến đây bạn có các phương án hợp lệ. Bước tiếp theo là so sánh điều chúng mang lại và phần việc chúng chuyển sang owner khác, thay vì chỉ đếm tính năng của tool.
+
+### Team autonomy là quyền đi cùng trách nhiệm
+
+Autonomy có nhiều lớp: team tự sửa code, tự test, tự chọn thời điểm release, tự rollout và tự phục hồi. Tách repository chỉ giúp một số lớp đầu. Tách deploy mà mọi thay đổi vẫn cần platform team sửa manifest thủ công có thể chỉ chuyển hàng đợi từ nơi này sang nơi khác.
+
+Để đánh giá, chọn một thay đổi tương thích trong domain và ghi lại ai phải tham gia. Team có thể tự làm tới production không? Nếu có lỗi, họ có biết version nào đang chạy, có quyền rollback và có người chịu trách nhiệm không?
+
+Độc lập không có nghĩa là không phối hợp. Thay semantics của command cart, thêm route cấp ứng dụng hoặc nâng framework dùng chung vẫn có thể cần kế hoạch nhiều team. Điều cần giảm là phối hợp không cần thiết cho thay đổi vốn chỉ thuộc một domain.
+
+### UX được đo trên hành trình người dùng
+
+Người dùng không quan tâm catalog là remote hay package. Họ quan tâm tìm được sản phẩm, thêm vào giỏ thành công, quay lại không mất bộ lọc và không phải nhìn hai trạng thái đăng nhập mâu thuẫn.
+
+Hãy đo hành trình hoàn chỉnh, gồm cold load, chuyển route, thao tác quan trọng và phục hồi sau lỗi. LCP, INP và CLS giúp quan sát trải nghiệm tải và tương tác, nhưng không thay được metric nghiệp vụ như thời gian từ click “Thêm vào giỏ” tới xác nhận đúng từ backend.
+
+Đối với runtime, kiểm tra chuỗi tải shell → cấu hình → entry → chunks → dữ liệu, thay vì chỉ kích thước remote entry. Đối với server composition, kiểm tra thời gian chờ renderer thiết yếu và thời điểm nội dung usable, không chỉ TTFB. SSR có thể cải thiện khả năng nhận nội dung sớm nhưng vẫn làm tương tác chậm nếu hydration nặng.
+
+Design system, focus management, loading state và accessibility cũng là contract tích hợp. Hai domain render riêng không nên để keyboard user mất focus khi chuyển route hoặc để screen reader nghe nhiều thông báo loading không rõ nghĩa.
+
+### Vận hành bao gồm trạng thái lỗi
+
+Trong build-time composition, nhiều lỗi dependency được phát hiện trước deploy, nhưng bản build vẫn có thể lỗi ở runtime. Với runtime composition, một manifest hoặc chunk không tải được có thể làm route mất ngay trong phiên. Với server composition, renderer chậm có thể giữ cả response nếu không có timeout và mức thiết yếu rõ ràng.
+
+Cần trả lời được những câu hỏi sau trước khi gọi một phương án là production-ready:
+
+- Ai sở hữu loader, composer, route gateway và domain artifact?
+- Trace hoặc log có xác định được shell version, domain version và cấu hình tích hợp không?
+- Nếu phần phụ trợ lỗi, hành trình chính còn dùng được không? Nếu phần thiết yếu lỗi, người dùng thấy trạng thái gì?
+- Rollback đổi tham chiếu cho lần tải tiếp theo hay có cơ chế xử lý phiên đang mở?
+- Những version nào được hỗ trợ đồng thời, và bao lâu được giữ artifact cũ?
+- Ai có quyền thay nguồn code hoặc renderer mà hệ thống tiêu thụ?
+
+Error boundary không cách ly main thread, và fallback không được giả vờ thao tác ghi đã thành công. Nếu cart lỗi, có thể tạm ẩn badge phụ; không thể báo “đã thêm hàng” chỉ để trang trông bình thường.
+
+### Chi phí thay đổi khác chi phí demo
+
+Một demo runtime có thể chỉ cần một remote và vài dòng cấu hình. Chi phí thật xuất hiện khi nâng framework, sửa contract, hỗ trợ nhiều môi trường, debug tab cũ và trực sự cố vào lúc owner domain không có mặt.
+
+Hãy phân biệt các khoản chi phí vì chúng có owner và thời điểm phát sinh khác nhau:
+
+| Khoản chi phí | Ví dụ việc phải tính |
+| --- | --- |
+| Thiết lập ban đầu | Tách public API, dựng pipeline, loader hoặc composer, preview tích hợp |
+| Duy trì đều đặn | Compatibility tests, platform upgrades, telemetry, trực và quản lý artifacts |
+| Mỗi lần đổi domain | Review contract, rollout, regression theo phạm vi ảnh hưởng |
+| Thay đổi xuyên domain | Migration API, shared dependency, design-system adoption |
+| Rút lui hoặc đổi cách ghép | Chuyển adapter, route, pipeline; bỏ infrastructure không còn cần |
+
+Không cần quy mọi thứ thành tiền ngay. Ghi lại loại công việc, owner và tần suất dự kiến đã hữu ích hơn một con số “chi phí thấp” không có căn cứ. Nếu chưa biết, đánh dấu là chưa biết và đưa vào pilot, đừng tự gán điểm tốt.
+
+## Quy trình chọn kiến trúc
+
+1. **Mô tả vấn đề bằng một thay đổi cụ thể.** Ghi baseline: phải chờ ai, thời gian nằm ở đâu, phần nào buộc release cùng nhau. Tách vấn đề code, pipeline và quy trình tổ chức.
+2. **Chọn boundary và owner.** Xác định domain, route, dữ liệu và contract. Nếu mỗi lần sửa nghiệp vụ vẫn thay cả hai phía, sửa boundary trước khi chọn loader.
+3. **Viết điều kiện bắt buộc.** Chuyển yêu cầu thành test có kết quả đạt hoặc không đạt. Không để “SEO”, “security” hoặc “autonomy” chỉ là nhãn.
+4. **Giữ một danh sách phương án ngắn.** Luôn có phương án giữ modular frontend làm đối chứng. Mô tả cấu hình tích hợp và release cụ thể, không dùng tên tool thay cho thiết kế.
+5. **So sánh lợi ích với chi phí.** Chọn trọng số theo vấn đề đang giải quyết, ghi giả định và độ chắc chắn của từng nhận định. Loại phương án không qua điều kiện bắt buộc trước khi cộng điểm.
+6. **Pilot điều chưa chắc nhất.** Nếu chưa biết rollback có giữ đúng version hydration hay không, thử việc đó; đừng dành toàn bộ pilot để dựng trang happy path.
+7. **Ghi ADR và mốc xem lại.** Chốt phạm vi áp dụng, việc chưa làm và dấu hiệu khiến quyết định cần thay đổi. Quyết định kiến trúc cần có đường rút lui, không chỉ đường mở rộng.
+
+Không cần lập hội đồng dài ngày cho mọi module. Mức đầu tư vào quyết định nên tương xứng với phần khó đảo ngược: public contract, quyền truy cập và ranh giới release thường cần cân nhắc kỹ hơn việc chọn tên package.
+
+## Ví dụ quyết định cho shop
+
+### Bối cảnh và các phương án hợp lệ
+
+Giả sử shop ở giai đoạn này là ứng dụng đặt hàng sau đăng nhập, chưa có catalog public. Team catalog thay đổi bộ lọc thường xuyên; team cart ít thay đổi hơn và chấp nhận release cùng shell. Catalog và cart đã có API riêng, không đọc store nội bộ của nhau.
+
+Các yêu cầu giả định:
+
+- Catalog phải đưa thay đổi tương thích lên production mà không rebuild hoặc deploy shell và cart.
+- Hành trình catalog → cart cần navigation không reload document.
+- Shell cũ trong tab đang mở phải tiếp tục tương tác được với catalog trong cửa sổ hỗ trợ đã thống nhất.
+- Team catalog phải tự quan sát và rollback release của mình; shell/platform owner chịu trách nhiệm đường tích hợp chung.
+- HTML có đầy đủ nội dung sản phẩm ngay từ response đầu chưa phải yêu cầu bắt buộc ở giai đoạn này.
+
+| Phương án | Kết quả lọc | Lý do |
+| --- | --- | --- |
+| A: Catalog package trong build của shell | Không đạt | Catalog muốn tới người dùng phải rebuild consumer |
+| B: Catalog remote theo route trong shell | Đưa vào pilot | Có thể chọn artifact riêng, giữ navigation SPA; còn phải kiểm chứng compatibility |
+| C: Server ghép catalog từ renderer riêng, có client navigation và hydration protocol phù hợp | Đưa vào pilot | Có thể đáp ứng nhưng cần cả server integration lẫn client lifecycle |
+| D: Ứng dụng catalog riêng với chuyển document qua gateway | Không đạt trong thiết kế này | Không đáp ứng yêu cầu navigation không reload |
+
+Nếu phương án D được bổ sung cơ chế client navigation thì cần đánh giá lại thiết kế mới. Tên “route gateway” không quyết định mọi thuộc tính của ứng dụng.
+
+### Chấm điểm để lộ giả định
+
+Trong ví dụ này, autonomy có trọng số lớn nhất vì đó là vấn đề đang cần giải quyết. Điểm từ 1 đến 5 thể hiện **mức phù hợp với bối cảnh**, không phải mức mạnh của công nghệ. Với tiêu chí vận hành và chi phí thay đổi, điểm cao nghĩa là ít gánh nặng hơn.
+
+Các điểm dưới đây là giả định minh họa để lập kế hoạch pilot. Chúng không phải dữ liệu đã đo, cũng không phải khuyến nghị copy nguyên sang dự án khác.
+
+| Tiêu chí | Trọng số | B: Runtime theo route | C: Server ghép renderer riêng |
+| --- | --- | --- | --- |
+| Team autonomy | 0.35 | 4 | 4 |
+| UX cho hành trình hiện tại | 0.25 | 4 | 4 |
+| Mức dễ vận hành với năng lực team hiện tại | 0.25 | 3 | 2 |
+| Mức dễ thay đổi và rút lui | 0.15 | 4 | 2 |
+| Tổng điểm có trọng số | 1.00 | 3.75 | 3.20 |
+
+Cách tính cho B: `0.35 × 4 + 0.25 × 4 + 0.25 × 3 + 0.15 × 4 = 3.75`.
+
+Vì sao C thấp hơn ở đây? Giả định team đã biết vận hành static artifacts qua CDN nhưng chưa có platform cho renderer phân tán. Server composition thêm request context, cache và đồng bộ HTML với code hydrate; những việc này chưa giải quyết một yêu cầu nội dung server bắt buộc của ứng dụng hiện tại.
+
+Nếu team đã có platform đó, hai điểm cuối của C phải được đánh giá lại. Nếu B cần tự viết loader phức tạp hơn dự tính, điểm vận hành của B có thể giảm. Điểm số giúp làm lộ giả định để tranh luận, không biến giả định thành bằng chứng.
+
+Kết luận tạm thời là **pilot B cho catalog**, không “chuyển toàn bộ shop sang runtime”. Cart tiếp tục là module trong shell vì chưa có lợi ích release riêng đủ rõ. B vẫn chưa được chấp nhận cho production cho tới khi qua các test bắt buộc.
+
+### Nếu catalog trở thành trang public
+
+Giờ giả sử shop có thêm `/products/*`, với yêu cầu nội dung và metadata sản phẩm xuất hiện trong response HTML. Client-only B không còn đủ cho phần đó. Bạn cần mở lại bước lọc, thay vì chỉ cộng thêm một điểm SEO cho C.
+
+Các lựa chọn có thể gồm ứng dụng SSR riêng theo route, server composition, hoặc SSR trong ứng dụng chung cho phần public nếu release policy cho phép. Nếu giữ runtime remote cho phần tương tác, phải kiểm chứng tổ hợp framework, bundler và protocol hydrate đang dùng, không giả định remote client chạy được ở server.
+
+Đây có thể là lý do hợp lệ để dùng hybrid: phần public render phía server, phần đặt hàng sau đăng nhập dùng shell tương tác. Nhưng hãy ghi rõ ai chọn version, ai sở hữu metadata và liệu cùng một domain có phải duy trì hai đường render. Hai chế độ phục vụ chỉ đáng giữ nếu lợi ích lớn hơn chi phí đó.
+
+## Pilot phải thử cả release và sự cố
+
+Pilot tốt có một domain đủ thật để chạm contract, nhưng đủ nhỏ để quay lại phương án cũ. Với shop mẫu, chọn một route catalog, nối command thêm hàng qua public capability và giữ entry cũ làm đường phục hồi. Không đưa toàn bộ cart store vào remote chỉ để demo nhanh.
+
+Trước khi chạy, ghi baseline và tiêu chí đạt. Với performance, dùng cùng hành trình, thiết bị và điều kiện network; thống nhất budget từ sản phẩm và baseline thực tế. Không lấy một lần tải trên laptop của người làm pilot làm bằng chứng “nhanh hơn”.
+
+| Thử nghiệm | Kết quả cần thấy | Bằng chứng nên giữ |
+| --- | --- | --- |
+| Deploy catalog mới, không đổi shell | Thay đổi tương thích xuất hiện ở nhóm rollout mà shell artifact không đổi | Artifact IDs, cấu hình rollout, kết quả test |
+| Shell trong cửa sổ hỗ trợ với catalog mới và bản rollback | Contract và semantics đều hoạt động | Compatibility matrix và integration tests |
+| Tab mở từ trước lúc rollout | Phiên dùng version nhất quán theo policy, không tự trộn artifact | Timeline tải, release IDs và telemetry |
+| Entry, chunk hoặc config lỗi | Có timeout và trạng thái phục hồi rõ; không báo thao tác ghi thành công giả | Fault-injection results và ảnh trạng thái UI |
+| Rollback catalog | Lần tải mới nhận bản trước; phiên đang mở có cách xử lý đã định | Nhật ký rollback và kiểm tra cache |
+| Deep link, refresh, Back và unmount lặp lại | Route và state đúng; không nhân đôi listener hoặc subscription | E2E, network trace, kiểm tra lifecycle |
+| Cold load và điều hướng tới catalog | Đáp ứng budget UX đã thống nhất, không tải domain không cần thiết | Performance trace và metric theo version |
+| Người trực điều tra release lỗi | Tìm được domain/version và thực hiện đường phục hồi | Kết quả diễn tập và runbook tối thiểu |
+
+Đối với server composition, thêm test renderer timeout, HTTP status, HTML/client artifact mismatch và cache giữa hai session. Đối với iframe, thêm kiểm tra message origin, schema, focus và quyền sandbox. Pilot phải thử rủi ro riêng của phương án, không chỉ dùng cùng một bộ screenshot cho mọi kiến trúc.
+
+<Callout type="warn" title="Rollback không thay code đã chạy">
+  Đổi manifest hoặc route target chủ yếu tác động tới lần resolve hoặc request tiếp theo. Nó không gỡ module đã evaluate trong tab, cũng không đảo ngược thao tác backend. Policy cho phiên cũ, thời gian giữ artifacts và compatibility với backend phải nằm trong quyết định.
+</Callout>
+
+Nếu pilot cho thấy mỗi lần sửa catalog đều phải đổi shell, đừng kết luận rằng cần một loader khác ngay. Xem lại contract và boundary trước. Nếu không có người nhận trách nhiệm vận hành, chưa mở rộng số remote.
+
+## Ghi quyết định bằng ADR
+
+ADR là Architecture Decision Record: một bản ghi ngắn về bối cảnh, quyết định và hệ quả. Nó không cần chép lại cả bài so sánh, nhưng phải giúp người đọc sau này hiểu vì sao một phương án từng hợp lý.
+
+Mẫu sau minh họa quyết định cho shop. Đây là nội dung ví dụ trong trang docs, không phải yêu cầu tạo thêm file.
+
+```yaml title="ADR mẫu cho shop"
+id: ADR-SHOP-CATALOG-COMPOSITION
+status: proposed
+scope:
+  - Catalog sau đăng nhập, trong namespace route đã có
+context:
+  - Catalog cần release thay đổi tương thích mà không deploy shell
+  - Cart chấp nhận release cùng shell
+  - Chưa cần HTML sản phẩm đầy đủ ở response đầu
+mandatory_requirements:
+  - Không rebuild hoặc deploy shell khi catalog release tương thích
+  - Navigation catalog tới cart không reload document
+  - Có compatibility policy cho shell trong cửa sổ hỗ trợ
+options:
+  - Build-time package, loại vì release coupling
+  - Client runtime theo route, chọn để pilot
+  - Server composition, giữ làm phương án đánh giá lại
+  - App riêng qua gateway với document navigation, không đạt UX hiện tại
+decision:
+  - Pilot catalog runtime theo route, giữ cart trong build của shell
+  - Chọn immutable artifact qua runtime config có kiểm soát
+  - Dùng snapshot cấu hình cho phiên theo policy đã thống nhất
+  - Không chia sẻ store nghiệp vụ giữa catalog và cart
+owners:
+  catalog_team: Artifact, domain contract, telemetry và rollback catalog
+  shell_platform_team: Loader, nguồn config, routing cấp ứng dụng
+consequences:
+  benefits:
+    - Có đường release catalog riêng nếu pilot đạt
+  costs:
+    - Duy trì compatibility matrix và artifacts cho phiên cũ
+    - Xử lý lỗi tải, lifecycle và version skew
+acceptance:
+  - Qua điều kiện bắt buộc và các thử nghiệm pilot đã thống nhất
+  - Chốt UX budget, cửa sổ hỗ trợ version và runbook trước production
+revisit_when:
+  - Catalog có yêu cầu public HTML hoặc metadata phía server
+  - Thay đổi tương thích vẫn cần coordinated release
+  - Chi phí vận hành vượt năng lực owner
+exit_plan:
+  - Giữ contract UI nhỏ và adapter phía shell
+  - Có thể ghép lại catalog bằng package trong consumer build
+```
+
+Đường rút lui không miễn phí. Quay về package vẫn cần chỉnh build, routing, test và pipeline. Nhưng contract nhỏ cùng dependency direction rõ giúp chi phí đó có thể dự đoán, thay vì phải gỡ mọi domain khỏi một global store đã lan rộng.
+
+Sau pilot, thay trạng thái `proposed` bằng quyết định thực tế và ghi bằng chứng. Những mục chưa chốt như UX budget hay cửa sổ hỗ trợ phải được hoàn tất trước production, không để ADR mẫu trở thành giấy thông hành.
+
+## Những dấu hiệu cần xem lại kiến trúc
+
+Quyết định đúng ở giai đoạn này có thể không còn đúng khi domain, sản phẩm hoặc năng lực platform thay đổi. Không cần đợi một sự cố lớn mới xem lại.
+
+| Dấu hiệu | Câu hỏi cần mở lại |
+| --- | --- |
+| Remote nào cũng release cùng shell | Độc lập có thật sự cần, hay contract đang buộc phối hợp? |
+| Một tính năng chạm nhiều remote nhỏ | Độ hạt có cắt ngang phần thường thay đổi cùng nhau? |
+| Platform team duyệt và thao tác mọi release | Cần self-service hay đang thiếu ownership? |
+| UX giảm sau mỗi lần thêm domain | Có duplicate dependency, waterfall hoặc quá nhiều fragment trên critical path? |
+| Không xác định được version lỗi | Release metadata và telemetry có đủ trước khi tách thêm không? |
+| Public HTML và metadata trở thành bắt buộc | Cần render phía server cho route nào, bằng cách nào? |
+| Nâng framework phải đổi cả hệ thống một lần | Shared dependency policy có tạo coupling ngoài dự kiến? |
+| Không có owner đủ sức duy trì pipeline và trực | Có nên ghép lại một số đơn vị deploy? |
+
+Gộp lại là một quyết định kiến trúc hợp lệ. Nếu lợi ích release riêng đã mất nhưng loader và compatibility matrix vẫn phải nuôi, giữ ranh giới code còn bỏ ranh giới deploy có thể là lựa chọn tốt hơn.
+
+## Checklist trước khi chốt
+
+- [ ] Mô tả được một thay đổi đang bị chặn và nguyên nhân của nó.
+- [ ] Domain boundary, route namespace và owner đã rõ.
+- [ ] Phân biệt yêu cầu bắt buộc với mục tiêu ưu tiên.
+- [ ] Có phương án modular frontend hoặc release chung làm đối chứng.
+- [ ] Biết ai chọn version, lúc nào chọn và artifact nào đưa thay đổi tới người dùng.
+- [ ] Không nhầm lazy loading, monorepo hoặc publish package với deploy độc lập.
+- [ ] Đánh giá cả navigation, accessibility, loading và trạng thái lỗi.
+- [ ] Có policy cho version skew, cache, tab cũ và rollback.
+- [ ] Trọng số và điểm giả định được ghi rõ, có kế hoạch kiểm chứng.
+- [ ] Pilot bao gồm deploy không đổi shell và ít nhất các failure modes quan trọng.
+- [ ] Có owner vận hành và quyền phục hồi, không chỉ owner source code.
+- [ ] ADR ghi phạm vi, hệ quả, điều kiện xem lại và đường rút lui.
+
+Bước tiếp theo là chọn một thay đổi thật, điền điều kiện bắt buộc và dựng pilot nhỏ nhất có thể kiểm chứng nó. Nếu chưa chỉ ra được thay đổi nào cần release riêng, hãy giữ modular frontend và cải thiện boundary trước.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Chia domain và ranh giới" href="/docs/kien-truc/chia-domain" description="Sửa boundary trước khi đổi cách tải và ghép code." />
+  <Card title="Build-time composition" href="/docs/kien-truc/build-time-composition" description="Giữ ranh giới code với consumer build và release chung." />
+  <Card title="Runtime composition" href="/docs/kien-truc/runtime-composition" description="Thiết kế artifact selection, lifecycle, version skew và fallback." />
+  <Card title="Server-side composition" href="/docs/kien-truc/server-side-composition" description="Kiểm soát renderer, cache và tính tương thích của hydration." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, Martin Fowler](https://martinfowler.com/articles/micro-frontends.html): independent deployment, các cách tích hợp và chi phí về payload, môi trường, vận hành.
+- [Module Federation — webpack](https://webpack.js.org/concepts/module-federation/): module giữa các build, container và shared dependencies; đây là cơ chế tích hợp, không thay thế thiết kế domain và release policy.

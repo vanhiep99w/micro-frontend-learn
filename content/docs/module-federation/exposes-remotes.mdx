@@ -1,18 +1,501 @@
 ---
 title: "Cấu hình exposes và remotes"
-description: "Khai báo module công khai, địa chỉ remote và phân biệt cấu hình theo bundler."
+description: "Nối public module với remote alias, cấu hình webpack và Vite đúng plugin, kiểm tra URL entry và chẩn đoán lỗi tải module."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog đã deploy lên CDN, nhưng shell vẫn báo không tìm thấy `catalog/ProductPage`. File component có tồn tại trong source không đủ: remote phải công bố đúng public key, host phải tìm đúng container, và container phải tải được các chunk của nó.
+
+Hai cấu hình nối những phần đó là `exposes` ở phía cung cấp module và `remotes` ở phía tiêu thụ. Trong bài này, mình đi từ cách đọc tên tới một ví dụ nhỏ có thể kiểm chứng, rồi phân biệt cú pháp giữa webpack và các plugin Vite để bạn không ghép nhầm cấu hình.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Ví dụ dùng shop giả định gồm shell và catalog, không phải ứng dụng có sẵn trong repository này. Phần chính dùng plugin tích hợp trong webpack 5, chạy trong browser; các ví dụ Vite được ghi rõ package. Đây không phải hướng dẫn cấu hình Module Federation cho Next.js, SSR hay React Server Components. Bạn nên đọc [Tổng quan Module Federation](/docs/module-federation) trước nếu chưa quen host, remote và container.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Đọc đúng các tên trong một import](#đọc-đúng-các-tên-trong-một-import)
+  - [Public key và đường dẫn nội bộ](#public-key-và-đường-dẫn-nội-bộ)
+  - [Remote alias và container name](#remote-alias-và-container-name)
+- [Chọn module nào để expose](#chọn-module-nào-để-expose)
+  - [Tạo public entry riêng](#tạo-public-entry-riêng)
+  - [Default export và named exports](#default-export-và-named-exports)
+- [Ví dụ kiểm chứng với webpack 5](#ví-dụ-kiểm-chứng-với-webpack-5)
+  - [Remote công bố một module nhỏ](#remote-công-bố-một-module-nhỏ)
+  - [Host khai báo remote và tải module](#host-khai-báo-remote-và-tải-module)
+  - [Build và phục vụ hai artifact](#build-và-phục-vụ-hai-artifact)
+- [Entry URL và địa chỉ chunk](#entry-url-và-địa-chỉ-chunk)
+  - [Remote entry không chứa toàn bộ remote](#remote-entry-không-chứa-toàn-bộ-remote)
+  - [URL tĩnh và release độc lập](#url-tĩnh-và-release-độc-lập)
+- [Phân biệt cấu hình theo plugin](#phân-biệt-cấu-hình-theo-plugin)
+  - [Webpack gốc và webpack enhanced](#webpack-gốc-và-webpack-enhanced)
+  - [Vite với plugin Module Federation](#vite-với-plugin-module-federation)
+  - [Vite với plugin OriginJS](#vite-với-plugin-originjs)
+  - [Tích hợp giữa các bundler](#tích-hợp-giữa-các-bundler)
+- [Chẩn đoán lỗi theo từng lớp](#chẩn-đoán-lỗi-theo-từng-lớp)
+- [Checklist trước khi đưa lên môi trường chung](#checklist-trước-khi-đưa-lên-môi-trường-chung)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Đọc đúng các tên trong một import
 
-Bài này sẽ giúp bạn: khai báo module công khai, địa chỉ remote và phân biệt cấu hình theo bundler.
+Một import federated trông giống import package, nhưng nó được plugin xử lý để lấy module từ một build khác. Với webpack script remote, mối nối cơ bản là:
 
-[Xem các bài trong nhóm Module Federation](/docs/module-federation).
+```text
+Host import: catalog/ProductPage
+                 │        │
+                 │        └── Remote exposes: './ProductPage'
+                 │                              │
+                 │                              ▼
+                 │                  './src/public/ProductPage.jsx'
+                 │
+                 └── Host remotes: catalog
+                            │
+                            ▼
+              catalog_app@https://assets.example.com/catalog/r17/remoteEntry.js
+                   │                             │
+                   ▼                             ▼
+          Remote name: catalog_app          URL của container entry
+```
+
+Có ba namespace khác nhau: alias mà host dùng, tên container do remote tạo, và public key bên trong container. Chúng không cần giống tên thư mục hoặc tên npm package.
+
+### Public key và đường dẫn nội bộ
+
+Ở remote:
+
+```js title="Mapping exposes của catalog"
+exposes: {
+  './ProductPage': './src/public/ProductPage.jsx',
+}
+```
+
+`./ProductPage` là public key. Consumer dùng `catalog/ProductPage`; federation runtime lấy key `./ProductPage` từ container. Dấu `./` thuộc khai báo key, không viết import thành `catalog/./ProductPage`.
+
+`./src/public/ProductPage.jsx` là đường dẫn nội bộ của remote, resolve theo context của build. Trong ví dụ webpack phía dưới, mình đặt `context: __dirname` để đường dẫn không phụ thuộc thư mục bạn đang đứng khi chạy lệnh build.
+
+Host không tải URL `/src/public/ProductPage.jsx`. Bundler biến module đó và dependencies thành artifact; runtime lấy exports qua container. Nếu catalog chuyển file sang `./src/features/products/Page.jsx`, chỉ cần đổi value trong `exposes` và giữ public key cùng contract.
+
+<Callout type="warn" title="Key là API, không phải chi tiết source">
+  Đổi `./ProductPage` thành `./ProductsPage` là thay đổi public request mà host cũ đang dùng. Giữ key cũ như một adapter trong giai đoạn chuyển đổi nếu còn consumer phụ thuộc vào nó. Cũng đừng dựa vào khác biệt chữ hoa và chữ thường: hãy khớp chính xác key giữa config, import và tests.
+</Callout>
+
+### Remote alias và container name
+
+Ở host:
+
+```js title="Alias khác tên container trong webpack 5"
+remotes: {
+  catalog: 'catalog_app@https://assets.example.com/catalog/r17/remoteEntry.js',
+}
+```
+
+| Thành phần | Ai quyết định | Ý nghĩa |
+| --- | --- | --- |
+| `catalog` ở key `remotes` | Host | Alias dùng trong `import('catalog/ProductPage')` |
+| `catalog_app` trước `@` | Remote | Phải khớp `name` của container dạng script mà remote xuất ra |
+| URL sau `@` | Cấu hình tích hợp | Địa chỉ entry của remote, không phải địa chỉ component |
+| `./ProductPage` | Remote | Public key mà container cung cấp |
+| `filename: 'remoteEntry.js'` | Build tạo container | Tên entry mà chính build đó phát hành |
+
+Với format mặc định trong ví dụ webpack này, entry gán container vào global `catalog_app`. Host dùng tên đó để tiếp cận container sau khi script tải xong. File trả `200` nhưng không tạo đúng global vẫn làm import thất bại.
+
+`output.uniqueName` là một tên khác nữa: webpack dùng nó để tránh collision giữa runtime và cơ chế tải chunk của các build trên cùng trang. Mình đặt cả `name` lẫn `uniqueName` khác nhau giữa shell và catalog. Đổi `uniqueName` không sửa được container name sai trong `remotes`.
+
+Một build có thể vừa có `exposes`, vừa có `remotes`: host và remote là vai trò theo từng quan hệ. Tuy nhiên, consume catalog không bắt buộc shell phải expose module hay phát hành entry riêng cho consumer khác.
+
+## Chọn module nào để expose
+
+Cấu hình cho phép expose một function, component, nhánh route hoặc API `mount`. Câu hỏi cần trả lời trước không phải “plugin expose được file nào?”, mà là “team catalog muốn hỗ trợ API nào qua các lần release?”.
+
+Mình mặc định expose một boundary có ý nghĩa với domain, chẳng hạn `ProductPage` hoặc `mountCatalog`. Không expose hàng loạt helper, hook và store nội bộ chỉ vì shell muốn dùng lại. Khi shell phụ thuộc từng chi tiết bên trong catalog, việc deploy riêng chỉ còn là tách pipeline; thay đổi nội bộ vẫn kéo theo sửa consumer.
+
+### Tạo public entry riêng
+
+Giữ một file adapter làm điểm công bố giúp code nội bộ được tự do thay đổi:
+
+```js title="catalog/src/public/ProductPage.jsx"
+export { default } from '../features/products/ProductPage.jsx';
+```
+
+Đặt `exposes['./ProductPage']` trỏ tới adapter này. Contract của component vẫn cần nói rõ props, callbacks, loading, errors và lifecycle; một câu lệnh re-export không tự tạo compatibility.
+
+Public entry nên tránh side effect ngoài contract. Ví dụ, import component không nên tự gọi `createRoot()` vào một DOM node cố định, đăng ký listener global không có cleanup, hoặc khởi động router độc lập. Remote có thể có bootstrap riêng để chạy standalone, nhưng file expose không nên kéo theo bootstrap đó.
+
+Nếu expose API `mount`, việc tạo root có thể hợp lệ **khi consumer gọi `mount`**, với DOM container do consumer truyền vào và hàm `unmount` được thỏa thuận rõ. Xem [Application shell](/docs/kien-truc/application-shell) để đặt lifecycle ở đúng boundary.
+
+<Callout type="warn" title="Exposes không phải cơ chế bảo mật">
+  Danh sách public key giúp giới hạn API tích hợp qua container; nó không bảo vệ bí mật nằm trong JavaScript gửi xuống browser. Remote cũng chạy trong môi trường của host, không phải sandbox. Chỉ tải code từ publisher tin cậy và không đưa secrets vào artifact frontend.
+</Callout>
+
+### Default export và named exports
+
+Tên public key không quyết định module export gì. Key `./ProductPage` có thể trỏ tới file dùng default export hoặc named export; consumer phải đọc đúng exports của file đó.
+
+```js title="Consumer đọc exports đúng contract"
+// Remote có: export default ProductPage;
+const pageModule = await import('catalog/ProductPage');
+const ProductPage = pageModule.default;
+
+// Remote có: export function getProductPath(...) { ... }
+const routesModule = await import('catalog/productRoutes');
+const path = routesModule.getProductPath('sku-123');
+```
+
+Đoạn sau giả định remote có khai báo `./productRoutes`; không thể lấy module đó chỉ vì file nằm trong source. Một public module có nhiều named exports cũng không đồng nghĩa host được import từng export qua subpath, như `catalog/productRoutes/getProductPath`.
+
+Nếu dùng `React.lazy(() => import('catalog/ProductPage'))`, React mong chờ Promise trả về module có default export là component. Với named export, cần adapter rõ ràng; nhưng trước hết nên thống nhất contract để các host không phải đoán.
+
+## Ví dụ kiểm chứng với webpack 5
+
+Ví dụ này cố ý dùng function thuần thay vì React component. Nhờ vậy bạn kiểm chứng được `exposes`, `remotes` và đường tải chunk mà chưa phải xử lý JSX, renderer hoặc shared React. Đây là bài thử cơ chế, **không phải lý do để tách một helper nhỏ thành micro-frontend trong production**.
+
+Giả sử bạn có hai project độc lập là `catalog/` và `shell/`, mỗi project có `package.json`, `webpack` và `webpack-cli` trong dev dependencies. Đặt các config bên dưới trong project tương ứng; không cài chúng vào site docs này.
+
+### Remote công bố một module nhỏ
+
+```js title="catalog/src/public/productRoutes.js"
+export function getProductPath(productId) {
+  if (typeof productId !== 'string' || productId.length === 0) {
+    throw new TypeError('productId phải là chuỗi không rỗng');
+  }
+
+  return `/catalog/products/${encodeURIComponent(productId)}`;
+}
+```
+
+```js title="catalog/webpack.config.cjs"
+const path = require('node:path');
+const { ModuleFederationPlugin } = require('webpack').container;
+
+module.exports = {
+  mode: 'production',
+  context: __dirname,
+  // Bài thử chỉ cần container entry, không cần app standalone.
+  entry: {},
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    publicPath: 'auto',
+    uniqueName: 'shop_catalog',
+    chunkFilename: '[name].[contenthash].js',
+    clean: true,
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'catalog_app',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './productRoutes': './src/public/productRoutes.js',
+      },
+    }),
+  ],
+};
+```
+
+Remote build sinh `dist/remoteEntry.js` cùng các chunk cần thiết. `filename` đặt tên entry, không ép mọi module exposed vào cùng file. Ví dụ không khai báo `shared` vì function này không có dependency cần share.
+
+### Host khai báo remote và tải module
+
+```js title="shell/webpack.config.cjs"
+const path = require('node:path');
+const { ModuleFederationPlugin } = require('webpack').container;
+
+module.exports = {
+  mode: 'production',
+  context: __dirname,
+  entry: './src/index.js',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'main.js',
+    chunkFilename: '[name].[contenthash].js',
+    publicPath: 'auto',
+    uniqueName: 'shop_shell',
+    clean: true,
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shell',
+      remotes: {
+        catalog: 'catalog_app@http://localhost:3001/remoteEntry.js',
+      },
+    }),
+  ],
+};
+```
+
+```js title="shell/src/index.js"
+const status = document.getElementById('status');
+
+async function checkCatalog() {
+  status.textContent = 'Đang tải catalog…';
+
+  try {
+    const remoteModule = await import('catalog/productRoutes');
+
+    if (typeof remoteModule.getProductPath !== 'function') {
+      throw new TypeError('Catalog không cung cấp getProductPath');
+    }
+
+    status.textContent = remoteModule.getProductPath('sku-123');
+  } catch (error) {
+    status.textContent = 'Catalog chưa sẵn sàng. Shell vẫn hoạt động.';
+    console.error('Không tải hoặc sử dụng được catalog/productRoutes', error);
+  }
+}
+
+void checkCatalog();
+```
+
+`import()` tạo async boundary để runtime tải và khởi tạo remote trước khi dùng exports. Không tự chèn thêm `<script src="...remoteEntry.js">` trong HTML: webpack đã sinh loader cho remote được khai báo này.
+
+Trong app có shared dependencies được import ở bước khởi động, có thể cần tách entry thành `import('./bootstrap')` để phần app chạy sau async boundary. Đó là vấn đề bootstrap và sharing, không phải thay public key. Xem [Shared dependencies](/docs/module-federation/shared-dependencies) trước khi thêm React vào ví dụ.
+
+### Build và phục vụ hai artifact
+
+Chạy trong từng project, với dependencies đã cài:
+
+```bash title="Terminal ở catalog/"
+npx webpack --config webpack.config.cjs
+```
+
+```bash title="Terminal ở shell/"
+npx webpack --config webpack.config.cjs
+```
+
+Sau khi build shell, tạo HTML sau trong `shell/dist/index.html`. Config dùng `clean: true`, nên nếu build lại, bạn cần tạo lại HTML hoặc đưa bước tạo HTML vào pipeline, chẳng hạn bằng HTML plugin.
+
+```html title="shell/dist/index.html"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title>Kiểm chứng catalog remote</title>
+  </head>
+  <body>
+    <h1>Shop shell</h1>
+    <p id="status">Chưa tải catalog</p>
+    <script src="./main.js" defer></script>
+  </body>
+</html>
+```
+
+Dùng static HTTP server để phục vụ `catalog/dist` ở port `3001`, `shell/dist` ở port `3000`. Nếu máy có Python 3, mở hai terminal từ hai thư mục project:
+
+```bash title="Terminal phục vụ catalog/"
+python3 -m http.server 3001 --directory dist
+```
+
+```bash title="Terminal phục vụ shell/"
+python3 -m http.server 3000 --directory dist
+```
+
+Mở `http://localhost:3000`. Kết quả mong đợi là `/catalog/products/sku-123`. Trong DevTools Network, bạn sẽ thấy entry từ port `3001` và những chunk remote cần dùng. Tên chunk cụ thể do build quyết định.
+
+Tắt server catalog rồi reload shell với cache tắt: shell vẫn có heading và hiện fallback thay vì mất toàn bộ document. Bật lại server và reload để kiểm tra đường phục hồi. Ví dụ này không triển khai retry trong phiên, và browser có thể cache kết quả tải module hoặc lỗi tùy loader.
+
+Hai port là hai origin khác nhau. Bài thử dùng classic script remote của webpack; static server này không phải cấu hình mẫu cho ESM remote, vốn cần CORS phù hợp. Đừng mở HTML bằng `file://` rồi dùng kết quả đó để kết luận integration HTTP hoạt động.
+
+## Entry URL và địa chỉ chunk
+
+### Remote entry không chứa toàn bộ remote
+
+Entry là cửa vào container, không phải toàn bộ artifact graph. Khi host lấy một exposed module, runtime có thể phải tải thêm JavaScript, CSS và assets; entry `200` chưa chứng minh import thành công.
+
+Trong webpack, `output.publicPath: 'auto'` giúp runtime suy ra base URL từ môi trường tải script. Với entry được phục vụ trực tiếp từ CDN như ví dụ, các chunk remote cần đi về nơi chứa artifact remote, không phải origin của shell. Nếu hệ thống có proxy, rewrite hoặc tách entry và chunks sang hai location, hãy kiểm tra URL thực tế và cân nhắc public path tường minh phù hợp deployment.
+
+Có hai phép thử đơn giản:
+
+1. Mở URL entry, kiểm tra response là JavaScript thật, không phải HTML do SPA fallback hoặc trang login trả về.
+2. Import module qua host, kiểm tra tất cả chunk và assets liên quan có URL đúng, status đúng và content type đúng.
+
+Một file JS trả `200` nhưng body là `<!doctype html>` thường xuất hiện dưới dạng lỗi parse hoặc MIME type. Sửa routing của static server, không sửa `exposes` để né lỗi.
+
+<Callout type="warn" title="Deploy cả artifact graph">
+  Upload entry cùng toàn bộ chunks và assets của cùng một build. Giữ artifact của release cũ để tab đang mở và rollback còn tải được. Nếu entry mới trỏ tới chunk chưa upload, hoặc chunk cũ đã bị xóa, public key đúng vẫn không cứu được import.
+</Callout>
+
+### URL tĩnh và release độc lập
+
+Trong config webpack trên, URL remote được chốt khi build shell, nhưng implementation remote vẫn được tải lúc chạy. Đây là static remote configuration, không phải build-time bundling code catalog vào shell.
+
+Nếu đổi URL từ `/catalog/r17/remoteEntry.js` sang `/catalog/r18/remoteEntry.js`, shell dùng config tĩnh thường phải build lại để biết địa chỉ mới. Ngược lại, nếu giữ URL và thay nội dung, shell có thể nhận catalog mới mà không build lại, nhưng cache và compatibility trở thành trách nhiệm của bạn.
+
+Mình ưu tiên URL artifact bất biến theo release, sau đó chọn release bằng runtime config hoặc dynamic remotes nếu cần rollout không rebuild host. Cách này giúp entry và chunks nhất quán, nhưng loader và chính sách cache phải được thiết kế cùng nhau. Cấu hình `remotes` không tự tạo canary, rollback hay thay module đã đánh giá trong tab đang mở.
+
+Phần resolve URL động nằm ở [Dynamic remotes](/docs/module-federation/dynamic-remotes); trang này giữ cấu hình tĩnh để việc đọc mapping không bị lẫn với chính sách rollout.
+
+## Phân biệt cấu hình theo plugin
+
+Cùng có `exposes` và `remotes` không có nghĩa các plugin dùng cùng protocol hoặc option shape. Hãy bắt đầu bằng package import trong config, không chỉ nhìn tên `ModuleFederationPlugin`.
+
+| Integration | Khai báo remote điển hình | Điểm cần phân biệt |
+| --- | --- | --- |
+| webpack 5 tích hợp | `catalog: 'catalog_app@https://…/remoteEntry.js'` | Ví dụ ở bài này dùng script container; không tự đọc federation manifest |
+| `@module-federation/enhanced/webpack` | Chuỗi `name@entry`, entry có thể là manifest hoặc JS theo integration | Có runtime mở rộng và manifest support; không phải plugin webpack tích hợp |
+| `@module-federation/vite` | Object có `type`, `name`, `entry` | Chọn format rõ, ví dụ `type: 'module'` cho ESM remote |
+| `@originjs/vite-plugin-federation` | URL string hoặc object có `external`, `format`, `from` | Là plugin khác, có runtime và giới hạn dev mode riêng |
+
+Các cấu hình dưới đây minh họa API của từng integration, không phải bộ project hoàn chỉnh. Pin version package và kiểm tra tài liệu tương ứng trước khi copy vào ứng dụng; khả năng dev mode, HMR, types và SSR có thể đổi theo version.
+
+### Webpack gốc và webpack enhanced
+
+Plugin gốc được lấy từ `require('webpack').container`. Plugin enhanced được lấy từ một package khác:
+
+```js title="Phần plugins — @module-federation/enhanced/webpack"
+const { ModuleFederationPlugin } = require('@module-federation/enhanced/webpack');
+
+module.exports = {
+  // entry, output và các phần build khác không trình bày ở đây.
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shell',
+      remotes: {
+        catalog: 'catalog_app@https://assets.example.com/catalog/r17/mf-manifest.json',
+      },
+    }),
+  ],
+};
+```
+
+Ví dụ này giả định catalog đã phát hành manifest hợp lệ cho runtime enhanced. Manifest chứa metadata giúp runtime tìm entry và tài nguyên; nó không phải JavaScript container và không phải file component.
+
+Không đưa URL `mf-manifest.json` vào script remote của webpack gốc rồi mong webpack tự đọc JSON. Cũng không chỉ đổi extension từ `remoteEntry.js` sang `.json`: phía producer phải thực sự sinh artifact theo integration tương ứng.
+
+### Vite với plugin Module Federation
+
+Dùng named import `federation` từ `@module-federation/vite`. Với ESM remote, một cấu hình minh họa ở catalog là:
+
+```ts title="catalog/vite.config.ts — @module-federation/vite"
+import { defineConfig } from 'vite';
+import { federation } from '@module-federation/vite';
+
+export default defineConfig({
+  plugins: [
+    federation({
+      name: 'catalog_app',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './productRoutes': './src/public/productRoutes.js',
+      },
+    }),
+  ],
+});
+```
+
+Ở shell:
+
+```ts title="shell/vite.config.ts — @module-federation/vite"
+import { defineConfig } from 'vite';
+import { federation } from '@module-federation/vite';
+
+export default defineConfig({
+  plugins: [
+    federation({
+      name: 'shell',
+      remotes: {
+        catalog: {
+          type: 'module',
+          name: 'catalog_app',
+          entry: 'https://assets.example.com/catalog/r17/remoteEntry.js',
+        },
+      },
+    }),
+  ],
+});
+```
+
+Host vẫn gọi `import('catalog/productRoutes')`: alias phục vụ source code, còn object mô tả cách tải remote. URL minh họa giả định pipeline đã đưa entry tới đúng location đó; hãy xác nhận output thật thay vì đoán đường dẫn từ `filename`.
+
+Cấu hình trên bỏ qua framework plugins, app entry và cấu hình server. Vite dùng HTML làm entry trong mô hình app thông thường, nên bạn còn cần project Vite hợp lệ. Với UI component, thêm framework tooling và policy shared phù hợp; đừng lấy ví dụ function thuần này làm cấu hình React hoàn chỉnh.
+
+### Vite với plugin OriginJS
+
+Nếu repository dùng `@originjs/vite-plugin-federation`, cú pháp khác:
+
+```ts title="shell/vite.config.ts — @originjs/vite-plugin-federation"
+import { defineConfig } from 'vite';
+import federation from '@originjs/vite-plugin-federation';
+
+export default defineConfig({
+  plugins: [
+    federation({
+      name: 'shell',
+      remotes: {
+        catalog: {
+          external: 'https://assets.example.com/catalog/r17/assets/remoteEntry.js',
+          format: 'esm',
+          from: 'vite',
+        },
+      },
+    }),
+  ],
+});
+```
+
+Ở đây giả định producer cũng dùng plugin OriginJS và phát hành ESM entry tại URL đã khai báo. `external` không phải `entry`, và `format: 'esm'` không phải `type: 'module'`. Đường dẫn `/assets/remoteEntry.js` là ví dụ deployment, không phải quy tắc chung cho mọi plugin.
+
+Theo README của OriginJS, host hỗ trợ Vite dev mode, còn remote cần build để sinh entry; có thể dùng `vite build --watch` rồi phục vụ output. Vì vậy “remote chạy bằng `vite dev` nhưng không có entry” chưa chắc do sai `exposes`. Giới hạn này thuộc plugin OriginJS, không nên suy rộng sang `@module-federation/vite`.
+
+### Tích hợp giữa các bundler
+
+Remote entry của webpack trong ví dụ chính là script container có global name. Remote Vite dạng ESM là format khác. Hai file cùng tên `remoteEntry.js` không chứng minh host có thể tải chúng bằng cùng cơ chế.
+
+Với `@module-federation/vite`, remote dạng global dùng cấu hình `type: 'var'` theo integration và có thể cần `entryGlobalName` để chỉ đúng global. Với OriginJS, các trường tương ứng là `format` và `from`. Đọc hướng dẫn interoperability của package đang dùng thay vì đổi mỗi URL trong config.
+
+Format khớp vẫn chưa đủ. Cần kiểm tra shared dependencies, module interop, CSS/assets và runtime behavior bằng production build của cả hai bên. Riêng README OriginJS cảnh báo về mixed webpack/Vite trong React do khác biệt đóng gói CommonJS có thể ảnh hưởng sharing; đừng coi một import function thành công là bằng chứng React component integration an toàn.
+
+<Callout type="warn" title="CORS và CSP phụ thuộc cách tải">
+  ESM modules tải khác origin cần response CORS phù hợp. Classic script remote không có cùng yêu cầu CORS như module script, nhưng vẫn chịu CSP, mixed-content policy và các chính sách tài nguyên liên quan. Manifest tải qua fetch cũng cần CORS khi khác origin. Hãy cho phép đúng origin và loại tài nguyên cần dùng, không tắt CSP hoặc mở CORS rộng chỉ để hết lỗi. CORS cũng không xác thực publisher của remote.
+</Callout>
+
+## Chẩn đoán lỗi theo từng lớp
+
+Khi import lỗi, kiểm tra theo đường đi từ host tới exports. Tên lỗi cụ thể thay đổi theo runtime; bảng dưới là hướng khoanh vùng, không phải kết luận chỉ dựa trên message.
+
+| Lớp lỗi | Dấu hiệu thường gặp | Kiểm tra trước |
+| --- | --- | --- |
+| Host build | Không resolve được `catalog/…` | Plugin đúng package đã chạy chưa, alias đúng chưa, public request có phải chuỗi tường minh không |
+| TypeScript | `Cannot find module` dù bundler có mapping | Declaration cho public module hoặc tooling types; tránh khai báo wildcard `any` chỉ để che lỗi |
+| Tải entry | `ScriptExternalLoadError`, lỗi fetch hoặc request thất bại | URL, DNS, status, response body, HTTPS, CSP và CORS theo format |
+| Tìm container | Entry `200` nhưng không có container mong đợi | `name` trước `@`, global name và remote format có khớp không |
+| Lấy public module | `Module "./…" does not exist in container` hoặc lỗi tương tự | Public key, chữ hoa/thường, entry đang tải có đúng release không |
+| Khởi tạo sharing | Eager consumption hoặc version mismatch | Async bootstrap, share scope và version policy; không đổi alias để sửa sharing |
+| Tải chunk | `ChunkLoadError`, chunk `404` hoặc bị MIME block | Public path, CDN location, artifact graph và thời điểm upload/xóa chunk |
+| Dùng exports | Export không phải function/component mong đợi | Default/named exports, contract và compatibility giữa host với remote |
+
+Giữ import request tường minh khi danh sách module đã biết. Đừng biến `import('catalog/productRoutes')` thành `import(remoteAlias + '/' + moduleName)` rồi kỳ vọng mọi bundler/plugin tự resolve chuỗi runtime đó. Nếu cần registry, dùng map loader với các import literal hoặc API dynamic remote của integration đang dùng.
+
+Khi debug ví dụ webpack, bạn có thể nhìn global `catalog_app` trong console sau khi entry tải xong để kiểm tra container có xuất hiện không. Nhưng việc nhìn thấy object có `get` và `init` chưa chứng minh sharing hoặc module usable; đường kiểm chứng cuối vẫn là import qua host và gọi public API.
+
+Trong ứng dụng thật, ghi lại alias, container name, public request, resolved entry URL, remote build ID và phase lỗi. Đừng gộp mọi lỗi thành “catalog unavailable” trong telemetry: URL sai, key bị xóa và API không tương thích cần cách sửa khác nhau. Message fallback cho người dùng có thể gọn hơn thông tin chẩn đoán.
+
+## Checklist trước khi đưa lên môi trường chung
+
+- [ ] Ghi rõ bundler, package plugin, version, browser runtime và remote format của cả hai bên.
+- [ ] Public key ổn định, trỏ tới adapter hoặc entry có contract được công bố, không kéo theo bootstrap standalone ngoài ý muốn.
+- [ ] Alias host, container name remote và exposed key khớp theo đúng integration; mỗi webpack build có runtime name riêng.
+- [ ] Entry URL trả đúng artifact, không bị SPA fallback hoặc redirect sang login.
+- [ ] Chunk, CSS và asset tải từ đúng location qua production build; CORS/CSP cho phép đúng đường tải cần dùng.
+- [ ] Có async loading và fallback tại boundary; shell vẫn usable khi remote bị tắt hoặc chunk bị lỗi.
+- [ ] Nếu expose UI dùng framework chung, shared policy và renderer compatibility được kiểm thử riêng.
+- [ ] Pipeline publish và giữ lại đầy đủ artifact graph; rollback không trỏ tới chunks đã bị xóa.
+- [ ] Test cả host hiện tại với remote mới và các tổ hợp version còn được hỗ trợ, không chỉ hai bản build mới nhất.
+
+Trước khi thêm remote thứ hai, hãy chạy bài thử với alias `catalog` và container `catalog_app` khác nhau, rồi cố tình đổi sai public key và URL chunk. Phân biệt được ba lỗi đó sẽ giúp bạn tìm đúng lớp cần sửa khi tích hợp UI thật.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Quản lý dependencies dùng chung sau khi đường tải module đã đúng." />
+  <Card title="Dynamic remotes" href="/docs/module-federation/dynamic-remotes" description="Chọn remote URL và release ở runtime thay vì chốt trong host build." />
+  <Card title="Types và contracts" href="/docs/module-federation/types-contracts" description="Định nghĩa exports, input và hành vi mà consumer có thể dựa vào." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Kiểm thử host và remote khác version, thay đổi API và rollback." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): `name`, `filename`, `remotes`, `remoteType` và `exposes` của plugin tích hợp.
+- [webpack — Module Federation concepts](https://webpack.js.org/concepts/module-federation/): container interface, async boundary, public path và unique runtime name.
+- [Module Federation — Webpack integration](https://module-federation.io/integrations/bundler/webpack): package `@module-federation/enhanced/webpack`.
+- [Module Federation — remotes](https://module-federation.io/configure/remotes.html): remote alias và entry JS hoặc manifest trong hệ sinh thái enhanced.
+- [Module Federation Vite — README](https://github.com/module-federation/vite): API của `@module-federation/vite`, remote format và ví dụ integration.
+- [OriginJS Vite plugin federation — README](https://github.com/originjs/vite-plugin-federation): `external`, `format`, `from` và giới hạn dev mode của plugin OriginJS.

@@ -1,18 +1,519 @@
 ---
 title: "Runtime composition"
-description: "Ghép frontend ở runtime và phân tích loading, coupling và failure modes."
+description: "Ghép micro-frontend trong trình duyệt: chọn artifact, tải và mount remote, kiểm soát coupling, version skew và failure modes."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog vừa thêm bộ lọc sản phẩm. Bạn muốn đưa thay đổi đó tới người dùng mà không build lại shell và cart. Nhưng shell phải tìm bản catalog mới ở đâu, người dùng đang mở tab cũ sẽ nhận bản nào, và navigation có còn hoạt động nếu CDN trả lỗi?
+
+Runtime composition đưa việc tải và ghép những phần frontend có artifact riêng vào lúc ứng dụng chạy. Nó mở đường cho release độc lập, nhưng cũng chuyển một phần bài toán tích hợp từ build pipeline sang browser: network, module resolution, compatibility và lifecycle đều có thể lỗi ngay trong phiên sử dụng.
+
+**Tải bundle riêng là cơ chế; phát hành độc lập và phục hồi được mới là kết quả cần thiết kế.**
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài tập trung vào client-side runtime composition với shop giả định gồm shell, catalog và cart. Ví dụ minh họa thiết kế, không phải implementation có sẵn trong repository docs. Sơ đồ dùng text để hiển thị trực tiếp với cấu hình Fumadocs hiện tại. Lifecycle và trách nhiệm của shell được trình bày sâu hơn ở [Application shell](/docs/kien-truc/application-shell).
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Runtime composition giải quyết điều gì](#runtime-composition-giải-quyết-điều-gì)
+  - [Khác code splitting và build time](#khác-code-splitting-và-build-time)
+  - [Khi nào nên chọn và khi nào không](#khi-nào-nên-chọn-và-khi-nào-không)
+- [Các thành phần và luồng tải](#các-thành-phần-và-luồng-tải)
+  - [Từ route tới nội dung usable](#từ-route-tới-nội-dung-usable)
+  - [Entry không phải toàn bộ artifact](#entry-không-phải-toàn-bộ-artifact)
+- [Chọn cơ chế tích hợp](#chọn-cơ-chế-tích-hợp)
+  - [Loader khác orchestrator](#loader-khác-orchestrator)
+  - [Ưu tiên boundary theo route](#ưu-tiên-boundary-theo-route)
+- [Chọn artifact bằng runtime config](#chọn-artifact-bằng-runtime-config)
+  - [Snapshot cấu hình cho một phiên](#snapshot-cấu-hình-cho-một-phiên)
+  - [Ví dụ loader cho native ESM](#ví-dụ-loader-cho-native-esm)
+  - [Giới hạn của validation và nguồn tin cậy](#giới-hạn-của-validation-và-nguồn-tin-cậy)
+- [Loading và lifecycle không chỉ là một lệnh import](#loading-và-lifecycle-không-chỉ-là-một-lệnh-import)
+  - [Load mount và readiness là các mốc khác nhau](#load-mount-và-readiness-là-các-mốc-khác-nhau)
+  - [Navigation race và timeout](#navigation-race-và-timeout)
+  - [Unmount không unload module](#unmount-không-unload-module)
+- [Coupling vẫn tồn tại ở runtime](#coupling-vẫn-tồn-tại-ở-runtime)
+  - [Contract và semantics](#contract-và-semantics)
+  - [Shared dependencies và framework context](#shared-dependencies-và-framework-context)
+  - [DOM CSS state và quyền truy cập](#dom-css-state-và-quyền-truy-cập)
+- [Version skew caching và release](#version-skew-caching-và-release)
+  - [Tách cache cấu hình khỏi cache artifact](#tách-cache-cấu-hình-khỏi-cache-artifact)
+  - [Rollout một bản catalog mới](#rollout-một-bản-catalog-mới)
+  - [Rollback không thay code đã chạy](#rollback-không-thay-code-đã-chạy)
+- [Failure modes và fallback](#failure-modes-và-fallback)
+  - [Phân loại lỗi theo phase](#phân-loại-lỗi-theo-phase)
+  - [Retry có giới hạn và đúng nguyên nhân](#retry-có-giới-hạn-và-đúng-nguyên-nhân)
+  - [Fallback giữ đúng ý nghĩa nghiệp vụ](#fallback-giữ-đúng-ý-nghĩa-nghiệp-vụ)
+- [Performance và trải nghiệm người dùng](#performance-và-trải-nghiệm-người-dùng)
+- [Quan sát và kiểm thử tích hợp](#quan-sát-và-kiểm-thử-tích-hợp)
+- [Checklist trước khi chọn runtime composition](#checklist-trước-khi-chọn-runtime-composition)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Runtime composition giải quyết điều gì
 
-Bài này sẽ giúp bạn: ghép frontend ở runtime và phân tích loading, coupling và failure modes.
+Với shop mẫu, shell sở hữu khung trải nghiệm và quyết định catalog xuất hiện dưới `/catalog/*`, cart dưới `/cart/*`. Catalog và cart có pipeline tạo artifact riêng. Khi người dùng vào một route, shell tải phần cần thiết rồi ghép vào outlet — vùng nội dung dành cho remote.
 
-[Xem các bài trong nhóm Kiến trúc và ranh giới](/docs/kien-truc).
+Điểm khác biệt có ý nghĩa ở đây không phải “code tải muộn”, mà là **artifact của catalog có thể được thay bằng một bản tương thích mà không thay artifact của shell**. Việc chọn bản mới có thể đi qua runtime config, import map hoặc cơ chế resolution của một loader. Nếu quy trình vẫn bắt shell rebuild mỗi lần catalog thay đổi, bạn chưa đạt mục tiêu release độc lập dù đang dùng remote entry.
+
+### Khác code splitting và build time
+
+| Cách tổ chức | Điều gì quyết định code catalog được tải | Khi catalog đổi nội bộ |
+| --- | --- | --- |
+| Code splitting trong một app | Bản build chung sinh entry và các chunk liên quan | Thường tạo và release lại bản build của app |
+| Build-time composition qua package | Shell build với một version của package catalog | Thường cập nhật dependency rồi build lại shell |
+| Runtime composition qua artifact riêng | Loader chọn artifact catalog trong lúc chạy | Có thể release riêng nếu resolution, contract và dependency vẫn tương thích |
+
+`React.lazy(() => import('./CatalogPage'))` giúp hoãn tải một phần của app; tự nó không tạo một đơn vị deploy riêng. Ngược lại, remote có artifact riêng vẫn có thể chứa nhiều chunk và dùng lazy loading nội bộ. Hai cách tối ưu này không loại trừ nhau.
+
+Runtime composition cũng không bắt buộc mọi URL phải được chọn động. Host có thể build với một URL remote cố định nhưng tải nội dung URL đó ở runtime. Tuy nhiên, nếu muốn dùng URL bất biến theo version và đổi bản mà không rebuild host, bạn cần tách quyết định chọn version khỏi artifact host.
+
+### Khi nào nên chọn và khi nào không
+
+Mình chọn runtime composition khi các team có domain đủ rõ, cần đưa thay đổi tương thích tới production theo nhịp riêng, và sản phẩm cần ghép các phần trong cùng trải nghiệm. Đổi lại, team phải vận hành thêm artifact resolution, compatibility, fallback và telemetry tại boundary.
+
+Nếu chỉ cần chia code giữa các nhóm nhưng vẫn có một release train, build-time composition thường ít việc hơn. Nếu mỗi domain có thể phục vụ một document độc lập, navigation bằng link thông thường có thể đủ; không cần dựng một SPA orchestrator chỉ để tránh reload trang.
+
+Không nên chọn runtime composition để né việc thống nhất ownership. Catalog đọc trực tiếp store nội bộ của cart vẫn là coupling mạnh, bất kể hai bundle có tải từ hai CDN khác nhau.
+
+## Các thành phần và luồng tải
+
+Một hệ thống runtime composition tối thiểu có những vai trò sau. Chúng không nhất thiết là các service riêng.
+
+| Thành phần | Trách nhiệm | Ví dụ trong shop |
+| --- | --- | --- |
+| Shell hoặc lớp composition | Chọn route/slot, giữ khung, quản lý trạng thái tích hợp | `/catalog/*` thuộc catalog |
+| Runtime config hoặc import map | Chọn artifact hoặc ánh xạ module specifier | Catalog trỏ tới bản `catalog-r17` |
+| Loader | Resolve, tải và lấy public module | Native ESM loader hoặc federation runtime |
+| Artifact hosting | Phục vụ entry, chunk, CSS và asset đúng version | CDN với thư mục release bất biến |
+| Public contract | Nói cách tiêu thụ module và quản lý instance | Component export hoặc API `mount` |
+| Remote | Render domain, sở hữu dữ liệu và tài nguyên nội bộ | Catalog tải API sản phẩm và dọn subscription |
+
+Sơ đồ này tách **quyết định chọn bản** khỏi **việc tải và sử dụng bản đã chọn**:
+
+```text
+Runtime config ── chọn version ──► Shell
+                                    │
+                                    ▼
+                                 Loader ── tải ──► Remote artifact
+                                    │
+                                    ▼
+                              Public module
+                                    │
+                                    ▼
+                              Outlet của shell
+```
+
+### Từ route tới nội dung usable
+
+Một lần mở trực tiếp `/catalog/products/sku-42` có thể đi qua các bước:
+
+1. Browser nhận document và code shell; shell dựng navigation cùng trạng thái loading.
+2. Shell nhận snapshot cấu hình đã validate, xác định catalog là owner của route.
+3. Loader resolve entry của artifact được chọn và tải module graph cần cho public export.
+4. Shell kiểm tra contract; loader/runtime xử lý shared dependencies nếu cơ chế tích hợp có yêu cầu này.
+5. Shell render component hoặc gọi lifecycle mount vào outlet hiện tại.
+6. Catalog đọc subroute, tải dữ liệu domain và render nội dung có thể dùng.
+
+Một số bước có thể chạy song song, nhưng thứ tự dependency vẫn tồn tại. Nếu phải tải config rồi entry, entry mới chỉ ra chunk, chunk mới bắt đầu request dữ liệu, người dùng sẽ chờ một waterfall. Runtime composition không tự loại bỏ nó.
+
+Với iframe, shell chọn URL và điều phối document riêng thay vì lấy public JavaScript module. Contract tích hợp khi đó thường là message protocol, sizing, navigation và readiness, không phải hàm `mount` cùng realm.
+
+### Entry không phải toàn bộ artifact
+
+Entry là điểm bắt đầu để loader tìm code. Trong webpack Module Federation, `remoteEntry.js` thường cung cấp container, rồi container tải module được expose cùng các chunk liên quan. Với ESM, entry có thể import các module khác. CSS, font và asset cũng có thể được tải sau đó.
+
+```text
+Catalog release catalog-r17
+├── entry.js
+├── chunks/product-page.a1b2.js
+├── chunks/vendor.c3d4.js
+├── styles/catalog.e5f6.css
+└── assets/...
+```
+
+Nếu entry trả `200` nhưng chunk bị `404`, remote vẫn không dùng được. Vì vậy deployment và rollback phải quản lý **toàn bộ artifact graph**, không chỉ file entry. Cấu hình base URL hoặc `publicPath` sai cũng có thể làm entry tải từ CDN nhưng chunk lại bị tìm ở origin của shell.
+
+## Chọn cơ chế tích hợp
+
+Runtime composition là lựa chọn kiến trúc; Module Federation chỉ là một cơ chế thực hiện. Chọn công cụ sau khi xác định public boundary, framework compatibility và mức isolation cần thiết.
+
+| Cơ chế | Boundary thường dùng | Bạn vẫn phải thiết kế |
+| --- | --- | --- |
+| Native ESM và import maps | Module exports, component hoặc lifecycle API | Artifact graph chạy được trong browser, mapping, dependency và lifecycle |
+| Module Federation | Module được expose qua container/runtime | Contract, shared dependency policy, version selection, loading/fallback |
+| single-spa kết hợp loader | Application có lifecycle và quy tắc activation | Cách tải artifact, UI shell, navigation và capability contract |
+| Web Components | Custom element với properties, events và lifecycle | Cách load/register, style boundary, version và cleanup; không tự có sandbox |
+| Iframe | Document riêng với message protocol | Origin/sandbox policy, handshake, height, focus và navigation |
+
+### Loader khác orchestrator
+
+Loader trả lời “làm sao lấy code cần dùng?”. Orchestrator trả lời “phần nào đang active, lúc nào mount, lúc nào unmount, ai được commit vào slot này?”. Hai trách nhiệm có thể nằm trong một thư viện, nhưng không nên nhầm chúng là một.
+
+Import maps ánh xạ module specifier tới URL; chúng không quản lý UI lifecycle. single-spa điều phối lifecycle ứng dụng; nó không bắt buộc bạn phải dùng Module Federation để tải code. Web Components cung cấp lifecycle của element; bạn vẫn cần đưa module định nghĩa element tới browser.
+
+Với webpack Module Federation, dynamic container thường đi qua khởi tạo share scope, `container.init(...)`, rồi `container.get(...)` để lấy factory của module. **Đừng dùng `import(remoteEntryUrl)` rồi mặc định kết quả có export `mount`.** Container entry kiểu script và native ESM entry có protocol khác nhau; adapter phải khớp format artifact và runtime đang dùng.
+
+Xem [Cơ chế Module Federation](/docs/module-federation/co-che) và [So sánh cách tích hợp](/docs/cac-cach-tich-hop/so-sanh) khi cần cấu hình cụ thể, thay vì chọn loader chỉ từ tên file `.js`.
+
+### Ưu tiên boundary theo route
+
+Mình bắt đầu với một remote cho một nhánh route nếu domain có hành trình đủ lớn. Catalog có thể giữ tìm kiếm, bộ lọc và chi tiết sản phẩm; shell chỉ cần biết prefix công khai, không phải mọi component bên trong.
+
+Slot nhỏ như cart badge có thể phù hợp, nhưng mỗi slot thêm một loading state, failure boundary và lifecycle. Khi một màn hình cần nhiều remote nhỏ cùng sẵn sàng mới có ý nghĩa, độc lập trên pipeline dễ biến thành phụ thuộc lúc chạy.
+
+Cũng cần chọn giữa component trong cây framework chung và root độc lập. Component chung thuận tiện cho context nhưng tăng yêu cầu compatibility; root riêng tạo boundary render rõ hơn nhưng cần inject navigation, auth và theme qua contract. Đừng thêm một lớp root độc lập nếu nó không giải quyết yêu cầu cụ thể nào.
+
+## Chọn artifact bằng runtime config
+
+Nếu shell chứa URL versioned trong source, thay URL đó thường cần release shell. Runtime config đưa quyết định chọn version ra ngoài artifact shell, chẳng hạn qua `/runtime-config.json` hoặc dữ liệu được server inject vào document.
+
+Ví dụ sau là **schema riêng của shop giả định**, không phải manifest chuẩn của Module Federation hay import map:
+
+```json title="runtime-config.json"
+{
+  "schemaVersion": 1,
+  "releaseId": "shop-release-42",
+  "remotes": {
+    "catalog": {
+      "format": "esm",
+      "artifactVersion": "catalog-r17",
+      "contractVersion": 1,
+      "entry": "https://assets.example.com/catalog/catalog-r17/entry.js"
+    },
+    "cart": {
+      "format": "esm",
+      "artifactVersion": "cart-r9",
+      "contractVersion": 1,
+      "entry": "https://assets.example.com/cart/cart-r9/entry.js"
+    }
+  }
+}
+```
+
+`releaseId` định danh lựa chọn cấu hình để debug và rollback. `artifactVersion` định danh bản build; `contractVersion` nói về public API, không phải version của React hay backend. Một release config có thể chỉ đổi catalog và giữ cart nguyên bản; không có nghĩa mọi team phải build lại theo một release train.
+
+Trước khi dùng config, validate schema ở runtime: trường bắt buộc, format được hỗ trợ, version contract, remote name và URL policy. TypeScript type annotation không validate JSON tải từ network. Cấu hình không hợp lệ phải dẫn tới lỗi cấu hình rõ ràng, không fallback âm thầm sang một URL `latest` khác.
+
+### Snapshot cấu hình cho một phiên
+
+Mình chọn một snapshot đã validate lúc khởi động document, rồi dùng nó nhất quán cho phiên đó. Đổi route không tự chọn lại catalog version mới. Cách này làm hành vi dễ giải thích: tab đang chạy giữ artifact selection của nó; document mới có thể nhận config mới theo cache và rollout policy.
+
+Chính sách này không tự áp dụng chỉ vì có JSON. Shell phải thực sự giữ snapshot, và các entry/chunk trong artifact phải tham chiếu nội dung bất biến. Nếu entry của `catalog-r17` vẫn import dependency ở URL `latest`, bạn chưa pin toàn bộ dependency graph.
+
+Nếu muốn refresh config giữa phiên, hãy coi đó là một tính năng có lifecycle riêng. Bạn phải quyết định có remount không, xử lý form draft thế nào, và shared dependency đã khởi tạo có thể thay được không. Với import maps, không giả định thêm một mapping mới sẽ thay module specifier đã resolve trong document; browser có quy tắc giữ các mapping/resolution trước đó.
+
+### Ví dụ loader cho native ESM
+
+Ví dụ dưới đây chỉ minh họa ranh giới **descriptor đã validate → URL policy → import → public contract**. Nó dùng `RemoteModule` với `contractVersion: 1` và `mount` được định nghĩa ở [Application shell](/docs/kien-truc/application-shell#contract-mẫu-cho-root-độc-lập).
+
+```ts title="platform/load-esm-remote.ts"
+// File contract thuộc ứng dụng giả định, không phải repository docs.
+import type { RemoteModule } from '../contracts/remote';
+
+type EsmDescriptor = Readonly<{
+  format: 'esm';
+  artifactVersion: string;
+  contractVersion: 1;
+  entry: string;
+}>;
+
+const allowedOrigins = new Set(['https://assets.example.com']);
+
+function resolveEntry(entry: string): URL {
+  // Policy của ví dụ: URL tuyệt đối, HTTPS, không credential/query/hash.
+  const url = new URL(entry);
+  if (
+    url.protocol !== 'https:' ||
+    !allowedOrigins.has(url.origin) ||
+    url.username || url.password || url.search || url.hash
+  ) {
+    throw new Error('Remote entry violates URL policy');
+  }
+  return url;
+}
+
+function assertRemoteModule(value: unknown): asserts value is RemoteModule {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Remote did not return a module namespace');
+  }
+  const module = value as Record<string, unknown>;
+  if (module.contractVersion !== 1 || typeof module.mount !== 'function') {
+    throw new Error('Unsupported remote contract');
+  }
+}
+
+export async function loadEsmRemote(
+  descriptor: EsmDescriptor,
+): Promise<RemoteModule> {
+  // Caller phải validate JSON thành descriptor trước khi gọi.
+  if (descriptor.format !== 'esm' || descriptor.contractVersion !== 1) {
+    throw new Error('Unsupported remote descriptor');
+  }
+  const url = resolveEntry(descriptor.entry);
+  const module: unknown = await import(url.href);
+  assertRemoteModule(module);
+  return module;
+}
+```
+
+Đây là ngữ nghĩa `import()` **native trong browser**, không phải đoạn code có thể dán nguyên vào Next.js/webpack/Vite rồi mặc định bundler sẽ giữ import URL động. Với app thực tế, dùng adapter/loader đúng toolchain và kiểm tra đầu ra build. Artifact ESM phải có dependency graph mà browser resolve được, MIME type phù hợp, CORS cho module cross-origin và CSP cho phép tải/thực thi nguồn cần thiết.
+
+Module catalog trong ví dụ export `contractVersion` và `mount` ở dạng named exports. Sau khi load, orchestrator vẫn phải kiểm tra navigation hiện tại trước khi mount; snippet chưa triển khai timeout, telemetry hay quản lý instance. Nó cũng không áp dụng cho iframe hoặc container entry của federation.
+
+### Giới hạn của validation và nguồn tin cậy
+
+Kiểm tra contract **sau import** nghĩa là top-level code của module graph đã có thể chạy. Validation giúp từ chối public API không tương thích trước khi mount; nó không ngăn code độc hại thực thi.
+
+Allowlist URL chỉ là một lớp policy. Bạn còn cần quyền publish artifact/config, bảo vệ pipeline và storage, kiểm soát redirect cùng dependency graph và CSP phù hợp. Một origin tin cậy nhưng cho phép bất kỳ ai upload JavaScript vẫn không phải nguồn code an toàn.
+
+<Callout type="warn" title="Config là quyền chọn code chạy trong ứng dụng">
+  Không nhận remote entry tùy ý từ query string, local storage hoặc dữ liệu do người dùng sửa trên production. Một field checksum trong JSON cũng không tự tạo kiểm tra integrity: loader/browser phải thực sự xác minh nó bằng cơ chế được hỗ trợ. JavaScript remote chạy cùng realm có quyền của document shell, dù tải từ CDN khác origin.
+</Callout>
+
+## Loading và lifecycle không chỉ là một lệnh import
+
+Loader có thể trả một module dùng lại; mỗi lần hiển thị remote lại tạo một instance với tài nguyên riêng. Trộn hai phạm vi này sẽ làm state hoặc listener của lần hiển thị trước sống sang lần sau.
+
+### Load mount và readiness là các mốc khác nhau
+
+| Mốc | Điều đã hoàn tất | Điều chưa được chứng minh |
+| --- | --- | --- |
+| Shell visible | Khung trang đã xuất hiện | Remote hoặc auth đã sẵn sàng |
+| Module loaded | Loader lấy được public module; với ESM, evaluation đã hoàn tất | UI đã mount hoặc dữ liệu đã có |
+| Mounted | Lifecycle mount đã hoàn tất theo contract | Nội dung đã usable, trừ khi contract quy định như vậy |
+| Usable | Nội dung/interaction thiết yếu của route đã sẵn sàng theo định nghĩa sản phẩm | Mọi request nền đều hoàn tất |
+
+Với mount đồng bộ trả handle, shell có thể nhận handle trước khi framework commit UI. Với lifecycle async, Promise hoàn tất có ý nghĩa tùy adapter. Vì vậy telemetry và loading state phải dựa trên semantics đã thống nhất, không lấy thời điểm `import()` resolve làm “trang đã tải xong”.
+
+Remote nên tránh tạo listener global, socket hay private state ngay ở top level của module. Import để preload code không nên vô tình kích hoạt một phiên nghiệp vụ. Tài nguyên theo instance cần đi vào mount và có cleanup tương ứng.
+
+### Navigation race và timeout
+
+Giả sử catalog đang tải chậm, người dùng chuyển sang cart, rồi catalog mới resolve. Nếu shell mount mọi kết quả vừa đến, nội dung catalog sẽ đè cart dù URL đã đổi.
+
+Mỗi outlet nên có generation hoặc request identity. Bắt đầu navigation mới, retry mới hoặc kết thúc attempt do timeout đều phải làm attempt cũ mất quyền commit. Trước mount và sau mỗi bước async có thể tạo instance, kiểm tra attempt còn hiện hành; instance hoàn tất muộn phải được cleanup theo contract.
+
+`AbortController` có thể hủy config fetch hoặc request dữ liệu có hỗ trợ signal. Native `import()` không có API `AbortSignal` chuẩn để hủy theo cách đó. `Promise.race` với timer chỉ giúp shell ngừng chờ, **không dừng import hay top-level side effect**.
+
+Do đó timeout cần cả fallback lẫn stale-result guard. Người dùng không được thấy remote đã timeout bất ngờ mount lại sau khi họ chuyển trang. Mẫu generation và cleanup nằm ở [Ngăn remote cũ mount sau navigation mới](/docs/kien-truc/application-shell#ngăn-remote-cũ-mount-sau-navigation-mới).
+
+### Unmount không unload module
+
+Unmount dọn instance: framework root, subscription, listener, timer, request, portal và tài nguyên khác do instance sở hữu. Nó không xóa module đã load khỏi module cache của browser. Quay lại catalog có thể dùng cùng module nhưng tạo instance mới.
+
+Với native ESM, import lại cùng resolved module URL thường dùng module đã được load/link/evaluate thành công, không chạy lại top-level code. Không có API chuẩn để tùy ý xóa module namespace cache. Thêm timestamp vào URL để ép reload tạo identity mới, có thể làm state singleton trùng lặp và tăng tài nguyên trong phiên dài.
+
+Đây là lý do không dùng cache busting làm cleanup hoặc hot-swap policy. Reset state theo user/tenant và lifecycle instance phải được thiết kế riêng; không dựa vào hy vọng lần import tiếp theo sẽ bắt đầu từ đầu.
+
+## Coupling vẫn tồn tại ở runtime
+
+Runtime composition giảm coupling ở bước đóng gói/phát hành, nhưng không làm biến mất những phụ thuộc giữa các phần. Chúng thường khó thấy hơn vì không còn nằm trong cùng dependency graph của một build.
+
+### Contract và semantics
+
+Public contract bao gồm export name, props/capability, route prefix, lifecycle và ý nghĩa của event. `contractVersion: 1` chỉ là một marker; compatibility còn cần kiểm thử hành vi.
+
+Ví dụ `cart:changed` có thể mang cùng payload nhưng đổi nghĩa từ “backend đã xác nhận” sang “user vừa bấm thêm”. Catalog và badge sẽ hiển thị khác nhau dù TypeScript không báo lỗi. Tương tự, đổi `mount` từ trả handle ngay sang đợi API hoàn tất có thể phá timeout/cleanup logic của shell.
+
+Mình ưu tiên thay đổi additive: cung cấp capability mới trước, migrate consumer, rồi mới bỏ capability cũ sau cửa sổ hỗ trợ. Với breaking change, dùng adapter hoặc version contract mới và từ chối tổ hợp không hỗ trợ có kiểm soát; không bắt browser đoán cách gọi API mới.
+
+Contract test phải kiểm tra cả version shell còn được hỗ trợ, không chỉ shell và remote mới nhất. Types tải từ remote giúp developer experience, nhưng không thay runtime validation hay compatibility tests.
+
+### Shared dependencies và framework context
+
+Các remote có thể bundle dependency riêng, dùng ESM/import-map mapping chung hoặc tham gia share scope của federation. Mỗi lựa chọn đổi coupling và chi phí tải.
+
+| Lựa chọn | Lợi ích | Rủi ro cần quản lý |
+| --- | --- | --- |
+| Bundle riêng theo remote | Ít phụ thuộc vào version được cấp bởi phần khác | Trùng bytes, memory và có thể nhiều runtime/library identity |
+| Share dependency có contract rõ | Có thể giảm tải trùng và giữ identity chung khi cần | Version negotiation, singleton policy và migration phối hợp |
+| Chia sẻ cả store/provider nội bộ | Tích hợp ban đầu thuận tiện | Remote biết implementation của nhau; dễ buộc release đồng bộ |
+
+Mình chỉ share những dependency có lý do cụ thể về size hoặc identity, kèm owner và compatibility policy. Không cấu hình singleton cho mọi package theo thói quen. `singleton` không phải lời cam kết rằng mọi version đều tương thích; hành vi chọn bản hoặc từ chối còn phụ thuộc runtime và cấu hình version.
+
+Với component React trong cùng cây, host renderer và component remote phải dùng React tương thích với identity của runtime đang render chúng. Với root độc lập, share package `react` vẫn không làm context tự đi qua giữa các root. Router, auth provider và query cache cũng cần mô hình ownership riêng.
+
+Xem [Shared dependencies](/docs/module-federation/shared-dependencies), [Version compatibility](/docs/module-federation/version-compatibility) và [React trong micro-frontend](/docs/ui-va-framework/react) trước khi coi việc tải thành công là tích hợp đúng.
+
+### DOM CSS state và quyền truy cập
+
+Remote cùng document có thể sửa DOM ngoài container, đưa global CSS vào trang hoặc làm nghẽn main thread. Error boundary không cứu được một vòng lặp vô hạn, và root độc lập không phải security sandbox.
+
+Shell sở hữu container, remote sở hữu subtree; portal và overlay cần vùng đích cùng cleanup rule. CSS cần scope và quy ước base styles. Navigation cấp ứng dụng cần một history owner; domain nhận location và capability thay vì tự giành toàn bộ browser router.
+
+State nghiệp vụ ở lại domain. Truyền capability nhỏ qua contract tốt hơn trao global mutable store, nhưng capability vẫn là ranh giới thiết kế nếu code chạy cùng realm. Khi cần thực thi code không tin cậy, hãy đánh giá iframe khác origin với sandbox và message protocol phù hợp, không coi federation hoặc Shadow DOM là ranh giới bảo mật.
+
+## Version skew caching và release
+
+Trong một frontend runtime, “production đang chạy bản nào?” có thể không có một câu trả lời duy nhất. Tab cũ giữ shell cũ, một cohort nhận catalog mới, config khác nhau do cache, và chunk chỉ được tải khi người dùng đi tới màn hình sâu hơn.
+
+Đây là **version skew**: nhiều version tồn tại đồng thời. Nó là trạng thái vận hành cần hỗ trợ, không chỉ sự cố cache cần xóa.
+
+### Tách cache cấu hình khỏi cache artifact
+
+| Loại tài nguyên | Chính sách thường phù hợp | Vì sao |
+| --- | --- | --- |
+| Document shell và config có URL ổn định | TTL có kiểm soát hoặc revalidation; xác định rõ freshness/cohort | Đây là nơi chọn release cho document mới |
+| Entry theo release bất biến | Cache dài, có thể `immutable` khi đúng semantics | URL luôn đại diện cùng nội dung |
+| Chunk/CSS/asset versioned hoặc content-hashed | Cache dài và giữ asset cũ theo retention policy | Tab cũ có thể tải thêm chunk muộn |
+| Service worker cache nếu có | Cùng quy tắc version và invalidation đã test | Có thể phục vụ bản cũ dù HTTP/CDN đã cập nhật |
+
+`Cache-Control: no-cache` cho phép cache lưu response nhưng yêu cầu validate trước khi reuse; nó không có nghĩa “không lưu”. Nếu yêu cầu không lưu, đó là semantics của `no-store`. Chọn theo nhu cầu vận hành, không dùng một header cho tất cả tài nguyên.
+
+Không ghi đè nội dung tại URL được tuyên bố bất biến. Nếu config trỏ `catalog-r17` nhưng entry ở URL đó bị sửa, bạn không còn tái tạo được tổ hợp lỗi hoặc rollback đáng tin cậy. Ngược lại, URL entry ổn định có TTL ngắn vẫn là một thiết kế khả thi, nhưng phải chấp nhận freshness và cache skew khó kiểm soát hơn.
+
+Retention phải dựa trên thời gian hỗ trợ tab/release cũ, lazy-loading và cơ chế yêu cầu refresh. “Giữ hai bản gần nhất” không đủ nếu tab đã mở qua nhiều lần deploy. Không xóa chunk cũ ngay sau khi trỏ config sang bản mới.
+
+### Rollout một bản catalog mới
+
+Giả sử `shop-release-42` đang chọn `catalog-r17` và `cart-r9`. Catalog chuẩn bị `catalog-r18`, giữ contract version 1.
+
+Một luồng release hợp lý:
+
+1. Build/test `catalog-r18`; kiểm tra compatibility với shell và capability/dependency còn được hỗ trợ.
+2. Upload toàn bộ entry, chunks, CSS và asset của bản mới vào namespace bất biến, chưa đổi config production.
+3. Kiểm tra availability qua đường CDN thực tế, MIME, CORS, CSP và base URL; mở cả route có lazy chunk.
+4. Publish snapshot config mới chọn `catalog-r18`, giữ cart nguyên bản; hệ thống resolution chọn cohort theo policy.
+5. Theo dõi lỗi load/compatibility/render và thời gian tới usable, không chỉ trạng thái upload thành công.
+6. Mở rộng cohort nếu đạt điều kiện; giữ config/artifact trước đó để rollback.
+
+Nếu config được cá nhân hóa theo cohort, cache key hoặc response policy phải bảo toàn lựa chọn đó. Đừng để CDN cache một response rollout rồi vô tình phát cùng bản cho mọi user. Config update cũng cần nhất quán: người đọc không được nhận JSON đang ghi dở hoặc snapshot chưa có đủ asset.
+
+### Rollback không thay code đã chạy
+
+Giả sử bản `catalog-r18` lỗi. Release operator có thể publish config quay về `catalog-r17`; document mới sẽ nhận lựa chọn này theo freshness policy. Nhưng document đã lấy snapshot `catalog-r18` hoặc đã evaluate module đó **không tự trở về bản cũ**.
+
+Bạn cần nói rõ phạm vi rollback: tác động tới lần boot mới, tới remote chưa load, hay tới cả instance hiện tại. Mặc định mình không hot-swap giữa phiên; nếu cần refresh, thông báo và bảo vệ draft/hành động đang chạy theo thiết kế sản phẩm. Đổi config không sửa markup, singleton hay share scope đã khởi tạo.
+
+Rollback cũng không hoàn tác backend migration hay đơn hàng đã tạo. Artifact cũ chỉ dùng được nếu backend API và dữ liệu vẫn tương thích. Kế hoạch release phải giữ compatibility window ở cả frontend lẫn API.
+
+Xem [Caching](/docs/trien-khai/caching), [Runtime configuration](/docs/trien-khai/runtime-configuration) và [Rollout và rollback](/docs/trien-khai/rollout-rollback) để tách policy khỏi chi tiết loader.
+
+## Failure modes và fallback
+
+Shell có thể giữ navigation khi remote lỗi, nhưng điều đó không xảy ra chỉ nhờ tách bundle. Loading, error handling và render boundary phải đặt đúng chỗ; khởi động app không nên chờ mọi remote qua một `Promise.all` duy nhất nếu chúng không thiết yếu cho route hiện tại.
+
+### Phân loại lỗi theo phase
+
+| Phase | Tình huống | Xử lý phù hợp |
+| --- | --- | --- |
+| Shell boot | Document hoặc code shell không dùng được | Recovery ở cấp document/hosting; fallback trong shell có thể chưa chạy được |
+| Config/resolve | Config lỗi schema, remote thiếu mapping, URL bị policy từ chối | Báo lỗi cấu hình, giữ khung nếu đã boot; chỉ dùng last-known-good khi có policy rõ |
+| Entry/module graph load | Offline, CDN lỗi, chunk `404`, CORS/CSP/MIME sai | Fallback tại route/slot; phân biệt lỗi tạm thời với lỗi deploy/policy |
+| Linking/evaluation | ESM export không khớp, cú pháp lỗi, top-level code throw | Không mount; xác định artifact lỗi, cân nhắc rollback |
+| Shared dependency/contract | Version không hỗ trợ hoặc thiếu public export | Từ chối tích hợp, gửi telemetry về tổ hợp version |
+| Mount | Setup thất bại sau khi tạo tài nguyên | Remote rollback phần đã tạo; shell giữ outlet ở trạng thái lỗi |
+| Render | Component throw trong framework tree | Boundary đúng cây/root render; không chỉ `try/catch` quanh import |
+| Domain data | API sản phẩm lỗi, permission denied, validation lỗi | Domain xử lý; không gộp thành “remote không tải được” |
+| Unmount | Listener, timer hoặc portal còn sống | Điều tra lifecycle leak; giữ generation guard, không chỉ xóa DOM |
+
+HTTP `200` không chứng minh entry hợp lệ. Hosting SPA có thể trả HTML fallback cho đường dẫn chunk bị thiếu; browser sau đó báo MIME hoặc parse error. Khi debug, kiểm tra body và content type, không chỉ status.
+
+Với React root độc lập, error boundary nằm trong cây shell không tự bắt lỗi render của root catalog. Remote cần boundary bên trong root của mình hoặc một contract báo lỗi tích hợp. Lỗi event handler/async cũng cần error handling đúng phạm vi.
+
+### Retry có giới hạn và đúng nguyên nhân
+
+Retry hữu ích với lỗi mạng tạm thời, không sửa được export sai, contract không tương thích hay CSP bị chặn. Dùng retry budget/backoff có giới hạn, cho người dùng retry chủ động, và tránh mọi slot cùng retry vô hạn khi CDN đang lỗi.
+
+Với native ESM, lỗi evaluation được cache; import lại cùng URL không phải cách chạy lại top-level code đã throw. Lỗi load/link có thể được thử lại, nhưng còn chịu HTTP cache và điều kiện mạng. Federation và loader khác có cache/error state riêng; phải kiểm tra cách reset mà runtime hỗ trợ, không suy ra từ ESM.
+
+Nếu adapter tự giữ Promise để deduplicate load, hãy quyết định có xóa Promise rejected cho loại lỗi retry được không. Nếu giữ vĩnh viễn, nút retry có thể chỉ nhận lại rejection cũ mà không phát request mới. Ngược lại, cache busting ngẫu nhiên không phải cách sửa artifact hỏng: nó tạo thêm module identity và che mất nguyên nhân.
+
+<Callout type="warn" title="Không tự động đổi version sau mọi lỗi">
+  Retry cùng artifact và chuyển sang artifact khác là hai hành động khác nhau. Tự lấy bản “mới nhất” hoặc bản trước đó sau bất kỳ lỗi nào có thể phá compatibility snapshot và tạo tổ hợp chưa test. Fallback sang version khác cần policy, telemetry và điều kiện an toàn rõ ràng.
+</Callout>
+
+### Fallback giữ đúng ý nghĩa nghiệp vụ
+
+Nếu cart badge lỗi, hiển thị “không tải được giỏ hàng” hoặc trạng thái chưa xác định; đừng đổi thành `0` vì user sẽ hiểu giỏ rỗng. Nếu catalog lỗi, giữ URL đích cùng nút retry và navigation để user rời trang, thay vì redirect về home rồi mất ngữ cảnh.
+
+Checkout là luồng thiết yếu. Không âm thầm bỏ qua phần xác nhận thanh toán để giữ giao diện “vẫn chạy”. UI cần báo rõ trạng thái và backend vẫn phải bảo đảm authorization cùng tính đúng đắn của giao dịch.
+
+Fallback ở slot nhỏ có thể gọn; fallback của route nên có thông điệp accessible, hành động phục hồi và error reference không nhạy cảm nếu cần hỗ trợ. Đừng tự giành focus mỗi lần background retry. Skeleton cũng phải giữ kích thước hợp lý để nội dung không nhảy liên tục.
+
+## Performance và trải nghiệm người dùng
+
+Runtime composition có thể giảm code tải cho route đầu tiên, nhưng cũng có thể thêm request, dependency duplication và main-thread work. Không có kết luận “micro-frontend nhanh hơn” chỉ từ việc bundle nhỏ hơn.
+
+Mình đo đường đi tới nội dung usable của route thực tế, rồi mới tối ưu phần đang chặn:
+
+- Tránh tải tất cả remote lúc boot; chỉ tải những phần route hiện tại thực sự cần.
+- Giảm config → entry → chunk waterfall bằng config delivery hoặc preload có mục tiêu khi đã biết artifact được chọn.
+- Preload dựa trên khả năng navigation và budget; phân biệt fetch/preload tài nguyên với `import()` có evaluation.
+- Bundle/cache dependency theo policy đã đo, không share mọi package chỉ để giảm số byte trên báo cáo.
+- Giới hạn remote lồng nhau khiến catalog phải tải một remote khác rồi mới có thể bắt đầu render.
+- Đo parse/evaluate, long tasks, layout shift và memory sau nhiều vòng mount/unmount, không chỉ download time.
+
+Preload code không cho phép truy cập dữ liệu riêng tư trước auth. Remote cũng không nên mount hoặc mở socket chỉ vì loader đang warming module. API/data loading vẫn có owner và session scope riêng.
+
+Với trang cần SEO hoặc nội dung xuất hiện từ HTML ban đầu, client-only composition có thể không đáp ứng mục tiêu. Có thể kết hợp server-side composition/SSR với hydration, nhưng server và client phải chọn artifact tương thích. Không hydrate HTML do catalog bản A render bằng code bản B một cách tùy ý. Xem [Server-side composition](/docs/kien-truc/server-side-composition) và [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
+
+## Quan sát và kiểm thử tích hợp
+
+Khi người dùng báo màn hình trống, bạn cần biết họ đang chạy tổ hợp nào và lỗi ở phase nào. Một event `remote_failed` không có version hoặc phase thường chưa đủ để tìm owner.
+
+Telemetry tích hợp nên ghi remote name, shell version, artifact version, contract version, config release ID, phase, attempt/instance identity, duration và error category. Readiness phải gắn với instance hiện tại để callback muộn không kết thúc loading của instance khác. Không log token, cookie, user identifier tùy tiện hoặc raw URL/query có dữ liệu nhạy cảm.
+
+| Kịch bản cần test | Điều phải đúng |
+| --- | --- |
+| Mở URL sâu và refresh | Shell chọn đúng domain; remote đọc đúng subroute |
+| Shell cũ với remote mới còn được hỗ trợ | Contract/dependency hoạt động hoặc bị từ chối có fallback rõ |
+| Config malformed hoặc entry ngoài allowlist | Không load URL bị cấm; báo lỗi đúng phase |
+| Entry tải được nhưng chunk/CSS lỗi | Fallback đúng boundary; không kết luận success từ entry `200` |
+| Entry trả HTML thay vì JavaScript | Phát hiện lỗi MIME/parse và xác định hosting fallback |
+| Load catalog chậm rồi chuyển cart | Catalog resolve muộn không mount đè cart |
+| Timeout rồi import hoàn tất | Attempt cũ không được commit; top-level behavior không tạo leak |
+| Import evaluation throw rồi retry | Không kỳ vọng evaluation cùng URL được chạy lại |
+| Remote render throw | Boundary thuộc đúng framework tree/root xử lý |
+| Mount thất bại giữa chừng | Tài nguyên đã tạo được rollback |
+| Mount/unmount lặp lại | Không tăng listener, socket, timer, portal hoặc private cache ngoài policy |
+| Logout/đổi tenant khi request còn pending | Kết quả cũ không commit sang auth scope mới |
+| Config rollback trong lúc tab cũ mở | Hành vi đúng policy; tab cũ còn tải được chunk cũ |
+| Cohort khác nhau qua CDN | Cache không làm mất hoặc trộn selection |
+| Standalone tốt nhưng integrated lỗi | Test bắt được khác biệt router, provider, CSS và shared dependency |
+| Loading/fallback bằng keyboard và screen reader | Navigation còn dùng được, focus và thông báo hợp lý |
+
+Dùng độ trễ có điều khiển để tạo race, chặn entry hoặc lazy chunk riêng để tạo lỗi, và giữ browser context cũ qua một lần release để test version skew. Local development chỉ chạy tất cả bản mới nhất thường bỏ sót đúng những tổ hợp xảy ra trên production.
+
+Unit test resolver/contract/generation logic giúp bắt lỗi nhanh. Integration test xác nhận loader và lifecycle; E2E test xác nhận browser history, asset hosting, fallback và hành trình nghiệp vụ thật. Test standalone của catalog không thay cho test dưới shell.
+
+## Checklist trước khi chọn runtime composition
+
+- [ ] Có nhu cầu release độc lập rõ ràng, không chỉ muốn chia bundle.
+- [ ] Domain và owner đã xác định; route/slot không chia vụn workflow tùy tiện.
+- [ ] Cơ chế tích hợp khớp format artifact, public contract và mức isolation cần thiết.
+- [ ] Chọn version không bắt shell rebuild cho mọi thay đổi nội bộ tương thích.
+- [ ] Runtime config được validate và chỉ nguồn có quyền mới được thay selection.
+- [ ] Entry cùng toàn bộ dependency graph có URL/cache policy nhất quán.
+- [ ] Compatibility window có shell/remote/backend cũ còn được hỗ trợ.
+- [ ] Load, mount và usable có semantics/telemetry riêng.
+- [ ] Navigation mới, timeout và retry làm attempt cũ mất quyền commit.
+- [ ] Mount thất bại có rollback; unmount dọn tài nguyên theo instance.
+- [ ] Shared dependency, DOM, CSS, navigation và state có ownership rõ.
+- [ ] Fallback giữ navigation và không giả mạo trạng thái nghiệp vụ.
+- [ ] Retry có budget; biết khác biệt giữa lỗi network, evaluation và compatibility.
+- [ ] Rollout/rollback nói rõ tác động tới tab mới và tab đang chạy.
+- [ ] Có retention policy cho asset cũ cùng test lazy chunk sau deploy.
+- [ ] Có telemetry theo tổ hợp version và test failure/race/version skew.
+
+Để review thiết kế, thử một thay đổi nhỏ của catalog giữ nguyên contract. Viết ra artifact nào được build lại, ai đổi selection, tab cũ tải gì và cách khôi phục khi chunk mới lỗi. Nếu bạn chưa trả lời được bốn câu này, hãy hoàn thiện release và failure policy trước khi thêm remote tiếp theo.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Ranh giới trách nhiệm, contract mount và lifecycle của instance." />
+  <Card title="Build-time composition" href="/docs/kien-truc/build-time-composition" description="Đối chiếu coupling ở build/release với ghép ở runtime." />
+  <Card title="Dynamic remotes" href="/docs/module-federation/dynamic-remotes" description="Chọn và tải remote động trong cơ chế Module Federation." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Đưa version mới tới người dùng và xác định phạm vi khôi phục." />
+  <Card title="Resilience" href="/docs/production/resilience" description="Thiết kế failure boundary, fallback và recovery ở production." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/): container interface, dynamic remote containers, share scope và public path.
+- [MDN — import()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import): module evaluation, caching, error behavior và giới hạn reload module.
+- [MDN — Import maps](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap): mapping, scopes và quy tắc merge với specifier đã resolve.
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control): phân biệt revalidation, `no-cache`, `no-store` và `immutable`.
+- [single-spa — Building applications](https://single-spa.js.org/docs/building-applications/): lifecycle của application và yêu cầu cleanup khi unmount.
+- [React — Error boundaries](https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary): phạm vi lỗi render mà boundary có thể xử lý.

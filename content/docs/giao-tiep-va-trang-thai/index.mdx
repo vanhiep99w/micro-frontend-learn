@@ -1,24 +1,291 @@
 ---
 title: "Giao tiếp và trạng thái"
-description: "Giữ quyền sở hữu dữ liệu rõ ràng và giảm coupling giữa các frontend."
+description: "Định hướng cách các micro-frontend trao đổi dữ liệu, giữ state đúng owner và phối hợp routing, cache, session qua contract ổn định."
 ---
 
-Đây là trang khung cho nhóm **Giao tiếp và trạng thái**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử bạn bấm “Thêm vào giỏ” trong catalog: cart đã có sản phẩm mới, badge trên header vẫn hiện số cũ, còn refresh thì mọi thứ lại đúng. Cách sửa nhanh là cho cả ba nơi dùng chung store. Nhưng nếu catalog, cart và shell đều được sửa giỏ hàng, lần đổi cấu trúc store tiếp theo có thể buộc cả ba phải deploy cùng nhau.
+
+Nhóm **Giao tiếp và trạng thái** giúp bạn giải quyết bài toán này từ ranh giới trách nhiệm, không từ tên thư viện. Mình mặc định giữ state trong domain sở hữu nó, công bố một contract nhỏ cho bên cần đọc hoặc yêu cầu thay đổi, rồi mới chọn cách truyền dữ liệu.
+
+<Callout type="info" title="Phạm vi nhóm bài">
+  Đây là trang định hướng cho sáu bài chuyên sâu, không phải implementation của một global store hay message bus. Ví dụ dùng shop giả định gồm shell, catalog và cart; các tên API, event và route là mẫu thiết kế, không phải ứng dụng có sẵn trong repository. Bạn chỉ cần hiểu props, Promise, HTTP và lifecycle mount/unmount ở mức cơ bản.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bắt đầu từ quyền đọc và quyền ghi](#bắt-đầu-từ-quyền-đọc-và-quyền-ghi)
+- [Bản đồ state cho shop](#bản-đồ-state-cho-shop)
+- [Phân biệt command query và event](#phân-biệt-command-query-và-event)
+- [Luồng thêm sản phẩm vào giỏ](#luồng-thêm-sản-phẩm-vào-giỏ)
+  - [Đường ghi đi qua cart owner](#đường-ghi-đi-qua-cart-owner)
+  - [Nơi đọc đến muộn vẫn cần snapshot](#nơi-đọc-đến-muộn-vẫn-cần-snapshot)
+- [Chọn cơ chế giao tiếp vừa đủ](#chọn-cơ-chế-giao-tiếp-vừa-đủ)
+  - [Contract trước transport](#contract-trước-transport)
+  - [Chia sẻ thư viện khác với chia sẻ instance](#chia-sẻ-thư-viện-khác-với-chia-sẻ-instance)
+- [Routing cache và session cùng cần ownership](#routing-cache-và-session-cùng-cần-ownership)
+  - [URL là state có thể khôi phục](#url-là-state-có-thể-khôi-phục)
+  - [Cache là bản sao có vòng đời](#cache-là-bản-sao-có-vòng-đời)
+  - [Session xác định phạm vi dữ liệu](#session-xác-định-phạm-vi-dữ-liệu)
+- [Giữ đúng qua lifecycle và lỗi](#giữ-đúng-qua-lifecycle-và-lỗi)
+- [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
+- [Bài tập thiết kế một boundary](#bài-tập-thiết-kế-một-boundary)
+  - [Viết bản mô tả tối thiểu](#viết-bản-mô-tả-tối-thiểu)
+  - [Kiểm chứng bằng tình huống bất lợi](#kiểm-chứng-bằng-tình-huống-bất-lợi)
+- [Checklist trước khi nối thêm remote](#checklist-trước-khi-nối-thêm-remote)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bắt đầu từ quyền đọc và quyền ghi
 
-Giữ quyền sở hữu dữ liệu rõ ràng và giảm coupling giữa các frontend.
+“Cả shell và cart đều cần số lượng giỏ hàng” là một nhu cầu đọc chung. Nó chưa phải lý do để hai bên cùng có quyền thay đổi cart. **Nhiều consumer có thể đọc cùng dữ liệu, nhưng đường ghi cần một owner rõ ràng.**
 
-## Các bài trong nhóm
+Owner là bên định nghĩa ý nghĩa của state, điều phối thay đổi, xử lý lỗi và quyết định khi nào state hết hiệu lực. Nơi đặt object trong memory và nơi render UI không tự quyết định ownership: shell render badge, nhưng cart domain vẫn quyết định badge đếm gì.
 
-- [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) — Thiết kế props, events và schemas có version cùng quy tắc tương thích.
-- [Events và message bus](/docs/giao-tiep-va-trang-thai/events) — Trao đổi sự kiện với payload rõ ràng, cleanup và xử lý các event bị lặp.
-- [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) — Phân định local state, shared state và tránh một global store điều khiển mọi remote.
-- [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) — Chia quyền sở hữu URL, nested routes, deep links và browser history.
-- [Data fetching và cache](/docs/giao-tiep-va-trang-thai/data-fetching) — Phân định API ownership, query cache, request deduplication và invalidation.
-- [Authentication và session](/docs/giao-tiep-va-trang-thai/authentication) — Phối hợp login, session và logout mà không nhầm UI permissions với backend authorization.
+Với dữ liệu nghiệp vụ như giỏ hàng, cần phân biệt hai cấp trách nhiệm. Backend là nguồn chuẩn của cart đã xác nhận và enforce quy tắc nghiệp vụ; cart frontend sở hữu cách gọi API, quản lý cache và cung cấp summary cho UI. Cart frontend không có quyền tự xác nhận giá, tồn kho hay quyền truy cập thay backend.
+
+Trước khi tạo một shared store hoặc event, hãy trả lời:
+
+| Câu hỏi | Câu trả lời minh họa với badge |
+| --- | --- |
+| Giá trị có nghĩa gì? | Tổng quantity trong cart hiện tại, không phải số dòng sản phẩm |
+| Nguồn chuẩn là đâu? | Cart do backend xác nhận |
+| Ai điều phối cập nhật ở frontend? | Cart controller hoặc data layer thuộc cart domain |
+| Ai cần đọc? | Header của shell; cart UI |
+| Ai được yêu cầu thay đổi? | Catalog và cart UI qua command công khai |
+| Khi nào phải bỏ dữ liệu cũ? | Khi đổi user, tenant hoặc cart; khi session kết thúc |
+
+Shell có thể tạo hoặc tải cart controller rồi inject contract vào remote. Đó là wiring ở composition layer, không phải chuyển toàn bộ nghiệp vụ cart sang shell.
+
+## Bản đồ state cho shop
+
+Không phải state nào cũng cần đi qua boundary. Giá trị đang gõ trong input và giỏ hàng đã commit có nguồn chuẩn, consumer và vòng đời khác nhau; đưa cả hai vào một store toàn cục thường làm ranh giới khó hiểu hơn.
+
+| Loại state | Ví dụ | Owner mặc định | Cách chia sẻ nếu cần |
+| --- | --- | --- | --- |
+| Local UI state | Modal đang mở, biến thể đang chọn, draft tìm kiếm | Component hoặc catalog UI | Giữ local; chỉ đưa kết quả cần thiết vào command |
+| URL state | Từ khóa đã submit, sort, trang kết quả | Catalog sở hữu semantics; router owner điều phối URL | URL và navigation contract |
+| Server state | Sản phẩm, tồn kho, cart đã xác nhận | Backend là nguồn chuẩn; domain frontend sở hữu data layer | Query hoặc read-only data port |
+| State dẫn xuất | Tổng quantity ở badge | Cart domain tính từ cart | Summary snapshot và notification |
+| Shared application state | Theme, locale | Platform module | Props hoặc reader cùng command có phạm vi nhỏ |
+| Session projection | Đang kiểm tra phiên, anonymous, authenticated, chưa xác nhận được | Auth module | Snapshot và subscription, không phải token broadcast |
+
+Một owner không có nghĩa là chỉ có một bản sao. Cart data layer có cache, header có summary, UI có optimistic state; điều quan trọng là biết bản nào đã được xác nhận, bản nào còn dự đoán và cách reconcile với nguồn chuẩn.
+
+Mình giữ local state local, trừ khi có yêu cầu cụ thể như bảo toàn draft qua navigation. Khi cần lưu draft, hãy công bố vòng đời và scope của draft đó; đừng giữ mọi state của remote vô thời hạn chỉ vì một form chưa submit.
+
+## Phân biệt command query và event
+
+Ba loại giao tiếp này trả lời ba câu hỏi khác nhau. Dùng đúng loại giúp bạn tránh biến bus thành nơi mọi remote gửi yêu cầu rồi tự đoán ai sẽ xử lý.
+
+| Loại | Câu hỏi | Ví dụ | Consumer cần biết |
+| --- | --- | --- | --- |
+| Command | “Owner có thể làm việc này không?” | `cart.addItem({ productId, quantity })` | Input, kết quả, lỗi, timeout và retry |
+| Query hoặc snapshot | “Trạng thái hiện tại là gì?” | Đọc cart summary từ owner | Scope, loading/error, freshness và cách cập nhật |
+| Event | “Điều gì đã xảy ra?” | `shop.cart.updated.v1` | Payload, version, delivery và cách reconcile |
+
+Catalog cần báo kết quả ngay trên nút “Thêm vào giỏ”, nên mình chọn command có kết quả rõ ràng. Sau khi mutation được xác nhận, cart có thể phát event cho badge và các consumer khác. Không dùng việc một subscriber đã nhận event để quyết định command thành công hay chưa.
+
+Một message tên `cart.add-item` vẫn là command nếu nó yêu cầu bên nhận thực hiện mutation. Gọi nó là event không giải quyết được câu hỏi “ai xử lý nếu cart UI chưa mount?” hoặc “hai subscriber có thêm hàng hai lần không?”. Owner phải tồn tại đúng vòng đời, và request-response phải có semantics rõ ràng.
+
+Event giống một thông báo “sổ đã cập nhật”, không phải bản thân cuốn sổ. Với bus trong memory không có replay, người đến sau không đọc lại được thông báo cũ; vì vậy event không thay thế snapshot hiện tại.
+
+## Luồng thêm sản phẩm vào giỏ
+
+### Đường ghi đi qua cart owner
+
+Sơ đồ sau thể hiện trách nhiệm, không phải cách chia bundle hay yêu cầu các UI cùng mount:
+
+```text
+Catalog UI ── addItem ──► Cart domain ── mutation ──► Backend cart
+                              │                         │
+                              ◄── snapshot xác nhận ────┘
+                              │
+Shell badge ◄── đọc summary ───┤
+Shell badge ◄── notification ──┘
+```
+
+Một lần thêm hàng có thể đi qua các bước sau:
+
+1. Catalog giữ lựa chọn sản phẩm và trạng thái pending ở UI, rồi gọi cart command được inject vào nó.
+2. Cart owner validate input và gửi mutation; backend kiểm tra session, quyền, tồn kho và quy tắc cart.
+3. Nếu backend xác nhận thành công, owner cập nhật snapshot/cache, trả kết quả cho caller và thông báo thay đổi cho consumer. Thứ tự chi tiết phải được công bố trong contract; notification chỉ được phát sau khi snapshot tương ứng đã sẵn sàng để đọc.
+4. Catalog xử lý kết quả command để hiển thị thành công hoặc lỗi. Header đọc summary mới, không tự cộng một vào badge từ click của catalog.
+5. Khi người dùng mở `/cart`, cart UI dựng từ dữ liệu hiện tại của owner hoặc query lại theo policy, không phụ thuộc vào việc nó đã nghe đủ event trước đó.
+
+Cart domain không nhất thiết là màn hình cart. Nếu command chỉ được đăng ký khi route `/cart` mount, người dùng đang ở catalog sẽ không có bên xử lý. Một controller có vòng đời theo session có thể cung cấp capability dù cart UI đang unmount; controller vẫn thuộc cart team.
+
+<Callout type="warn" title="Timeout không chứng minh mutation chưa xảy ra">
+  Backend có thể đã thêm hàng trước khi response bị mất. Đừng tạo thao tác mới và retry mù. Contract cần biểu diễn kết quả chưa xác định, cách đọc lại trạng thái và idempotency nếu backend hỗ trợ. Chỉ đặt một `operationId` trong request không tự bảo đảm chống mutation trùng.
+</Callout>
+
+### Nơi đọc đến muộn vẫn cần snapshot
+
+Giả sử header được remount sau khi cart đã phát `shop.cart.updated.v1`. Trên bus không lưu lịch sử, header không nhận event cũ; nếu badge chỉ đổi khi có event mới, nó sẽ đứng ở giá trị mặc định dù cart đã có hàng.
+
+Owner nên cung cấp khả năng đọc snapshot hiện tại cùng subscription, hoặc một read API kết hợp revalidation. Snapshot cần phân biệt “chưa tải”, “đã sẵn sàng” và “lỗi”; số `0` chỉ nên có nghĩa là đã xác nhận giỏ rỗng, không kiêm luôn nghĩa chưa biết.
+
+Với snapshot đồng bộ và subscription tương ứng, đăng ký trước rồi đọc snapshot giúp tránh khoảng trống giữa lần đọc và lúc bắt đầu nghe. Nếu query bất đồng bộ, vẫn phải xử lý response đến muộn: chỉ áp dụng dữ liệu đúng scope, dùng revision nếu backend cung cấp, hoặc revalidate theo policy của owner. Thứ tự đăng ký listener không giải quyết mọi race.
+
+Chi tiết implementation nằm ở [Events và message bus](/docs/giao-tiep-va-trang-thai/events) và [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership).
+
+## Chọn cơ chế giao tiếp vừa đủ
+
+### Contract trước transport
+
+Contract là thỏa thuận về dữ liệu và hành vi; transport là cách đưa lời gọi hoặc message tới bên nhận. Bạn cần quyết định consumer được làm gì trước khi chọn `CustomEvent`, function, store hay `postMessage`.
+
+| Nhu cầu | Lựa chọn mặc định | Giới hạn cần nhớ |
+| --- | --- | --- |
+| Shell truyền locale/theme khi mount | Props hoặc mount context | Phải quy định update hay remount khi giá trị đổi |
+| Catalog thêm hàng và cần kết quả | Function capability hoặc request-response API | Cần owner, validation và semantics lỗi |
+| Nhiều bên phản ứng sau cart update | Event có namespace và schema | Bus không mặc nhiên replay, ACK hoặc retry |
+| Header cần state hiện tại | Reader/snapshot cùng subscription | Cần loading/error, scope và cleanup |
+| Bộ lọc cần bookmark và Back | URL cùng navigation API | Không đưa credential hoặc dữ liệu nhạy cảm vào URL |
+| Shell giao tiếp với iframe khác origin | Protocol qua `postMessage` | Kiểm tra origin, source, schema và lifecycle |
+| Component cùng owner, cùng vòng release | Local/shared store trong phạm vi đó | Không nhất thiết cần bus hay contract versioned cho mọi helper |
+
+Mình không dùng event bus cho props giữa cha và con, cũng không dùng `localStorage` như nguồn chuẩn của cart. Storage có thể giữ preference hoặc draft theo policy riêng; persistence không biến dữ liệu lưu ở browser thành dữ liệu nghiệp vụ đã được backend xác nhận.
+
+Một contract tốt cần mô tả cả semantics: `itemCount` đếm quantity hay SKU, field nào optional, version nào tương thích, khi nào callback còn hiệu lực, và subscriber throw có ảnh hưởng publisher không. Interface TypeScript chỉ kiểm tra lúc build; dữ liệu từ remote khác version vẫn cần được kiểm tra tại runtime theo boundary phù hợp.
+
+Với iframe, function và DOM element không truyền được qua structured clone của `postMessage`. Hãy thiết kế message protocol có request ID, response, timeout và schema phù hợp. Trong mô hình origin xác định của shop, dùng `targetOrigin` chính xác; phía nhận kiểm tra `event.origin`, `event.source` và payload trước khi xử lý.
+
+### Chia sẻ thư viện khác với chia sẻ instance
+
+Hai remote cùng dùng Redux hoặc TanStack Query không có nghĩa chúng dùng cùng store hay query client. Nếu mỗi bên gọi hàm tạo instance, chúng vẫn giữ hai cache và hai tập subscription riêng.
+
+Ngược lại, chia sẻ đúng một instance cũng không tự tạo ownership tốt. Một global store cho mọi remote quyền dispatch có thể trở thành API ngầm mà thay đổi reducer nào cũng kéo theo nhiều consumer.
+
+Module Federation giúp tải và chia sẻ module theo cấu hình, không tự quyết định ai tạo controller hoặc ai được ghi dữ liệu. Shell nên inject đúng contract/instance cần dùng; consumer không import reducer, query key hoặc mutable object nội bộ của domain khác như đường tắt.
+
+Shared store vẫn hợp lý cho một phạm vi cùng owner hoặc cho platform state nhỏ có API được kiểm soát. Điều cần tránh không phải mọi shared state, mà là một shared implementation khiến các domain không thể thay đổi nội bộ độc lập.
+
+## Routing cache và session cùng cần ownership
+
+Badge chỉ là điểm khởi đầu. URL, query cache và session đều có thể sinh nhiều nguồn ghi nếu mỗi remote tự quản một bản không có cơ chế phối hợp.
+
+### URL là state có thể khôi phục
+
+Với `/catalog?q=keyboard&sort=price-asc&page=2`, catalog định nghĩa ý nghĩa query và parse input; router owner điều phối location và browser history của document chính. Mình mặc định chọn một browser-history owner, thay vì để shell và mỗi remote tự ghi history độc lập.
+
+Draft đang gõ có thể ở local state. Bộ lọc đã áp dụng nên dựng được từ URL khi cần share link, refresh hoặc Back/Forward; không để một store và URL cùng tự nhận là nguồn chuẩn rồi liên tục ghi ngược nhau.
+
+Remote gửi yêu cầu navigation qua contract phù hợp; áp dụng location từ Back/Forward không được tạo một navigation command mới. Deep link còn cần server phục vụ đúng document, nên việc click trong dev server chạy đúng chưa đủ để xác nhận routing hoàn chỉnh.
+
+### Cache là bản sao có vòng đời
+
+Catalog quản lý product query; cart quản lý cart query và invalidation sau mutation. Shell có thể cấp transport, tracing hoặc session context, nhưng không cần biết mọi endpoint và query key nghiệp vụ.
+
+Mặc định mình giữ cache theo domain. Khi badge và cart UI thực sự cần đọc chung dữ liệu, chọn shared query client được wiring rõ hoặc data port do cart cung cấp; quyết định này cần cân nhắc coupling, runtime và framework của consumer.
+
+Request deduplication chỉ có tác dụng trong phạm vi cơ chế cache/transport tương ứng; hai cache độc lập không tự biết request của nhau. Invalidate query cache cũng không tự purge HTTP cache hoặc CDN. Domain owner phải xác định dữ liệu nào bị ảnh hưởng và cách consumer lấy bản mới.
+
+### Session xác định phạm vi dữ liệu
+
+Một auth module điều phối bootstrap, login, refresh và logout; remote đọc projection đủ cho UI. “Đang kiểm tra session” khác “anonymous”, và lỗi mạng không chứng minh người dùng đã logout.
+
+Khi đổi user hoặc tenant, cart snapshot và request cũ có thể không còn hợp lệ dù shape không đổi. Auth lifecycle cần giúp các data layer reset scope, loại bỏ dữ liệu riêng tư và ngăn response cũ ghi vào phiên mới. Chỉ ẩn badge khi logout không dọn được cache bên dưới.
+
+<Callout type="warn" title="Boundary kiến trúc không phải security boundary">
+  Không broadcast access token qua event bus để đồng bộ login. UI permissions và frontend reader chỉ phối hợp trải nghiệm, không thay backend authorization. JavaScript chạy cùng document không được sandbox chỉ vì thuộc một remote khác; quyền truy cập tài nguyên phải được backend kiểm tra trên từng request.
+</Callout>
+
+## Giữ đúng qua lifecycle và lỗi
+
+Happy path dễ chạy đúng khi mọi remote mount cùng lúc và network nhanh. Ranh giới thực sự rõ khi một consumer chưa mount, một request về muộn hoặc session vừa đổi.
+
+| Tình huống | Quy tắc cần thiết kế | Sai lầm thường gặp |
+| --- | --- | --- |
+| Remote unmount rồi mount lại | Cleanup listener; đọc snapshot mới khi mount | Giữ listener cũ, khiến một update chạy nhiều handler |
+| Cart UI chưa mount | Command owner vẫn có lifecycle phù hợp | Đăng ký mutation handler chỉ trong màn hình cart |
+| Event lặp hoặc dữ liệu sai thứ tự | Reconcile theo scope/revision hoặc revalidate; xử lý idempotent | Cộng quantity từ mọi event nhận được |
+| Request cũ trả sau request mới | Owner bỏ stale result hoặc kiểm tra phiên bản dữ liệu | Response đến cuối luôn thắng |
+| Subscriber lỗi | Cô lập lỗi notification khỏi kết quả mutation đã commit | Báo thêm hàng thất bại dù backend đã thành công |
+| Logout trong lúc request đang chạy | Reset scope và chặn kết quả session cũ | Chỉ xóa UI rồi để response cũ điền lại cache |
+| Shell cũ gặp remote mới | Contract tương thích hoặc fallback rõ ràng | Tin rằng chung package type là đủ |
+| Remote load thất bại | Shell giữ navigation và hiển thị fallback/retry | Toàn trang mất khả năng điều hướng |
+
+`unmount` UI không mặc nhiên phải hủy toàn bộ domain cache, nhưng các subscription thuộc instance đó phải được dọn. Ngược lại, logout có thể đòi hỏi hủy dữ liệu theo session ngay cả khi shell vẫn mount. Vòng đời UI và vòng đời dữ liệu là hai quyết định khác nhau.
+
+Abort cũng không phải rollback. Nếu request đã tới server, owner vẫn phải xác định kết quả mutation; chỉ dừng chờ ở consumer không xóa thao tác backend đã áp dụng.
+
+Để debug, hãy lần theo owner và boundary: phiên bản shell/remote nào đang chạy, command nào tạo mutation, snapshot thuộc cart/scope nào, notification nào đã phát, consumer nào còn subscribe. Dùng operation/correlation ID và metadata đã được cho phép; không log token hay toàn bộ dữ liệu cá nhân chỉ để tìm một badge lệch.
+
+## Lộ trình đọc trong nhóm
+
+Thứ tự dưới đây bám theo sidebar. Nếu bạn đang sửa lỗi nhiều writer, có thể đọc **State ownership** trước, rồi quay lại thiết kế contract và transport.
+
+| Thứ tự | Bài | Câu hỏi được giải quyết |
+| --- | --- | --- |
+| 1 | [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) | Consumer được đọc/gọi gì, dữ liệu có nghĩa gì và thay đổi thế nào để còn tương thích? |
+| 2 | [Events và message bus](/docs/giao-tiep-va-trang-thai/events) | Khi nào nên dùng event, validate payload và cleanup ra sao, nơi đến muộn lấy state thế nào? |
+| 3 | [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) | Local, shared, URL và server state thuộc ai; đường ghi có bị phân tán không? |
+| 4 | [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) | Ai quản history, chia route và giữ deep link/Back/Forward nhất quán? |
+| 5 | [Data fetching và cache](/docs/giao-tiep-va-trang-thai/data-fetching) | Ai sở hữu API, cache dùng chung tới đâu và invalidation đi theo domain nào? |
+| 6 | [Authentication và session](/docs/giao-tiep-va-trang-thai/authentication) | Ai điều phối session và ngăn dữ liệu của phiên cũ xuất hiện trong phiên mới? |
+
+Các bài bổ sung cho nhau, không phải sáu giải pháp thay thế nhau. Chẳng hạn, thêm hàng cần command contract, cart cache cần ownership, badge cần snapshot/notification, còn dữ liệu cart cần scope theo session.
+
+## Bài tập thiết kế một boundary
+
+### Viết bản mô tả tối thiểu
+
+Chọn luồng “catalog thêm hàng, shell cập nhật badge, người dùng mở cart”. Trước khi viết adapter, thử điền một bản mô tả ngắn:
+
+| Hạng mục | Ví dụ để bắt đầu |
+| --- | --- |
+| Owner | Cart domain điều phối frontend; backend xác nhận cart |
+| Input | `productId`, quantity nguyên dương, cart scope và operation ID theo contract |
+| Command result | Đã commit, bị từ chối hoặc chưa xác định được kết quả; lỗi ngoài contract được report |
+| State cho nơi đọc | Loading, ready hoặc error; khi ready có tổng quantity và định danh phạm vi |
+| Notification | `shop.cart.updated.v1`, phát sau xác nhận và có snapshot tương ứng để đọc |
+| Vòng đời | Controller theo session/cart; subscription theo consumer; cleanup khi unmount |
+| Compatibility | Có owner của schema, policy cho field mới và cửa sổ hỗ trợ phiên bản cũ |
+| Security | Không gửi credential trong payload; backend validate và authorize mutation |
+
+Đây là bản nháp thiết kế, không phải một wire schema hoàn chỉnh. Bài **Hợp đồng giao tiếp** sẽ giúp bạn cụ thể hóa input/result và quy tắc tương thích; bài **Events và message bus** đi vào envelope và delivery.
+
+### Kiểm chứng bằng tình huống bất lợi
+
+Sau khi có một prototype, kiểm tra các trường hợp này trước khi mở rộng sang domain khác:
+
+- Thêm hàng khi cart UI chưa từng mount: vẫn có owner xử lý và trả kết quả.
+- Mount header sau mutation: badge đọc được snapshot hiện tại mà không cần event cũ.
+- Unmount/remount consumer nhiều lần: số subscription không tăng sau mỗi vòng.
+- Phát lại notification: badge không tự cộng thêm và không tạo mutation mới.
+- Làm response mutation bị mất: UI biểu diễn kết quả chưa biết và reconcile, không retry mù.
+- Logout khi cart query đang chạy: response phiên cũ không khôi phục dữ liệu người dùng trước.
+- Mở URL sâu, chuyển route rồi Back: URL, filter và màn hình khớp nhau.
+- Ghép các phiên bản producer/consumer còn trong cửa sổ hỗ trợ: contract vẫn hoạt động hoặc báo không tương thích có kiểm soát.
+
+Ghi kết quả cần quan sát cho từng test, không chỉ “không throw”. Với badge, cần thấy đúng quantity và đúng cart; với logout, cần thấy dữ liệu cũ không quay lại cả trong UI lẫn cache đang được dùng.
+
+## Checklist trước khi nối thêm remote
+
+- [ ] Mỗi state có owner, nguồn chuẩn, consumer và scope rõ ràng.
+- [ ] Consumer gửi command, không sửa mutable state nội bộ của domain khác.
+- [ ] Đã phân biệt command, query và event; không dùng notification để xác nhận mutation.
+- [ ] State hiện tại đọc được khi consumer mount muộn, với loading/error rõ ràng.
+- [ ] Contract mô tả semantics, runtime validation và policy tương thích.
+- [ ] Shared service/cache được inject đúng instance nếu thiết kế yêu cầu dùng chung.
+- [ ] Routing có một cơ chế điều phối browser history của document chính.
+- [ ] Invalidation thuộc đúng data owner và không nhầm các lớp cache.
+- [ ] Unmount cleanup subscription; đổi session dọn dữ liệu và chặn response cũ.
+- [ ] Timeout, duplicate, stale result và lỗi remote có đường xử lý kiểm thử được.
+- [ ] Credential không đi qua bus/log; backend vẫn validate và authorize.
+
+Nếu chưa xác định được ai xử lý command khi cart UI chưa mount, hãy dừng ở bản đồ ownership trước khi thêm bus. Khi câu trả lời đã rõ, chọn một boundary nhỏ và kiểm chứng luồng thêm hàng với header mount muộn; đó là bước đầu cụ thể hơn việc đưa toàn bộ ứng dụng vào một global store.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Cụ thể hóa props, capabilities và event schemas cùng quy tắc tương thích." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Đặt đường đọc, đường ghi và vòng đời dữ liệu về đúng domain." />
+  <Card title="Events và message bus" href="/docs/giao-tiep-va-trang-thai/events" description="Thiết kế notification, validation, snapshot và cleanup cho consumer." />
+  <Card title="Thực hành shop" href="/docs/thuc-hanh/shop-shell-catalog-cart" description="Áp dụng các quyết định boundary vào bài thực hành shell, catalog và cart." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, trên martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): ranh giới phát hành, giao tiếp giữa frontend, container và đánh đổi khi chia sẻ state.
+- [MDN — Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage): structured clone, `targetOrigin` và kiểm tra origin/source cùng dữ liệu nhận được.

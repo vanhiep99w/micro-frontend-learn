@@ -3,16 +3,614 @@ title: "Application shell"
 description: "Xác định trách nhiệm của shell, lifecycle và những việc shell không nên ôm."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shop của bạn có catalog và cart do hai team phát triển. Catalog vừa deploy bộ lọc mới, cart vẫn chạy bình thường, nhưng shell lại phải sửa theo vì nó đọc trực tiếp store của catalog. Bạn đã tách bundle mà chưa tách được quyền sở hữu.
+
+Application shell giúp ghép các phần thành một trải nghiệm chung: giữ khung trang, chọn domain theo URL, cung cấp ngữ cảnh tích hợp và xử lý lúc một phần chưa sẵn sàng. **Shell điều phối ứng dụng, không sở hữu nghiệp vụ của mọi domain.** Ranh giới này quyết định việc thêm một tính năng có thật sự chỉ cần release một team hay không.
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài dùng shop giả định gồm shell, catalog và cart. Code minh họa contract và lifecycle cho client-side composition với các root độc lập; đây không phải implementation có sẵn trong repository docs. Shell là vai trò kiến trúc, không bắt buộc dùng React, Module Federation hay single-spa. Các sơ đồ dùng text để không phụ thuộc cấu hình Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Shell giải quyết bài toán gì](#shell-giải-quyết-bài-toán-gì)
+  - [Shell khác host và app shell của PWA](#shell-khác-host-và-app-shell-của-pwa)
+  - [Khi nào không cần một shell runtime riêng](#khi-nào-không-cần-một-shell-runtime-riêng)
+- [Ranh giới trách nhiệm](#ranh-giới-trách-nhiệm)
+  - [Những việc shell nên sở hữu](#những-việc-shell-nên-sở-hữu)
+  - [Những việc phải ở lại domain](#những-việc-phải-ở-lại-domain)
+  - [Shared capability không phải shared business store](#shared-capability-không-phải-shared-business-store)
+- [Bố cục và điểm ghép giao diện](#bố-cục-và-điểm-ghép-giao-diện)
+  - [Ghép theo route hay theo slot](#ghép-theo-route-hay-theo-slot)
+  - [Ai sở hữu DOM và framework context](#ai-sở-hữu-dom-và-framework-context)
+- [Luồng khởi động ứng dụng](#luồng-khởi-động-ứng-dụng)
+- [Lifecycle của một remote](#lifecycle-của-một-remote)
+  - [Load và bootstrap](#load-và-bootstrap)
+  - [Mount và update](#mount-và-update)
+  - [Unmount và cleanup](#unmount-và-cleanup)
+- [Thiết kế contract tích hợp nhỏ](#thiết-kế-contract-tích-hợp-nhỏ)
+  - [Contract mẫu cho root độc lập](#contract-mẫu-cho-root-độc-lập)
+  - [Adapter React phía remote](#adapter-react-phía-remote)
+  - [Tránh biến shell SDK thành framework thứ hai](#tránh-biến-shell-sdk-thành-framework-thứ-hai)
+- [Ngăn remote cũ mount sau navigation mới](#ngăn-remote-cũ-mount-sau-navigation-mới)
+- [Failure boundary và trải nghiệm phục hồi](#failure-boundary-và-trải-nghiệm-phục-hồi)
+  - [Phân biệt các lớp lỗi](#phân-biệt-các-lớp-lỗi)
+  - [Retry timeout và fallback](#retry-timeout-và-fallback)
+- [Routing auth và state đi qua shell thế nào](#routing-auth-và-state-đi-qua-shell-thế-nào)
+- [Performance accessibility và isolation](#performance-accessibility-và-isolation)
+- [Compatibility và release của shell](#compatibility-và-release-của-shell)
+- [SSR và standalone không dùng cùng lifecycle một cách máy móc](#ssr-và-standalone-không-dùng-cùng-lifecycle-một-cách-máy-móc)
+- [Quan sát và kiểm thử ranh giới](#quan-sát-và-kiểm-thử-ranh-giới)
+- [Dấu hiệu shell đang ôm quá nhiều](#dấu-hiệu-shell-đang-ôm-quá-nhiều)
+- [Checklist thiết kế shell](#checklist-thiết-kế-shell)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Shell giải quyết bài toán gì
 
-Bài này sẽ giúp bạn: xác định trách nhiệm của shell, lifecycle và những việc shell không nên ôm.
+Khi người dùng mở `/catalog/products/sku-42`, browser cần một nơi bắt đầu: dựng navigation, xác định catalog là owner của route, tải phần giao diện phù hợp rồi xử lý thành công hoặc thất bại. Nếu mỗi remote tự làm tất cả việc này, bạn dễ có nhiều auth store, nhiều browser router và nhiều cách hiển thị loading khác nhau trong cùng một trang.
 
-[Xem các bài trong nhóm Kiến trúc và ranh giới](/docs/kien-truc).
+Shell giữ các quyết định cấp ứng dụng để remote tập trung vào domain của nó. Bạn có thể hình dung shell như ban quản lý một khu mua sắm: giữ lối đi, biển chỉ dẫn và quy tắc chung; từng cửa hàng vẫn quyết định hàng hóa của mình. Giới hạn của phép so sánh là các remote chạy cùng document vẫn có thể ảnh hưởng lẫn nhau bằng JavaScript hoặc CSS, chứ không có sẵn những bức tường cách ly.
+
+Một ranh giới tốt có phép thử khá thực tế: catalog đổi cách sắp xếp sản phẩm nhưng giữ public contract thì shell không cần biết. Catalog đổi điểm gắn hoặc API tích hợp thì cần phối hợp với shell, vì đó là thay đổi ở ranh giới.
+
+### Shell khác host và app shell của PWA
+
+`Host` và `remote` mô tả quan hệ tiêu thụ module trong cơ chế như Module Federation. `Shell` mô tả trách nhiệm trong sản phẩm. Shell thường là host, nhưng catalog cũng có thể làm host khi tiêu thụ một module khác; điều đó không biến catalog thành shell của toàn shop.
+
+Trong tài liệu PWA, *app shell* còn chỉ khung UI có thể cache để tải nhanh. Cache header và navigation bằng service worker không tự tạo ra domain ownership, lifecycle hay independent deployment. Xem [Thuật ngữ cốt lõi](/docs/nen-tang/thuat-ngu) nếu bạn đang gặp các cách gọi này xen kẽ nhau.
+
+### Khi nào không cần một shell runtime riêng
+
+Mình không mặc định tạo một runtime orchestrator chỉ vì có nhiều team. Nếu toàn bộ frontend cùng framework, cùng release và chỉ cần ranh giới code, một modular frontend với layout và router chung thường đơn giản hơn.
+
+Nếu mỗi domain phục vụ một document độc lập, link thông thường có thể đủ để nối trải nghiệm. Các app có thể dùng chung design system mà không cần một SPA shell tải tất cả chúng. Bạn chấp nhận full-page navigation và thiết kế server routing đúng, đổi lại bớt một lớp lifecycle trong browser.
+
+Shell runtime có ích khi bạn thật sự cần ghép các phần trong cùng phiên sử dụng, điều phối lifecycle và giữ UX nhất quán. Nó không miễn phí: shell trở thành một dependency chung và có thể là điểm lỗi ảnh hưởng toàn ứng dụng.
+
+## Ranh giới trách nhiệm
+
+Không nên dùng quy tắc “cái gì nhiều remote cần thì đưa vào shell”. Cả catalog lẫn cart đều cần biết giá, nhưng shell không nên trở thành pricing engine. Câu hỏi tốt hơn là: **ai có quyền quyết định dữ liệu hoặc hành vi này, và thay đổi nó thuộc release của ai?**
+
+### Những việc shell nên sở hữu
+
+| Trách nhiệm | Shell quyết định | Remote vẫn quyết định |
+| --- | --- | --- |
+| Khung trải nghiệm | Header, navigation cấp ứng dụng, vùng nội dung, các slot công khai | Layout và interaction trong domain |
+| Routing cấp cao | Domain owner của `/catalog/*`, `/cart/*`, app-level not found | Subroute, query schema và domain-level not found |
+| Composition | Chọn module, thời điểm load, container và lifecycle | Render màn hình trong boundary đã nhận |
+| Ngữ cảnh chung | Cách cung cấp locale, theme, auth projection và navigation capability | Cách domain dùng ngữ cảnh đó |
+| Resilience tích hợp | Loading, lỗi tải remote, retry và khả năng rời slot lỗi | Lỗi dữ liệu, validation và nghiệp vụ của domain |
+| Chính sách platform | Telemetry envelope, nguồn artifact tin cậy, compatibility policy | Telemetry nghiệp vụ và implementation nội bộ |
+
+“Shell sở hữu” không có nghĩa mọi dòng code phải nằm trong repository shell. Auth runtime, design system hay telemetry adapter có thể là package/platform service với owner riêng. Shell lắp chúng vào ứng dụng và điều phối lifecycle, thay vì tự viết lại tất cả.
+
+### Những việc phải ở lại domain
+
+Catalog sở hữu việc parse filter, hiển thị chi tiết sản phẩm và xử lý sản phẩm không tồn tại. Cart sở hữu UI giỏ hàng, draft thao tác và contract với API giỏ hàng. Backend vẫn sở hữu quyết định có thẩm quyền về giá cuối cùng, tồn kho, quyền truy cập và tạo đơn.
+
+Shell không nên:
+
+- Import reducer, selector hoặc mutable store nội bộ của catalog và cart.
+- Tính giảm giá, chọn sản phẩm thay thế hoặc quyết định checkout có hợp lệ không.
+- Fetch mọi API của mọi màn hình rồi truyền xuống bằng một object khổng lồ.
+- Biết từng modal, form và query key của các remote.
+- Chạy migration dữ liệu nghiệp vụ khi mount remote.
+- Dùng danh sách navigation như một hệ thống authorization thay backend.
+
+Một ví dụ dễ nhầm là badge số món trong giỏ ở header. Header có thể do shell render, nhưng ý nghĩa “số món” và nguồn dữ liệu vẫn thuộc cart. Cart công bố một projection nhỏ hoặc cung cấp một widget cho slot; shell không đọc `cartStore.items` rồi tự cộng số lượng theo cách nó đoán.
+
+### Shared capability không phải shared business store
+
+Capability là một khả năng cụ thể mà remote được cung cấp qua API: yêu cầu navigation, đọc auth snapshot hoặc gửi telemetry. Nó khác với việc trao cả object nội bộ để consumer tự sửa.
+
+Ví dụ, `navigation.navigate(destination)` rõ ràng hơn `shell.router.history.push(...)`; `auth.getSnapshot()` rõ ràng hơn `window.globalStore.user`. Contract nhỏ giúp owner thay implementation mà không buộc mọi remote đổi theo.
+
+Nhưng capability cũng tạo coupling. Hãy version và test semantics của nó: snapshot có replay không, ai unsubscribe, command hoàn tất nghĩa là gì? Với JavaScript cùng realm, API hẹp là ranh giới thiết kế, **không phải security sandbox**; remote vẫn có thể truy cập nhiều API của document.
+
+## Bố cục và điểm ghép giao diện
+
+Trước khi chọn thư viện tích hợp, hãy vẽ nơi shell cho remote xuất hiện. Một shop ghép theo route có thể bắt đầu với bố cục này:
+
+```text
+┌────────────────────────────────────────────┐
+│ Shell: header và navigation cấp ứng dụng   │
+├────────────────────────────────────────────┤
+│ Main outlet                                │
+│   /catalog/* → giao diện Catalog           │
+│   /cart/*    → giao diện Cart              │
+├────────────────────────────────────────────┤
+│ Shell: trạng thái tích hợp và hỗ trợ chung │
+└────────────────────────────────────────────┘
+```
+
+Đây là bản đồ trách nhiệm, không phải yêu cầu tải catalog và cart cùng lúc. Với route hiện tại, shell chỉ cần remote phù hợp và những phần thật sự dùng chung.
+
+### Ghép theo route hay theo slot
+
+Mình bắt đầu bằng composition theo route nếu domain có thể giữ một hành trình đủ lớn. Nó tạo boundary dễ hiểu: catalog hoạt động dưới `/catalog`, cart dưới `/cart`, và một lỗi tải cart không nhất thiết làm mất navigation hay catalog.
+
+Slot phù hợp khi một trang thật sự cần phần do domain khác sở hữu, chẳng hạn cart badge trên header. Khi thêm slot, hãy công bố container, dữ liệu đầu vào, loading, fallback, sizing và lifecycle cho slot đó. “Render component này ở đâu cũng được” thường không đủ để hai team giữ UX tương thích.
+
+| Cách ghép | Điểm mạnh | Chi phí cần chấp nhận |
+| --- | --- | --- |
+| Một domain cho một nhánh route | Ít điểm tích hợp, ownership rõ | Hành trình qua domain cần navigation contract |
+| Nhiều domain trong các slot cùng trang | Tái sử dụng phần nghiệp vụ có owner | Nhiều lifecycle, loading và failure boundary đồng thời |
+| Component cùng cây framework | Context và state flow quen thuộc | Compatibility của framework và provider chặt hơn |
+| Root hoặc document riêng | Boundary render rõ hơn | Cần bridge cho context và interaction chung |
+
+Đừng chia mỗi button thành một remote chỉ để tăng số team có thể deploy. Khi một màn hình phải đồng bộ nhiều remote nhỏ mới có ý nghĩa, shell dễ biến thành nơi chứa toàn bộ workflow nghiệp vụ.
+
+### Ai sở hữu DOM và framework context
+
+Với root độc lập, shell sở hữu container, còn remote sở hữu subtree bên trong container đó. Shell không sửa các node nội bộ; remote không thay header hoặc xóa sibling container. Modal render qua portal ra ngoài container phải có vùng đích và quy tắc cleanup rõ ràng.
+
+Với một cây React chung, shell render component của remote và React quản lý subtree. Không cần thêm `createRoot` cho component đó. Với nhiều root độc lập, React context không tự đi từ shell sang remote chỉ vì hai bên share package `react`.
+
+<Callout type="warn" title="DOM boundary không phải context boundary tự động">
+  Nếu catalog gọi `createRoot` riêng, nó không tự nhận router, auth provider hay error boundary ở cây React của shell. Inject contract hoặc provider vào root của catalog. Nếu dùng chung cây React, thống nhất compatibility của React, router và các context được chia sẻ.
+</Callout>
+
+Xem [React trong micro-frontend](/docs/ui-va-framework/react) và [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) để chọn mô hình phù hợp, thay vì dùng bridge cho một boundary vốn không cần cô lập.
+
+## Luồng khởi động ứng dụng
+
+Khi mở trực tiếp một URL sâu, shell không thể giả định người dùng đã đi qua trang chủ. Nó phải dựng được trải nghiệm từ URL và session hiện tại.
+
+Một luồng khởi động hợp lý cho shop client-side:
+
+1. Nhận document của shell và dựng khung tối thiểu, kể cả khi remote chưa sẵn sàng.
+2. Đọc runtime config đã validate: route map, artifact được chọn và capability cần thiết.
+3. Khởi tạo navigation owner, telemetry và auth owner theo lifecycle của shell.
+4. Đọc location hiện tại, tìm domain owner và đánh giá entry guard nếu route cần auth.
+5. Nếu auth còn đang xác nhận, hiển thị trạng thái chờ; nếu lỗi xác nhận, cho retry thay vì kết luận đã logout.
+6. Tải module phù hợp, kiểm tra public contract, rồi mount vào container.
+7. Remote tự tải dữ liệu domain, xử lý subroute và công bố readiness nếu hai bên có contract cho tín hiệu đó.
+
+Các bước độc lập có thể chạy song song. Nhưng không nên cho route bảo vệ commit nội dung riêng tư trước khi có auth scope phù hợp. Nếu quyết định preload code của remote trước auth, đó là tối ưu tải artifact, không phải bằng chứng user được xem dữ liệu.
+
+Shell cũng cần phân biệt ba mốc: **khung đã hiển thị**, **remote đã được gắn**, **nội dung có thể dùng**. Một lệnh render đã được gọi không có nghĩa API sản phẩm đã trả về hoặc nút mua hàng đã hoạt động.
+
+## Lifecycle của một remote
+
+Tách lifecycle của module khỏi lifecycle của instance đang hiển thị. Một module catalog có thể được load một lần rồi mount nhiều lần. State của lần mount trước không vì thế được phép theo sang user hoặc tenant mới.
+
+```text
+Module:    chưa load ──► load ──► bootstrap nếu cần
+                                    │
+Instance:                           ▼
+                       mount ──► update ──► unmount
+                         ▲                      │
+                         └──── instance mới ────┘
+```
+
+Tên và API chính xác tùy runtime. single-spa có lifecycle riêng; React component trong cùng cây đi theo lifecycle của React. Sơ đồ trên mô tả việc cần quản lý, không yêu cầu bạn export tất cả các hàm này trong mọi kiến trúc.
+
+### Load và bootstrap
+
+**Load** lấy module và có thể thực thi code ở top level của module đó. Đừng gắn listener vào `window`, mở WebSocket hoặc đọc user rồi giữ state ngay khi import. Shell có thể preload code mà chưa muốn remote hoạt động.
+
+**Bootstrap** là khởi tạo một lần theo phạm vi mà runtime quy định, chẳng hạn chuẩn bị adapter dùng lại được. Không đặt state riêng tư của user trong singleton bootstrap rồi tái sử dụng vô điều kiện. Dữ liệu có session scope cần lifecycle và cơ chế reset tương ứng.
+
+Nếu dùng single-spa, tuân theo API của nó: tài liệu hiện hành yêu cầu export `bootstrap`, `mount`, `unmount`, với lifecycle trả Promise hoặc là async function; `unload` là tùy chọn. `bootstrap` được gọi trước lần mount đầu tiên. Đừng áp contract đồng bộ ở ví dụ phía dưới trực tiếp vào single-spa mà không có adapter.
+
+### Mount và update
+
+**Mount** tạo một instance hoạt động: render UI vào vùng đã nhận, subscribe các nguồn cần thiết và tạo tài nguyên theo instance. Contract phải nói rõ mount trả về khi nào. “Đã đăng ký root” và “đã render xong nội dung” là hai ý nghĩa khác nhau.
+
+**Update** đưa input mới vào instance hiện tại. Chuyển từ `/catalog/products/a` sang `/catalog/products/b` thường chỉ cần location mới; đổi theme cũng không nên remount cả catalog. Remount tùy tiện có thể làm mất form draft, focus và state local.
+
+Không phải input nào cũng được update tại chỗ. Đổi auth scope hoặc tenant có thể yêu cầu hủy query, dọn private cache hoặc tạo instance mới. Owner của dữ liệu phải công bố chính sách đó; shell không tự đoán rằng đổi một prop `userId` đã làm sạch mọi state.
+
+### Unmount và cleanup
+
+**Unmount** kết thúc instance đang hoạt động. Remote phải dọn tài nguyên nó tạo, kể cả những thứ không nằm trong DOM container:
+
+| Tài nguyên | Cleanup cần có |
+| --- | --- |
+| Framework root | `root.unmount()` với React root độc lập, hoặc API tương ứng |
+| Store và event subscription | Gọi unsubscribe của instance |
+| Listener global | Gỡ listener, giữ đúng function reference và options |
+| Timer và observer | Clear timer, disconnect observer |
+| Fetch và async task | Abort khi hỗ trợ, bỏ qua kết quả đã stale |
+| WebSocket hoặc worker | Đóng tài nguyên riêng; với tài nguyên chung, giải phóng ownership/subscription |
+| Portal, modal, focus trap | Dọn vùng render và trả quyền điều khiển focus phù hợp |
+
+Chỉ gọi `container.replaceChildren()` không thay thế cleanup của framework. DOM có thể biến mất trong khi timer và subscription vẫn chạy.
+
+Mình thiết kế cleanup idempotent: gọi lần hai không làm hỏng instance khác. Nếu mount thất bại sau khi tạo một phần tài nguyên, remote phải rollback phần đã tạo trước khi throw/reject. Shell không có đủ thông tin để dọn các tài nguyên nội bộ đó thay remote.
+
+Unmount cũng không xóa module khỏi cache của browser. Quay lại catalog có thể tạo root mới từ module đã load; top-level state của module vẫn cần được kiểm soát.
+
+## Thiết kế contract tích hợp nhỏ
+
+Contract nên nói remote được nhận gì, được thay đổi gì và trả lại quyền điều khiển bằng cách nào. Đừng chỉ ghi “shell gọi mount” rồi để hai team tự hiểu phần còn lại.
+
+### Contract mẫu cho root độc lập
+
+Ví dụ này chọn **mount đồng bộ trả handle ngay**, còn tải dữ liệu nằm trong remote. Cách này giúp shell luôn có handle để cleanup mà không phải chờ một request nghiệp vụ hoàn tất. Nó không phù hợp nguyên trạng với mọi runtime; adapter có lifecycle async cần contract khác.
+
+```ts title="contracts/remote.ts"
+// NavigationPort được mô tả ở bài Routing và navigation.
+import type { NavigationPort } from './navigation';
+
+export type ViewContext = Readonly<{
+  locale: string;
+  theme: 'light' | 'dark';
+}>;
+
+export type MountOptions = Readonly<{
+  container: HTMLElement;
+  context: ViewContext;
+  navigation: NavigationPort;
+  signal: AbortSignal;
+}>;
+
+export interface MountedRemote {
+  update(context: ViewContext): void;
+  unmount(): void;
+}
+
+export interface RemoteModule {
+  readonly contractVersion: 1;
+  mount(options: MountOptions): MountedRemote;
+}
+```
+
+Contract dùng `NavigationPort` đã mô tả trong [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing); các file import trong ví dụ thuộc ứng dụng giả định. Locale và theme là snapshot bất biến. Location không nằm trong `ViewContext` vì navigation port đã có snapshot và subscription của nó.
+
+Semantics cần ghi kèm type:
+
+- Một lần `mount` tạo một instance, chỉ quản lý subtree và tài nguyên thuộc instance đó.
+- `mount` trả handle đồng bộ; không đồng nghĩa UI đã commit hay dữ liệu đã sẵn sàng.
+- `update` thay view context; remote dùng navigation subscription cho thay đổi location.
+- `signal` có hiệu lực suốt instance, không chỉ trong lúc load. Abort yêu cầu dừng hoạt động, nhưng shell vẫn gọi `unmount` để hoàn tất cleanup theo contract.
+- `unmount` idempotent. Sau unmount, `update` không làm gì và callback async không được cập nhật UI cũ.
+- Nếu `mount` throw trước khi trả handle, remote rollback tài nguyên đã tạo.
+- Contract này không truyền credential, mutable business store hoặc quyền sửa DOM ngoài container.
+
+`contractVersion` hỗ trợ kiểm tra compatibility sau khi module đã load. Nó không chứng minh code an toàn: dynamic import có thể đã thực thi top-level code trước khi shell đọc field này. Kiểm soát nguồn artifact phải diễn ra ở loader và quy trình phát hành.
+
+### Adapter React phía remote
+
+Một adapter cho contract trên có thể giữ mỗi React root trong closure của lần mount. Không dùng `let root` toàn module, vì hai instance catalog ở hai slot sẽ ghi đè nhau.
+
+```tsx title="catalog/entry.tsx"
+import { createRoot } from 'react-dom/client';
+import type {
+  MountOptions,
+  MountedRemote,
+  ViewContext,
+} from '../contracts/remote';
+import { App } from './App';
+
+export const contractVersion = 1 as const;
+
+export function mount(options: MountOptions): MountedRemote {
+  const { container, navigation, signal } = options;
+  signal.throwIfAborted();
+
+  const root = createRoot(container);
+  let active = true;
+
+  function unmount() {
+    if (!active) return;
+    active = false;
+    signal.removeEventListener('abort', unmount);
+    root.unmount();
+  }
+
+  function update(context: ViewContext) {
+    if (!active) return;
+    root.render(
+      <App
+        context={context}
+        navigation={navigation}
+        signal={signal}
+      />,
+    );
+  }
+
+  try {
+    signal.addEventListener('abort', unmount, { once: true });
+    update(options.context);
+    return { update, unmount };
+  } catch (error) {
+    unmount();
+    throw error;
+  }
+}
+```
+
+`App` là component của catalog, không được triển khai trong snippet. Nó chịu trách nhiệm dùng location snapshot, cleanup effect, xử lý data request và có error boundary thích hợp trong root của mình. Adapter không tự cleanup một timer được tạo ngoài React nếu remote không đăng ký cleanup cho timer đó.
+
+`root.render()` có thể trả trước khi render/effect hoàn tất. Vì thế, `try/catch` trên xử lý lỗi đồng bộ của bước setup, **không bắt mọi lỗi render về sau**. Nếu shell cần biết lúc remote lỗi hoặc nội dung đã usable, bổ sung callback hay telemetry contract có semantics rõ ràng, gắn với instance hiện tại.
+
+Sau `root.unmount()`, không render lại trên root cũ. Một lần mount mới phải tạo root mới. Với nội dung SSR đã có trong container, adapter cần hydration phù hợp chứ không gọi `createRoot` để thay HTML.
+
+### Tránh biến shell SDK thành framework thứ hai
+
+Một SDK gom navigation, auth, telemetry và theme có thể tiện, nhưng nó trở thành dependency mà mọi remote phải tương thích. Nếu SDK còn ép domain dùng cùng store, query library, form library và service layer, bạn đã dựng một framework nội bộ với chi phí migration riêng.
+
+Mình giữ contract platform nhỏ, tách các capability độc lập và inject adapter khi cần. Domain vẫn chọn implementation bên trong boundary. Với các team đã chủ động chọn cùng framework và shared providers, dùng component contract có thể đơn giản hơn; không cần giả lập framework independence bằng hàng loạt port.
+
+## Ngăn remote cũ mount sau navigation mới
+
+Race phổ biến nhất: shell bắt đầu load catalog, người dùng chuyển sang cart, rồi catalog mới load xong. Nếu shell mount bất cứ kết quả nào vừa resolve, URL là `/cart` nhưng nội dung lại thành catalog.
+
+```text
+Thời điểm 1: yêu cầu Catalog ─────────── đang load ───────┐
+Thời điểm 2: yêu cầu Cart ── load xong ── mount Cart     │
+Thời điểm 3:                                            ▼
+                     Catalog load xong → bỏ kết quả cũ
+```
+
+Dùng generation cho outlet: chỉ yêu cầu mới nhất được commit. Abort giúp dừng công việc có hỗ trợ cancellation; generation giúp bỏ qua kết quả của công việc không hủy được, như nhiều trường hợp dynamic import.
+
+Ví dụ dưới đây chỉ quản lý **đổi remote trong một outlet**. Router adapter gọi `show` khi đổi domain hoặc cần remount có chủ đích; đổi subroute trong cùng domain đi qua navigation port. Container `outlet` phải là vùng dành riêng cho controller này, không phải node mà React shell đồng thời quản lý children.
+
+```ts title="shell/outlet-controller.ts"
+import type { NavigationPort } from '../contracts/navigation';
+import type {
+  MountedRemote,
+  RemoteModule,
+  ViewContext,
+} from '../contracts/remote';
+
+export function createOutletController(
+  outlet: HTMLElement,
+  navigation: NavigationPort,
+  getContext: () => ViewContext,
+  report: (error: unknown) => void,
+) {
+  let generation = 0;
+  let controller: AbortController | undefined;
+  let mounted: MountedRemote | undefined;
+
+  function clearCurrent() {
+    // detach ownership trước khi gọi cleanup của remote.
+    const previous = mounted;
+    mounted = undefined;
+    try {
+      controller?.abort();
+      previous?.unmount();
+    } finally {
+      outlet.replaceChildren();
+    }
+  }
+
+  async function show(load: () => Promise<RemoteModule>) {
+    const request = ++generation;
+    let pending: MountedRemote | undefined;
+
+    try {
+      clearCurrent();
+      const task = new AbortController();
+      controller = task;
+      outlet.textContent = 'Đang tải nội dung…';
+
+      const remote = await load();
+      if (request !== generation || task.signal.aborted) return;
+      if (remote.contractVersion !== 1) {
+        throw new Error('Unsupported remote contract');
+      }
+
+      const container = document.createElement('div');
+      outlet.replaceChildren(container);
+      pending = remote.mount({
+        container,
+        context: getContext(),
+        navigation,
+        signal: task.signal,
+      });
+
+      if (request !== generation || task.signal.aborted) {
+        pending.unmount();
+        return;
+      }
+      mounted = pending;
+    } catch (error) {
+      pending?.unmount();
+      report(error);
+      if (request !== generation) return;
+      outlet.textContent = 'Không tải được nội dung. Hãy thử lại.';
+    }
+  }
+
+  return {
+    show,
+    update: (context: ViewContext) => mounted?.update(context),
+    dispose() {
+      generation++;
+      clearCurrent();
+    },
+  };
+}
+```
+
+Đây là mẫu tối thiểu cho remote tuân thủ contract đồng bộ, cleanup không throw và không kích hoạt navigation reentrant trong mount/unmount. `load` là adapter của cơ chế tích hợp, không phải API federation có sẵn. Production cần validate shape module ở runtime, phân loại lỗi, timeout, UI retry, telemetry và xử lý cleanup lỗi có chủ đích.
+
+Điểm cần giữ lại khi dùng runtime có sẵn là **kiểm tra request hiện hành sau mỗi bước async trước khi commit**, lấy context mới nhất khi mount và cleanup instance bị thay thế. Đừng viết orchestrator riêng chỉ để sao chép lại lifecycle mà single-spa hoặc framework đã quản lý.
+
+Nếu `mount` là async, generation check sau `load` chưa đủ. Trong lúc chờ mount, remote có thể đã tạo listener hoặc DOM. Contract async phải quy định signal, rollback khi reject và cleanup handle khi resolve muộn; đồng thời bảo đảm instance cũ không ghi vào container của instance mới. Có thể serialize transition hoặc dùng container riêng theo instance, nhưng không để hai instance tranh cùng một outlet.
+
+## Failure boundary và trải nghiệm phục hồi
+
+Shell giữ navigation không có nghĩa lỗi remote luôn được cô lập. Bạn phải đặt boundary đúng lớp và biết giới hạn của boundary đó.
+
+### Phân biệt các lớp lỗi
+
+| Lớp lỗi | Owner xử lý chính | UI phù hợp |
+| --- | --- | --- |
+| Không tải được config thiết yếu của shell | Shell/platform | App-level error hoặc bản config tin cậy dự phòng theo policy |
+| Entry hoặc chunk remote không tải được | Loader/shell | Slot-level fallback, retry, navigation vẫn dùng được |
+| Contract hoặc shared dependency không tương thích | Integration/platform và remote owner | Không mount phần không tương thích, báo lỗi có version |
+| Render lỗi trong remote | Boundary của cây render tương ứng | Fallback của domain, báo telemetry cho shell nếu cần |
+| API domain timeout hoặc `5xx` | Remote/data layer | Retry dữ liệu tại màn hình, không reload toàn shell |
+| Validation nghiệp vụ hoặc resource không tồn tại | Domain | Thông báo nghiệp vụ hoặc domain-level not found |
+| Session hết hạn hay thiếu quyền | Auth owner phối hợp domain/backend | Login hoặc forbidden theo error contract |
+
+Một React error boundary ở shell chỉ bắt lỗi thuộc cây React phù hợp. Nó không bao quanh lỗi render của root catalog độc lập theo nghĩa React, và không tự bắt mọi lỗi từ event handler hay Promise. `window.onerror` và `unhandledrejection` có thể hỗ trợ quan sát, nhưng không thay boundary phục hồi.
+
+<Callout type="warn" title="Không có boundary UI nào cứu được mọi lỗi cùng realm">
+  Remote có thể chặn main thread bằng vòng lặp vô hạn, sửa global hoặc làm rò bộ nhớ. Tách root và bọc error boundary không tạo process isolation. Nếu code không đáng tin cần chạy cạnh ứng dụng, cân nhắc iframe khác origin với protocol và sandbox policy phù hợp.
+</Callout>
+
+### Retry timeout và fallback
+
+Mình giữ nguyên URL khi remote tải lỗi. Người dùng vẫn biết điểm đến và có thể retry hoặc chuyển domain khác. Redirect mọi lỗi về trang chủ vừa làm mất ngữ cảnh vừa che khuất lỗi deploy.
+
+Retry phải nói rõ đang thử lại cái gì: tải module, tạo instance mới hay fetch dữ liệu. Nút retry catalog không được tự replay mutation checkout. Dynamic import hoặc federation runtime cũng có cache và retry semantics riêng; gọi lại cùng loader không bảo đảm bỏ được artifact lỗi khỏi cache.
+
+Timeout giúp shell ngừng chờ và hiển thị fallback; nó không tự dừng module đang thực thi. `Promise.race` chỉ chọn kết quả đến trước, không cleanup công việc thua cuộc. Khi timeout, invalidate generation, abort khi có thể và cleanup mọi instance đến muộn theo contract.
+
+Fallback nên có tên phần bị lỗi, một hành động rõ ràng và cách rời màn hình. Đừng dùng skeleton kéo dài vô hạn hoặc báo thành công giả. Cart badge lỗi có thể ẩn hoặc hiển thị trạng thái không xác định; không nên biến nó thành số `0` như thể cart rỗng.
+
+## Routing auth và state đi qua shell thế nào
+
+Shell thường nằm ở giao điểm của ba chủ đề này, nhưng không vì thế sở hữu toàn bộ implementation.
+
+| Chủ đề | Shell nên làm | Shell không nên làm |
+| --- | --- | --- |
+| Routing | Giữ một browser-history owner, chọn domain, cung cấp navigation contract | Parse mọi query nội bộ hoặc để mỗi root tạo browser history riêng |
+| Auth | Lắp auth owner, điều phối entry guard và cung cấp projection/capability cần thiết | Phát raw token khắp remote hoặc coi route guard là backend authorization |
+| Domain state | Nhận projection/public event đã thống nhất khi cần cross-domain UX | Lấy store nội bộ làm API chung của ứng dụng |
+| Data fetching | Thiết lập policy transport cần thiết và contract tích hợp | Fetch toàn bộ dữ liệu domain để tiện truyền props |
+
+Với state, ưu tiên nguồn chuẩn có owner. Catalog muốn thêm sản phẩm vào giỏ thì gọi command/public API của cart hoặc backend theo contract; shell không nên nghe event rồi tự mô phỏng reducer của cart. Nếu workflow trải qua nhiều domain, hãy xác định owner nghiệp vụ của workflow thay vì giấu nó trong shell.
+
+Auth cần projection hiện tại và subscription cho remote mount muộn. Chỉ broadcast event `logged-in` không đủ: catalog preload hoặc mount sau event sẽ không biết session hiện tại. Logout, đổi user và đổi tenant còn cần hủy task, dọn cache riêng tư và chặn kết quả cũ quay lại; không thể giải quyết chỉ bằng đổi text ở header.
+
+Đọc sâu hơn ở [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing), [Authentication và session](/docs/giao-tiep-va-trang-thai/authentication), [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) và [Data fetching](/docs/giao-tiep-va-trang-thai/data-fetching).
+
+## Performance accessibility và isolation
+
+Một shell nhỏ về số dòng vẫn có thể nặng nếu nó import tất cả remote và shared library ngay lúc startup. Ngược lại, lazy load quá nhiều lớp tạo waterfall: config → entry → chunk → data, khiến khung trang có rồi nhưng nội dung vẫn chưa dùng được.
+
+Mình load domain hiện tại trước, sau đó cân nhắc preload theo tín hiệu có ích như intent navigation và ngân sách network. Không bootstrap mọi remote chỉ để navigation sau này nhanh hơn. Hãy đo thời gian tới nội dung usable, không chỉ thời gian header xuất hiện; phần fetch data vẫn thuộc remote owner.
+
+Shell và remote cần thỏa thuận UX ở boundary:
+
+- Shell quản lý landmark cấp ứng dụng; remote không thêm nhiều `main` đang hoạt động vào cùng trang.
+- Khi đổi domain, có chính sách focus và title. Remote có thể công bố heading/title, còn shell điều phối khi transition đã được chấp nhận.
+- Loading và fallback có trạng thái accessible, chẳng hạn `aria-busy` và thông báo phù hợp; không liên tục giành focus trong lúc người dùng nhập.
+- Navigation cấp ứng dụng còn hoạt động khi outlet lỗi. Skeleton giữ kích thước hợp lý để hạn chế layout shift.
+- Overlay, portal và z-index có quy ước chung, không để modal của remote cũ còn khóa trang sau unmount.
+
+Về CSS, shell nên sở hữu reset/base styles có chủ đích, còn remote scope style của mình. CSS Modules không ngăn selector global vô tình lọt vào bundle; Shadow DOM cải thiện style encapsulation nhưng không sandbox JavaScript. Hai bundle độc lập vẫn có thể cùng dùng main thread và cùng sửa document.
+
+Về security, kiểm soát nguồn artifact, CSP phù hợp, quyền thay runtime config và supply chain. Đừng nhận remote URL tùy ý từ query rồi import vào production. JavaScript từ CDN khác origin, khi chạy trong document shell, không được cách ly chỉ vì URL tải xuống khác origin.
+
+Các quyết định này cần phối hợp với [Performance](/docs/production/performance), [Accessibility](/docs/ui-va-framework/accessibility), [CSS isolation](/docs/ui-va-framework/css-isolation) và [Security](/docs/production/security).
+
+## Compatibility và release của shell
+
+Shell là dependency chung nên thay đổi phá contract có thể làm nhiều remote ngừng hoạt động cùng lúc. Mục tiêu không phải shell “không bao giờ thay đổi”, mà là thay đổi có cửa sổ compatibility và rollout rõ ràng.
+
+| Thay đổi | Ai cần phối hợp |
+| --- | --- |
+| Catalog đổi bộ lọc nội bộ, giữ contract | Catalog tự release; shell không cần artifact mới |
+| Shell đổi màu navigation, giữ token/contract | Shell release; kiểm tra UX tích hợp |
+| Shell thêm capability tùy chọn | Shell cung cấp trước, remote dùng sau khi xác nhận được hỗ trợ |
+| Shell bỏ capability cũ | Cần migration consumer và xác nhận không còn phiên bản được hỗ trợ dùng nó |
+| Catalog đổi `mount` hoặc framework context contract | Catalog và shell/adapter cần compatibility plan |
+| Route công khai đổi prefix | Phối hợp routing, redirect, deep links và các consumer |
+
+Mình ưu tiên thay đổi additive rồi migrate dần. Không đổi một field từ optional sang required mà chỉ test shell và remote mới nhất. Browser tab đang mở có thể giữ shell cũ trong khi remote mới đã được publish; cache và rollout làm version skew thành trạng thái vận hành bình thường.
+
+Với runtime composition, release config cần xác định shell đang dùng artifact nào, ở đâu, với contract nào. Nếu dùng URL versioned bất biến, rollback thường thay version được chọn; vẫn phải giữ các asset cũ cho những phiên shell còn tham chiếu chúng. Không tùy tiện đổi artifact đang chạy giữa phiên nếu chưa thiết kế hot-swap lifecycle.
+
+Với build-time composition, cập nhật package remote thường cần build/release lại artifact shell. Có package riêng không tự tạo independent deployment. Chi tiết nằm ở [Build-time composition](/docs/kien-truc/build-time-composition) và [Runtime composition](/docs/kien-truc/runtime-composition).
+
+Shell cũng cần owner và quy trình hỗ trợ riêng: ai review contract, ai xử lý app-level incident, ai quyết định rollback config? “Mọi team cùng sửa” nhưng không có người chịu trách nhiệm cuối thường làm platform API mở rộng khó kiểm soát.
+
+## SSR và standalone không dùng cùng lifecycle một cách máy móc
+
+Trong server-side composition, shell có thể là layout hoặc lớp composition phía server. Trách nhiệm giữ khung và ranh giới vẫn còn, nhưng không có `HTMLElement` hay `createRoot` trong lifecycle render phía server.
+
+State liên quan user phải theo request, không nằm trong mutable singleton của process. Server snapshot và artifact version cần tương thích với client hydration. Nếu server render catalog phiên bản A mà browser hydrate bằng B có markup hoặc contract khác, lỗi không nằm ở “React render chậm” mà ở lựa chọn artifact giữa hai phía.
+
+Đừng gọi `createRoot` lên HTML cần hydrate, và đừng coi host config của SPA là cấu hình SSR. Xem [Server-side composition](/docs/kien-truc/server-side-composition) và [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
+
+Với standalone development, remote nên có dev harness cung cấp cùng contract navigation/context/auth cần thiết. Entry tích hợp không tự mount vào một node global khi import. Harness có thể dùng mock adapter có chủ đích; nó không nên tạo một implementation nghiệp vụ khác để che lỗi tích hợp.
+
+Một remote chạy đúng standalone mới chứng minh phần nội bộ hoạt động. Bạn vẫn phải test dưới shell với basename, auth scope, shared dependency và lifecycle thực tế.
+
+## Quan sát và kiểm thử ranh giới
+
+Khi người dùng báo “màn hình trắng”, bạn cần biết lỗi ở shell boot, remote load, compatibility, mount, render hay data request. Nếu mọi lỗi chỉ được ghi là `app_failed`, hai team sẽ mất thời gian tìm owner trước khi tìm nguyên nhân.
+
+Telemetry tích hợp nên có remote name, shell/remote version, contract version, instance hoặc navigation generation, phase, duration và error category. Không gửi raw token, cookie, session ID hay URL/query chứa dữ liệu nhạy cảm. Các identifier phục vụ correlation cũng cần chính sách dữ liệu phù hợp.
+
+Đừng dùng cùng một event `ready` cho “import xong” và “nội dung đã usable”. Nếu cần readiness callback, chỉ chấp nhận callback thuộc instance hiện tại; remote cũ có thể gửi một tín hiệu muộn sau navigation.
+
+| Kịch bản kiểm thử | Điều cần xác nhận |
+| --- | --- |
+| Mở trực tiếp URL sâu | Shell chọn đúng domain, remote xử lý subroute; refresh không mất điểm đến |
+| Catalog load chậm, chuyển nhanh sang cart | Catalog không mount đè cart khi resolve muộn |
+| Đổi subroute trong catalog | Location cập nhật, không remount vô ích và không tạo history thứ hai |
+| Remote entry hoặc chunk lỗi | Fallback ở đúng slot, URL giữ nguyên, navigation còn dùng được |
+| Mount thất bại giữa chừng | Remote rollback tài nguyên đã tạo, không còn listener/root mồ côi |
+| Render lỗi trong root độc lập | Remote boundary xử lý; không kỳ vọng boundary React ngoài root bắt được |
+| Mount và unmount lặp lại | Listener, timer, socket và portal không tăng sau mỗi vòng |
+| Gọi cleanup hai lần | Không throw, không đụng instance mới |
+| Đổi locale hoặc theme | Instance cập nhật mà không mất draft chỉ vì context đổi |
+| Logout khi fetch còn pending | Dữ liệu riêng tư bị dọn và kết quả cũ không commit |
+| Shell cũ kết hợp remote mới còn được hỗ trợ | Contract và dependency tương thích, hoặc từ chối có fallback rõ ràng |
+| Badge cart lỗi | Không giả định cart rỗng, phần còn lại của header vẫn hoạt động |
+| Keyboard navigation qua loading và fallback | Focus hợp lý, có trạng thái accessible và lối rời phần lỗi |
+| Remote chạy standalone và integrated | Cùng public contract, không có auth/router instance thứ hai ngoài ý muốn |
+
+Unit test contract và generation logic giúp bắt race; integration/E2E test xác nhận DOM ownership, browser history, focus và request lifecycle. Test với độ trễ có điều khiển thay vì chờ race ngẫu nhiên xuất hiện. Đo tài nguyên sau nhiều vòng mount/unmount và kiểm tra không còn callback của instance đã hủy.
+
+## Dấu hiệu shell đang ôm quá nhiều
+
+Có một cách review đơn giản: lấy một thay đổi nghiệp vụ bình thường và lần theo các file phải sửa. Nếu đổi rule khuyến mãi của catalog mà shell phải đổi reducer hoặc query key, boundary đã rò.
+
+| Dấu hiệu | Vì sao đáng lo | Hướng chỉnh |
+| --- | --- | --- |
+| Shell import `catalog/internal/*` | Internal API trở thành contract ngầm | Công bố boundary nhỏ hoặc đưa logic về catalog |
+| Mọi remote ghi vào global store chung | Owner và lifecycle state mơ hồ | Tách state theo owner, dùng projection/command công khai |
+| Shell gọi hàng loạt API domain | Shell giữ logic của mọi màn hình | Để domain fetch dữ liệu của nó; giữ transport policy riêng |
+| Mỗi feature mới cần sửa nhiều điều kiện trong shell | Shell biết workflow nội bộ | Đưa branching về owner nghiệp vụ, giữ route/slot contract ổn định |
+| Một lỗi widget làm toàn app trắng | Boundary quá rộng hoặc phụ thuộc khởi động nối chuỗi | Tách loading/fallback theo mức độ thiết yếu |
+| Không release được remote nếu shell chưa nâng SDK | SDK buộc version lockstep | Giảm API, hỗ trợ compatibility window và adapter migration |
+
+Một shell gọn về trách nhiệm không nhất thiết gọn về số dòng. Nó vẫn cần code nghiêm túc cho loader, accessibility, telemetry và recovery. Điều cần tránh là dùng sự tiện lợi của “nơi ai cũng truy cập được” để gom quyền sở hữu nghiệp vụ.
+
+## Checklist thiết kế shell
+
+Trước khi triển khai thêm remote, dùng checklist này trong design review:
+
+- [ ] Mỗi route/slot có domain owner, container và fallback đã xác định.
+- [ ] Shell giữ khung và composition; business state và API có owner riêng.
+- [ ] Mô hình render rõ ràng: subtree cùng framework, root độc lập hay document riêng.
+- [ ] Một browser-history owner; remote nhận đúng location và navigation contract.
+- [ ] Load/bootstrap không tự khởi động tài nguyên riêng tư ngoài lifecycle.
+- [ ] Mount có semantics hoàn tất rõ ràng, không nhập nhằng với data readiness.
+- [ ] Update không remount tùy tiện; đổi auth scope có chính sách cleanup phù hợp.
+- [ ] Unmount dọn root, subscription, timer, request và portal; cleanup idempotent.
+- [ ] Navigation mới/timeout loại kết quả cũ, kể cả sau async mount nếu có.
+- [ ] Error boundary đặt đúng cây render; lỗi remote không mặc định phá navigation.
+- [ ] Capability nhỏ, có version và runtime validation cần thiết, không truyền credential tràn lan.
+- [ ] Nguồn artifact/config tin cậy; không coi root riêng là security sandbox.
+- [ ] Performance đo tới nội dung usable; focus, landmark và loading accessible được kiểm thử.
+- [ ] Compatibility test có version skew, rollout/rollback và shell owner rõ ràng.
+
+Bước tiếp theo: chọn một hành trình như mở sản phẩm → thêm vào giỏ → xem cart. Ghi owner cho từng quyết định, rồi đánh dấu chỗ nào thật sự phải qua shell. Nếu shell phải hiểu cấu trúc product, cart reducer và rule checkout để nối hành trình đó, hãy sửa boundary trước khi thêm cơ chế tải remote.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Chia domain và ranh giới" href="/docs/kien-truc/chia-domain" description="Chọn đơn vị ownership trước khi chia bundle và slot." />
+  <Card title="Runtime composition" href="/docs/kien-truc/runtime-composition" description="Phân tích loading, coupling và failure modes khi ghép ở runtime." />
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Thiết kế public API và compatibility ở boundary." />
+  <Card title="Resilience" href="/docs/production/resilience" description="Thiết kế fallback và phục hồi khi một phần ứng dụng lỗi." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [single-spa — Building applications](https://single-spa.js.org/docs/building-applications/): lifecycle load, bootstrap, mount, unmount, unload và cleanup của registered application.
+- [React — createRoot](https://react.dev/reference/react-dom/client/createRoot): quản lý root độc lập, timing của render và giới hạn sau unmount.
+- [React — Error Boundary](https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary): phạm vi lỗi boundary có thể bắt và các trường hợp không được bao phủ.
+- [React — hydrateRoot](https://react.dev/reference/react-dom/client/hydrateRoot): nối client runtime vào HTML đã được server render.

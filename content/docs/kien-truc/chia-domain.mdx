@@ -1,18 +1,406 @@
 ---
 title: "Chia domain và ranh giới"
-description: "Chia theo năng lực nghiệp vụ thay vì chia cơ học theo từng widget."
+description: "Chọn ranh giới micro-frontend theo năng lực nghiệp vụ, ownership dữ liệu và nhịp thay đổi; kiểm chứng bằng shop shell–catalog–cart."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn tách trang sản phẩm thành ba remote: bộ lọc, danh sách và nút “Thêm vào giỏ”. Khi thêm lựa chọn biến thể sản phẩm, cả ba phải đổi payload, sửa shared store rồi release cùng nhau. Bundle đã nhỏ hơn, nhưng một tính năng vẫn kéo theo nhiều lần bàn giao.
+
+Vấn đề không nằm ở số remote. Bạn đã chia theo hình dạng giao diện, trong khi các phần cần thay đổi cùng nhau lại bị đặt ở hai phía ranh giới. **Một ranh giới tốt giữ phần lớn thay đổi nghiệp vụ ở bên trong và chỉ công bố những tương tác cần thiết ra bên ngoài.**
+
+Mình mặc định bắt đầu với các module nghiệp vụ đủ lớn, rồi mới chọn module nào cần trở thành đơn vị phát hành riêng. Tách thêm remote là bước sau, không phải mục tiêu của việc phân tích domain.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Bài dùng shop giả định gồm shell, catalog và cart; các route, contract và team bên dưới là ví dụ thiết kế, không phải chức năng đã có trong repository. Bạn nên biết [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi). Bài này chọn ranh giới; cách tải và ghép các phần được bàn riêng trong nhóm kiến trúc.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Bạn đang đặt ranh giới cho điều gì](#bạn-đang-đặt-ranh-giới-cho-điều-gì)
+- [Domain và bounded context giúp chọn ranh giới](#domain-và-bounded-context-giúp-chọn-ranh-giới)
+  - [Chia theo năng lực thay vì danh từ](#chia-theo-năng-lực-thay-vì-danh-từ)
+  - [Cùng một sản phẩm nhưng khác mô hình](#cùng-một-sản-phẩm-nhưng-khác-mô-hình)
+- [Tiêu chí của một ranh giới có ích](#tiêu-chí-của-một-ranh-giới-có-ích)
+- [Quy trình tìm ranh giới từ thay đổi thực tế](#quy-trình-tìm-ranh-giới-từ-thay-đổi-thực-tế)
+  - [Bước 1 Liệt kê hành trình và quyết định nghiệp vụ](#bước-1-liệt-kê-hành-trình-và-quyết-định-nghiệp-vụ)
+  - [Bước 2 Đánh dấu những phần thường thay đổi cùng nhau](#bước-2-đánh-dấu-những-phần-thường-thay-đổi-cùng-nhau)
+  - [Bước 3 Xác định owner dữ liệu và đường ghi](#bước-3-xác-định-owner-dữ-liệu-và-đường-ghi)
+  - [Bước 4 Vẽ các tương tác đi qua ranh giới](#bước-4-vẽ-các-tương-tác-đi-qua-ranh-giới)
+  - [Bước 5 Chọn đơn vị phát hành và làm pilot](#bước-5-chọn-đơn-vị-phát-hành-và-làm-pilot)
+- [Bản đồ ranh giới cho shop mẫu](#bản-đồ-ranh-giới-cho-shop-mẫu)
+  - [Phần thuộc catalog cart và shell](#phần-thuộc-catalog-cart-và-shell)
+  - [Nút thêm hàng thuộc bên nào](#nút-thêm-hàng-thuộc-bên-nào)
+- [Chọn độ hạt theo route hay fragment](#chọn-độ-hạt-theo-route-hay-fragment)
+  - [Bắt đầu ở cấp route](#bắt-đầu-ở-cấp-route)
+  - [Chỉ tách fragment khi có lý do độc lập](#chỉ-tách-fragment-khi-có-lý-do-độc-lập)
+- [Contract giữ implementation ở đúng phía](#contract-giữ-implementation-ở-đúng-phía)
+  - [Ví dụ command thêm vào giỏ](#ví-dụ-command-thêm-vào-giỏ)
+  - [Luồng xử lý và trạng thái lỗi](#luồng-xử-lý-và-trạng-thái-lỗi)
+- [Những thứ dùng chung không nên xóa ranh giới](#những-thứ-dùng-chung-không-nên-xóa-ranh-giới)
+- [Kiểm chứng bằng ma trận thay đổi và kiểm thử](#kiểm-chứng-bằng-ma-trận-thay-đổi-và-kiểm-thử)
+- [Khi nào chưa nên tách hoặc nên gộp lại](#khi-nào-chưa-nên-tách-hoặc-nên-gộp-lại)
+- [Ghi quyết định thành bản mô tả ranh giới](#ghi-quyết-định-thành-bản-mô-tả-ranh-giới)
+- [Checklist trước khi tạo remote](#checklist-trước-khi-tạo-remote)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bạn đang đặt ranh giới cho điều gì
 
-Bài này sẽ giúp bạn: chia theo năng lực nghiệp vụ thay vì chia cơ học theo từng widget.
+Một folder, một bundle và một phạm vi nghiệp vụ không phải cùng một thứ. Nếu dùng từ “tách” cho cả ba, bạn dễ tưởng rằng đổi cấu hình build đã giải quyết coupling.
 
-[Xem các bài trong nhóm Kiến trúc và ranh giới](/docs/kien-truc).
+| Loại ranh giới | Câu hỏi cần trả lời | Ví dụ trong shop |
+| --- | --- | --- |
+| Nghiệp vụ và mô hình | Phần này phục vụ năng lực nào, thuật ngữ nào có ý nghĩa bên trong? | Catalog phục vụ tìm và xem sản phẩm; cart phục vụ quản lý giỏ |
+| Code và dữ liệu | Phần nào là nội bộ, phần nào được đọc hoặc gọi từ bên ngoài? | Catalog không import cart store; chỉ gọi command công khai |
+| Ownership | Ai quyết định, kiểm thử, theo dõi và xử lý lỗi? | Team cart chịu trách nhiệm tích hợp trải nghiệm giỏ hàng |
+| Phát hành | Thay đổi tương thích có thể đưa tới người dùng riêng không? | Đổi bộ lọc catalog không bắt cart và shell build lại |
+
+Một modular frontend có thể làm tốt ba ranh giới đầu nhưng vẫn phát hành một artifact chung. Đây là lựa chọn hợp lý nếu bạn chưa cần nhịp release riêng. Ngược lại, hai artifact riêng vẫn có thể bị buộc phát hành cùng nhau vì dùng chung schema store nội bộ.
+
+Cũng cần tách ranh giới nghiệp vụ khỏi ranh giới isolation. Catalog và cart chạy JavaScript trong cùng document không tự có sandbox bảo mật hay tài nguyên riêng. Contract và quy tắc import giúp quản lý sự phụ thuộc; chúng không ngăn code độc hại đọc DOM hoặc ngăn một vòng lặp làm nghẽn main thread.
+
+## Domain và bounded context giúp chọn ranh giới
+
+### Chia theo năng lực thay vì danh từ
+
+Trong bài này, *domain* là phạm vi nghiệp vụ frontend phục vụ. Một *business capability* là khả năng có ý nghĩa với sản phẩm: tìm sản phẩm, quản lý giỏ, thanh toán, theo dõi đơn hàng. Tên như “form”, “table” hay “modal” chỉ mô tả cách dựng UI, chưa nói được giá trị nghiệp vụ.
+
+Mình sẽ mô tả ứng viên bằng một câu có động từ: “giúp người dùng tìm và chọn sản phẩm”, thay vì chỉ ghi “Product”. Vì một danh từ có thể xuất hiện ở nhiều nơi, chia tất cả code liên quan đến `Product` vào một remote dễ tạo một khối dùng chung mà mọi team phải chờ.
+
+Một lát cắt theo năng lực thường chứa UI, state riêng, adapter gọi API và test cho trải nghiệm đó. Nó không bắt buộc sở hữu một backend riêng, cũng không phải mọi request đều do chính team frontend vận hành.
+
+### Cùng một sản phẩm nhưng khác mô hình
+
+*Bounded context* trong Domain-Driven Design là ranh giới trong đó mô hình và ngôn ngữ nghiệp vụ nhất quán. Điểm hữu ích cho frontend là: cùng một từ không buộc mọi domain dùng cùng một object.
+
+| Ngữ cảnh | Người dùng cần biết gì? | Mô hình có thể cần |
+| --- | --- | --- |
+| Catalog | Sản phẩm có phù hợp không, có biến thể nào? | Mô tả, ảnh, thuộc tính, lựa chọn SKU, giá hiển thị |
+| Cart | Đang định mua gì, số lượng nào được chấp nhận? | Dòng hàng, SKU, quantity, số tiền và cảnh báo do backend trả |
+| Order, nếu bổ sung sau | Đã mua gì ở thời điểm đặt hàng? | Snapshot tên hàng, giá và địa chỉ theo đơn đã xác nhận |
+
+Catalog có thể cập nhật tên hoặc ảnh sản phẩm mà lịch sử đơn hàng vẫn cần giữ snapshot cũ. Nếu mọi nơi dùng một `Product` khổng lồ từ shared package, một thay đổi “nội bộ” của catalog có thể trở thành thay đổi schema toàn shop.
+
+Ranh giới giao tiếp nên dùng identifier và dữ liệu tối thiểu cần thiết. Chẳng hạn cart nhận `skuId` và `quantity`, không cần nhận toàn bộ object sản phẩm để tin vào giá mà catalog hiển thị. Backend vẫn kiểm tra SKU, quyền truy cập, tồn kho và tính tiền theo chính sách hiện hành.
+
+<Callout type="warn" title="Bounded context không phải công thức đếm remote">
+  Một bounded context không bắt buộc tương ứng đúng một micro-frontend, một repository hay một microservice. Một context có thể phục vụ nhiều UI; một màn hình có thể đọc dữ liệu từ nhiều context. Dùng DDD để hiểu ý nghĩa mô hình và quan hệ giữa các bên, rồi chọn đơn vị deploy theo nhu cầu thay đổi và vận hành.
+</Callout>
+
+## Tiêu chí của một ranh giới có ích
+
+Hai ý thường gặp là *cohesion* và *coupling*. Cohesion cao nghĩa là các phần bên trong cùng phục vụ một mục đích và có lý do thay đổi chung. Coupling thấp nghĩa là phần bên ngoài không cần biết nhiều chi tiết để làm việc với phần này; nó không có nghĩa là không có dependency.
+
+Bạn có thể hình dung chia việc trong một căn bếp: khu làm đồ uống tự hoàn thành một ly nước, thay vì mỗi người chỉ làm một thao tác và phải chuyền qua nhau cho mọi đơn. Nhưng frontend còn dùng chung DOM, dependency và tài nguyên trình duyệt; chia trách nhiệm không tự cách ly lỗi như chia khu vực vật lý.
+
+| Tiêu chí | Dấu hiệu tốt | Dấu hiệu cần xem lại |
+| --- | --- | --- |
+| Mục đích | Nói được một năng lực người dùng nhận được | Chỉ mô tả bằng loại component hoặc framework |
+| Nhịp thay đổi | Phần lớn tính năng trong phạm vi được xử lý nội bộ | Một thay đổi nhỏ thường xuyên sửa nhiều remote |
+| Dữ liệu | Có owner cho mỗi đường ghi và mô hình nội bộ | Nhiều bên cùng sửa một global store theo schema chung |
+| Giao tiếp | Các capability công khai ít, có semantics rõ | Gửi toàn bộ state hoặc trao đổi từng thao tác UI |
+| Ownership | Có team owner đủ quyền phát hành và khôi phục | Có repo riêng nhưng mọi việc vẫn phải chờ shell team |
+| Kiểm thử | Test domain bằng contract và test double được | Chỉ chạy được khi dựng toàn bộ shop và đúng mọi version |
+| Vận hành | Biết lỗi phần nào, version nào, fallback ra sao | Một remote lỗi làm mất navigation hoặc phá phần khác |
+
+Không có kích thước bundle hay số component cố định để kết luận ranh giới đúng. Nếu bộ lọc và danh sách luôn cần cùng query semantics, giữ chúng trong catalog thường có ích hơn tách hai remote nhỏ. Nếu checkout có nhịp phát triển, mô hình và yêu cầu vận hành khác cart, bạn có lý do xem xét ranh giới riêng dù giao diện hai phần nối tiếp nhau.
+
+## Quy trình tìm ranh giới từ thay đổi thực tế
+
+Đừng bắt đầu bằng sơ đồ repository. Hãy bắt đầu bằng các tính năng và đường đi của người dùng; repository là một cách hiện thực hóa quyết định sau đó.
+
+### Bước 1 Liệt kê hành trình và quyết định nghiệp vụ
+
+Với shop, bạn có thể viết: tìm và lọc sản phẩm → chọn SKU → thêm vào giỏ → sửa số lượng → thanh toán. Ở mỗi bước, ghi lại ai quyết định trạng thái đúng và người dùng cần phản hồi gì.
+
+Hành trình đầu-cuối không bắt buộc nằm trong một micro-frontend. Nó cho thấy các điểm bàn giao: catalog chọn SKU, cart tiếp nhận yêu cầu thêm hàng, backend xác nhận thay đổi. Nếu không ghi những điểm đó, nút trên catalog rất dễ trở thành nơi chứa cả logic giỏ hàng.
+
+### Bước 2 Đánh dấu những phần thường thay đổi cùng nhau
+
+Lấy một tập tính năng đại diện từ backlog hoặc lịch sử thay đổi. Với mỗi tính năng, đánh dấu UI, state, API adapter và contract cần sửa. Nếu chưa có lịch sử, dùng kịch bản giả định rồi coi ranh giới là giả thuyết cần kiểm chứng.
+
+Ví dụ: thêm filter theo thương hiệu thường động đến parser query, bộ lọc và danh sách trong catalog. Thêm khả năng chọn màu thường động đến picker và trạng thái SKU được chọn trong catalog. Những phần này có lý do ở cùng nhau, dù wireframe vẽ thành các khối khác nhau.
+
+Nhưng một pull request sửa cả shop chưa chắc chứng minh domain sai: đổi formatter hoặc design token cũng chạm nhiều nơi. Phân biệt thay đổi cơ học với thay đổi semantics nghiệp vụ trước khi kết luận.
+
+### Bước 3 Xác định owner dữ liệu và đường ghi
+
+Với mỗi dữ liệu, trả lời ba câu: nguồn chuẩn ở đâu, frontend domain nào sở hữu adapter và cache, bên khác được phép làm gì? Catalog sở hữu filter đang áp dụng trên route của mình; cart sở hữu cách đọc và cập nhật giỏ; backend sở hữu trạng thái giỏ đã xác nhận.
+
+Đọc cùng một dữ liệu không đồng nghĩa cùng có quyền ghi. Header cần tổng quantity nhưng không nên sửa dòng hàng. Catalog cần yêu cầu thêm SKU nhưng không nên tính lại tổng tiền hay trực tiếp sửa store cart.
+
+Ở bước này, làm rõ cả thời gian sống: filter có thể dựng từ URL; giỏ phải đọc lại được sau refresh hoặc khi mở tab mới. Một event trong memory không thay thế nguồn chuẩn bền vững.
+
+### Bước 4 Vẽ các tương tác đi qua ranh giới
+
+Ghi rõ mỗi tương tác là navigation, command, dữ liệu chỉ đọc hay notification. “Catalog nói chuyện với cart” chưa đủ: gọi command có kết quả khác với phát notification mà không biết ai nhận.
+
+Nếu hai phần trao đổi liên tục từng ký tự input, từng thay đổi selection và từng trạng thái validation, hãy xem xét giữ chúng trong cùng module. Ranh giới app không nên cắt qua một state machine vốn cần được cập nhật đồng bộ để giữ UI nhất quán.
+
+Không phải mọi đường nối đều cần xóa. Catalog → cart là dependency nghiệp vụ có chủ đích. Mục tiêu là thay dependency vào implementation bằng dependency vào contract ổn định, không phải giấu nó dưới event bus rồi gọi là độc lập.
+
+### Bước 5 Chọn đơn vị phát hành và làm pilot
+
+Khi phạm vi và contract đã rõ, hỏi phần nào thật sự cần release riêng. Có thể giữ catalog và cart dưới dạng module trong một app trước; cũng có thể chọn catalog làm pilot nếu team thường bị chặn bởi lịch phát hành giỏ hàng.
+
+Pilot cần thử được một thay đổi nội bộ, một lỗi tải và một lần khôi phục. Nếu catalog mới vẫn buộc shell sửa source và rebuild chỉ để nhận artifact, bạn chưa đạt mục tiêu phát hành riêng dù code đã ở repo khác.
+
+Owner phải tham gia quyết định này. Một ranh giới mà không team nào đủ năng lực kiểm thử và vận hành sẽ chỉ chuyển công việc từ trong folder sang giữa các pipeline. Phần tổ chức được bàn kỹ hơn trong [Team ownership và Conway's Law](/docs/nen-tang/team-ownership).
+
+## Bản đồ ranh giới cho shop mẫu
+
+### Phần thuộc catalog cart và shell
+
+Trong ví dụ này, chọn `/catalog` làm nhánh tìm sản phẩm và `/cart` làm nhánh giỏ hàng. Tên path là contract URL của ví dụ, không phải yêu cầu rằng domain catalog phải mang đúng tên đó ở mọi ứng dụng.
+
+| Phần | Năng lực hoặc vai trò | Sở hữu bên trong | Công bố ra ngoài | Không sở hữu |
+| --- | --- | --- | --- | --- |
+| Catalog | Tìm, lọc và xem sản phẩm; chọn SKU | Filter, kết quả, chi tiết, selection, catalog API adapter | Route và entry UI; yêu cầu thêm hàng theo cart contract | Cart store, tổng tiền được xác nhận, lịch sử đơn |
+| Cart | Hiển thị và cập nhật giỏ | Cart data layer, UI dòng hàng, xử lý mutation và lỗi | Command thêm/sửa/xóa; summary chỉ đọc | Bộ lọc và layout nội bộ catalog |
+| Shell | Ghép các phần thành trải nghiệm chung | Layout, route cấp app, lifecycle, fallback, tích hợp session | Navigation và các capability nền tảng đã thống nhất | Query semantics catalog, quy tắc giỏ hàng |
+
+Shell là vai trò tích hợp, không phải một business domain ngang hàng với catalog hay cart. Nó có thể do platform team hoặc một team sản phẩm sở hữu; không cần tạo team mới chỉ để khớp sơ đồ.
+
+```text
+                     Shell
+              layout · route · lifecycle
+                 /               \
+        Catalog UI               Cart UI
+        tìm và chọn SKU          xem và sửa giỏ
+                 \               /
+                  Cart data port
+              command · summary reader
+```
+
+Sơ đồ là bản đồ trách nhiệm, không phải dependency graph của bundle. Cart data port do cart domain sở hữu; composition layer có thể inject nó cho consumer. Khi chỉ cần thêm hàng hoặc đọc badge, không nhất thiết phải tải toàn bộ trang giỏ hàng. Port có thể được hiện thực bằng adapter gọi backend mà không kéo theo UI cart.
+
+Backend API có ownership riêng. Nếu một endpoint kết hợp dữ liệu nhiều service, owner màn hình hoặc BFF có thể cung cấp view model phù hợp; không vì vậy mà shell phải gom mọi API và chứa mọi quy tắc nghiệp vụ.
+
+### Nút thêm hàng thuộc bên nào
+
+Nút nằm trên trang sản phẩm, nên catalog sở hữu vị trí, accessibility, SKU đang chọn và phản hồi tại chỗ như loading hoặc lỗi của lần bấm. Nhưng hành động “thêm vào giỏ” là command thuộc cart domain.
+
+Catalog chuyển ý định qua contract, cart data layer gọi backend và cập nhật dữ liệu giỏ theo kết quả đã xác nhận. Cách này tách trách nhiệm mà không cần dựng một remote riêng cho nút. Validation phía catalog giúp người dùng nhập đúng; backend vẫn quyết định có chấp nhận SKU và quantity không.
+
+Tương tự, badge trong header có thể do shell render theo summary của cart. Chỉ khi mini-cart có hành vi đủ lớn như xem, sửa, xóa dòng hàng và cần release riêng, bạn mới cân nhắc để cart cung cấp cả fragment UI. **Vị trí xuất hiện trên màn hình không quyết định ai sở hữu semantics của dữ liệu.**
+
+## Chọn độ hạt theo route hay fragment
+
+### Bắt đầu ở cấp route
+
+Mình ưu tiên route-level boundary cho lần tách đầu tiên: catalog chứa danh sách và chi tiết sản phẩm; cart chứa màn hình giỏ. Cách này thường giúp domain giữ được vòng đời màn hình và state bên trong, đồng thời giảm số phần phải phối hợp trên cùng một vùng tương tác.
+
+Một domain có thể sở hữu nhiều route. Tách `/catalog` và `/catalog/products/:skuId` thành hai micro-frontend chỉ vì chúng là hai URL thường không có ích nếu cùng team, cùng model và cùng nhịp thay đổi.
+
+Shell nhận diện nhánh cấp app; domain xử lý subroute theo contract. Deep link, refresh, Back/Forward và URL state vẫn cần thiết kế rõ; route riêng không tự giải quyết browser history. Xem [Routing giữa các ứng dụng](/docs/giao-tiep-va-trang-thai/routing).
+
+### Chỉ tách fragment khi có lý do độc lập
+
+Fragment-level boundary đặt nhiều phần có owner riêng trên cùng màn hình, chẳng hạn catalog bên cạnh mini-cart. Nó hợp lý khi fragment phục vụ một năng lực rõ, dùng ở nhiều điểm và thực sự cần thay đổi riêng.
+
+Đổi lại, bạn phải chốt thêm kích thước vùng hiển thị, focus khi mở/đóng, CSS, loading, fallback, subscription và cleanup. Nếu mini-cart đang lỗi, catalog có được tiếp tục thêm hàng không? Nếu có, phản hồi thành công phải đến từ command, không phụ thuộc fragment có mount hay không.
+
+| Ứng viên | Lựa chọn mặc định | Khi nào cân nhắc khác |
+| --- | --- | --- |
+| Filter và danh sách sản phẩm | Cùng catalog | Search trở thành năng lực riêng với owner và contract rõ, không chỉ là một panel |
+| Danh sách và chi tiết sản phẩm | Cùng catalog, nhiều route | Có nhu cầu tự chủ thực tế và ít thay đổi phải phối hợp |
+| Badge giỏ hàng trong header | Shell render summary chỉ đọc | UI badge có nhu cầu phát hành riêng đáng kể, không chỉ khác vị trí |
+| Mini-cart có sửa/xóa hàng | Fragment do cart sở hữu nếu cần | Giữ là component trong app chung nếu chưa cần deploy riêng |
+| Button và Input | Component design system | Không tạo remote riêng chỉ để đánh dấu ownership |
+
+Không lấy số khối trong wireframe làm số micro-frontend. Một component dùng lại ở nhiều nơi cũng chưa đủ lý do để có pipeline và lifecycle riêng.
+
+## Contract giữ implementation ở đúng phía
+
+Ranh giới sẽ bị thủng nếu catalog import `cart/src/store`, shell sửa query cache của cart hoặc một consumer chạm vào DOM nội bộ của bên khác. Contract phải làm rõ consumer được phép làm gì để họ không cần các lối tắt đó.
+
+### Ví dụ command thêm vào giỏ
+
+Interface dưới đây là mẫu capability ở cấp thiết kế. Nó không quy định transport, framework hay cách cấu hình Module Federation; cũng không phải một cart SDK có sẵn.
+
+```ts title="Ví dụ contract do cart domain sở hữu"
+export type AddItemInput = Readonly<{
+  skuId: string;
+  quantity: number;
+}>;
+
+export type AddItemResult =
+  | Readonly<{ status: 'confirmed' }>
+  | Readonly<{
+      status: 'rejected';
+      reason: 'invalid-quantity' | 'unavailable' | 'auth-required';
+    }>
+  | Readonly<{
+      status: 'failed';
+      outcome: 'not-sent' | 'unknown';
+    }>;
+
+export interface CartCommands {
+  addItem(input: AddItemInput): Promise<AddItemResult>;
+}
+```
+
+Catalog nhận capability này từ composition layer, gọi `addItem` rồi hiển thị phản hồi theo kết quả. Nó không cần biết cart dùng Redux hay query client nào. `quantity` phải là số nguyên dương theo contract; TypeScript không kiểm tra điều đó ở runtime, nên adapter và backend cần validation phù hợp.
+
+Semantics là phần không thể bỏ khỏi contract:
+
+- `confirmed` nghĩa là backend đã xác nhận mutation, không chỉ là request được gửi hoặc người dùng vừa click.
+- `rejected` nghĩa là có kết quả từ chối rõ; catalog hiển thị hướng xử lý phù hợp với `reason`.
+- `failed` với `not-sent` nghĩa là adapter biết command chưa được gửi; với `unknown`, client không xác định được backend đã xử lý hay chưa.
+- Cart adapter chuẩn hóa lỗi vận hành dự kiến thành kết quả trên; consumer vẫn cần error boundary hoặc cách xử lý lỗi bất ngờ của implementation.
+
+Contract thực tế còn cần quy tắc session, xử lý nhiều lần bấm, timeout, retry, compatibility và telemetry. Đây là lý do một type dùng chung chưa đủ để chứng minh các version runtime tương thích.
+
+### Luồng xử lý và trạng thái lỗi
+
+```text
+Catalog UI ── addItem(skuId, quantity) ──► Cart data layer
+                                              │
+                                        gọi Cart API
+                                              │
+Catalog UI ◄── confirmed / rejected / failed ──┘
+```
+
+Sau xác nhận thành công, cart data layer cập nhật hoặc invalidate dữ liệu thuộc mình. Header đọc summary hiện tại; cart UI đọc giỏ hiện tại. Nếu dùng notification để báo dữ liệu đổi, consumer mới mount vẫn phải đọc snapshot hoặc fetch lại, vì notification trong memory có thể đã trôi qua.
+
+Badge stale không có nghĩa mutation thất bại. Hãy phân biệt kết quả command với khả năng revalidate summary; nếu gộp hai lỗi làm một rồi tự gửi lại command, bạn có thể thêm hàng lần nữa dù lần đầu đã thành công.
+
+Timeout cũng không chứng minh backend chưa ghi. Với `outcome: 'unknown'`, không tự động retry mutation nếu chưa có contract idempotency; hãy xác minh lại giỏ và cho người dùng phản hồi rõ. Nếu cần retry an toàn, client và backend phải thống nhất request identity và semantics chống xử lý trùng, không chỉ thêm một field tùy ý ở frontend.
+
+Dependency nghiệp vụ catalog → cart vì thế vẫn tồn tại, nhưng UI catalog không cần phụ thuộc vào trang giỏ đang được render. Khi cart API lỗi, catalog có thể tiếp tục phục vụ việc tìm sản phẩm và vô hiệu hóa hoặc báo lỗi riêng cho thao tác thêm hàng. Đây là suy giảm có chủ đích, không phải lời hứa rằng các phần hoàn toàn độc lập.
+
+## Những thứ dùng chung không nên xóa ranh giới
+
+Không chia sẻ gì có thể gây lặp code; chia sẻ mọi thứ có thể khiến cả shop thành một ứng dụng phân tán buộc đổi cùng nhau. Mình giữ phần nghiệp vụ ở owner, chỉ đưa ra ngoài những contract hoặc utility có lý do sử dụng chung.
+
+| Phần dùng chung | Phạm vi nên chia sẻ | Điều nên tránh |
+| --- | --- | --- |
+| Design system | Component trình bày, token, chuẩn accessibility | Nhét cart store vào Button hoặc bắt mọi app dùng một business model |
+| Contract | DTO tối thiểu, capability và semantics đã công bố | Export toàn bộ reducer, selector và object nội bộ |
+| Auth integration | Session snapshot tối thiểu, capability đăng nhập/đăng xuất | Consumer sửa session tùy ý; coi route guard là authorization backend |
+| Navigation | Public destinations và cách yêu cầu chuyển route | Remote sửa history hoặc route table nội bộ của bên khác |
+| Transport và telemetry | Cách gắn trace, chuẩn lỗi, timeout có owner | Shell biết mọi endpoint, query key và invalidation rule |
+| Dependency runtime | Các version tương thích khi cần share | Suy ra shared React đồng nghĩa shared state hoặc isolation |
+
+Một shared package kiểu `@shop/everything` làm mất ý nghĩa của public boundary nếu nó re-export mọi implementation. Với package contract, vẫn cần chỉ rõ owner và kiểm tra tương thích; publish version mới không tự cập nhật những consumer đã build hoặc những tab đang chạy.
+
+Giữ rule import bằng công cụ nếu có thể: consumer chỉ dùng public entry, cấm deep import xuyên domain, và kiểm tra trong CI. Trong monorepo, folder riêng không ngăn import chéo; trong multi-repo, copy model hoặc dùng global store cũng có thể tái tạo cùng loại coupling.
+
+Có lúc lặp một view model nhỏ lại ít rủi ro hơn dùng chung model nghiệp vụ đang biến động. Chia sẻ ý nghĩa contract khi cần, không ép mọi representation nội bộ giống nhau. Chi tiết state và cache được bàn trong [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) và [Data fetching và cache](/docs/giao-tiep-va-trang-thai/data-fetching).
+
+## Kiểm chứng bằng ma trận thay đổi và kiểm thử
+
+Một sơ đồ đẹp chỉ là giả thuyết. Bảng dưới đây là kỳ vọng cho shop giả định; khi áp dụng vào dự án, thay bằng thay đổi thật và ghi những nơi buộc phải sửa, kiểm thử hoặc release.
+
+| Thay đổi | Phạm vi dự kiến | Phối hợp có lý do | Dấu hiệu coupling không cần thiết |
+| --- | --- | --- | --- |
+| Thêm filter thương hiệu | Catalog UI, query và API adapter | Owner catalog API nếu API chưa hỗ trợ | Cart phải release vì cùng dùng search store |
+| Đổi layout dòng hàng | Cart UI | Design system nếu thiếu primitive | Shell phải biết cấu trúc DOM dòng hàng |
+| Thêm lựa chọn màu và gửi SKU đã chọn | Catalog, giữ command nhận SKU | Backend nếu xuất hiện quy tắc mới | Đổi payload của nhiều remote chỉ để truyền cả object Product |
+| Thêm cảnh báo quantity được chấp nhận | Cart data layer/UI | Cart API và consumer nếu semantics công khai đổi | Catalog tự tính lại quy tắc chấp nhận quantity |
+| Đổi chính sách session | Auth integration và consumer liên quan | Các team cần kiểm tra lifecycle và cache | Mỗi domain có một bản auth logic lệch nhau |
+| Thay public route sản phẩm | Catalog và routing integration | Redirect/link consumer cần migration | Đổi component nội bộ cũng bắt shell sửa route table |
+
+Thay đổi xuyên domain không phải thất bại kiến trúc. Đổi auth, URL công khai hoặc semantics command vốn là thay đổi contract. Điều cần phát hiện là một thay đổi nội bộ nhỏ mà vẫn bắt các phần không liên quan phát hành cùng nhau.
+
+Với pilot, kiểm chứng ít nhất các tình huống sau:
+
+| Phép thử | Điều cần chứng minh |
+| --- | --- |
+| Thay UI catalog, giữ contract | Cart và shell giữ artifact mà luồng mua hàng vẫn chạy |
+| Chạy domain với test double của capability | Không cần import store hoặc dựng mọi UI để test logic riêng |
+| Shell hiện tại với catalog mới; bản cũ còn hỗ trợ với bản mới | Các tổ hợp version trong cửa sổ hỗ trợ giữ đúng semantics |
+| Cart UI chưa mount, catalog thêm hàng | Command vẫn hoạt động và cart đọc đúng dữ liệu khi mở sau đó |
+| Summary đang lỗi sau mutation thành công | UI không tự gửi lại command và không báo giỏ chắc chắn chưa đổi |
+| API cart lỗi hoặc không rõ kết quả | Catalog còn tìm sản phẩm được; trạng thái thêm hàng được phân biệt |
+| Tải catalog lỗi rồi khôi phục artifact cũ | Shell còn navigation, fallback và đường retry phù hợp |
+| Refresh và mở deep link | Domain dựng được trạng thái từ URL/backend, không cần event đã phát trước đó |
+
+E2E xuyên catalog và cart vẫn cần thiết; độc lập không có nghĩa chỉ test từng app. Khác biệt là test đầu-cuối không nên thay thế mọi test contract và test nội bộ. Nếu mỗi lần sửa một label đều cần dựng đúng toàn bộ hệ thống mới kiểm thử được, hãy tìm dependency implementation đang lọt qua boundary.
+
+Theo dõi số phần phải sửa, số lần release bắt buộc đồng bộ và thời gian chờ bên ngoài cho từng loại tính năng. Đừng đặt ngưỡng “đúng” tùy ý; so với mục tiêu và baseline của dự án để quyết định ranh giới có giúp giảm bàn giao hay chỉ tăng pipeline.
+
+## Khi nào chưa nên tách hoặc nên gộp lại
+
+Mình sẽ giữ modular frontend khi một team vẫn làm phần lớn sản phẩm, nhịp release chung không gây cản trở và chưa có nhu cầu vận hành các artifact riêng. Bạn vẫn có thể đặt public API, owner và rule import ngay trong một codebase; không cần chờ micro-frontend mới làm được những việc đó.
+
+Với một ứng viên đang muốn tách, hãy dừng lại nếu không nói được capability độc lập hoặc không dựng được contract mà không truyền toàn bộ state. Tách trước rồi “sẽ dọn dependency sau” thường biến import trực tiếp thành coupling runtime khó nhìn hơn.
+
+| Dấu hiệu | Khả năng cần kiểm tra | Hướng xử lý đầu tiên |
+| --- | --- | --- |
+| Filter và list phải trao đổi mọi keystroke | Cắt qua state machine của một trải nghiệm | Gộp trong catalog, giữ component riêng bên trong |
+| Mọi release cart đều cần catalog mới | Consumer phụ thuộc model hoặc semantics đang biến động | Thu hẹp contract; gộp nếu hai phần thực sự là một năng lực |
+| Shell quyết định SKU, quantity và tổng tiền | Shell đã nhận nghiệp vụ của domain | Chuyển trách nhiệm về catalog/cart, giữ shell điều phối |
+| Nhiều remote chỉ chuyển tiếp event cho nhau | Tách quá nhỏ hoặc thiếu capability trực tiếp | Rút ngắn đường giao tiếp, xem lại đơn vị deploy |
+| Phần riêng không có owner rollback và alert | Ranh giới phát hành chưa có ownership thực tế | Bổ sung ownership trước hoặc chưa tách |
+| Một remote phục vụ nhiều năng lực không liên quan | Ranh giới quá lớn | Tìm cụm thay đổi và owner đủ độc lập để tách tiếp |
+
+Không phải cứ phối hợp nhiều là gộp lại ngay. Một shared package sai hoặc endpoint không ổn định có thể là nguyên nhân chính; gộp UI không sửa được ownership backend. Nhưng nếu sau khi làm rõ contract, hai phần vẫn luôn thay đổi cùng nhau và cùng một team vận hành, một module chung thường đơn giản hơn hai remote giả vờ độc lập.
+
+Ranh giới có thể điều chỉnh khi sản phẩm thay đổi. Chẳng hạn checkout chỉ nên thành ứng viên riêng khi có mô hình, nhịp thay đổi và trách nhiệm đủ khác cart; đừng tạo sẵn remote cho mọi khả năng có thể xuất hiện trong tương lai.
+
+## Ghi quyết định thành bản mô tả ranh giới
+
+Trước khi viết cấu hình tích hợp, ghi một bản mô tả ngắn để reviewer nhìn thấy cả phần *không* thuộc domain. Mẫu dưới đây là minh họa cho catalog, không phải file cấu hình cần thêm vào project.
+
+```yaml title="Bản mô tả ranh giới catalog minh họa"
+name: catalog
+purpose: Giúp người dùng tìm, xem sản phẩm và chọn SKU
+owner: team-catalog
+internal:
+  - filter draft và query parser
+  - product view model và selected SKU
+  - catalog API adapter và cache
+public_routes:
+  - /catalog
+  - /catalog/products/:skuId
+consumes:
+  - navigation capability của shell
+  - cart.addItem theo contract do cart sở hữu
+  - session context tối thiểu theo auth contract
+non_goals:
+  - sở hữu cart store hoặc tính tổng tiền được xác nhận
+  - điều khiển DOM của header và cart UI
+  - quyết định authorization thay backend
+release_goal: Thay đổi nội bộ không buộc shell hoặc cart build lại
+verification:
+  - contract test với capability được hỗ trợ
+  - integration test với shell trong cửa sổ compatibility
+  - E2E tìm sản phẩm và thêm vào giỏ
+failure_policy:
+  - shell giữ navigation khi catalog không tải được
+  - báo lỗi thêm hàng riêng khi cart command không thành công
+```
+
+Bản quyết định nên có thêm lý do chọn, phương án chưa chọn và điều kiện xem xét lại. Ví dụ: giữ danh sách và chi tiết trong catalog vì cùng model, owner và nhịp thay đổi; xem xét tách khi có bằng chứng nhu cầu tự chủ, không chỉ khi thư mục lớn hơn.
+
+Ghi rõ ai sở hữu contract, ai duy trì test và cách rollout/rollback tương thích. Bản mô tả chỉ nói “catalog độc lập” mà không có đường kiểm chứng sẽ khó dùng khi các team bất đồng về một thay đổi.
+
+## Checklist trước khi tạo remote
+
+- [ ] Mô tả được capability của phần định tách mà không chỉ kể tên component.
+- [ ] Đã xem các thay đổi đại diện và phân biệt thay đổi nội bộ với thay đổi contract.
+- [ ] Những phần thường thay đổi cùng nhau được giữ trong một ranh giới hợp lý.
+- [ ] Mỗi đường ghi dữ liệu có owner; backend vẫn là nơi kiểm tra nghiệp vụ và quyền.
+- [ ] Consumer chỉ dùng public contract, không import store hoặc model nội bộ.
+- [ ] Route, command, summary và notification có semantics, lỗi và lifecycle rõ.
+- [ ] Shell không phải sửa code cho mọi thay đổi nghiệp vụ nội bộ.
+- [ ] Có team owner cho test, phát hành, telemetry và khôi phục.
+- [ ] Có nhu cầu release riêng đủ cụ thể để bù chi phí composition và vận hành.
+- [ ] Đã xác định các version cần tương thích, deep link và kịch bản suy giảm khi dependency lỗi.
+- [ ] Có phép thử pilot và điều kiện để giữ, tách tiếp hoặc gộp ranh giới.
+
+Bước tiếp theo: lấy một tính năng sắp làm, chẳng hạn chọn biến thể sản phẩm, rồi điền ma trận “phải sửa phần nào, vì sao”. Nếu câu trả lời vẫn là sửa cả shell, catalog và cart chỉ để truyền selection nội bộ, hãy sửa contract hoặc ranh giới trước khi tạo thêm remote.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Giữ composition, lifecycle và trách nhiệm nền tảng ở shell, không gom mọi nghiệp vụ vào đó." />
+  <Card title="Chọn kiến trúc bằng trade-off" href="/docs/kien-truc/chon-kien-truc" description="Chọn cách ghép các phần sau khi đã hiểu ranh giới và mục tiêu tự chủ." />
+  <Card title="Team ownership và Conway's Law" href="/docs/nen-tang/team-ownership" description="Gắn phạm vi nghiệp vụ với quyền quyết định, phát hành và vận hành." />
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Đặc tả capability, payload và compatibility tại các điểm bàn giao." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Cam Jackson — Micro Frontends](https://martinfowler.com/articles/micro-frontends.html): lát cắt nghiệp vụ, team autonomy, independent deployment và đánh đổi khi ghép frontend.
+- [Martin Fowler — Bounded Context](https://martinfowler.com/bliki/BoundedContext.html): ranh giới mô hình nhất quán và cách các context tích hợp khi cùng thuật ngữ có ý nghĩa khác nhau.

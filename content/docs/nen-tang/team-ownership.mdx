@@ -1,18 +1,359 @@
 ---
 title: "Team ownership và Conway's Law"
-description: "Gắn ranh giới ứng dụng với team ownership và trách nhiệm vận hành."
+description: "Gắn ranh giới micro-frontend với phạm vi nghiệp vụ, quyền phát hành và trách nhiệm vận hành; hiểu Conway's Law qua shop shell–catalog–cart."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog đã có repo và pipeline riêng, nhưng mỗi lần đưa bộ lọc mới lên production vẫn phải nhờ team shell đổi cấu hình, nhờ một team khác chạy test và chờ người duy nhất có quyền rollback. Bạn đã tách code; team catalog vẫn chưa tự chủ được việc đưa tính năng tới người dùng.
+
+Một tình huống khác còn khó hơn: người dùng bấm “Thêm vào giỏ” nhưng số lượng không đổi. Catalog nói đã gửi request, cart nói API trả đúng, shell nói remote tải thành công. Nếu không ai chịu trách nhiệm nối các bằng chứng lại, ranh giới ứng dụng trở thành nơi đẩy sự cố sang nhau.
+
+**Team ownership phải đi cùng phạm vi nghiệp vụ, quyền quyết định và trách nhiệm sau deploy.** Bài này giúp bạn đặt ba thứ đó cạnh nhau trước khi tách thêm ứng dụng.
+
+<Callout type="info" title="Phạm vi bài này">
+  Ví dụ tiếp tục dùng shop với shell, catalog và cart. Nếu chưa quen mô hình, đọc [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi) trước. Các team, tên kênh liên lạc và bản ghi ownership bên dưới đều là minh họa, không phải mô tả cơ cấu hiện tại của repository này.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Ownership không chỉ là người sửa code](#ownership-không-chỉ-là-người-sửa-code)
+  - [Ba phần phải đi cùng nhau](#ba-phần-phải-đi-cùng-nhau)
+  - [Một owner chính không có nghĩa là làm một mình](#một-owner-chính-không-có-nghĩa-là-làm-một-mình)
+- [Conway’s Law giải thích điều gì](#conways-law-giải-thích-điều-gì)
+  - [Cấu trúc giao tiếp để lại dấu vết trong kiến trúc](#cấu-trúc-giao-tiếp-để-lại-dấu-vết-trong-kiến-trúc)
+  - [Inverse Conway Maneuver](#inverse-conway-maneuver)
+- [Chia theo năng lực nghiệp vụ thay vì lớp kỹ thuật](#chia-theo-năng-lực-nghiệp-vụ-thay-vì-lớp-kỹ-thuật)
+  - [Chọn một lát cắt đủ trọn vẹn](#chọn-một-lát-cắt-đủ-trọn-vẹn)
+  - [Không bắt buộc một team ứng với một remote](#không-bắt-buộc-một-team-ứng-với-một-remote)
+- [Bản đồ ownership cho shop mẫu](#bản-đồ-ownership-cho-shop-mẫu)
+  - [Trách nhiệm của shell, catalog và cart](#trách-nhiệm-của-shell-catalog-và-cart)
+  - [Những trách nhiệm xuyên suốt sản phẩm](#những-trách-nhiệm-xuyên-suốt-sản-phẩm)
+- [Team được tự quyết đến đâu](#team-được-tự-quyết-đến-đâu)
+- [Contract là chỗ cần phối hợp rõ ràng](#contract-là-chỗ-cần-phối-hợp-rõ-ràng)
+  - [Ai duy trì contract và ai kiểm chứng](#ai-duy-trì-contract-và-ai-kiểm-chứng)
+  - [Ví dụ đổi contract thêm vào giỏ](#ví-dụ-đổi-contract-thêm-vào-giỏ)
+- [Vận hành là một phần của ownership](#vận-hành-là-một-phần-của-ownership)
+  - [Trước và sau một lần release](#trước-và-sau-một-lần-release)
+  - [Khi sự cố chưa rõ thuộc phần nào](#khi-sự-cố-chưa-rõ-thuộc-phần-nào)
+- [Ghi ownership thành một thỏa thuận có thể dùng](#ghi-ownership-thành-một-thỏa-thuận-có-thể-dùng)
+  - [Mẫu bản ghi cho catalog](#mẫu-bản-ghi-cho-catalog)
+  - [Chuyển giao khi team hoặc ứng dụng thay đổi](#chuyển-giao-khi-team-hoặc-ứng-dụng-thay-đổi)
+- [Những dấu hiệu ranh giới chưa hiệu quả](#những-dấu-hiệu-ranh-giới-chưa-hiệu-quả)
+- [Kiểm chứng ownership bằng một thay đổi thật](#kiểm-chứng-ownership-bằng-một-thay-đổi-thật)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Ownership không chỉ là người sửa code
 
-Bài này sẽ giúp bạn: gắn ranh giới ứng dụng với team ownership và trách nhiệm vận hành.
+Trong bài này, *ownership* là trách nhiệm duy trì một phạm vi sản phẩm trong suốt vòng đời của nó: hiểu yêu cầu, phát triển, kiểm thử, đưa lên production, theo dõi và xử lý khi nó không còn hoạt động đúng. Team không chỉ nhận ticket rồi bàn giao một bundle cho người khác.
 
-[Xem các bài trong nhóm Nền tảng](/docs/nen-tang).
+Bạn có thể hình dung một người phụ trách căn hộ trong tòa nhà: họ biết ai sửa thiết bị bên trong và phải liên hệ ai khi đường nước chung bị hỏng. Nhưng phép so sánh có giới hạn: micro-frontend chạy cùng trang còn dùng chung tài nguyên trình duyệt, nên lỗi bên trong một phần có thể ảnh hưởng phần khác. Có owner riêng không tự tạo isolation.
+
+### Ba phần phải đi cùng nhau
+
+| Phần của ownership | Câu hỏi phải trả lời được | Ví dụ với catalog |
+| --- | --- | --- |
+| Phạm vi | Team chịu trách nhiệm cho kết quả nào của người dùng? | Người dùng tìm, lọc và xem sản phẩm; khởi tạo hành động thêm vào giỏ qua contract đã thống nhất |
+| Quyền quyết định | Team có quyền thay đổi và khôi phục phần mình không? | Chọn cách triển khai nội bộ, phát hành artifact tương thích và quay lại bản ổn định trong quy trình đã duyệt |
+| Trách nhiệm vận hành | Khi lỗi, ai tiếp nhận và làm gì tiếp theo? | Team catalog kiểm tra lỗi UI, artifact đang chạy, request thêm vào giỏ và phối hợp với owner cart API nếu cần |
+
+Nếu chỉ có trách nhiệm mà không có quyền deploy hoặc quyền xem telemetry, team sẽ phải chịu lỗi nhưng không có cách xử lý. Nếu chỉ có quyền đổi tùy ý mà không có trách nhiệm giữ contract, chi phí sẽ rơi sang các team khác.
+
+Mình sẽ bắt đầu bằng cách chốt phạm vi và quyền trước, rồi mới giao các chỉ tiêu chất lượng. Một mục tiêu “catalog phải ổn định” không giúp được gì nếu alert gửi nhầm nơi và không ai trong team biết chọn lại artifact cũ.
+
+### Một owner chính không có nghĩa là làm một mình
+
+Mỗi phần nên có một team chịu trách nhiệm chính, để câu hỏi “ai tiếp nhận việc này?” có câu trả lời rõ. Team khác vẫn có thể đóng góp code, review chuyên môn hoặc hỗ trợ khi có sự cố. Ownership không phải quyền độc chiếm repository.
+
+Cũng đừng biến owner thành một cá nhân duy nhất. Một người có thể làm đầu mối, nhưng tài liệu, quyền truy cập và kiến thức khôi phục cần có người thay thế. Việc một developer nghỉ phép không nên khiến catalog ngừng khả năng release.
+
+Team owner không bắt buộc tự vận hành CDN, xây hệ thống monitoring hay xử lý mọi lỗi backend. Họ cần biết dependency nào do ai quản lý, có đường liên hệ và có đủ dữ liệu để phối hợp. Đó là khác biệt giữa “sở hữu kết quả” và “tự làm toàn bộ hạ tầng”.
+
+## Conway’s Law giải thích điều gì
+
+### Cấu trúc giao tiếp để lại dấu vết trong kiến trúc
+
+Melvin Conway nêu luận điểm trong bài *How Do Committees Invent?*, xuất bản năm 1968: tổ chức thiết kế một hệ thống sẽ tạo ra cấu trúc thiết kế phản ánh cấu trúc giao tiếp của tổ chức đó. Đây là diễn giải tiếng Việt của luận điểm, không phải một công thức chia số team thành số ứng dụng.
+
+Điểm cần nhìn là **ai thường xuyên trao đổi với ai để hoàn thành thay đổi**. Nó bao gồm review, phê duyệt, bàn giao và cách xử lý dependency, chứ không chỉ sơ đồ báo cáo trong công ty.
+
+Giả sử shop tổ chức theo ba nhóm: nhóm UI làm mọi màn hình, nhóm API làm mọi endpoint và nhóm release đưa mọi thứ lên production. Một tính năng bộ lọc mới sẽ đi qua các bước bàn giao:
+
+```text
+Nhóm UI → Nhóm API → Nhóm UI tích hợp → Nhóm release
+```
+
+Tách `catalog` và `cart` thành hai bundle không xóa chuỗi bàn giao này. Mọi thay đổi vẫn chạy qua cùng các nhóm, nên quyết định và lịch phát hành tiếp tục bị buộc vào nhau.
+
+Trong một cách tổ chức khác, team catalog có đủ năng lực để thay phần lớn trải nghiệm tìm sản phẩm, kiểm thử và đưa thay đổi tương thích lên production. Khi đó ranh giới catalog có cơ hội trở thành một đơn vị tự chủ thực sự. Phối hợp với cart vẫn cần, nhưng chủ yếu nằm ở contract thay vì từng chi tiết component.
+
+<Callout type="warn" title="Không dùng Conway’s Law như định luật chia ứng dụng">
+  Có ba team không có nghĩa phải tạo ba micro-frontend. Cũng không nên sao chép mọi thay đổi sơ đồ tổ chức thành một lần tách hoặc gộp ứng dụng. Conway’s Law giúp nhận ra lực tác động giữa tổ chức và kiến trúc; nó không thay thế phân tích nghiệp vụ hay chi phí vận hành.
+</Callout>
+
+### Inverse Conway Maneuver
+
+*Inverse Conway Maneuver* là chủ động điều chỉnh cách tổ chức và giao tiếp để khuyến khích kiến trúc mong muốn. Thay vì chỉ vẽ catalog là một khối độc lập rồi yêu cầu mọi người làm theo, bạn tạo điều kiện để team catalog thực sự hoàn thành công việc trong ranh giới đó.
+
+Với shop mẫu, điều chỉnh này có thể là giao quyền rollout catalog theo chính sách chung, bổ sung năng lực kiểm thử trong team và làm rõ đường làm việc với owner API. Không nhất thiết phải thành lập thêm một phòng ban hay chuyển mọi backend developer sang team frontend.
+
+Nhưng đổi tên team không làm mất global store dùng chung, import chéo hoặc pipeline chỉ build được toàn bộ shop. Nếu kiến trúc hiện tại còn gắn chặt, cơ cấu mới có thể làm lộ thêm điểm nghẽn trước khi tạo lợi ích. Vì vậy cần thay đổi cả cách làm việc lẫn code, theo từng ranh giới có thể kiểm chứng.
+
+Mình sẽ chọn một pilot như catalog, giữ contract với cart, trao đủ quyền vận hành và đo xem còn phải chờ ai. Cách này dễ phát hiện vấn đề hơn việc tổ chức lại mọi team rồi đồng thời tách toàn bộ frontend.
+
+## Chia theo năng lực nghiệp vụ thay vì lớp kỹ thuật
+
+### Chọn một lát cắt đủ trọn vẹn
+
+Một *vertical slice* là lát cắt theo khả năng nghiệp vụ mà người dùng nhận được, thay vì chỉ một lớp kỹ thuật như CSS, component hay validation. Với catalog, lát cắt đó có thể gồm trang danh sách, bộ lọc, chi tiết sản phẩm, cách gọi API và kiểm thử cho trải nghiệm tìm sản phẩm.
+
+| Cách chia | Khi người dùng cần lọc theo thương hiệu | Hệ quả với ownership |
+| --- | --- | --- |
+| Theo lớp: team form, team CSS, team data fetching | Nhiều nhóm phải cùng sửa một tính năng | Trách nhiệm nằm rải rác; mỗi lần đổi dễ tạo nhiều bàn giao |
+| Theo nghiệp vụ: team catalog, team cart | Catalog xử lý phần lớn thay đổi trong phạm vi mình | Ít phối hợp bắt buộc hơn nếu API và contract ngoài phạm vi không đổi |
+
+Các chuyên môn như accessibility, security hay design system vẫn cần người phụ trách. Điểm khác biệt là họ đặt chuẩn, hỗ trợ và duy trì năng lực dùng chung, không nhất thiết nhận mọi ticket của từng tính năng.
+
+Một lát cắt trọn vẹn cũng không có nghĩa phải sở hữu backend một-một. Team catalog có thể dùng API chung ổn định. Nếu gần như mọi tính năng catalog đều phải chờ thay API, hãy xem lại ownership backend, contract hoặc nhu cầu BFF; đừng mặc định dựng BFF chỉ vì đã có một remote.
+
+Phép thử mình dùng là lấy vài thay đổi nghiệp vụ gần đây và đánh dấu tất cả phần phải sửa. Nếu hầu hết thay đổi tìm sản phẩm nằm trong catalog, đó là dấu hiệu tốt. Nếu gần như lần nào cũng sửa cart, shell và một shared store, bạn cần xem lại ranh giới hoặc các phụ thuộc trước khi kỳ vọng deploy riêng sẽ giúp.
+
+### Không bắt buộc một team ứng với một remote
+
+Một team có thể sở hữu nhiều micro-frontend, chẳng hạn cả catalog và trang chi tiết sản phẩm nếu chúng phục vụ cùng năng lực và còn vận hành được. Một micro-frontend cũng có thể nhận đóng góp từ nhiều team, nhưng vẫn cần một owner chính cho contract, release và sự cố.
+
+Ngược lại, nhiều team có thể làm việc trong một modular frontend với các module có owner rõ. Ownership tốt có ích ngay cả khi chỉ có một artifact deploy. Khi chưa cần nhịp phát hành riêng, cách này thường ít chi phí hơn.
+
+Đơn vị deploy nên bám vào nhu cầu thay đổi tương đối độc lập, không bám vào số người hay số component. `Button` và `Input` có thể thuộc design system; chúng thường không cần trở thành hai remote chỉ để mỗi phần có owner.
+
+## Bản đồ ownership cho shop mẫu
+
+Một bản đồ đơn giản nên thể hiện cả phần ứng dụng lẫn những thứ dùng chung:
+
+```text
+Team platform → Shell: layout, composition, routing cấp ứng dụng
+Team catalog  → Catalog: tìm, lọc, xem sản phẩm
+Team cart     → Cart: hiển thị và cập nhật giỏ hàng
+
+Cả ba dùng contract và chuẩn chung:
+URL · auth integration · design system · telemetry · release policy
+```
+
+“Team platform” ở đây là một vai trò minh họa. Trong dự án nhỏ, trách nhiệm shell có thể do một team sản phẩm đảm nhiệm; không cần lập team mới chỉ để sơ đồ đẹp hơn.
+
+### Trách nhiệm của shell, catalog và cart
+
+| Phần | Owner chính trong ví dụ | Phải duy trì | Không tự quyết một mình |
+| --- | --- | --- | --- |
+| Shell | Team platform | Chọn và tải artifact, mount/unmount, routing cấp app, layout chung, fallback và tích hợp phiên đăng nhập | Đổi route catalog, thay contract auth hoặc cấu hình shared dependency có thể ảnh hưởng mọi remote |
+| Catalog | Team catalog | UI tìm sản phẩm, contract đầu vào với shell, tích hợp hành động thêm vào giỏ, pipeline, dashboard và runbook của catalog | Đổi payload gọi cart API, truy cập store nội bộ cart hoặc phá quy ước CSS chung |
+| Cart | Team cart | UI giỏ hàng, tích hợp cart API, hiển thị trạng thái và lỗi, pipeline, dashboard và runbook của cart | Đổi contract mà catalog đang dùng hoặc thay hành vi navigation chung |
+
+Nếu cart API do team khác vận hành, cần ghi owner đó riêng. Team cart chịu trách nhiệm tích hợp UI đúng, không vì vậy mà trở thành người có quyền đổi mọi quy tắc backend. Tính giá, kiểm tra tồn kho và authorization phải được thực thi ở backend phù hợp, không chỉ tin dữ liệu frontend gửi lên.
+
+### Những trách nhiệm xuyên suốt sản phẩm
+
+Các việc “dùng chung” vẫn cần đầu mối, nếu không chúng dễ bị bỏ lại giữa các team.
+
+| Mối quan tâm | Đầu mối cần chỉ định | Trách nhiệm của team ứng dụng |
+| --- | --- | --- |
+| Luồng mua hàng xuyên catalog và cart | Owner luồng mua hàng phối hợp các team | Cung cấp test, test data và hỗ trợ điều tra lỗi tại ranh giới của mình |
+| Design system và accessibility | Owner design system/UX | Dùng đúng component, kiểm tra focus, keyboard và thông báo lỗi trong màn hình mình |
+| Auth integration | Owner shell phối hợp identity/security | Tuân thủ contract phiên đăng nhập và xử lý trạng thái hết phiên; backend vẫn kiểm tra quyền |
+| Telemetry và alert routing | Owner nền tảng observability | Gắn tên ứng dụng, release version và ngữ cảnh an toàn; xử lý alert thuộc phạm vi mình |
+| CDN và cấu hình chọn artifact | Owner hạ tầng hoặc platform | Publish đúng quy ước, biết artifact đang hoạt động và có đường khôi phục đã được cấp quyền |
+| Hiệu năng toàn trang | Đầu mối hiệu năng sản phẩm | Kiểm soát bundle và tác động của phần mình; phối hợp nếu tải trùng dependency hoặc nghẽn main thread |
+
+Owner luồng mua hàng không phải người đi sửa mọi repository. Họ duy trì tiêu chí thành công của luồng, chỉ định nơi quản lý E2E xuyên app và bảo đảm vấn đề được theo tới khi khôi phục. Khi công việc cần nhiều team, phải có người điều phối, nhưng không cần biến người đó thành cổng duyệt mọi release nội bộ.
+
+## Team được tự quyết đến đâu
+
+Tự chủ cần có ranh giới. Mặc định, mình cho team quyết định các chi tiết bên trong ứng dụng và release các thay đổi tương thích; những thay đổi có thể tác động bên ngoài phải được review ở đúng ranh giới.
+
+| Loại quyết định | Cách xử lý mặc định | Ví dụ |
+| --- | --- | --- |
+| Nội bộ, không đổi contract | Team owner tự quyết và kiểm thử | Đổi component bộ lọc, tái cấu trúc state riêng của catalog |
+| Release tương thích trong chính sách chung | Team owner chủ động rollout và theo dõi | Catalog thêm cách sắp xếp, giữ route và contract cũ |
+| Thêm khả năng công khai | Provider và consumer thống nhất ý nghĩa, version và test | Thêm một event hoặc tham số mới có ảnh hưởng tích hợp |
+| Phá contract hoặc đổi chuẩn chung | Có kế hoạch migration, review bởi các bên bị ảnh hưởng | Đổi route công khai, bỏ field payload, nâng shared runtime không tương thích |
+| Thay nền tảng kỹ thuật trong một app | Đánh giá cả tác động vận hành và sản phẩm | Đổi framework làm tăng dependency, thay local tooling hoặc cách tích hợp |
+
+Guardrail nên là quy tắc có thể kiểm tra: không import module nội bộ của app khác, không ghi vào global store ngoài contract, không phát hành artifact từ nguồn không được phê duyệt. “Các team phải phối hợp tốt” quá mơ hồ để review một pull request.
+
+Platform nên cung cấp đường làm việc tự phục vụ trong guardrail: template pipeline, cách publish artifact, môi trường tích hợp và thao tác rollback có audit. Nếu mọi release catalog vẫn phải xếp hàng chờ platform sửa manifest bằng tay, platform đã trở thành release bottleneck mới.
+
+Một số tổ chức vẫn cần phê duyệt chung vì tuân thủ hoặc rủi ro nghiệp vụ. Điều đó không tự phủ nhận khả năng deploy riêng, nhưng bạn phải tách bạch: artifact độc lập giải quyết phụ thuộc kỹ thuật; nó không tự bỏ được thời gian chờ chính sách. Đừng hứa lợi ích tổ chức mà kiến trúc không có quyền tạo ra.
+
+## Contract là chỗ cần phối hợp rõ ràng
+
+### Ai duy trì contract và ai kiểm chứng
+
+Contract là giao diện công khai giữa các phần: route, props, lifecycle, event, API hoặc quy ước phiên đăng nhập. Nó bao gồm ý nghĩa và hành vi, không chỉ tên field trong TypeScript.
+
+Với mỗi contract, ghi rõ bên cung cấp (*provider*) và những bên sử dụng (*consumer*). Provider duy trì giao diện và chính sách tương thích; consumer ghi rõ hành vi mình cần và kiểm chứng việc tích hợp. Nếu contract thuộc lớp composition, owner shell thường là đầu mối, nhưng vẫn cần các remote tham gia khi giao diện thay đổi.
+
+Ví dụ trong shop, giả sử catalog gọi cart API để thêm sản phẩm. Owner cart API là provider; catalog là consumer. Nếu UI cart tải lại trạng thái sau một thông báo thay đổi, contract thông báo đó cần owner và consumer riêng; không thể suy ra API hoạt động đúng thì UI chắc chắn cập nhật đúng.
+
+Contract tests giúp kiểm chứng các thỏa thuận tại ranh giới. E2E cho luồng mua hàng kiểm chứng các phần thực sự ghép được. Hai loại test bổ sung nhau; một bộ test nội bộ catalog không thay thế được cả hai.
+
+### Ví dụ đổi contract thêm vào giỏ
+
+Giả sử API minh họa đang nhận:
+
+```json
+{
+  "productId": "product-123",
+  "quantity": 1
+}
+```
+
+Nghiệp vụ mới cần chọn biến thể và gửi `skuId`. Nếu catalog đổi ngay payload còn API chỉ hiểu `productId`, nút “Thêm vào giỏ” sẽ hỏng dù catalog build và unit test đều xanh.
+
+Một kế hoạch chuyển đổi có thể dùng cách *expand–migrate–contract*: mở rộng khả năng tương thích, chuyển consumer, rồi mới bỏ giao diện cũ.
+
+1. Owner API và catalog thống nhất ý nghĩa `skuId`, hành vi lỗi và cách xử lý `productId` cũ. Nếu một sản phẩm có nhiều SKU và không thể ánh xạ an toàn, giữ endpoint hoặc contract version cũ thay vì tự đoán biến thể.
+2. Provider phát hành giao diện mở rộng hoặc version mới, vẫn giữ giao diện cũ hoạt động. Bổ sung contract tests cho các đường cần hỗ trợ.
+3. Catalog chuyển sang contract mới, kiểm thử với API đang triển khai và luồng mua hàng hiện tại. UI cart cũng cần tham gia nếu trạng thái trả về thay đổi.
+4. Các bên quan sát mức sử dụng contract cũ, xem cả tab đang mở code cũ và các artifact có thể rollback. Không chỉ nhìn version catalog vừa deploy.
+5. Provider chỉ ngừng hỗ trợ giao diện cũ khi đạt điều kiện đã thống nhất. Cửa sổ tương thích phải phù hợp chính sách cache, phiên đang mở và rollback của dự án.
+
+Ở đây có phối hợp, nhưng không nhất thiết phải deploy mọi phần cùng một thời điểm. Mục tiêu là giảm **phối hợp bắt buộc cho thay đổi nội bộ**, không phải cấm trao đổi khi thay đổi nghiệp vụ vượt qua ranh giới.
+
+<Callout type="warn" title="Version package không đủ chứng minh tương thích">
+  Một contract giữ nguyên kiểu dữ liệu vẫn có thể đổi ý nghĩa, chẳng hạn `quantity` từ số lượng cần thêm thành số lượng cuối cùng. Review phải xem cả hành vi, lỗi và side effect. Dùng chung một file type không đảm bảo các artifact đang chạy hiểu contract giống nhau.
+</Callout>
+
+## Vận hành là một phần của ownership
+
+### Trước và sau một lần release
+
+Team owner cần biết không chỉ code nào đã merge, mà cả artifact nào người dùng đang nhận. Publish thành công chưa có nghĩa rollout thành công; một cấu hình composition có thể vẫn chọn bản cũ, và tab đang mở có thể tiếp tục chạy code trước rollout.
+
+Trước release, team cần có kiểm thử phù hợp, thông tin version, cách rollout và phương án khôi phục. Sau release, họ cần quan sát lỗi tải app, lỗi render, lỗi API và kết quả nghiệp vụ trong phạm vi mình. Với catalog, remote tải được nhưng không tìm được sản phẩm vẫn là một lỗi cần xử lý.
+
+Tín hiệu nên gắn tên app và release version; khi điều tra lỗi ghép, cần biết cả tổ hợp version của shell, catalog và cart. Correlation ID có thể giúp nối request frontend với backend. Đừng thu thập token hoặc dữ liệu cá nhân nhạy cảm chỉ để dễ debug.
+
+Mỗi team cũng cần biết giới hạn của rollback. Chọn lại catalog cũ không hoàn tác request đã gửi, thay đổi dữ liệu hoặc migration backend. Khôi phục an toàn phụ thuộc vào contract còn tương thích và artifact cũ còn tồn tại.
+
+### Khi sự cố chưa rõ thuộc phần nào
+
+Giả sử người dùng thêm sản phẩm nhưng mini-cart không cập nhật. Đừng bắt người báo lỗi chứng minh đó là lỗi catalog hay cart trước khi tiếp nhận. Với mô hình minh họa, đầu mối luồng mua hàng nhận sự cố xuyên app và chỉ định người điều phối theo quy trình đã thống nhất.
+
+1. **Ghi triệu chứng và phạm vi ảnh hưởng.** Xác định URL, hành động, thời điểm và tổ hợp version; thu thập dữ liệu theo chính sách bảo mật.
+2. **Kiểm tra thay đổi gần nhất.** Xem rollout ứng dụng, cấu hình composition và backend; không mặc định remote mới nhất là nguyên nhân.
+3. **Kiểm tra từng ranh giới.** Owner catalog xem request có được gửi và nhận kết quả không; owner API xem giỏ có đổi không; owner cart xem UI có lấy trạng thái mới không; owner shell xem tải và vòng đời app có lỗi không.
+4. **Ưu tiên giảm ảnh hưởng.** Rollback hoặc tắt tính năng nếu phương án đó an toàn; mọi thao tác ghi cần tránh tạo request trùng. Không thử lại hành động có side effect một cách mù quáng.
+5. **Bàn giao rõ người tiếp tục xử lý.** Chỉ đổi owner xử lý khi bên nhận đã xác nhận. Người điều phối giữ trách nhiệm theo dõi cho tới khi luồng hoạt động lại.
+6. **Sửa cả khoảng trống hệ thống.** Sau khôi phục, xác định cần thêm contract test, alert, runbook hay thay đổi ranh giới; không chỉ đóng ticket vì một team đã sửa code.
+
+Đầu mối tiếp nhận sự cố không đồng nghĩa với team gây ra lỗi. Tách hai việc này giúp phục hồi nhanh hơn và tránh biến observability thành công cụ phân lỗi cho người khác.
+
+Chế độ trực và mức phản hồi phải theo yêu cầu sản phẩm, nguồn lực và chính sách của tổ chức. Ownership không mặc định mỗi team nhỏ phải trực 24/7; nó yêu cầu có đường tiếp nhận và escalation được thống nhất, kể cả ngoài giờ nếu sản phẩm cần.
+
+## Ghi ownership thành một thỏa thuận có thể dùng
+
+### Mẫu bản ghi cho catalog
+
+Bản ghi cần đủ ngắn để được cập nhật, nhưng đủ cụ thể để người khác tìm owner mà không hỏi cả công ty. Ví dụ dưới đây là mẫu tài liệu, không phải schema mà một công cụ trong repository tự đọc:
+
+```yaml
+application: catalog
+primary_team: team-catalog
+contact: "#team-catalog"
+backup: "Đầu mối dự phòng theo lịch của team"
+
+scope:
+  - Tìm, lọc và xem sản phẩm
+  - Khởi tạo thêm vào giỏ qua cart API
+out_of_scope:
+  - Quy tắc tính giá và tồn kho ở backend
+  - State nội bộ và giao diện giỏ hàng
+
+contracts:
+  - name: shell-to-catalog
+    provider: team-catalog
+    consumers: [team-platform]
+  - name: cart-api
+    provider: team-cart-api
+    consumers: [team-catalog, team-cart]
+
+release:
+  artifact: "Catalog entry và các assets theo version"
+  activation: "Chọn artifact bằng cấu hình composition có audit"
+  decision_owner: team-catalog
+  guardrails: "Contract tương thích; kiểm thử và tiêu chí rollout đạt"
+  rollback: "Chọn lại artifact ổn định nếu API vẫn tương thích"
+
+operations:
+  dashboard: "Liên kết dashboard theo app và release version"
+  runbook: "Liên kết runbook lỗi tải, render và API"
+  cross_app_incident: "Đầu mối luồng mua hàng"
+  escalation: "Quy trình escalation đã thống nhất"
+
+review_trigger: "Đổi contract, đổi quyền release hoặc chuyển team"
+```
+
+Trong bản ghi thật, thay các dòng “Liên kết…” bằng địa chỉ sử dụng được và ghi nơi tìm lịch dự phòng. Nếu platform sở hữu bộ chọn artifact, cũng phải ghi rõ team catalog có quyền thao tác gì và khi nào cần platform hỗ trợ.
+
+`CODEOWNERS` có thể hỗ trợ tìm người review code; README của app có thể dẫn tới bản ghi trên. Nhưng danh sách người review không thể thay thông tin về alert, quyền rollback và trách nhiệm contract. Phân quyền deploy và cơ chế phê duyệt phải được cấu hình riêng, không suy ra từ việc một team có tên trong tài liệu.
+
+### Chuyển giao khi team hoặc ứng dụng thay đổi
+
+Ownership cần được cập nhật khi tổ chức thay đổi, không chỉ khi tạo ứng dụng. Nếu catalog chuyển sang team khác, team cũ không nên biến mất khỏi đường liên hệ trước khi team mới có thể vận hành nó.
+
+Một lần chuyển giao cần xác nhận ít nhất các việc sau:
+
+- Team nhận hiểu scope, dependency và những contract còn phải hỗ trợ.
+- Quyền source, pipeline, cấu hình rollout, dashboard và thao tác khôi phục đã được cấp theo chính sách.
+- Alert và đường escalation đã chuyển tới nơi nhận đúng.
+- Team nhận thực hiện được một lần release và diễn tập khôi phục trong môi trường phù hợp.
+- Backlog vận hành, rủi ro đã biết và thời điểm kết thúc hỗ trợ của team cũ được ghi lại.
+
+Tương tự, gỡ một remote cần có người chịu trách nhiệm ngừng traffic, dọn cấu hình và theo dõi artifact cũ có còn được client sử dụng không. Xóa repository không chứng minh mọi tab, cache hoặc cấu hình đã thôi tham chiếu tới ứng dụng đó.
+
+## Những dấu hiệu ranh giới chưa hiệu quả
+
+| Dấu hiệu quan sát được | Điều nên kiểm tra trước | Hướng xử lý có thể phù hợp |
+| --- | --- | --- |
+| Catalog sửa nội bộ nhưng mọi team vẫn phải release cùng | Pipeline, cơ chế chọn version hoặc dependency runtime chung | Tách đường activation, giảm ràng buộc version và giữ contract tương thích |
+| Một tính năng luôn đi qua nhiều team | Ranh giới nghiệp vụ và năng lực còn thiếu trong team | Điều chỉnh scope hoặc bổ sung năng lực, thay vì chỉ thêm remote |
+| Shell chứa cả logic lọc và tính tổng giỏ | Shell đang trở thành app nghiệp vụ trung tâm | Đưa logic về domain; giữ shell tập trung vào composition |
+| Không ai nhận lỗi luồng mua hàng | Thiếu owner xuyên app và quy trình tiếp nhận | Chỉ định đầu mối, nơi quản lý E2E và đường escalation |
+| Platform phải làm tay mọi lần deploy | Công cụ dùng chung chưa có đường tự phục vụ | Cấp thao tác trong guardrail và tự động hóa, không bỏ kiểm soát an toàn |
+| Team chỉ biết “build xanh”, không biết version đang chạy | Thiếu telemetry và liên kết artifact–rollout | Hiển thị version, bổ sung dashboard và runbook |
+| Mọi thứ được đưa vào shared store/package | Ranh giới public API và internal state bị lẫn | Thu nhỏ phần dùng chung; bỏ import chéo; gộp phần thực sự không thể tách nếu cần |
+
+Không phải dependency nào cũng cần xóa. Auth, design system và hạ tầng chung có thể làm sản phẩm nhất quán hơn. Vấn đề là dependency có owner, contract và chính sách thay đổi rõ hay buộc mọi team phải chờ nhau cho cả những việc không liên quan.
+
+Một cách đo hữu ích là xem các lần release: phải chờ ai, chờ vì kỹ thuật hay chính sách, bao nhiêu thay đổi nội bộ kéo theo sửa phần khác, và khi lỗi mất thời gian ở đâu. Không đặt một ngưỡng phổ quát cho mọi tổ chức; dùng baseline của dự án để xem ranh giới mới có giảm phối hợp bắt buộc mà vẫn giữ chất lượng hay không.
+
+## Kiểm chứng ownership bằng một thay đổi thật
+
+Đừng dừng ở sơ đồ team. Hãy chọn một thay đổi nhỏ của catalog, chẳng hạn thêm cách sắp xếp sản phẩm mà không đổi contract, rồi dùng nó để kiểm chứng:
+
+- [ ] Nêu được kết quả người dùng nhận được và team chịu trách nhiệm chính.
+- [ ] Team catalog tự thực hiện được thay đổi nội bộ và kiểm thử trong guardrail.
+- [ ] Release không bắt buộc cart hoặc shell đổi code hay build lại.
+- [ ] Có người duy trì kiểm thử luồng xem sản phẩm → thêm vào giỏ → mở cart.
+- [ ] Team biết catalog nào đang hoạt động, ai chọn version và cần theo dõi tín hiệu nào.
+- [ ] Có cách khôi phục đã kiểm chứng, với điều kiện tương thích được ghi rõ.
+- [ ] Một lỗi giả lập xuyên app được tiếp nhận và bàn giao rõ, không bị trả qua lại vì chưa biết nguyên nhân.
+- [ ] Có đầu mối dự phòng; không phụ thuộc người duy nhất có quyền hoặc kiến thức vận hành.
+
+Sau bài thử, ghi lại nơi phải nhờ team khác và lý do. Nếu đó là thay đổi contract có chủ đích, phối hợp có thể hoàn toàn đúng. Nếu đó là thao tác deploy lặp lại mà owner không được tự làm, bạn đang thiếu quyền hoặc tooling. Nếu phần lớn công việc vẫn phải sửa nhiều domain, hãy xem lại ranh giới trước khi tạo remote tiếp theo.
+
+## Đọc tiếp
+
+Các trang dưới đây đi sâu vào ranh giới và vận hành; một số có thể còn là trang khung của lộ trình.
+
+<Cards>
+  <Card title="Chia domain và ranh giới" href="/docs/kien-truc/chia-domain" description="Chọn phạm vi nghiệp vụ đủ trọn vẹn để phát triển tương đối độc lập." />
+  <Card title="Contracts và versioning" href="/docs/giao-tiep-va-trang-thai/contracts" description="Làm rõ giao diện công khai và cách giữ tương thích giữa các phần." />
+  <Card title="Logs, metrics và tracing" href="/docs/kiem-thu-va-tooling/observability" description="Theo dõi lỗi theo ứng dụng và release version để điều tra xuyên ranh giới." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Đưa artifact mới vào sử dụng và khôi phục khi có sự cố." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Conway’s Law — Melvin Conway](https://www.melconway.com/Home/Conways_Law.html): luận điểm gốc về cấu trúc giao tiếp và thông tin xuất bản bài *How Do Committees Invent?* năm 1968.
+- [Conway’s Law — Martin Fowler](https://martinfowler.com/bliki/ConwaysLaw.html): tác động của cách tổ chức team, Inverse Conway Maneuver và giới hạn khi thay đổi một kiến trúc hiện có.
+- [Micro Frontends — Cam Jackson, trên martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): autonomous teams theo lát cắt nghiệp vụ, independent deployment, shared responsibilities và giao tiếp giữa các ứng dụng.

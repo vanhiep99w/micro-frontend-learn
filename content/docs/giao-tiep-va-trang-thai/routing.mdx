@@ -1,18 +1,520 @@
 ---
 title: "Routing và navigation"
-description: "Chia quyền sở hữu URL, nested routes, deep links và browser history."
+description: "Chia quyền sở hữu URL giữa shell và remote, thiết kế nested routes, deep links và browser history mà không tạo nhiều nguồn điều hướng độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn mở sản phẩm từ catalog, chuyển sang cart rồi bấm Back. Thanh địa chỉ đã quay về sản phẩm nhưng màn hình vẫn là cart. Hoặc navigation trong ứng dụng chạy đúng, còn gửi link sản phẩm cho người khác thì server trả 404. Hai lỗi này thường đến từ hai ranh giới khác nhau: ai điều khiển browser history, và ai phục vụ URL khi người dùng truy cập trực tiếp.
+
+Trong micro-frontend, routing không chỉ là khai báo một danh sách path. Bạn cần thống nhất **shell chọn domain nào, remote hiểu phần URL nào, và ai có quyền ghi navigation vào history**. Mình mặc định dùng một browser-history owner cho shell, rồi giao từng nhánh route cho domain tương ứng.
+
+<Callout type="info" title="Phạm vi ví dụ">
+  Bài dùng shop giả định gồm shell, catalog và cart. Code là mẫu thiết kế, không phải implementation có sẵn trong repository docs này. Ví dụ React dùng API declarative của React Router v7; nguyên tắc ownership vẫn áp dụng cho framework khác. Các phần SPA fallback không phải cấu hình cho site Next.js đang chứa tài liệu.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chia quyền sở hữu URL](#chia-quyền-sở-hữu-url)
+  - [Shell sở hữu ranh giới domain](#shell-sở-hữu-ranh-giới-domain)
+  - [Remote sở hữu route và query của domain](#remote-sở-hữu-route-và-query-của-domain)
+  - [URL là một public contract](#url-là-một-public-contract)
+- [Chọn mô hình router](#chọn-mô-hình-router)
+  - [Một router và nhiều nhánh route](#một-router-và-nhiều-nhánh-route)
+  - [Router cô lập qua navigation port](#router-cô-lập-qua-navigation-port)
+  - [Điều hướng giữa các document hoặc iframe](#điều-hướng-giữa-các-document-hoặc-iframe)
+- [Nested routes trong một cây React](#nested-routes-trong-một-cây-react)
+  - [Shell ghép nhánh route của catalog](#shell-ghép-nhánh-route-của-catalog)
+  - [Base path không phải asset base](#base-path-không-phải-asset-base)
+- [Navigation contract cho remote cô lập](#navigation-contract-cho-remote-cô-lập)
+  - [Snapshot và yêu cầu điều hướng](#snapshot-và-yêu-cầu-điều-hướng)
+  - [Đồng bộ một chiều để tránh vòng lặp](#đồng-bộ-một-chiều-để-tránh-vòng-lặp)
+- [URL state và query parameters](#url-state-và-query-parameters)
+  - [Phân biệt filter đã áp dụng và draft](#phân-biệt-filter-đã-áp-dụng-và-draft)
+  - [Parse và cập nhật query có chủ đích](#parse-và-cập-nhật-query-có-chủ-đích)
+- [Deep links và refresh](#deep-links-và-refresh)
+  - [Luồng khởi động từ một URL sâu](#luồng-khởi-động-từ-một-url-sâu)
+  - [Fallback cho document không phải cho mọi request](#fallback-cho-document-không-phải-cho-mọi-request)
+- [Browser history và Back Forward](#browser-history-và-back-forward)
+  - [Khi nào dùng push và replace](#khi-nào-dùng-push-và-replace)
+  - [History API không tự thông báo mọi thay đổi](#history-api-không-tự-thông-báo-mọi-thay-đổi)
+- [Lifecycle và navigation bất đồng bộ](#lifecycle-và-navigation-bất-đồng-bộ)
+- [Auth redirects và trải nghiệm điều hướng](#auth-redirects-và-trải-nghiệm-điều-hướng)
+  - [Return URL và quyền truy cập](#return-url-và-quyền-truy-cập)
+  - [Form chưa lưu focus và scroll](#form-chưa-lưu-focus-và-scroll)
+- [Failure modes và cách debug](#failure-modes-và-cách-debug)
+- [Ma trận kiểm thử routing](#ma-trận-kiểm-thử-routing)
+- [Checklist trước khi deploy](#checklist-trước-khi-deploy)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Chia quyền sở hữu URL
 
-Bài này sẽ giúp bạn: chia quyền sở hữu URL, nested routes, deep links và browser history.
+Hình dung một URL của shop:
 
-[Xem các bài trong nhóm Giao tiếp và trạng thái](/docs/giao-tiep-va-trang-thai).
+```text
+https://shop.example/catalog/products/sku-42?sort=price-asc#reviews
+                     └─ shell chọn catalog
+                             └─ catalog chọn sản phẩm
+                                             └─ query và fragment
+```
+
+Routing có thể xem như chia địa chỉ theo khu vực: shell tìm đúng khu, remote tìm đúng màn hình bên trong. Điểm giới hạn của cách hình dung này là browser chỉ có một thanh địa chỉ cho document chính; các domain không thể tự giữ những địa chỉ công khai mâu thuẫn rồi mong người dùng hiểu mình đang ở đâu.
+
+### Shell sở hữu ranh giới domain
+
+Shell quyết định nhánh URL nào thuộc domain nào, tải remote nào và hiển thị gì khi remote chưa sẵn sàng. Với shop, bản đồ ban đầu có thể là:
+
+| Phạm vi URL | Owner | Trách nhiệm |
+| --- | --- | --- |
+| `/` | Shell | Trang vào ứng dụng hoặc redirect mặc định |
+| `/catalog` và `/catalog/*` | Catalog; shell quản lý điểm gắn | Danh sách, chi tiết sản phẩm, tìm kiếm |
+| `/cart` và `/cart/*` | Cart; shell quản lý điểm gắn | Giỏ hàng và màn hình liên quan |
+| `/login` | Auth module qua shell | Luồng đăng nhập và quay lại điểm đến |
+| Path ngoài các nhánh đã công bố | Shell | Trang không tìm thấy cấp ứng dụng |
+
+Shell không cần biết catalog có bao nhiêu màn hình nội bộ. Nhưng shell phải biết nhánh `/catalog` có owner để không mount catalog lẫn cart cùng lúc.
+
+Nếu tự viết matcher, kiểm tra ranh giới segment: `pathname === '/cart' || pathname.startsWith('/cart/')`. Chỉ dùng `startsWith('/cart')` sẽ nhận nhầm `/cartoon`. Khi các nhánh lồng nhau hoặc có route động, dùng matcher của router thay vì tích lũy các điều kiện string.
+
+### Remote sở hữu route và query của domain
+
+Catalog định nghĩa `/catalog/products/:productId`, các giá trị hợp lệ của `sort`, và việc sản phẩm không tồn tại được hiển thị thế nào. Shell chọn catalog nhưng không tự suy ra schema product ID hay sửa filter của catalog.
+
+Có ba trường hợp khác nhau cần tách:
+
+- Không có domain sở hữu path: shell hiển thị app-level not found.
+- Domain có tồn tại nhưng không nhận ra subroute: remote hiển thị domain-level not found.
+- Route chi tiết hợp lệ nhưng backend không tìm thấy sản phẩm: màn hình chi tiết hiển thị resource not found.
+
+Một lần tải remote thất bại lại là lỗi availability, không phải bằng chứng rằng URL không tồn tại. Đừng biến tất cả thành redirect về trang chủ; người dùng sẽ mất điểm đến, còn team khó phân biệt lỗi route với lỗi deploy.
+
+### URL là một public contract
+
+URL đã được bookmark, gửi qua email hoặc lưu trong notification có thể sống lâu hơn bundle tạo ra nó. Vì thế, đổi `/catalog/products/:id` thành `/catalog/items/:id` là thay đổi contract, dù không có remote nào import route cũ.
+
+Mình giữ route cũ trong cửa sổ migration đã thống nhất, chuyển sang route mới và bảo toàn query cần thiết. Với navigation đang chạy trong SPA, redirect thường dùng `replace`; với entry request, server có thể redirect theo chính sách migration. Chỉ dùng redirect vĩnh viễn khi thật sự muốn client và cache ghi nhớ việc chuyển địa chỉ.
+
+Cross-domain consumer chỉ nên biết public destinations. Catalog có thể tự đổi route của một modal nội bộ, nhưng không nên âm thầm đổi URL sản phẩm đã công bố. Chi tiết versioning của boundary xem ở [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts).
+
+## Chọn mô hình router
+
+Không phải ứng dụng nào cũng cần hai router rồi viết bridge giữa chúng. Chọn theo ranh giới runtime trước:
+
+| Mô hình | Khi phù hợp | Đổi lại |
+| --- | --- | --- |
+| Một router trong shell, remote cung cấp nhánh route | Cùng framework, cùng cây render và router context | Remote phụ thuộc vào router contract và compatibility của context |
+| Shell giữ browser history, remote nhận navigation port | Khác framework hoặc mount trong các root độc lập | Cần adapter location, semantics rõ ràng và kiểm thử bridge |
+| Chuyển document bằng link thông thường | Các frontend là những ứng dụng độc lập theo URL | Có full-page navigation; state trong memory không tự đi theo |
+| Iframe nhận location qua message protocol | Cần boundary document riêng | Phải thiết kế messaging và quyết định quan hệ với history của trang cha |
+
+### Một router và nhiều nhánh route
+
+Đây là lựa chọn mình ưu tiên nếu các remote React thật sự render dưới router của shell. Shell giữ browser history; remote dùng `Link`, `useLocation` hoặc `useNavigate` trong context hiện có, và không tạo thêm `BrowserRouter` cho subtree của mình.
+
+Ưu điểm là Back/Forward, route matching và navigation dùng cùng một luồng. Coupling nằm ở React, router context và route API; các dependency đó cần có chính sách compatibility rõ ràng.
+
+<Callout type="warn" title="Chung package không có nghĩa là chung context">
+  Hai remote gọi `createRoot` riêng không tự nhận router context từ shell, kể cả khi React và React Router được share qua Module Federation. Context chỉ đi qua cây React phù hợp, không đi xuyên qua một DOM container để vào root khác. Mount remote như một subtree hoặc dùng navigation port cho boundary cô lập.
+</Callout>
+
+### Router cô lập qua navigation port
+
+Với React shell và Vue remote, hoặc các root độc lập, shell có thể gửi location snapshot và một capability yêu cầu navigation. Remote dùng snapshot để chọn màn hình; mọi navigation công khai vẫn đi qua shell.
+
+Remote có thể giữ memory router để render route nội bộ, nhưng nó không được trở thành history công khai thứ hai. Bridge phải áp dụng location từ shell mà không phát lại command navigation.
+
+Nếu chỉ có một wizard tạm thời và bạn không muốn từng bước xuất hiện trong URL, giữ bước đó ở local state hoặc memory router là hợp lý. Nhưng khi yêu cầu có bookmark hay Back/Forward qua từng bước, memory router đứng riêng không đủ.
+
+### Điều hướng giữa các document hoặc iframe
+
+Nếu mỗi domain phục vụ một document độc lập, một link thật như `<a href="/cart">Giỏ hàng</a>` có thể là cách đơn giản nhất. Browser xử lý navigation; các document không cần giả lập một SPA chung. Bạn cần server routing đúng và chấp nhận rằng local state của document cũ có thể mất.
+
+Iframe khác ở chỗ location bên trong không tự trở thành URL công khai của shell. Nếu muốn chia sẻ link tới màn hình trong iframe, shell cần biểu diễn màn hình đó trong URL của mình, rồi truyền location cho child. Với cross-origin iframe, dùng `postMessage`, validate `origin`, `source` và payload; không truyền function navigation port trực tiếp.
+
+Iframe navigation cũng có thể ảnh hưởng đến session history mà người dùng duyệt bằng Back/Forward. Đừng giả định nó hoàn toàn vô hình với browser. Mặc định để shell điều phối public navigation và kiểm thử hành vi trên browser mục tiêu; xem thêm [Tích hợp bằng iframe](/docs/cac-cach-tich-hop/iframe).
+
+## Nested routes trong một cây React
+
+Ở mô hình dùng chung context, shell sở hữu route cấp ứng dụng, còn catalog cung cấp component mô tả route bên dưới điểm gắn. Ví dụ sau dùng route tương đối để catalog không lặp lại prefix `/catalog` trong mọi màn hình.
+
+### Shell ghép nhánh route của catalog
+
+Đây là mẫu tối thiểu cho hai module React cùng cây render. Ví dụ chưa triển khai tải remote qua network; shell production cần loading boundary và error boundary cho bước đó.
+
+```tsx title="shell/App.tsx"
+import { BrowserRouter, Route, Routes } from 'react-router';
+import { CatalogRoutes } from 'catalog/routes';
+import { CartPage } from './CartPage';
+import { HomePage } from './HomePage';
+import { AppNotFound } from './AppNotFound';
+
+export function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/catalog/*" element={<CatalogRoutes />} />
+        <Route path="/cart" element={<CartPage />} />
+        <Route path="*" element={<AppNotFound />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+```
+
+```tsx title="catalog/routes.tsx"
+import { Link, Outlet, Route, Routes } from 'react-router';
+import { ProductList } from './ProductList';
+import { ProductDetail } from './ProductDetail';
+import { CatalogNotFound } from './CatalogNotFound';
+
+function CatalogLayout() {
+  return (
+    <section aria-label="Catalog">
+      <nav aria-label="Catalog navigation">
+        <Link to="/catalog">Sản phẩm</Link>
+      </nav>
+      <Outlet />
+    </section>
+  );
+}
+
+export function CatalogRoutes() {
+  return (
+    <Routes>
+      <Route element={<CatalogLayout />}>
+        <Route index element={<ProductList />} />
+        <Route path="products/:productId" element={<ProductDetail />} />
+        <Route path="*" element={<CatalogNotFound />} />
+      </Route>
+    </Routes>
+  );
+}
+```
+
+`/*` ở điểm gắn cho phép các URL sâu tiếp tục được xử lý trong `CatalogRoutes`. `Outlet` là nơi render màn hình con của layout. Link trong layout dùng điểm gắn công khai `/catalog`, và router tự thêm application basename nếu có. Với điểm gắn thay đổi theo môi trường, inject mount path hoặc dùng route builder thay vì giữ string này trong remote.
+
+Link tương đối còn phụ thuộc vị trí route và cách router xử lý splat. Đừng coi `to="."` bên dưới `/catalog/*` luôn là catalog root, hoặc mọi `to=".."` đều là “quay về trang trước”; hai hành vi đó khác browser Back.
+
+Để chạy catalog standalone khi phát triển, dev harness có thể tạo một `BrowserRouter` và điểm gắn `/catalog/*` tương tự shell. Component export `CatalogRoutes` vẫn không chứa router riêng. Nếu dùng data-router loaders/actions, hãy ghép route objects vào cây data router theo API tương ứng; mẫu descendant `Routes` trên không tự cung cấp data-router features cho từng route con.
+
+### Base path không phải asset base
+
+Có ba giá trị dễ bị trộn lẫn:
+
+| Giá trị | Ví dụ | Mục đích |
+| --- | --- | --- |
+| Application basename | `/shop` | Prefix của toàn bộ ứng dụng khi phục vụ dưới subpath |
+| Domain mount path | `/catalog` trong không gian route của app | Điểm shell giao cho catalog |
+| Asset base URL | `https://cdn.example/catalog/v123/` | Nơi tải JavaScript, CSS và các asset của remote |
+
+Nếu toàn bộ shop chạy tại `/shop`, router của shell có thể đặt `basename="/shop"`; route catalog vẫn là `/catalog/*`, còn URL người dùng thấy là `/shop/catalog/products/sku-42`. Basename không cấu hình CDN, và CDN URL không phải đường dẫn màn hình.
+
+Ở mô hình router cô lập, thống nhất shell gửi pathname đầy đủ hay pathname tương đối với mount path. Đừng để cả bridge lẫn remote cùng thêm `/catalog`, rồi sinh `/catalog/catalog/products/sku-42`.
+
+## Navigation contract cho remote cô lập
+
+Khi không chia sẻ router context, dùng một contract nhỏ thay vì inject toàn bộ router instance. Remote cần đọc location hiện tại, subscribe thay đổi và yêu cầu tới một public destination.
+
+### Snapshot và yêu cầu điều hướng
+
+Ví dụ contract cho shop:
+
+```ts title="contracts/navigation.ts"
+export type LocationSnapshot = Readonly<{
+  revision: number;
+  pathname: string;
+  search: string;
+  hash: string;
+}>;
+
+export type Destination =
+  | Readonly<{ name: 'catalog.list' }>
+  | Readonly<{ name: 'catalog.product'; productId: string }>
+  | Readonly<{ name: 'cart' }>;
+
+export interface NavigationPort {
+  getSnapshot(): LocationSnapshot;
+  subscribe(listener: () => void): () => void;
+  href(destination: Destination): string;
+  navigate(
+    destination: Destination,
+    options?: Readonly<{ replace?: boolean }>,
+  ): Promise<'committed' | 'cancelled'>;
+}
+```
+
+Contract này quy định:
+
+- Snapshot dùng pathname trong không gian route của app, không chứa application basename; `search` gồm dấu `?` khi có query, `hash` gồm dấu `#` khi có fragment.
+- Shell adapter đổi URL browser thành snapshot theo quy ước trên. `revision` tăng khi shell công bố navigation mới, kể cả khi Back quay về một URL cũ.
+- Snapshot immutable và giữ cùng reference khi chưa đổi, nếu consumer dùng nó với `useSyncExternalStore`.
+- `subscribe` không replay; consumer subscribe rồi đọc snapshot hiện tại. Hàm trả về dùng để unsubscribe.
+- `href` là phép dựng link không có side effect, trả path có application basename để dùng cho anchor, mở tab mới hoặc copy link.
+- `navigate` mặc định dùng push. `committed` nghĩa là shell đã chấp nhận và công bố location, không có nghĩa remote hay dữ liệu màn hình đã tải xong.
+- `cancelled` dùng khi guard từ chối hoặc request bị request mới hơn thay thế trước commit. Destination không hợp lệ hoặc lỗi adapter khiến promise reject.
+
+Destination có tên giúp catalog yêu cầu tới cart mà không biết cấu trúc route nội bộ của cart. `href` và `navigate` phải dùng cùng route builder; owner validate tham số và encode product ID như một path segment. TypeScript không thay thế runtime validation nếu input đi qua message hoặc đến từ nguồn bên ngoài.
+
+Contract tối thiểu này chưa có filter. Khi cần link có bộ lọc, bổ sung field đã được catalog định nghĩa vào destination thay vì cho mọi consumer tùy ý sửa query của domain khác.
+
+### Đồng bộ một chiều để tránh vòng lặp
+
+Giữ hai loại tín hiệu riêng:
+
+```text
+Remote ── yêu cầu navigation ──► Shell history owner
+                                      │
+                               location snapshot
+                                      ▼
+                             Remote chọn màn hình
+```
+
+Khi shell gửi location mới, remote áp dụng nó vào UI hoặc memory router nhưng không gọi lại `navigate`. Nếu bridge chỉ nghe mọi thay đổi của memory router rồi ghi ngược ra browser, một lần Back có thể sinh thêm push và làm người dùng không thoát khỏi trang.
+
+Mình ưu tiên API “apply external location” tách khỏi API “user requests navigation”. Nếu adapter của framework không tách được, gắn source hoặc revision để bỏ qua thay đổi do shell áp dụng. So sánh URL giúp tránh một số update trùng, nhưng không đủ khi có guard hoặc navigation async.
+
+Không xem `initialEntries` của `MemoryRouter` là một prop location có thể cập nhật liên tục: nó khởi tạo history trong memory. Bridge phải dùng adapter điều hướng phù hợp cho các snapshot tiếp theo, thường là replace để không tạo lịch sử công khai thứ hai. Nút Back cấp ứng dụng vẫn đi qua shell, không qua memory stack của remote.
+
+## URL state và query parameters
+
+Routing còn quyết định màn hình được dựng với state nào. Với catalog, `/catalog?q=keyboard&sort=price-asc&page=2` phải cho cùng ý nghĩa khi mở từ link, refresh hoặc Back.
+
+### Phân biệt filter đã áp dụng và draft
+
+Input đang gõ có thể là local state. Khi người dùng submit, query đã áp dụng đi vào URL; kết quả tìm kiếm và query key được dựng từ URL đó. Nhờ vậy, Back không chỉ đổi thanh địa chỉ mà còn khôi phục bộ lọc.
+
+Đừng để một effect đọc store ghi URL, trong khi effect khác đọc URL ghi store mà cả hai đều tự quyết định giá trị đúng. Mặc định mình chọn URL là nguồn chuẩn cho filter đã áp dụng, còn store hoặc cache chỉ giữ dữ liệu dẫn xuất.
+
+Query cũng cần ownership. Catalog sở hữu `q`, `sort`, `page` trên nhánh của mình; tham số nền tảng như locale chỉ được sửa theo contract đã thống nhất. Khi chuyển domain, route builder quyết định tham số nào được mang theo; không sao chép toàn bộ query cũ sang cart.
+
+### Parse và cập nhật query có chủ đích
+
+Input trên URL là dữ liệu không tin cậy. Parser cần xử lý giá trị thiếu, không hợp lệ hoặc lặp; ví dụ này chọn giá trị đầu tiên theo semantics của `URLSearchParams.get`:
+
+```ts title="catalog/query.ts"
+type Sort = 'relevance' | 'price-asc';
+
+export function readCatalogQuery(search: string) {
+  const params = new URLSearchParams(search);
+  const rawPage = params.get('page');
+  const parsedPage = rawPage === null ? NaN : Number(rawPage);
+  const page = Number.isSafeInteger(parsedPage) && parsedPage >= 1
+    ? parsedPage
+    : 1;
+  const sort: Sort = params.get('sort') === 'price-asc'
+    ? 'price-asc'
+    : 'relevance';
+
+  return { q: params.get('q') ?? '', sort, page };
+}
+
+export function withCatalogSort(search: string, sort: Sort): string {
+  const params = new URLSearchParams(search);
+  params.set('sort', sort);
+  params.delete('page'); // Đổi sort quay về trang đầu.
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+```
+
+Helper cập nhật query giữ các tham số chưa sửa, thay vì tạo một object chỉ có `sort` rồi làm mất `q` hoặc locale. Caller lấy snapshot mới nhất, giữ pathname và hash theo chính sách của màn hình, rồi gửi location mới qua router owner; helper này không tự ghi history.
+
+Nếu có canonicalization, chẳng hạn xóa `page=1`, hãy dùng replace khi URL thật sự khác. Không redirect lại cùng URL sau mỗi render. Không đưa token, mật khẩu hoặc dữ liệu cá nhân nhạy cảm vào query: URL có thể xuất hiện trong history, log và các link người dùng chia sẻ.
+
+## Deep links và refresh
+
+Một route chỉ hoạt động sau khi người dùng vào `/` rồi click qua chưa phải là route hoàn chỉnh. Deep link yêu cầu cả server lẫn frontend hiểu đường đi từ URL ban đầu.
+
+### Luồng khởi động từ một URL sâu
+
+Với `/catalog/products/sku-42?sort=price-asc`, đường đi của một SPA là:
+
+1. Browser gửi request document cho path `/catalog/products/sku-42`; fragment không được gửi trong HTTP request.
+2. Server/CDN phục vụ shell document cho nhánh ứng dụng đó.
+3. Shell đọc location hiện tại, nhận ra nhánh catalog và tải đúng remote.
+4. Catalog nhận location ban đầu, chọn route sản phẩm rồi tải dữ liệu của `sku-42`.
+5. UI phân biệt loading, lỗi tải remote, lỗi dữ liệu và not found; chỉ xử lý fragment khi nội dung cần thiết đã render.
+
+Không cần event navigation đầu tiên để khởi động: một event bus thông thường không replay và remote đến muộn sẽ bỏ lỡ nó. Location hiện tại phải đọc được ngay khi mount, như nguyên tắc snapshot trong [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership).
+
+### Fallback cho document không phải cho mọi request
+
+Với static SPA, server thường cần rewrite các document path thuộc ứng dụng về shell HTML. Nhưng rewrite mọi request về `index.html` sẽ biến một file JavaScript bị thiếu thành response HTML với status 200.
+
+| Request | Cách xử lý mong đợi |
+| --- | --- |
+| Document `/catalog/products/sku-42` | Trả shell HTML để client dựng màn hình |
+| Remote entry hoặc chunk có thật | Trả asset đúng MIME type |
+| Chunk không tồn tại | Trả lỗi asset, không trả shell HTML |
+| API request | Chuyển tới backend theo rule API, không áp dụng SPA fallback |
+| Path ngoài không gian app | Theo chính sách server, không mặc định đưa vào catalog |
+
+Kiểm tra bằng request thật qua hosting đang deploy, không chỉ dev server. Thay host và asset path bên dưới bằng giá trị của bản deploy đang kiểm tra:
+
+```bash
+curl -i https://shop.example/catalog/products/sku-42
+curl -i https://shop.example/assets/definitely-missing.js
+```
+
+Trong mô hình static SPA này, request đầu cần HTML của shell, còn request thứ hai phải báo lỗi asset. Sau đó vẫn phải mở link trong browser để kiểm tra remote load và route render. HTTP 200 cho shell không chứng minh sản phẩm tồn tại; muốn status 404 đúng ở mức document hoặc SEO theo route, bạn cần thiết kế server/SSR tương ứng.
+
+SSR và Next.js có routing pipeline riêng: server phải chọn đúng page và dữ liệu trước hydration. Không áp dụng một SPA fallback tổng quát lên mọi route framework. Nếu initial route ở server khác client, bạn có thể gặp hydration mismatch hoặc redirect lặp. Xem [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
+
+## Browser history và Back Forward
+
+Người dùng mong Back quay về một bước có ý nghĩa, không phải xóa từng ký tự của ô tìm kiếm. Semantics của history vì thế phải được chọn theo hành động, không theo số lần state đổi.
+
+### Khi nào dùng push và replace
+
+| Tình huống | Mặc định | Lý do |
+| --- | --- | --- |
+| Mở sản phẩm, chuyển catalog sang cart | Push | Có điểm đến mới để quay lại |
+| Submit một tìm kiếm mới hoặc áp dụng filter | Push | Back có thể khôi phục lựa chọn trước |
+| Sửa query liên tục khi gõ | Replace nếu cần đưa draft lên URL | Tránh tạo một entry cho mỗi ký tự |
+| Chuẩn hóa URL hoặc đổi route cũ sang route mới | Replace | Không giữ lại một entry chỉ redirect |
+| Áp dụng location do browser Back/Forward | Không ghi history mới | Browser đã chuyển entry |
+| Quay về điểm đến sau login | Thường replace entry login | Tránh Back lại màn hình login vừa hoàn tất |
+
+Ví dụ sau minh họa lịch sử mong đợi:
+
+```text
+/catalog
+  ── push ──► /catalog?q=keyboard
+  ── push ──► /catalog/products/sku-42
+  ── push ──► /cart
+
+Back: /catalog/products/sku-42
+Back: /catalog?q=keyboard
+```
+
+Nút “Về catalog” là navigation đến một destination, không nhất thiết là `history.back()`. Người dùng có thể đã mở sản phẩm trực tiếp từ email; Back khi đó có thể rời shop. Nếu nút thật sự mang nghĩa “Quay lại bước trước”, cần contract và fallback phù hợp với luồng đó.
+
+### History API không tự thông báo mọi thay đổi
+
+`history.pushState` và `history.replaceState` không phát `popstate` chỉ vì được gọi. Một shell chỉ nghe `popstate` sẽ cập nhật UI khi Back/Forward, nhưng có thể bỏ qua navigation do chính ứng dụng tạo ra.
+
+Khi dùng router framework, để router thực hiện navigation và dùng subscription/location API của nó. Đừng trộn `useNavigate` với những lệnh `pushState` trực tiếp từ remote; router có thể không biết URL đã thay đổi, hoặc state metadata của nó bị ghi đè.
+
+Nếu tự viết history adapter, owner phải publish snapshot sau push/replace thành công, và đọc location mới khi xử lý `popstate`. Hash-only navigation cần có chính sách `hashchange` và deduplication riêng. Không giả lập `popstate` để “đánh thức” mọi router trong trang: mỗi router có thể giả định metadata khác nhau và phản ứng không giống nhau.
+
+`history.state` có thể chứa metadata phục vụ history hoặc scroll, nhưng không phải nguồn duy nhất để dựng màn hình có thể chia sẻ. Link mở trong tab mới không mang theo state object của entry cũ; dữ liệu thiết yếu phải có trong URL hoặc lấy lại được từ backend. Với `pushState`, URL mới còn phải cùng origin; chuyển sang site khác là document navigation, không phải client-side push.
+
+## Lifecycle và navigation bất đồng bộ
+
+Có một race dễ bỏ sót: shell bắt đầu tải catalog, người dùng chuyển sang cart, rồi catalog tải xong. Nếu callback cũ vẫn mount vào outlet hiện tại, thanh địa chỉ là `/cart` nhưng màn hình lại thành catalog.
+
+Owner cần một navigation generation hoặc cancellation mechanism. Sau mỗi bước async như guard, tải remote hoặc dữ liệu, kiểm tra request còn là navigation đang active trước khi commit UI. Nếu chuyển từ sản phẩm A sang B trong cùng remote, fetch layer cũng cần bỏ qua response A đến muộn; không chỉ kiểm tra tên domain.
+
+Một quy trình an toàn ở mức thiết kế:
+
+1. Đọc snapshot và tạo navigation generation cho điểm đến.
+2. Đánh giá guard nếu có, rồi chọn domain và loading UI tương ứng.
+3. Tải module; chỉ mount nếu generation vẫn active.
+4. Nếu module đã mount mà navigation bị thay thế, gọi cleanup của instance đó.
+5. Khi chỉ đổi subroute trong cùng domain, cập nhật location thay vì remount toàn bộ remote nếu mount contract hỗ trợ.
+
+Dynamic import không phải lúc nào cũng hủy được. Bạn có thể bỏ qua kết quả import cũ dù request network đã hoàn tất. Với fetch hỗ trợ cancellation, dùng `AbortController` cùng kiểm tra generation, chứ không coi abort là bảo đảm mọi công việc phía server đã dừng.
+
+Khi unmount, remote phải unsubscribe location, hủy listener và cleanup React/Vue root theo contract. Nếu giữ subscription cũ, một lần Back có thể gọi cả instance đã rời màn hình. Remote mới mount phải đọc location hiện tại, không dùng snapshot chụp lúc bắt đầu tải module.
+
+Đối với lỗi tải remote, shell nên giữ nguyên URL, hiển thị error boundary và cung cấp retry. Retry tải màn hình không cần push thêm một entry cùng URL. Giữ shell navigation hoạt động để người dùng vẫn chuyển sang domain khác được.
+
+## Auth redirects và trải nghiệm điều hướng
+
+Routing và auth gặp nhau ở guard, nhưng route có được render không khác với API có được authorize không. Shell có thể điều phối entry vào màn hình bảo vệ; backend vẫn phải kiểm tra quyền cho từng request nghiệp vụ.
+
+### Return URL và quyền truy cập
+
+Khi người dùng chưa login mở một route bảo vệ, lưu điểm đến hợp lệ, đưa tới login rồi quay lại sau khi session đã được xác nhận. Giữ cả query và fragment cần thiết; đừng luôn quay về `/` và làm mất ngữ cảnh.
+
+`returnTo` là input không tin cậy. Mặc định mình chỉ cho phép path nội bộ thuộc app và nằm trong danh sách điểm đến được hỗ trợ. Nếu nhận một URL string, parse bằng `new URL(value, trustedOrigin)`, kiểm tra origin và route cho phép; chỉ kiểm tra `startsWith('/')` không đủ vì `//evil.example` là một URL hướng tới host khác.
+
+Không tự động điều hướng về login khi auth còn đang ở trạng thái “đang kiểm tra session”. Đợi kết quả hoặc hiển thị trạng thái loading rõ ràng. Khi user đã login nhưng không có quyền, hiển thị forbidden thay vì vòng lặp login → route bảo vệ → login.
+
+Redirect sau login thường replace entry login. Điều này không có nghĩa bạn có thể xóa tùy ý toàn bộ session history. Thống nhất hành vi với luồng thực tế, nhất là khi login chuyển qua identity provider ngoài origin; xem [Authentication và session](/docs/giao-tiep-va-trang-thai/authentication).
+
+### Form chưa lưu focus và scroll
+
+Form chưa lưu cần navigation blocker phù hợp với router mode đang dùng. Chặn một command từ remote không tự chặn được browser Back, external link hay đóng tab. `beforeunload` có giới hạn trên browser và mobile, nên nếu draft quan trọng hãy thêm chính sách lưu draft thay vì chỉ dựa vào hộp thoại cảnh báo.
+
+Blocker cũng giải thích vì sao navigation contract có kết quả `cancelled`. Nếu guard chưa cho phép chuyển, remote không nên tự đổi UI sang điểm đến rồi mới chờ shell xác nhận.
+
+Với accessibility, dùng anchor/`Link` có `href` thật cho các liên kết. Người dùng cần mở tab mới, copy link và dùng bàn phím; một `div` chỉ gọi `navigate` không thay thế được các hành vi này. Bridge chỉ nên intercept click nội bộ thông thường, không chiếm modifier keys hoặc link có target khác.
+
+Sau khi chuyển màn hình, cập nhật document title, quản lý focus tới nội dung phù hợp và thống nhất scroll restoration ở cấp app. Shell điều phối transition cấp domain, remote xác định tiêu đề và vùng nội dung của mình. Khi Back/Forward, thường cần khôi phục scroll thay vì luôn cuộn lên đầu; khi tới `#reviews`, chờ phần reviews render rồi mới xử lý fragment.
+
+## Failure modes và cách debug
+
+Bắt đầu từ URL browser, location snapshot của shell và route mà remote đang render. Ba giá trị này cần giải thích được cùng một màn hình.
+
+| Triệu chứng | Nghi ngờ đầu tiên | Cách kiểm tra |
+| --- | --- | --- |
+| Click chạy đúng, refresh 404 | Thiếu document fallback hoặc server route | Request URL sâu trực tiếp qua hosting thật |
+| URL đổi nhưng UI không đổi | Remote ghi history ngoài router owner | Trace nơi gọi push/replace và subscription location |
+| Back đổi URL nhưng remote đứng yên | Memory router không nhận snapshot từ shell | Log revision và location remote áp dụng |
+| Back lập tức quay lại URL vừa rời | Bridge publish ngược khi apply location | Tách source của command và external update |
+| Mỗi click tạo hai history entries | Hai history writers hoặc click handler trùng | Trace một command tới số lần commit |
+| Path lặp `/catalog/catalog` | Prefix được thêm ở hai tầng | Kiểm tra basename, mount path và route builder |
+| URL cart nhưng UI catalog | Remote load cũ commit muộn | Kiểm tra navigation generation trước mount |
+| Chunk trả 200 nhưng báo MIME/syntax error | Asset request bị rewrite thành HTML | Xem response body và `Content-Type` |
+| Link standalone đúng nhưng integrated sai | Route tuyệt đối hoặc dev base khác production | Chạy cùng mount path như shell thật |
+| Login redirect lặp | Guard xử lý loading như anonymous hoặc return route sai | Trace auth state và redirect destination |
+
+Log navigation ID/revision, source, domain, kết quả guard và thời điểm commit giúp phân biệt lỗi routing với remote load. Không log nguyên query nếu có thể chứa dữ liệu nhạy cảm; chỉ ghi field đã được cho phép hoặc URL đã redact.
+
+## Ma trận kiểm thử routing
+
+Unit test route builders và parser chưa đủ; lỗi server fallback hay browser history cần integration/E2E test qua môi trường giống deploy thật.
+
+| Kịch bản | Kết quả cần kiểm tra |
+| --- | --- |
+| Mở trực tiếp URL sản phẩm trong tab mới | Shell chọn catalog, remote render đúng sản phẩm mà không cần event cũ |
+| Refresh URL sâu có query và fragment | Không mất location; dữ liệu tải lại và fragment xử lý sau render |
+| Catalog → sản phẩm → cart → Back → Forward | URL, màn hình và filter khớp nhau; không sinh entry phụ |
+| Modifier-click một link sản phẩm | Tab mới nhận URL có basename đúng |
+| Sửa filter rồi bấm Back | UI dựng lại từ query cũ, không giữ store filter mới |
+| Nhập query lỗi, lặp hoặc quá lớn | Parser áp dụng chính sách đã công bố, không crash |
+| Mở path ngoài app và subroute catalog không tồn tại | App not found khác với catalog not found |
+| Tải catalog chậm rồi chuyển cart | Kết quả catalog đến muộn không mount đè cart |
+| Remote load lỗi rồi retry | URL được giữ; retry không tạo entry navigation mới |
+| Mount/unmount cùng remote nhiều lần | Không tăng số listener, không cập nhật instance đã hủy |
+| Mở deep link khi anonymous hoặc forbidden | Return destination hợp lệ, không redirect lặp |
+| Gửi `returnTo` tới origin ngoài | Bị từ chối hoặc thay bằng fallback an toàn |
+| Chạy app dưới `/shop` | Link, refresh, remote routing và asset URL vẫn đúng |
+| Shell cũ với remote mới và ngược lại | Public destinations còn tương thích trong cửa sổ hỗ trợ |
+
+Với blocker, kiểm thử cả link trong app, browser Back và reload; không suy ra ba trường hợp có cùng semantics. Với iframe, thêm kiểm thử history của trang cha và child trên các browser mục tiêu.
+
+## Checklist trước khi deploy
+
+- [ ] Mỗi nhánh URL có một domain owner, không có prefix match chồng lấn ngoài ý muốn.
+- [ ] Chỉ một cơ chế điều phối ghi browser history của document chính.
+- [ ] Remote không bọc thêm browser router khi đã dùng context của shell.
+- [ ] Basename, mount path và asset base được cấu hình riêng, không hard-code lẫn nhau.
+- [ ] Query/fragment có semantics, validation và chính sách giữ hoặc bỏ khi chuyển route.
+- [ ] Deep link và refresh chạy qua hosting thật; asset/API không bị SPA fallback nuốt lỗi.
+- [ ] Back/Forward áp dụng location, không tạo navigation command mới.
+- [ ] Navigation async có kiểm tra stale result, cleanup và trạng thái retry rõ ràng.
+- [ ] Return URL được validate; route guard không thay backend authorization.
+- [ ] Link thật, title, focus và scroll đã được kiểm tra bằng bàn phím và browser history.
+- [ ] Thay đổi public URL có migration và kiểm thử giữa các phiên bản còn hỗ trợ.
+
+Trước khi nối thêm remote, hãy chọn một URL sâu như `/catalog/products/sku-42`, mở nó trong tab mới rồi đi qua chuỗi cart → Back → refresh. Nếu URL và màn hình giữ đúng ý nghĩa suốt chuỗi đó, bạn đã kiểm tra được cả entry routing, history ownership lẫn khả năng dựng lại state từ location.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Giữ URL state và local draft đúng owner, tránh hai nguồn ghi độc lập." />
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Công bố navigation capability và quy tắc tương thích giữa shell với remote." />
+  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="Phối hợp guard, session và logout mà không nhầm UI với authorization." />
+  <Card title="Thực hành routing và auth" href="/docs/thuc-hanh/routing-auth" description="Áp dụng ranh giới routing và auth trong bài thực hành shop." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [React Router v7 — Routing](https://reactrouter.com/7.13.2/start/declarative/routing): nested routes, layout routes và route matching.
+- [React Router — BrowserRouter](https://reactrouter.com/api/declarative-routers/BrowserRouter): browser History API và basename.
+- [React Router — MemoryRouter](https://reactrouter.com/api/declarative-routers/MemoryRouter): history entries trong memory và initial entries.
+- [MDN — Working with the History API](https://developer.mozilla.org/en-US/docs/Web/API/History_API/Working_with_the_History_API): quản lý history entries và khôi phục UI.
+- [MDN — pushState](https://developer.mozilla.org/en-US/docs/Web/API/History/pushState): same-origin URL, state object và việc không phát hashchange.
+- [MDN — popstate](https://developer.mozilla.org/en-US/docs/Web/API/Window/popstate_event): khi event xảy ra và khác biệt với push/replace trực tiếp.

@@ -1,18 +1,280 @@
 ---
 title: "Thuật ngữ cốt lõi"
-description: "Làm rõ host, remote, shell, composition, isolation và independent deployment."
+description: "Phân biệt host, remote, shell, composition, isolation và independent deployment qua ví dụ shop shell–catalog–cart."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Bạn đọc một cấu hình thấy `host` tải `remote`, rồi đọc thiết kế thấy `shell` ghép các micro-frontend. Đó có phải cùng một thứ không? Nếu catalog đã có URL và pipeline riêng, nó đã deploy độc lập chưa?
+
+Bài này giúp bạn gọi đúng tên từng vai trò và tránh suy ra khả năng của kiến trúc chỉ từ tên công cụ. Ví dụ xuyên suốt là một shop có shell quản lý khung trang, catalog hiển thị sản phẩm và cart hiển thị giỏ hàng.
+
+<Callout type="info" title="Cách dùng trang này">
+  Bạn có thể đọc lần lượt hoặc dùng bảng tra nhanh để tìm thuật ngữ. `Host` và `remote` được giải thích chủ yếu trong ngữ cảnh Module Federation; `shell`, `composition` và `isolation` là khái niệm kiến trúc rộng hơn. Các ví dụ không phải cấu hình lab chạy được.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Tra nhanh các thuật ngữ chính](#tra-nhanh-các-thuật-ngữ-chính)
+- [Shell là vai trò trong sản phẩm](#shell-là-vai-trò-trong-sản-phẩm)
+- [Host và remote là vai trò tích hợp](#host-và-remote-là-vai-trò-tích-hợp)
+  - [Host tiêu thụ module](#host-tiêu-thụ-module)
+  - [Remote cung cấp module](#remote-cung-cấp-module)
+  - [Vì sao host không đồng nghĩa với shell](#vì-sao-host-không-đồng-nghĩa-với-shell)
+- [Composition là cách ghép các phần frontend](#composition-là-cách-ghép-các-phần-frontend)
+  - [Ghép vào thời điểm nào](#ghép-vào-thời-điểm-nào)
+  - [Ghép theo route hay trong cùng trang](#ghép-theo-route-hay-trong-cùng-trang)
+- [Isolation phải nói rõ cách ly điều gì](#isolation-phải-nói-rõ-cách-ly-điều-gì)
+  - [Các chiều cách ly](#các-chiều-cách-ly)
+  - [Giới hạn của các cơ chế phổ biến](#giới-hạn-của-các-cơ-chế-phổ-biến)
+- [Independent deployment là khả năng phát hành riêng](#independent-deployment-là-khả-năng-phát-hành-riêng)
+  - [Phân biệt build, deploy và release](#phân-biệt-build-deploy-và-release)
+  - [Phép thử với một thay đổi catalog](#phép-thử-với-một-thay-đổi-catalog)
+- [Những thuật ngữ đi cùng các ranh giới](#những-thuật-ngữ-đi-cùng-các-ranh-giới)
+  - [Domain, ownership, contract và coupling](#domain-ownership-contract-và-coupling)
+  - [Entry, manifest và shared dependency](#entry-manifest-và-shared-dependency)
+  - [Lifecycle, fallback và rollback](#lifecycle-fallback-và-rollback)
+- [Đọc một mô tả kiến trúc cho đúng](#đọc-một-mô-tả-kiến-trúc-cho-đúng)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Tra nhanh các thuật ngữ chính
 
-Bài này sẽ giúp bạn: làm rõ host, remote, shell, composition, isolation và independent deployment.
+Sáu thuật ngữ này trả lời những câu hỏi khác nhau. Một hệ thống có thể có host và remote nhưng chưa đạt independent deployment; cũng có thể đạt independent deployment mà không dùng Module Federation.
 
-[Xem các bài trong nhóm Nền tảng](/docs/nen-tang).
+| Thuật ngữ | Câu hỏi nó trả lời | Trong shop mẫu | Không nên suy ra |
+| --- | --- | --- | --- |
+| **Shell** | Ai giữ khung trải nghiệm và phối hợp các phần? | App chứa navigation, layout và chọn phần theo URL | Shell phải chứa mọi logic nghiệp vụ |
+| **Host** | Ai tải và tiêu thụ module được cung cấp từ build khác? | Shell import module trang sản phẩm của catalog | Host luôn là shell hoặc luôn là app cấp cao nhất |
+| **Remote** | Ai cung cấp module cho bên khác tiêu thụ? | Catalog expose trang sản phẩm cho shell | Remote phải ở domain khác hoặc phải là cả một app |
+| **Composition** | Các phần riêng được ghép thành trải nghiệm chung như thế nào? | Shell chọn catalog ở `/products`, cart ở `/cart` | Composition luôn diễn ra trong trình duyệt |
+| **Isolation** | Ranh giới nào hạn chế ảnh hưởng giữa các phần? | CSS catalog không làm đổi giao diện cart | Tách bundle đã cách ly JavaScript, lỗi và quyền truy cập |
+| **Independent deployment** | Thay đổi tương thích có thể tới production mà không buộc phần khác phát hành lại không? | Catalog cập nhật bộ lọc mà shell và cart giữ nguyên artifact | Mỗi team được phá contract tùy ý |
+
+## Shell là vai trò trong sản phẩm
+
+**Application shell** là phần giữ khung và điều phối trải nghiệm chung. Với shop mẫu, shell có thể quản lý header, navigation, vùng hiển thị nội dung, route cấp cao và trạng thái loading hoặc fallback khi một phần chưa tải được.
+
+```text
+Shell: khung trang, navigation, chọn nội dung theo URL
+  ├── /products → Catalog
+  └── /cart     → Cart
+```
+
+Sơ đồ này chỉ mô tả trách nhiệm, chưa quyết định shell tải nội dung bằng Module Federation, iframe hay cơ chế khác. Nó cũng không yêu cầu catalog và cart xuất hiện cùng lúc.
+
+Shell có thể phối hợp ngữ cảnh đăng nhập và chuyển thông tin cần thiết qua contract, nhưng backend vẫn phải kiểm tra quyền của từng request. Shell không nên tính giá sản phẩm, sở hữu toàn bộ state giỏ hàng hoặc biết cấu trúc store nội bộ của mọi app. Vì nếu mọi thay đổi nghiệp vụ đều phải sửa shell, shell sẽ trở thành điểm buộc các team release cùng nhau.
+
+Mình dùng “shell” cho vai trò tích hợp trải nghiệm trong lộ trình này. Trong các tài liệu về PWA, *app shell* còn thường chỉ phần khung UI có thể cache để tải nhanh; đừng tự suy ra kiến trúc micro-frontend hay deploy độc lập từ cách dùng đó.
+
+## Host và remote là vai trò tích hợp
+
+Trong Module Federation, các build có thể cung cấp và tiêu thụ module của nhau. Hai từ **host** và **remote** mô tả hai phía của quan hệ đó, không mô tả ownership nghiệp vụ hay mức cách ly.
+
+### Host tiêu thụ module
+
+Host là ứng dụng hoặc build tiêu thụ module từ remote. Ví dụ, shell muốn render trang danh sách sản phẩm và có một đoạn import như sau:
+
+```ts
+// Minh họa cách gọi sau khi đã cấu hình Module Federation.
+const catalogModule = await import('catalog/ProductPage');
+```
+
+Trong quan hệ này, shell là host và catalog là remote. `catalog` là tên mà bên tiêu thụ dùng để tham chiếu remote; `ProductPage` là tên module công khai trong ví dụ. Đây không phải đường dẫn HTTP, cũng không phải cú pháp tự hoạt động trong một dự án chưa cấu hình federation.
+
+Host chịu trách nhiệm cho cách sử dụng module: tải khi nào, đặt UI vào đâu và xử lý lỗi tích hợp ra sao. Tuy nhiên, tên “host” không có nghĩa nó luôn cung cấp toàn bộ framework hoặc shared dependency; điều đó phụ thuộc cấu hình.
+
+### Remote cung cấp module
+
+Remote là phía cung cấp module cho bên khác tiêu thụ. Catalog có thể expose một trang, một component hoặc một API lifecycle để host gọi. Phần được expose không nhất thiết là toàn bộ code của catalog.
+
+Trong webpack Module Federation, **container** là cơ chế cung cấp quyền truy cập vào các module được expose. Một **container entry**, thường được đặt tên `remoteEntry.js`, giúp runtime truy cập container và tải module cần dùng. Entry không nhất thiết chứa toàn bộ code ứng dụng; runtime có thể tải thêm các chunk sau đó. Tên file `remoteEntry.js` là quy ước phổ biến, không phải tên bắt buộc.
+
+“Remote” cũng không có nghĩa khác origin. Shell và catalog có thể phục vụ từ cùng một origin qua các đường dẫn khác nhau; ngược lại, JavaScript tải từ CDN khác origin nhưng chạy trong trang shell không vì thế có sandbox riêng.
+
+<Callout type="warn" title="Remote không tự động là micro-frontend">
+  Một thư viện UI được expose qua federation là remote về mặt kỹ thuật. Muốn đánh giá nó như một micro-frontend, bạn còn phải xem ranh giới nghiệp vụ, ownership và khả năng phát hành. Cơ chế expose module không tự tạo ra các ranh giới đó.
+</Callout>
+
+### Vì sao host không đồng nghĩa với shell
+
+Shell trả lời “ai giữ trải nghiệm chung?”, còn host trả lời “ai tiêu thụ module trong quan hệ này?”. Trong demo nhỏ, một app thường giữ cả hai vai trò nên hai từ dễ bị dùng thay nhau.
+
+Nhưng catalog có thể vừa expose `ProductPage` cho shell, vừa tiêu thụ một module từ remote khác. Khi đó catalog là remote đối với shell và là host trong quan hệ tiêu thụ kia. Một build có thể vừa cung cấp vừa tiêu thụ module.
+
+Ngược lại, shell ghép các app bằng iframe vẫn là shell, nhưng không phải host theo cơ chế Module Federation. Khi đọc thiết kế, hãy hỏi tên gọi đang mô tả **trách nhiệm sản phẩm** hay **quan hệ tải module**.
+
+## Composition là cách ghép các phần frontend
+
+**Composition** là việc ghép các phần frontend thành một ứng dụng hoặc trải nghiệm thống nhất. Nó bao gồm chọn phần cần hiển thị, đặt phần đó vào layout, kết nối các contract cần thiết và phối hợp navigation.
+
+### Ghép vào thời điểm nào
+
+| Kiểu composition | Nơi và thời điểm ghép | Ví dụ | Hệ quả cần nhớ |
+| --- | --- | --- | --- |
+| Build-time composition | Bundler ghép dependency khi tạo bản build | Shell import package `@shop/catalog` | Cập nhật catalog thường cần build và deploy lại shell |
+| Runtime composition | Trình duyệt tải các phần khi ứng dụng chạy | Shell tải module catalog từ entry riêng khi vào `/products` | Có thể thay catalog riêng nếu cơ chế chọn version và contract cho phép |
+| Server-side composition | Server hoặc edge ghép HTML hay fragment trước khi trả response | Server ghép header chung với fragment sản phẩm | Có thể phát hành phần riêng nếu lớp ghép không buộc release đồng bộ; phần tương tác vẫn cần thiết kế JavaScript phù hợp |
+
+Các kiểu này có thể kết hợp. Một trang có HTML ghép ở server rồi tải phần tương tác trong trình duyệt vẫn dùng nhiều lớp composition.
+
+**SSR không tự đồng nghĩa với server-side composition của micro-frontend.** Một server render toàn bộ React app từ một bản build chung là SSR, nhưng chưa chứng minh rằng có các đơn vị frontend phát hành riêng được ghép ở server.
+
+Theo cách dùng trong lộ trình này, khả năng phát hành độc lập là tiêu chí chính để phân biệt micro-frontend với modular frontend. Vì thế build-time composition vẫn là cách tổ chức code đáng học, nhưng bạn cần nhận ra coupling ở bước release thay vì chỉ đếm số package.
+
+### Ghép theo route hay trong cùng trang
+
+Thời điểm ghép là một trục; phạm vi UI được ghép là trục khác:
+
+- **Route-level composition:** shell hiển thị catalog ở `/products`, cart ở `/cart`. Đây thường là điểm bắt đầu dễ kiểm soát vì ranh giới màn hình và navigation rõ hơn.
+- **Fragment-level composition:** cùng trang chứa danh sách sản phẩm của catalog và mini-cart của cart. Cách này cần thỏa thuận rõ hơn về layout, cập nhật dữ liệu và các trạng thái loading, lỗi của từng vùng.
+
+Đừng dùng “runtime composition” để suy ra hai app phải render cùng lúc. Shell có thể chỉ tải remote khi route cần nó. Ngược lại, nhiều vùng UI trên cùng trang có thể được ghép từ một build chung và chưa có deploy riêng.
+
+## Isolation phải nói rõ cách ly điều gì
+
+Câu “catalog đã được isolate khỏi cart” chưa đủ để đánh giá thiết kế. Catalog không làm đè CSS của cart khác hoàn toàn với catalog không đọc được dữ liệu của shell.
+
+**Isolation** là mức hạn chế ảnh hưởng giữa các phần trên một ranh giới cụ thể. Mình khuyên luôn gọi tên ranh giới đó khi trao đổi, chẳng hạn “CSS isolation”, “state isolation” hay “security boundary”.
+
+### Các chiều cách ly
+
+| Chiều cách ly | Điều cần kiểm soát | Một tình huống cụ thể |
+| --- | --- | --- |
+| Code và dependency | Import chéo vào code nội bộ, version thư viện và API dùng chung | Catalog không import store nội bộ của cart |
+| CSS và DOM | Selector global, reset CSS, thao tác DOM vượt vùng sở hữu | Style `button` của catalog không làm đổi nút checkout |
+| JavaScript và state | Global variable, side effect và mutable state dùng chung | Catalog không tự sửa state giỏ hàng trong `window` |
+| Lỗi và tài nguyên | Phạm vi lỗi, thời gian CPU, memory và cơ chế khôi phục | Catalog tải lỗi thì shell còn navigation và hiện fallback |
+| Bảo mật | Quyền đọc dữ liệu, truy cập DOM và gọi các khả năng nhạy cảm | Code không tin cậy không được chạy với toàn bộ quyền của trang shell |
+
+Tách code hoặc state theo convention giúp giảm phụ thuộc, nhưng không nhất thiết cưỡng chế được ranh giới khi chạy. Code cùng JavaScript context vẫn có thể chạm vào global hoặc làm nghẽn main thread.
+
+### Giới hạn của các cơ chế phổ biến
+
+| Cơ chế | Nó giúp gì | Nó không đảm bảo gì |
+| --- | --- | --- |
+| CSS Modules hoặc namespace CSS | Giảm va chạm tên class và selector | Không cách ly JavaScript; style global và reset vẫn có thể ảnh hưởng phần khác |
+| Shadow DOM | Đóng gói cây DOM và phạm vi selector CSS | Không tạo JavaScript sandbox hay security boundary; inherited styles và CSS custom properties vẫn có thể đi qua host |
+| React error boundary | Bắt một số lỗi render trong cây con và hiển thị fallback | Không bắt mọi lỗi async, event handler hoặc vòng lặp làm treo main thread |
+| Iframe | Tạo document và browsing context riêng | Không mặc nhiên là process riêng hay cách ly tài nguyên tuyệt đối; mức bảo mật còn tùy origin, sandbox và quyền được cấp |
+| Module Federation | Tích hợp module từ các build riêng, có cơ chế shared dependency | Không tự cách ly CSS, JavaScript, lỗi hay quyền truy cập |
+
+Iframe khác origin thường tạo ranh giới truy cập DOM tốt hơn nhờ same-origin policy, nhưng cấu hình sandbox và giao tiếp qua `postMessage` vẫn cần được thiết kế. Tăng isolation cũng thường tăng công việc tích hợp: đồng bộ chiều cao, focus, routing hoặc trải nghiệm accessibility.
+
+<Callout type="warn" title="Tải script khác origin không có nghĩa là chạy ở origin đó">
+  Remote script chạy trong trang shell có quyền của ngữ cảnh trang đó. Đừng dùng URL CDN, tên remote hay Shadow DOM làm bằng chứng rằng code không tin cậy đã được sandbox. Nếu yêu cầu là bảo mật, hãy đánh giá threat model và cơ chế cưỡng chế ranh giới.
+</Callout>
+
+## Independent deployment là khả năng phát hành riêng
+
+**Independent deployment** nghĩa là một phần frontend có thể đưa thay đổi tương thích tới production mà không bắt buộc build và deploy lại các phần khác. Điều cần kiểm tra là đường đi của thay đổi tới người dùng, không chỉ việc artifact được upload riêng.
+
+### Phân biệt build, deploy và release
+
+Trong bài này, mình dùng ba từ theo quy ước sau; một số team gộp deploy và release thành một bước:
+
+| Từ | Ý nghĩa | Trong một lần cập nhật catalog |
+| --- | --- | --- |
+| Build | Tạo artifact từ source code | Sinh entry, JavaScript chunks, CSS và các asset |
+| Deploy | Đưa artifact hoặc cấu hình tới môi trường đích | Đưa bản catalog mới lên nơi phục vụ asset production |
+| Release | Cho một nhóm người dùng sử dụng thay đổi | Cấu hình chọn artifact mới hoặc bật tính năng cho nhóm đó |
+
+**Artifact** là đầu ra cụ thể của một build, không chỉ mỗi file entry. Muốn tải lại hoặc rollback một version, các chunk và asset mà version đó cần cũng phải còn khả dụng.
+
+Một catalog đã deploy lên CDN nhưng shell vẫn trỏ tới version cũ thì người dùng chưa nhất thiết nhận bản mới. Nếu shell phải sửa source, build và deploy lại chỉ để dùng catalog mới, chu kỳ phát hành của catalog vẫn phụ thuộc shell.
+
+### Phép thử với một thay đổi catalog
+
+Giả sử catalog thêm bộ lọc, giữ nguyên contract công khai. Hệ thống dùng runtime config để chọn artifact:
+
+```text
+Catalog: build/test bản mới → deploy artifact → chọn version cho người dùng
+Shell:   giữ nguyên artifact, dùng cấu hình chọn version
+Cart:    giữ nguyên artifact
+```
+
+Đây là dấu hiệu đạt phát hành độc lập cho thay đổi đó. Để kết luận chắc hơn, bạn cần trả lời:
+
+- Có thể cập nhật tham chiếu catalog mà không rebuild shell không?
+- Catalog mới có chạy với shell, cart và backend hiện tại không?
+- Hệ thống có xử lý người dùng vẫn đang chạy version cũ không?
+- Nếu cần khôi phục version trước, artifact cũ và các API mà nó dùng còn hoạt động không?
+
+Một monorepo có thể đáp ứng các điều này; nhiều repo cũng có thể không đáp ứng. Pipeline riêng giúp tổ chức build và deploy, nhưng nếu quy trình luôn bắt tất cả app release cùng nhau thì mục tiêu độc lập vẫn chưa đạt.
+
+Độc lập không phải “không cần phối hợp”. Đổi tên route công khai hoặc bắt bên tiêu thụ truyền một field mới có thể là breaking change và cần kế hoạch chuyển đổi. Mục tiêu là **thay đổi nội bộ tương thích không bị buộc release đồng bộ**, không phải mọi thay đổi đều được làm tùy ý.
+
+## Những thuật ngữ đi cùng các ranh giới
+
+Bạn sẽ gặp các từ dưới đây khi đọc những bài tiếp theo. Chúng giúp mô tả điều kiện để sáu khái niệm chính hoạt động cùng nhau.
+
+### Domain, ownership, contract và coupling
+
+| Thuật ngữ | Cách hiểu trong lộ trình | Ví dụ hoặc giới hạn |
+| --- | --- | --- |
+| Domain | Phạm vi nghiệp vụ mà frontend phục vụ | Catalog phục vụ tìm và xem sản phẩm; không phải cứ có một folder là có một domain |
+| Bounded context | Ranh giới trong đó mô hình và ngôn ngữ nghiệp vụ có ý nghĩa nhất quán, theo DDD | “Sản phẩm” ở catalog và “dòng hàng” ở cart có thể mang dữ liệu khác nhau; không cần dùng chung toàn bộ model |
+| Ownership | Trách nhiệm của team đối với một phần từ phát triển, kiểm thử đến vận hành | Team catalog theo dõi lỗi và chất lượng của catalog, không chỉ sửa code |
+| Contract | Giao diện công khai và hành vi đã thống nhất giữa các bên | Route, export của module, props, event schema, API lifecycle và quy ước lỗi |
+| Coupling | Mức một phần phải biết hoặc thay đổi theo phần khác | Catalog đọc store nội bộ của cart tạo coupling mạnh hơn gọi một API công khai ổn định |
+| Compatibility | Các version khác nhau vẫn làm việc đúng theo contract | Catalog mới vẫn chạy với shell hiện tại; TypeScript không tự đảm bảo điều đó ở runtime |
+
+Contract không chỉ là type. Ví dụ, một event `cart:changed` cần nói rõ nó có nghĩa “backend đã cập nhật giỏ thành công” hay chỉ “người dùng vừa bấm nút”. Hai cách hiểu có thể có cùng payload nhưng khiến UI hoạt động khác nhau.
+
+Mình mặc định giữ chi tiết store và model nội bộ trong phần sở hữu nó. Chỉ chia sẻ dữ liệu tối thiểu qua contract, vì chia sẻ toàn bộ implementation khiến các bên khó thay đổi riêng dù đã có artifact riêng.
+
+### Entry, manifest và shared dependency
+
+| Thuật ngữ | Ý nghĩa | Điều dễ nhầm |
+| --- | --- | --- |
+| Entry point | Điểm bắt đầu để tải hoặc sử dụng một phần frontend | Entry có thể tải thêm chunk; lấy được entry chưa có nghĩa UI đã render |
+| Manifest | Metadata mô tả artifact, địa chỉ hoặc các module có thể tải, tùy công cụ | Không phải mọi hệ thống đều có manifest; schema không có một chuẩn chung cho mọi cách tích hợp |
+| Runtime configuration | Cấu hình được đọc khi chạy để chọn remote, version hoặc hành vi tích hợp | Chỉ ghi URL trong source rồi build lại không phải cơ chế đổi version độc lập ở runtime |
+| Shared dependency | Dependency được phối hợp dùng chung giữa các build | Chia sẻ React không có nghĩa các app chia sẻ cùng business state |
+| Singleton | Trong Module Federation, tùy chọn giới hạn module được chia sẻ về một version dùng trong share scope tương ứng | Không tự bảo đảm tương thích và không có nghĩa chỉ có một instance cho mọi trang, iframe hay scope |
+
+Shared dependency có thể giảm tải trùng, nhưng nó tạo thêm ràng buộc version. Đừng đồng nhất “dùng chung framework” với “hoàn toàn độc lập về dependency”; đó là một đánh đổi cần quản lý.
+
+### Lifecycle, fallback và rollback
+
+**Lifecycle** là các giai đoạn tích hợp một phần frontend: tải code, chuẩn bị nếu cần, mount UI, cập nhật và unmount. Tên và thứ tự API cụ thể tùy công cụ; không có một interface bắt buộc cho mọi micro-frontend.
+
+Ví dụ, tải xong catalog chưa đồng nghĩa catalog đã mount vào vùng nội dung. Khi rời `/products`, phần chịu trách nhiệm lifecycle cần dọn UI và các tài nguyên thuộc catalog, như event listener hoặc subscription. Module Federation cung cấp module; bản thân cơ chế đó không bắt mọi remote có sẵn `mount` và `unmount`.
+
+**Fallback** là UI hoặc hành vi thay thế khi một phần chưa sẵn sàng hoặc lỗi, chẳng hạn vùng catalog hiện thông báo cùng nút thử lại. Fallback giúp người dùng còn sử dụng phần khả dụng; nó không sửa nguyên nhân và không tự rollback version.
+
+**Rollback** là đưa hệ thống trở lại artifact hoặc cấu hình trước đó. Với runtime composition, rollback có thể là đổi tham chiếu về catalog cũ, nhưng còn phụ thuộc cache, asset cũ và backend compatibility. Người đã mở trang cũng không nhất thiết đổi code ngay khi tham chiếu được cập nhật.
+
+## Đọc một mô tả kiến trúc cho đúng
+
+Hãy xét mô tả giả định này:
+
+> Shop dùng shell làm host để tải catalog và cart qua Module Federation. Các app có pipeline riêng, dùng shared React và CSS Modules. Catalog được deploy độc lập.
+
+Tách từng khẳng định ra, bạn sẽ biết điều gì đã rõ và điều gì cần hỏi thêm:
+
+| Khẳng định | Điều có thể hiểu | Điều chưa được chứng minh |
+| --- | --- | --- |
+| Shell làm host | Phần giữ khung trải nghiệm cũng tiêu thụ module remote | Shell có đang chứa quá nhiều logic nghiệp vụ không |
+| Catalog và cart là remote | Hai phía cung cấp module cho shell | Ranh giới domain và ownership có hợp lý không |
+| Dùng Module Federation | Có cơ chế tải module giữa các build | Có thể đổi version mà không rebuild shell không |
+| Dùng shared React | Có phối hợp dependency framework | Các version có tương thích không; state có được giữ riêng không |
+| Dùng CSS Modules | Có giảm va chạm class | CSS global, JavaScript và lỗi đã được cách ly chưa |
+| Có pipeline riêng | Có đường build, test hoặc deploy riêng cho từng app | Release thực tế có bị buộc đồng bộ không |
+
+Trước khi chấp nhận câu “catalog deploy độc lập”, hãy yêu cầu mô tả một thay đổi nội bộ cụ thể đi tới production: artifact nào đổi, ai phải build lại, cấu hình nào chọn version và khi lỗi thì khôi phục bằng cách nào. Đó là cách biến thuật ngữ thành một điều có thể kiểm chứng.
+
+## Đọc tiếp
+
+Các trang dưới đây đi sâu vào từng phần; những trang còn là placeholder cho biết phạm vi dự kiến của lộ trình.
+
+<Cards>
+  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Xác định trách nhiệm của shell và cách phối hợp lifecycle." />
+  <Card title="Runtime composition" href="/docs/kien-truc/runtime-composition" description="Tìm hiểu cách ghép các phần frontend khi ứng dụng chạy." />
+  <Card title="Contracts giữa các frontend" href="/docs/giao-tiep-va-trang-thai/contracts" description="Thiết kế giao diện công khai để các phần thay đổi riêng." />
+  <Card title="Deploy độc lập" href="/docs/thuc-hanh/deploy-doc-lap" description="Áp dụng phép thử phát hành riêng vào shop mẫu." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Module Federation — webpack](https://webpack.js.org/concepts/module-federation/): local và remote modules, container, shared modules và các build vừa expose vừa consume.
+- [Micro Frontends — Cam Jackson, trên martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): independent deployment và đánh đổi giữa các cách composition.
+- [Using shadow DOM — MDN](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM): encapsulation của DOM, CSS và giới hạn bảo mật của Shadow DOM.

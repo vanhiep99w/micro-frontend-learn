@@ -1,18 +1,567 @@
 ---
 title: "Build-time composition"
-description: "Ghép frontend qua packages ở build time và đánh giá tác động lên release."
+description: "Ghép frontend qua packages ở build time, thiết kế contract và quản lý dependency mà không nhầm publish package với deploy độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog và cart của shop đã nằm trong hai package, mỗi team có repository và pipeline riêng. Team catalog publish bộ lọc mới lên registry, nhưng người dùng vẫn thấy giao diện cũ. Vì shell đã đóng gói catalog vào bản build trước đó, publish package chưa làm thay đổi code đang chạy trên production.
+
+Đó là đánh đổi chính của **build-time composition**: bạn tách code và ownership thành các module, rồi ghép chúng khi build ứng dụng tiêu thụ. Cách này có thể rất hợp lý nếu bạn muốn ranh giới rõ mà chưa cần deploy từng domain riêng. Nhưng nếu mục tiêu là catalog lên production mà không rebuild shell, chỉ tách package chưa đủ.
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài dùng shop giả định gồm shell, catalog và cart, với React component được ghép trong cùng một cây render. Code và version là ví dụ kiến trúc, không phải các package hoặc script có sẵn trong repository docs. Sơ đồ dùng text để không cần cấu hình Mermaid. Với framework khác, nguyên tắc về contract và release vẫn áp dụng, còn API render sẽ khác.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Build-time composition giải quyết bài toán gì](#build-time-composition-giải-quyết-bài-toán-gì)
+  - [Ranh giới code khác ranh giới release](#ranh-giới-code-khác-ranh-giới-release)
+  - [Code splitting không biến nó thành runtime composition](#code-splitting-không-biến-nó-thành-runtime-composition)
+- [Luồng ghép package vào ứng dụng](#luồng-ghép-package-vào-ứng-dụng)
+- [Thiết kế ranh giới package](#thiết-kế-ranh-giới-package)
+  - [Package theo domain thay vì theo từng button](#package-theo-domain-thay-vì-theo-từng-button)
+  - [Public contract và dependency direction](#public-contract-và-dependency-direction)
+- [Ví dụ ghép catalog vào shell](#ví-dụ-ghép-catalog-vào-shell)
+  - [Contract nhỏ cho trang catalog](#contract-nhỏ-cho-trang-catalog)
+  - [Khai báo entry và dependency của package](#khai-báo-entry-và-dependency-của-package)
+  - [Shell tiêu thụ package](#shell-tiêu-thụ-package)
+  - [Lazy load từ cùng bản build](#lazy-load-từ-cùng-bản-build)
+- [Quản lý framework CSS và side effect](#quản-lý-framework-css-và-side-effect)
+  - [Peer dependency không phải bảo đảm singleton](#peer-dependency-không-phải-bảo-đảm-singleton)
+  - [CSS và asset cũng thuộc contract](#css-và-asset-cũng-thuộc-contract)
+  - [SSR không thay đổi ranh giới release](#ssr-không-thay-đổi-ranh-giới-release)
+- [Version lockfile và compatibility](#version-lockfile-và-compatibility)
+  - [Chọn version có chủ đích](#chọn-version-có-chủ-đích)
+  - [Breaking change không chỉ là đổi type](#breaking-change-không-chỉ-là-đổi-type)
+- [Pipeline từ publish tới người dùng](#pipeline-từ-publish-tới-người-dùng)
+  - [Hai pipeline với hai trách nhiệm](#hai-pipeline-với-hai-trách-nhiệm)
+  - [Kiểm thử artifact thay vì chỉ source trong workspace](#kiểm-thử-artifact-thay-vì-chỉ-source-trong-workspace)
+  - [Monorepo không xóa coupling ở bước release](#monorepo-không-xóa-coupling-ở-bước-release)
+- [Rollout rollback và người dùng đang mở trang](#rollout-rollback-và-người-dùng-đang-mở-trang)
+- [Lợi ích và chi phí thực tế](#lợi-ích-và-chi-phí-thực-tế)
+- [Khi nào nên chọn và khi nào không nên chọn](#khi-nào-nên-chọn-và-khi-nào-không-nên-chọn)
+- [Chuyển sang runtime composition khi có nhu cầu](#chuyển-sang-runtime-composition-khi-có-nhu-cầu)
+- [Checklist đánh giá thiết kế](#checklist-đánh-giá-thiết-kế)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Build-time composition giải quyết bài toán gì
 
-Bài này sẽ giúp bạn: ghép frontend qua packages ở build time và đánh giá tác động lên release.
+Khi nhiều team cùng sửa một frontend, vấn đề đầu tiên có thể là import chéo và quyền sở hữu code, chưa phải tốc độ deploy. Catalog đọc trực tiếp store của cart, cart dùng utility nằm sâu trong folder shell, rồi một refactor nhỏ kéo theo nhiều màn hình. Tách các phần thành package với public API rõ giúp bạn kiểm soát những phụ thuộc này.
 
-[Xem các bài trong nhóm Kiến trúc và ranh giới](/docs/kien-truc).
+Trong build-time composition, ứng dụng tiêu thụ khai báo dependency, resolver chọn package cụ thể, rồi bundler xử lý module graph để tạo artifact của ứng dụng. Package có thể cung cấp source code hoặc JavaScript đã compile; cả hai vẫn thuộc mô hình này nếu version và điểm tích hợp được quyết định khi build consumer.
+
+Bạn có thể hình dung shell như người đóng một bộ quà gồm nhiều sản phẩm: từng nơi sản xuất giao hàng riêng, nhưng người nhận sử dụng bộ đã đóng. Có sản phẩm mới trong kho không tự thay món nằm trong bộ cũ. Phép so sánh chỉ nói về version được chọn; bundler có thể tree-shake và chia module thành nhiều chunk, chứ không nhất thiết bê nguyên mọi package vào một file.
+
+### Ranh giới code khác ranh giới release
+
+Package catalog có thể được phát triển, review, test và publish độc lập. Nhưng khi người dùng nhận catalog qua artifact của shell, thay đổi catalog muốn tới production vẫn cần một lần build và deploy ứng dụng tiêu thụ với dependency mới.
+
+| Loại ranh giới | Package có thể giúp | Điều chưa tự có |
+| --- | --- | --- |
+| Code | Public exports, lint rule, hạn chế import nội bộ | Ngăn mọi đường truy cập ngoài quy ước |
+| Ownership | Team chịu trách nhiệm package và contract của domain | Team tự đưa thay đổi tới người dùng |
+| Kiểm thử | Unit và component test theo package | Integration đúng trong ứng dụng cuối |
+| Publish | Phát hành package version riêng | Thay code trong shell đã deploy |
+| Runtime | Quản lý subtree và local state theo module | Security sandbox hoặc cách ly CPU |
+
+Theo tiêu chí của lộ trình này, independent deployment là khả năng phát hành thay đổi tương thích mà không buộc phần khác rebuild và deploy lại. Vì thế, ghép domain bằng dependency trong một build thường được đánh giá là **modular frontend với release chung**, dù một số tài liệu vẫn xếp nó vào các kỹ thuật tích hợp micro-frontend.
+
+Tên gọi không phải vấn đề lớn nhất. Nếu team chấp nhận release chung thì đây là một lựa chọn có chủ đích; nếu team cần release riêng thì thiết kế đang thiếu một ranh giới quan trọng.
+
+### Code splitting không biến nó thành runtime composition
+
+Đoạn code sau có thể tạo chunk riêng và chỉ tải khi cần:
+
+```ts
+const catalog = await import('@shop/catalog');
+```
+
+Nếu bundler resolve `@shop/catalog` khi build shell, chunk catalog vẫn thuộc artifact và dependency graph của bản shell đó. Browser tải chunk ở runtime, nhưng **version được chọn ở build time**. Thay package trên registry không đổi chunk đã phát hành.
+
+Runtime composition giữa các build riêng có thêm một quyết định khác: ứng dụng đang chạy chọn và tiêu thụ artifact của domain được build riêng, thông qua cơ chế như remote container hoặc runtime manifest. Ngay cả khi dùng cơ chế đó, bạn vẫn phải thiết kế cách cập nhật tham chiếu để thật sự có deploy độc lập.
+
+## Luồng ghép package vào ứng dụng
+
+Với package publish qua registry, đường đi thông thường là:
+
+```text
+Catalog source → test/build → @shop/catalog@1.5.0
+                                      │
+                                      ▼
+                              Package registry
+                                      │
+                                      ▼
+Shell source + dependency lockfile → install/test/build
+                                      │
+                                      ▼
+                            Artifact của shell
+                         HTML + JS chunks + CSS + assets
+                                      │
+                                      ▼
+                             Deploy → Browser
+```
+
+Registry là nguồn đầu vào cho build, không phải nơi browser mặc định hỏi “catalog mới nhất là gì?”. Trong một SPA đã bundle package, browser tải file do shell phát hành, rồi catalog gọi backend của nó như bình thường.
+
+Có ba điểm cần phân biệt:
+
+1. **Publish package:** catalog version mới đã sẵn sàng cho consumer cài đặt.
+2. **Deploy ứng dụng:** artifact tích hợp version đó đã được đưa lên môi trường đích.
+3. **Release tính năng:** thay đổi được cho phép hiển thị với nhóm người dùng, có thể qua feature flag.
+
+Một pipeline tự động nối cả ba bước làm giảm thao tác thủ công, nhưng không xóa việc phải rebuild consumer. Build cache cũng chỉ giảm phần công việc lặp lại; nó không biến artifact cũ thành artifact chứa package mới.
+
+## Thiết kế ranh giới package
+
+Tách folder thành package mà vẫn cho phép import mọi file nội bộ thì bạn chỉ chuyển vị trí coupling. Hãy bắt đầu bằng câu hỏi: catalog cung cấp hành trình nào, shell cần biết gì để hiển thị nó, và cart có thật sự cần biết implementation của catalog không?
+
+### Package theo domain thay vì theo từng button
+
+Với shop mẫu, `@shop/catalog` có thể sở hữu tìm kiếm, bộ lọc và chi tiết sản phẩm; `@shop/cart` sở hữu thao tác và giao diện giỏ hàng. `@shop/design-system` cung cấp thành phần trình bày dùng chung, nhưng không quyết định luật thêm hàng hay cách tính tổng tiền.
+
+Một package UI không tự trở thành một domain frontend. Button dùng chung không có cùng trách nhiệm với hành trình catalog. Mình mặc định tách domain package theo năng lực nghiệp vụ đủ lớn, còn design system có owner và release policy riêng.
+
+Một domain có thể có nhiều package nội bộ nếu cần. Điều cần giữ là public surface đủ nhỏ để consumer không phải lắp từng reducer, hook và modal mới dựng được một màn hình.
+
+### Public contract và dependency direction
+
+Một dependency graph dễ kiểm soát có hướng rõ:
+
+```text
+Shell ──► Catalog ──► Design system
+  │
+  ├─────► Cart ─────► Design system
+  │
+  └─────► Platform adapters
+
+Không có chiều ngược: Catalog ──X──► Shell internals
+```
+
+Shell cung cấp các capability nhỏ qua props hoặc adapter. Catalog không import router instance, auth store hay telemetry singleton nằm trong source của shell. Nếu catalog cần thông báo “người dùng muốn thêm sản phẩm”, contract phải nói rõ đó là yêu cầu, không phải xác nhận backend đã cập nhật cart.
+
+Mình cũng tránh để cart import store của catalog chỉ vì cả hai cùng workspace. Cart cần product reference hoặc API contract phù hợp, không cần toàn bộ model hiển thị của catalog. Xem [Chia domain và ranh giới](/docs/kien-truc/chia-domain) và [Contracts giữa các frontend](/docs/giao-tiep-va-trang-thai/contracts) để xác định dữ liệu nào thật sự đi qua boundary.
+
+Package `exports` giúp giới hạn các entry mà consumer được phép resolve qua tên package. Kết hợp nó với lint rule kiểm tra dependency direction; không dùng alias như `@catalog-internal/*` ở shell để đi vòng public API. Đây là ranh giới thiết kế và tooling, không phải security boundary.
+
+## Ví dụ ghép catalog vào shell
+
+Ví dụ chọn một React component trong cùng cây render. Shell sở hữu router cấp ứng dụng và cart command; catalog sở hữu UI bên trong, không tự tạo React root hoặc browser router thứ hai.
+
+### Contract nhỏ cho trang catalog
+
+```tsx title="catalog/src/CatalogPage.tsx"
+export type ProductReference = Readonly<{
+  productId: string;
+}>;
+
+export type CatalogPageProps = Readonly<{
+  locale: string;
+  onProductSelected(product: ProductReference): void;
+}>;
+
+export function CatalogPage({
+  locale,
+  onProductSelected,
+}: CatalogPageProps) {
+  // Dữ liệu tĩnh để tập trung vào contract tích hợp.
+  // Catalog thực tế sở hữu query và trạng thái lỗi của nó.
+  return (
+    <section className="catalog-page" aria-labelledby="catalog-title">
+      <h1 id="catalog-title">
+        {locale === 'vi' ? 'Sản phẩm' : 'Products'}
+      </h1>
+      <button
+        type="button"
+        onClick={() => onProductSelected({ productId: 'sku-42' })}
+      >
+        {locale === 'vi' ? 'Chọn sản phẩm' : 'Select product'}
+      </button>
+    </section>
+  );
+}
+```
+
+```ts title="catalog/src/index.ts"
+export { CatalogPage } from './CatalogPage';
+export type {
+  CatalogPageProps,
+  ProductReference,
+} from './CatalogPage';
+```
+
+Semantics đi kèm type:
+
+- `locale` là input; catalog không sửa locale toàn ứng dụng.
+- `onProductSelected` phát ý định chọn sản phẩm, không xác nhận item đã có trong giỏ.
+- `productId` là reference mà hệ thống đã thống nhất, không chứa giá cuối cùng hoặc quyền mua hàng.
+- Callback trả `void`; catalog không suy ra request thành công từ việc callback đã được gọi.
+- Nếu UI catalog cần chờ kết quả thêm hàng, phải thiết kế command async và trạng thái tương ứng, thay vì tự đoán từ callback này.
+
+Ở đây chỉ có một catalog page instance. Nếu contract cần nhiều instance trên cùng document, component phải dùng ID riêng cho heading, chẳng hạn qua `useId`, thay vì cố định `catalog-title`.
+
+Public API không export `catalogStore`, query cache hay component nội bộ của bộ lọc. Điều này giúp catalog thay cách fetch hoặc tổ chức state mà shell không cần sửa.
+
+### Khai báo entry và dependency của package
+
+Manifest dưới đây giả định pipeline đã tạo JavaScript ESM, declaration file và stylesheet trong `dist`. Đây là phần metadata publish; bạn vẫn phải cấu hình build tool để tạo đúng các file và externalize framework.
+
+```json title="catalog/package.json"
+{
+  "name": "@shop/catalog",
+  "version": "1.5.0",
+  "type": "module",
+  "files": ["dist"],
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "sideEffects": ["**/*.css"]
+}
+```
+
+Range React 19 là giả định của ví dụ, không phải khuyến nghị áp dụng cho mọi dự án. Team phải khai báo range thực sự đã kiểm thử. Package này không dùng `react-dom`, nên không cần khai báo nó chỉ vì package chứa component; nếu có import API của `react-dom`, hãy khai báo peer tương ứng.
+
+Trong môi trường phát triển package, React, type definitions và build/test tooling còn cần được cung cấp qua dev dependencies phù hợp. Không bundle `react` hoặc `react/jsx-runtime` vào output của domain package; nếu dùng API khác của framework, cấu hình external tương ứng. `peerDependencies` không tự viết cấu hình bundler thay bạn.
+
+Entry trên chỉ hỗ trợ consumer ESM. Nếu phải phục vụ CommonJS, cần output và export condition phù hợp, đồng thời kiểm thử cả hai đường. Đừng trỏ `require` vào file ESM rồi hy vọng mọi consumer xử lý giống nhau.
+
+### Shell tiêu thụ package
+
+Shell chọn version cụ thể trong dependency của nó:
+
+```json title="shell/package.json — phần dependencies liên quan"
+{
+  "dependencies": {
+    "@shop/catalog": "1.5.0",
+    "@shop/cart": "2.3.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  }
+}
+```
+
+Đoạn adapter sau nằm ở màn hình `/catalog`. `requestAddToCart` là capability do ứng dụng cung cấp; implementation thật phải gọi API cart, xử lý pending, lỗi và authorization theo contract.
+
+```tsx title="shell/src/CatalogScreen.tsx"
+import { CatalogPage } from '@shop/catalog';
+import '@shop/catalog/styles.css';
+
+export type CatalogScreenProps = Readonly<{
+  locale: string;
+  requestAddToCart(productId: string): void;
+}>;
+
+export function CatalogScreen({
+  locale,
+  requestAddToCart,
+}: CatalogScreenProps) {
+  return (
+    <CatalogPage
+      locale={locale}
+      onProductSelected={({ productId }) => requestAddToCart(productId)}
+    />
+  );
+}
+```
+
+Callback ở đây chỉ nối ý định qua boundary. Nó không phải một workflow checkout hoàn chỉnh, và backend vẫn phải kiểm tra product, tồn kho, giá và quyền truy cập. Tránh chuyển toàn bộ `shellServices` hoặc credential xuống chỉ vì props cho phép làm vậy.
+
+Vì `CatalogPage` nằm trong cây React của shell, shell không gọi `createRoot` riêng cho nó. Component có thể nhận context từ provider phía trên nếu hai bên dùng đúng cùng context object, nhưng điều đó cũng là một dependency cần thống nhất. Mình ưu tiên props/capability rõ cho ranh giới domain thay vì bắt catalog biết mọi provider nội bộ của shell.
+
+### Lazy load từ cùng bản build
+
+Để chưa tải JavaScript catalog khi người dùng ở màn hình khác, shell có thể dùng `React.lazy` và `Suspense`:
+
+```tsx title="shell/src/LazyCatalogScreen.tsx"
+import { lazy, Suspense } from 'react';
+import type { CatalogScreenProps } from './CatalogScreen';
+import '@shop/catalog/styles.css';
+
+const CatalogPage = lazy(() =>
+  import('@shop/catalog').then((module) => ({
+    default: module.CatalogPage,
+  })),
+);
+
+export function LazyCatalogScreen({
+  locale,
+  requestAddToCart,
+}: CatalogScreenProps) {
+  return (
+    <Suspense fallback={<p role="status">Đang tải catalog…</p>}>
+      <CatalogPage
+        locale={locale}
+        onProductSelected={({ productId }) => requestAddToCart(productId)}
+      />
+    </Suspense>
+  );
+}
+```
+
+Đây là phương án thay cho static import, không phải yêu cầu dùng đồng thời hai màn hình. Bundler có thể tách chunk theo cấu hình của nó. CSS vẫn được import tĩnh trong ví dụ; muốn tải CSS theo route phải kiểm tra cơ chế extract và load CSS của tool đang dùng.
+
+`Suspense` hiển thị trạng thái chờ, không tự xử lý rejected import. Cần error boundary phù hợp cho lỗi render hoặc lazy import và chiến lược phục hồi khi chunk cũ không còn. Nó cũng không bắt mọi lỗi event handler, async task hoặc việc code làm nghẽn main thread.
+
+<Callout type="warn" title="Lazy load không phải chọn package mới nhất">
+  Chunk catalog được tham chiếu từ bản build shell hiện tại. Muốn dùng `@shop/catalog@1.6.0`, bạn vẫn phải cập nhật dependency, build và deploy consumer. Đổi `latest` trên registry không thay code trong trang đang mở.
+</Callout>
+
+## Quản lý framework CSS và side effect
+
+Ghép code trong một build giảm một số công việc loader, nhưng không xóa xung đột dependency hoặc side effect. Một package có thể rất gọn ở public API mà vẫn inject CSS global hoặc giữ state user trong singleton.
+
+### Peer dependency không phải bảo đảm singleton
+
+Peer dependency công bố yêu cầu tương thích với môi trường tiêu thụ. Với component React trong cùng cây render, React mà component dùng phải tương thích và resolve nhất quán với renderer của ứng dụng. Hai bản React ngoài ý muốn có thể gây invalid hook call; lỗi này còn có những nguyên nhân khác, không chỉ duplicate React.
+
+Kiểm tra dependency tree tại consumer:
+
+```bash
+npm ls react react-dom
+npm explain react
+```
+
+Kết quả cần được đọc cùng output bundler. Dependency tree có vẻ hợp lý chưa chứng minh package không nhúng sẵn một bản React trong JavaScript đã build. Hãy kiểm tra cả cấu hình external, bundle report và đường resolve khi dùng workspace symlink.
+
+Đừng mặc định dùng alias hay `overrides` để ép version rồi bỏ qua compatibility. Chúng có thể sửa cách resolve, nhưng không làm API của dependency cũ tự tương thích với API mới. Với context dùng chung, ngay cả hai bản cùng version của package định nghĩa context cũng có thể tạo hai object context khác nhau.
+
+### CSS và asset cũng thuộc contract
+
+Nếu catalog publish CSS riêng, consumer phải biết import ở đâu và cần quy tắc thứ tự nào. CSS Modules giúp giảm va chạm class, nhưng reset global, selector `button`, font và token vẫn có thể ảnh hưởng toàn trang.
+
+| Hạng mục | Quy ước cần công bố |
+| --- | --- |
+| Stylesheet | Entry import công khai, load một lần hay theo route |
+| Design token | Token nào bắt buộc, fallback khi thiếu, owner của theme |
+| Font và image | Có nằm trong tarball không, URL resolve ra sao ở deployment base path |
+| CSS global | Ai sở hữu reset, hạn chế selector ảnh hưởng ngoài domain |
+| Side effect | Những file không được loại bỏ khi tree-shake |
+| Cleanup | Listener, timer và subscription nào phải dọn khi component unmount |
+
+`sideEffects: ["**/*.css"]` trong ví dụ giúp bundler tôn trọng side effect của CSS ở những tool hỗ trợ metadata này. Nó không phải cấu hình đúng cho mọi package: nếu JavaScript có registration hoặc polyfill bắt buộc, phải khai báo chính xác hoặc chuyển việc khởi tạo thành API explicit.
+
+Mình tránh khởi tạo session, WebSocket hoặc listener global ngay ở top level khi import package. Import nên tải code; lifecycle của component hoặc adapter mới quyết định khi nào hoạt động bắt đầu và kết thúc. Một import được cache không có nghĩa tài nguyên của user cũ có thể dùng mãi.
+
+### SSR không thay đổi ranh giới release
+
+Một ứng dụng SSR có thể import catalog package rồi render toàn trang từ cùng bản build. Đó vẫn là build-time composition ở ranh giới domain, không tự trở thành server-side composition giữa các frontend được phát hành riêng.
+
+Package dùng trong SSR cần tránh đọc `window` hoặc `document` ở top level, phân biệt code client/server và giữ state có session scope đúng theo request. Với framework có Server Components, boundary client và việc truyền dữ liệu còn phải tuân theo quy tắc của framework; ví dụ callback client-side phía trên không áp dụng nguyên trạng qua mọi server/client boundary.
+
+Nếu server để dependency external thay vì bundle, version package vẫn thường được cố định trong image hoặc artifact triển khai. Thay đổi dependency server vẫn cần quy trình deploy tương ứng. Cách đóng gói không tự tạo independent deployment.
+
+## Version lockfile và compatibility
+
+Giả sử shell hiện dùng catalog `1.4.0`. Catalog publish `1.5.0` tương thích và không đổi props. Điều đó có nghĩa shell *có thể* nâng dependency với ít thay đổi source; nó không có nghĩa shell đã nâng rồi.
+
+### Chọn version có chủ đích
+
+Mình ưu tiên version cụ thể cho domain package ở ứng dụng tích hợp, cùng lockfile được commit. Cách này làm pull request nâng catalog dễ nhận diện và release manifest dễ đọc. Semver range vẫn có thể dùng nếu team có policy rõ; với lockfile, nó không đồng nghĩa mỗi CI run tự lấy bản mới nhất.
+
+| Khai báo | Điều nó nói | Điều cần nhớ |
+| --- | --- | --- |
+| `"@shop/catalog": "1.5.0"` | Chọn trực tiếp version này | Transitive dependencies vẫn cần lockfile |
+| `"@shop/catalog": "^1.5.0"` | Cho phép các version trong range semver | Version đã lock không tự đổi khi dùng `npm ci` |
+| `"@shop/catalog": "latest"` | Dùng dist-tag khi resolve dependency mới | Không phải runtime update; khó đọc ý định nâng version nếu không có review |
+| Workspace dependency | Consumer dùng package local theo cơ chế workspace | Source thay đổi có thể đi vào build mà không qua package release riêng |
+
+Ví dụ nâng dependency ở repository shell dùng npm và package registry đã cấu hình:
+
+```bash
+npm install --save-exact @shop/catalog@1.5.0
+
+git diff -- package.json package-lock.json
+```
+
+Review cả manifest lẫn lockfile, chạy test rồi commit cùng nhau. Trong CI, dùng:
+
+```bash
+npm ci
+```
+
+`npm ci` yêu cầu lockfile hiện có, không cập nhật manifest/lockfile và fail nếu chúng không khớp. Nếu lockfile được tạo với cấu hình ảnh hưởng dependency tree, CI phải dùng cấu hình tương ứng. Các lệnh này minh họa quy trình npm của ứng dụng giả định, không yêu cầu đổi package manager của site docs.
+
+Lockfile cố định đầu vào dependency, nhưng chưa đủ để mọi build byte-for-byte giống nhau. Node, package manager, environment, build flags và bước sinh code cũng cần được kiểm soát. Muốn rollback nhanh, giữ artifact đã build tốt hơn là trông chờ rebuild source cũ cho ra đúng kết quả cũ.
+
+### Breaking change không chỉ là đổi type
+
+Một thay đổi làm TypeScript compile fail là dấu hiệu rõ, nhưng không phải mọi breaking change đều có dấu hiệu đó.
+
+| Thay đổi của catalog | Ảnh hưởng tới consumer |
+| --- | --- |
+| Bỏ export `CatalogPage` | Import không còn resolve |
+| Thêm prop bắt buộc | Consumer cũ thiếu input |
+| Đổi `onProductSelected` từ ý định thành xác nhận đã thêm giỏ | Type có thể giữ nguyên nhưng workflow bị hiểu sai |
+| Đổi route hoặc cách parse product ID | Deep link và navigation có thể hỏng |
+| Bỏ stylesheet entry hoặc token bắt buộc | Build hoặc giao diện consumer có thể hỏng |
+| Tăng React peer range ngoài môi trường consumer | Cần nâng framework hoặc giữ version catalog cũ |
+
+Version semver là lời hứa của publisher, không thay thế test. Với thay đổi contract, mình thêm API mới hoặc input optional trước, migrate consumer, rồi mới bỏ API cũ ở release breaking phù hợp. Nếu có nhiều consumer, cần kiểm tra những version vẫn nằm trong support policy chứ không chỉ shell mới nhất.
+
+## Pipeline từ publish tới người dùng
+
+Chỗ dễ tạo hàng đợi nhất là sau khi catalog đã publish nhưng trước khi shell nhận package mới. Vì thế một thiết kế build-time tốt phải có owner cho việc cập nhật dependency, không chỉ có owner cho package.
+
+### Hai pipeline với hai trách nhiệm
+
+| Pipeline | Trách nhiệm | Artifact hoặc kết quả |
+| --- | --- | --- |
+| Catalog | Lint, typecheck, unit/component test, build, kiểm tra package, publish | Package version bất biến với changelog |
+| Shell | Chọn version, clean install, contract/integration test, build, smoke test, deploy | Artifact tích hợp và manifest các dependency |
+
+Một luồng tự động có thể là:
+
+1. Catalog publish version đã qua test, kèm mô tả thay đổi contract.
+2. Bot mở pull request ở shell để nâng catalog và lockfile.
+3. CI của shell chạy test, tạo preview và kiểm tra hành trình catalog–cart.
+4. Owner tích hợp chấp nhận bản nâng theo release policy.
+5. Build artifact một lần, promote artifact đó qua các môi trường nếu mô hình config cho phép.
+6. Deploy, theo dõi telemetry và release tính năng cho nhóm phù hợp.
+
+Bot và auto-merge cho thay đổi đủ điều kiện giúp giảm việc chờ đợi. Tuy nhiên, catalog vẫn phụ thuộc vào integration gate và deploy của consumer. “Không ai phải bấm nút thủ công” khác với “không phần nào khác phải rebuild”.
+
+Mỗi release nên ghi được ít nhất app build ID, source commit, package versions đã resolve và artifact identifier. Khi người dùng báo lỗi, bạn cần biết catalog nằm trong bản shell họ đang dùng, không chỉ version mới nhất ở registry.
+
+### Kiểm thử artifact thay vì chỉ source trong workspace
+
+Workspace có thể che lỗi đóng gói: một file tồn tại trong source nhưng không nằm trong tarball, alias resolve được nội bộ nhưng không có ở consumer, hoặc dependency được hoist tình cờ nên package quên khai báo vẫn chạy.
+
+Sau khi build package catalog, kiểm tra danh sách file dự kiến publish:
+
+```bash
+npm pack --dry-run
+```
+
+Sau đó tạo tarball thật bằng `npm pack`, cài vào một consumer fixture độc lập và chạy build/smoke test. Không chỉ test bằng path alias trỏ thẳng vào `src`, vì đường đó bỏ qua chính artifact sẽ được publish.
+
+Các lớp test nên phục vụ những lỗi khác nhau:
+
+- **Unit/component test của catalog:** interaction, loading, lỗi dữ liệu và cleanup nội bộ.
+- **Package contract test:** public exports, declaration files, CSS/asset entry và peer compatibility.
+- **Consumer integration test:** shell truyền đúng input, xử lý callback đúng nghĩa và không tạo context/framework trùng ngoài ý muốn.
+- **E2E trên artifact cuối:** vào URL catalog trực tiếp, chọn sản phẩm, kiểm tra cart và xử lý API thất bại.
+
+Typecheck giúp phát hiện mismatch tĩnh, nhưng không chứng minh callback có cùng semantics hoặc CSS không làm hỏng cart. Preview và test artifact cuối là nơi phát hiện các vấn đề ở điểm ghép.
+
+### Monorepo không xóa coupling ở bước release
+
+Trong monorepo, shell có thể consume source catalog trực tiếp qua workspace. Bạn không bắt buộc publish package lên registry cho mỗi thay đổi. Pipeline có thể dùng dependency graph để chỉ test/build những phần bị ảnh hưởng, rồi tạo artifact tích hợp mới.
+
+Điều đó tối ưu workflow, không thay đổi đơn vị deploy. Catalog sửa source mà shell cần build lại để đưa thay đổi tới người dùng thì release vẫn chung. Cart không nhất thiết phải publish version mới hoặc chạy lại mọi build riêng; code cart có thể được cache và giữ nguyên version, nhưng artifact ứng dụng cuối vẫn là đơn vị tích hợp mới.
+
+Multi-repo cũng không tự tạo deploy riêng. Nếu shell phải nâng các package và phát hành ứng dụng cuối, bạn chỉ có thêm bước registry và dependency update. Quyết định repository layout nên dựa vào ownership và tooling, không dùng nó làm bằng chứng cho independent deployment.
+
+## Rollout rollback và người dùng đang mở trang
+
+Với release chung, canary hoặc rollback thường áp dụng cho **artifact ứng dụng tích hợp**, không phải chỉ package catalog. Giả sử hai release minh họa có version như sau:
+
+| Release ứng dụng | Catalog | Cart |
+| --- | --- | --- |
+| `shop-build-A` | `1.4.0` | `2.3.0` |
+| `shop-build-B` | `1.5.0` | `2.3.0` |
+
+Nếu catalog trong build B gây lỗi, có hai hướng xử lý. Khôi phục artifact A là rollback nhanh nếu backend và cấu hình còn tương thích. Nếu cần giữ những thay đổi khác của B, tạo build C dùng catalog cũ hoặc bản fix, rồi chạy integration gate và deploy; đó là một release mới, không phải đổi package bên trong artifact B.
+
+<Callout type="warn" title="Đổi lockfile không phải rollback production">
+  Revert dependency chỉ thay đầu vào build tiếp theo. Production đang phục vụ build B vẫn giữ catalog `1.5.0` cho tới khi artifact hoặc traffic routing thay đổi. Unpublish package hay đổi dist-tag cũng không gỡ code đã bundle khỏi browser.
+</Callout>
+
+Giữ artifact cũ cùng những chunk và asset nó cần. Một trang mở từ build A có thể chưa tải lazy chunk catalog cho tới lúc người dùng bấm vào route đó; nếu deploy B xóa ngay chunk A, phiên đang hoạt động có thể gặp lỗi tải dù package hoàn toàn tương thích.
+
+Cache HTML, asset immutable và service worker cần có policy nhất quán. Người đã mở trang không tự chuyển sang JavaScript mới ngay khi bạn deploy hoặc rollback. Có thể đề nghị reload khi phát hiện build lỗi thời, nhưng phải cân nhắc draft form và thao tác đang diễn ra; không dùng reload vô hạn làm fallback mặc định.
+
+Feature flag có thể tắt đường chạy mới đã tồn tại trong bundle. Nó không chèn package mới vào một artifact cũ và không sửa mọi lỗi xảy ra ngay khi import module. Xem [Rollout và rollback](/docs/trien-khai/rollout-rollback) và [Caching](/docs/trien-khai/caching) cho các quyết định vận hành này.
+
+## Lợi ích và chi phí thực tế
+
+Build-time composition thường phù hợp khi bạn muốn bớt công việc vận hành runtime loader. Nhưng “ít cơ chế tích hợp hơn” không có nghĩa hệ thống tự nhanh, an toàn hoặc rẻ hơn trong mọi trường hợp.
+
+| Khía cạnh | Lợi ích có thể nhận | Chi phí hoặc giới hạn |
+| --- | --- | --- |
+| Type và import | Consumer kiểm tra nhiều lỗi trước deploy | Package types vẫn có thể khác behavior thật |
+| Dependency | Bundler có thể tree-shake và dedupe version tương thích | Version xung đột, package bundle sẵn dependency hoặc side effect vẫn gây trùng |
+| Loading | Không cần remote discovery riêng; có thể chia chunk theo route | Chunk thiếu, cache lệch và network failure vẫn tồn tại |
+| Developer workflow | Refactor và preview toàn ứng dụng dễ hơn khi tooling thống nhất | Consumer build có thể chậm khi dependency graph lớn |
+| Release | Có một artifact tích hợp để kiểm tra và phục hồi | Thay đổi nhỏ của domain vẫn phải qua release consumer |
+| Framework | Dùng một cây render và provider chung thuận tiện | Nâng framework dễ thành quyết định phối hợp nhiều team |
+| Isolation | Package boundary giúp tổ chức code và state | Code cùng document không có sandbox hay resource isolation |
+
+Mình đo initial JavaScript, route chunk size, thời gian build, thời gian từ package publish tới production và lượng lỗi integration trước khi kết luận. Không suy ra bundle nhỏ chỉ từ số package, hoặc suy ra tốc độ release tốt chỉ từ số pipeline riêng.
+
+Một failure domain vẫn cần được thiết kế: error boundary giúp giữ navigation khi catalog render lỗi, nhưng không cô lập mọi exception hay CPU. Nếu package không đáng tin cậy, ghép nó vào cùng JavaScript realm không phải lựa chọn bảo mật phù hợp.
+
+## Khi nào nên chọn và khi nào không nên chọn
+
+Mình chọn build-time composition làm mặc định khi frontend cùng framework, team chấp nhận một release ứng dụng và vấn đề chính là tổ chức code. Giữ boundary rõ từ đầu giúp nhiều team làm việc mà không phải vận hành remote discovery, compatibility tại runtime và nhiều bộ asset được rollout riêng.
+
+Nó cũng phù hợp để chuyển dần từ frontend nguyên khối sang module theo domain: trước tiên ngăn import chéo và xác lập owner, rồi mới quyết định domain nào cần đơn vị deploy riêng. Không bắt buộc mọi package phải trở thành remote trong tương lai.
+
+| Nhu cầu chính | Hướng cân nhắc |
+| --- | --- |
+| Tách ownership nhưng release chung vẫn đáp ứng | Build-time composition với contract và integration gate rõ |
+| Chia sẻ design system, helper hoặc SDK ổn định | Package build-time; không cần gọi đó là micro-frontend |
+| Catalog phải hotfix mà shell giữ nguyên artifact | Runtime composition hoặc cách phục vụ domain riêng phù hợp |
+| Các team cần nâng framework theo nhịp khác nhau | Đánh giá root/document riêng và chi phí bridge, thay vì ép mọi package vào một cây |
+| Cần ghép HTML từ các phần phục vụ độc lập | Đánh giá server-side composition và contract hydration/cache |
+| Cần chạy code không tin cậy với quyền hạn chế | Đánh giá threat model và security boundary thực sự, không dựa vào package |
+
+Không nên chọn mô hình này rồi cam kết “mỗi domain deploy độc lập” nếu mọi thay đổi đều phải đi qua shell build. Ngược lại, cũng không nên thêm runtime composition chỉ để đạt tên gọi micro-frontend khi release chung chưa tạo vấn đề thực tế.
+
+## Chuyển sang runtime composition khi có nhu cầu
+
+Khi thời gian chờ release consumer trở thành nút thắt, boundary package có thể là nền tảng cho bước tiếp theo. Nhưng thay một import package bằng remote import chưa đủ: code tải được không có nghĩa contract, version selection và rollback đã sẵn sàng.
+
+Một lộ trình chuyển đổi có thể là:
+
+1. **Giữ ownership:** catalog tiếp tục sở hữu hành trình và public contract, bỏ các import vào shell internals nếu còn.
+2. **Tách điểm ghép:** shell dùng adapter cho catalog để thay cơ chế tải mà không đổi toàn bộ màn hình.
+3. **Chọn mô hình render:** component cùng cây framework hay root riêng; quyết định lifecycle và provider theo mô hình đó.
+4. **Build artifact domain riêng:** quản lý entry, chunk, CSS, asset và định danh version bất biến.
+5. **Thiết kế chọn version ở runtime:** cập nhật tham chiếu mà không rebuild shell, có validate nguồn và compatibility policy.
+6. **Thêm vận hành:** loading, timeout, fallback, telemetry, canary và rollback, kể cả với phiên còn dùng version cũ.
+7. **Chạy phép thử release:** catalog đổi nội bộ tương thích, tới production, shell và cart giữ nguyên artifact.
+
+Điểm khác quan trọng là compatibility không còn chỉ được kiểm tra trong một build tích hợp. Shell cũ và catalog mới có thể gặp nhau khi chạy, nên support window và contract tests phải phản ánh các tổ hợp version được phép.
+
+Bạn có thể giữ design system hoặc platform SDK dưới dạng package build-time trong khi catalog được ghép ở runtime. Kiến trúc kết hợp là bình thường; điều cần công bố là mỗi dependency tạo coupling ở đâu, không phải ép mọi thứ dùng cùng cơ chế.
+
+## Checklist đánh giá thiết kế
+
+Trước khi chấp nhận một thiết kế build-time composition, hãy kiểm tra:
+
+- [ ] Có domain owner và public exports rõ; consumer không import store hoặc file nội bộ.
+- [ ] Contract nói cả type lẫn semantics, đặc biệt với callback và command async.
+- [ ] Dependency graph không có cycle qua shell internals hoặc mutable business store dùng chung.
+- [ ] Framework peer range đã được kiểm thử; output package không bundle framework ngoài ý muốn.
+- [ ] CSS, token, font, image và side effect có quy ước tích hợp cụ thể.
+- [ ] Manifest và lockfile được review cùng nhau; CI install theo đầu vào đã chốt.
+- [ ] Test bao gồm tarball hoặc artifact thật, không chỉ source qua workspace alias.
+- [ ] Có owner và thời gian kỳ vọng cho bước từ package publish tới consumer release.
+- [ ] Release manifest truy được package version trong từng app build.
+- [ ] Rollback dùng artifact có thể phục hồi; chunk cũ còn đủ cho phiên đang mở.
+- [ ] Team đã thống nhất release chung là đánh đổi chấp nhận được.
+
+Để kiểm chứng kết luận, chọn một thay đổi nhỏ của catalog và vẽ đường đi tới production. Nếu đường đó đi qua build và deploy shell, hãy ghi rõ đơn vị release là ứng dụng tích hợp; sau đó quyết định coupling ấy có đang cản mục tiêu của team hay không.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Giữ trách nhiệm điều phối ở shell mà không kéo nghiệp vụ của mọi domain vào đó." />
+  <Card title="Runtime composition" href="/docs/kien-truc/runtime-composition" description="Đối chiếu cách chọn artifact và những lỗi tích hợp xảy ra khi ứng dụng chạy." />
+  <Card title="Monorepo và multi-repo" href="/docs/kiem-thu-va-tooling/monorepo-multi-repo" description="Tách quyết định repository layout khỏi quyết định đơn vị release." />
+  <Card title="Deploy độc lập" href="/docs/thuc-hanh/deploy-doc-lap" description="Kiểm tra một thay đổi domain có tới production mà không rebuild phần khác hay không." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): mục Build-time integration phân tích việc ghép frontend qua library dependencies và coupling ở chu kỳ release.
+- [npm ci — npm Docs](https://docs.npmjs.com/cli/v11/commands/npm-ci): clean install từ lockfile, kiểm tra mismatch và cấu hình ảnh hưởng dependency tree.
+- [Modules: Packages — Node.js](https://nodejs.org/api/packages.html): package entry points, trường `exports` và encapsulation của public interface.
+- [Invalid hook call warning — React](https://react.dev/warnings/invalid-hook-call-warning): nguyên nhân invalid hook call, duplicate React và cách kiểm tra dependency tree.

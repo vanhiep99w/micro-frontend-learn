@@ -1,24 +1,286 @@
 ---
 title: "Kiến trúc và ranh giới"
-description: "Chọn cách chia domain và ghép giao diện với mức coupling phù hợp."
+description: "Thiết kế ranh giới domain, trách nhiệm shell và cách composition để cân bằng release độc lập với UX, coupling và chi phí vận hành."
 ---
 
-Đây là trang khung cho nhóm **Kiến trúc và ranh giới**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử team catalog muốn đưa bộ lọc mới lên production mà không chờ team cart. Bạn đã tạo hai repository và hai bundle, nhưng shell vẫn phải sửa mỗi lần catalog đổi UI, còn cart phải deploy cùng vì dùng chung store. Bạn đã tách nơi chứa code; ranh giới thay đổi vẫn chưa tách được.
+
+Nhóm **Kiến trúc và ranh giới** giúp bạn trả lời ba câu hỏi trước khi chọn công cụ: chia frontend theo năng lực nào, ai chịu trách nhiệm ở điểm ghép và ghép các phần vào lúc nào. Mình ưu tiên làm rõ domain và public contract trong một modular frontend trước; chỉ thêm ranh giới deploy khi có nhu cầu phát hành riêng đủ cụ thể để kiểm chứng.
+
+<Callout type="info" title="Phạm vi trang này">
+  Đây là bản đồ định hướng cho nhóm bài, không phải hướng dẫn cấu hình Module Federation. Ví dụ xuyên suốt là shop giả định gồm shell, catalog và cart; repository này là site tài liệu, không có ứng dụng shop chạy được. Bạn nên biết component, routing, build và deploy ở mức cơ bản. Các sơ đồ dùng text để hiển thị trực tiếp với cấu hình Fumadocs hiện tại.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bắt đầu từ thay đổi cần độc lập](#bắt-đầu-từ-thay-đổi-cần-độc-lập)
+- [Bốn ranh giới cần phân biệt](#bốn-ranh-giới-cần-phân-biệt)
+- [Bản đồ trách nhiệm của shop](#bản-đồ-trách-nhiệm-của-shop)
+  - [Domain giữ nghiệp vụ và state của mình](#domain-giữ-nghiệp-vụ-và-state-của-mình)
+  - [Shell giữ điểm ghép và lifecycle](#shell-giữ-điểm-ghép-và-lifecycle)
+- [Chọn độ hạt của điểm ghép](#chọn-độ-hạt-của-điểm-ghép)
+- [Hiểu các cách composition](#hiểu-các-cách-composition)
+  - [Build-time composition](#build-time-composition)
+  - [Client-side runtime composition](#client-side-runtime-composition)
+  - [Server-side composition](#server-side-composition)
+  - [Không nhầm thời điểm ghép với nơi render](#không-nhầm-thời-điểm-ghép-với-nơi-render)
+- [Nhận diện coupling ở điểm bàn giao](#nhận-diện-coupling-ở-điểm-bàn-giao)
+- [Kiểm chứng bằng một lần release catalog](#kiểm-chứng-bằng-một-lần-release-catalog)
+- [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
+- [Bản quyết định kiến trúc tối thiểu](#bản-quyết-định-kiến-trúc-tối-thiểu)
+- [Checklist trước khi chọn công cụ](#checklist-trước-khi-chọn-công-cụ)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bắt đầu từ thay đổi cần độc lập
 
-Chọn cách chia domain và ghép giao diện với mức coupling phù hợp.
+“Frontend lớn” chưa nói được bạn nên tách ở đâu. Nếu vấn đề là component khó đọc, hãy refactor module. Nếu bundle lớn, hãy đo dependency và code splitting. Nếu catalog thường xuyên phải chờ những thay đổi không liên quan của cart để phát hành, lúc đó ranh giới release mới là ứng viên cần xem xét.
 
-## Các bài trong nhóm
+Trước khi vẽ sơ đồ, chọn một thay đổi đại diện và viết kết quả mong muốn. Với shop, giả thuyết có thể là:
 
-- [Chia domain và ranh giới](/docs/kien-truc/chia-domain) — Chia theo năng lực nghiệp vụ thay vì chia cơ học theo từng widget.
-- [Application shell](/docs/kien-truc/application-shell) — Xác định trách nhiệm của shell, lifecycle và những việc shell không nên ôm.
-- [Build-time composition](/docs/kien-truc/build-time-composition) — Ghép frontend qua packages ở build time và đánh giá tác động lên release.
-- [Runtime composition](/docs/kien-truc/runtime-composition) — Ghép frontend ở runtime và phân tích loading, coupling và failure modes.
-- [Server-side composition](/docs/kien-truc/server-side-composition) — Ghép nội dung phía server hoặc edge và phân tích SSR, SEO, caching.
-- [Chọn kiến trúc bằng trade-off](/docs/kien-truc/chon-kien-truc) — So sánh phương án theo team autonomy, UX, vận hành và chi phí thay đổi.
+> Catalog thêm bộ lọc thương hiệu, giữ nguyên public contract. Team catalog có thể kiểm thử, phát hành và khôi phục bản đó mà không buộc shell hoặc cart build và deploy lại.
+
+Đây là mục tiêu có thể thử được. “Dùng ba remote” thì không: số remote không cho biết người dùng nhận thay đổi qua đường nào, team phải chờ ai hay khi lỗi sẽ khôi phục ra sao.
+
+Nếu toàn bộ sản phẩm do một team vận hành và release chung chưa gây cản trở, mình giữ một ứng dụng với module nghiệp vụ rõ ràng. Bạn vẫn có thể thiết kế ownership, public API và rule import mà chưa cần thêm loader, manifest hay pipeline riêng. Micro-frontend là một lựa chọn để giải quyết nhu cầu tự chủ, không phải phần thưởng cho codebase đủ lớn.
+
+## Bốn ranh giới cần phân biệt
+
+Một folder, một team, một artifact và một vùng lỗi có thể trùng nhau, nhưng không tự động trùng nhau. Cần phân biệt chúng vì mỗi loại ranh giới giải quyết một vấn đề khác.
+
+| Ranh giới | Câu hỏi cần trả lời | Ví dụ trong shop | Điều không tự có |
+| --- | --- | --- | --- |
+| Domain và code | Phần nào sở hữu model, hành vi và implementation? | Catalog giữ filter, lựa chọn SKU và catalog API adapter | Deploy riêng chỉ vì code nằm trong package riêng |
+| Ownership | Ai quyết định, review, theo dõi lỗi và khôi phục? | Team cart chịu trách nhiệm command và UI giỏ hàng | Quyền tự chủ nếu mọi thay đổi vẫn cần team khác duyệt |
+| Build và release | Artifact nào cần thay để tính năng tới người dùng? | Catalog có artifact riêng và đường chọn phiên bản có kiểm soát | Release độc lập chỉ vì có pipeline riêng |
+| Runtime và failure | Lỗi nào bị giới hạn, lỗi nào lan sang phần khác? | Lỗi tải catalog hiện fallback trong outlet | Security sandbox hoặc cách ly main thread khi cùng document |
+
+Theo cách dùng thuật ngữ trong lộ trình này, **release độc lập** là khả năng đưa một thay đổi tương thích tới người dùng mà không buộc các phần không liên quan build và deploy lại. Nó không có nghĩa mọi thay đổi đều được làm một mình: đổi public route, auth contract hay semantics của command có thể cần phối hợp.
+
+Đừng dùng ranh giới code để chứng minh ranh giới runtime. Catalog và cart ở hai repo nhưng chạy trong cùng document vẫn có thể ghi đè CSS, chặn main thread hoặc truy cập global state của nhau. Ngược lại, việc có một vùng fallback cũng không chứng minh team đó có đường release riêng.
+
+## Bản đồ trách nhiệm của shop
+
+Một cách chia khởi đầu hợp lý là giữ catalog và cart theo năng lực nghiệp vụ, còn shell làm lớp tích hợp. Đây là mô hình minh họa, không phải yêu cầu rằng cả hai domain luôn được render cùng lúc.
+
+```text
+Shop
+└── Shell: layout, navigation, route cấp app, composition
+    ├── /catalog/* → Catalog: tìm, xem sản phẩm, chọn SKU
+    └── /cart/*    → Cart: xem, thêm, sửa, xóa hàng
+
+Catalog ── command thêm SKU ──► Cart capability ──► Cart API
+Shell   ◄── summary chỉ đọc ─── Cart data layer
+```
+
+Các mũi tên mô tả contract, không phải import graph hoặc cấu trúc folder. Cart capability là giao diện công khai do cart domain sở hữu; composition layer có thể inject một adapter cho catalog. Thao tác thêm hàng không nên phụ thuộc vào việc trang cart đã mount hay chưa.
+
+### Domain giữ nghiệp vụ và state của mình
+
+Catalog sở hữu filter, query semantics, SKU được chọn và cách trình bày sản phẩm. Cart sở hữu frontend data layer của giỏ, command thêm/sửa/xóa, summary và phản hồi lỗi liên quan. Backend vẫn kiểm tra quyền, giá, tồn kho và mutation; frontend không phải nguồn quyết định cuối cùng cho các quy tắc đó.
+
+Nút “Thêm vào giỏ” nằm trên trang catalog, nhưng điều này không khiến catalog sở hữu cart store. Catalog quyết định vị trí nút, SKU gửi đi và trạng thái loading tại chỗ; cart capability xử lý command theo contract, rồi trả kết quả để catalog phản hồi cho người dùng.
+
+Tương tự, shell có thể render badge từ summary của cart mà không tự tính tổng tiền hoặc sửa dòng hàng. Khi summary chưa đọc được, badge cần biểu diễn trạng thái chưa biết; không nên suy ra giỏ trống chỉ vì một request lỗi.
+
+Ranh giới tốt giữ những phần thường thay đổi cùng nhau ở gần nhau. Tách filter, danh sách và chi tiết thành ba remote chỉ vì wireframe có ba khối thường làm bạn phải đưa state nội bộ qua nhiều điểm bàn giao hơn. Bài [Chia domain và ranh giới](/docs/kien-truc/chia-domain) đi sâu vào cách tìm những cụm thay đổi này.
+
+### Shell giữ điểm ghép và lifecycle
+
+Shell giữ khung trải nghiệm, xác định domain theo URL, cung cấp ngữ cảnh tích hợp và xử lý trạng thái tải. Với browser composition, nó còn cần quản lý mount, unmount, navigation race và cleanup theo contract đã chọn.
+
+Có thể hình dung shell như ban quản lý khu mua sắm: giữ lối đi, biển chỉ dẫn và quy tắc chung; từng cửa hàng giữ nghiệp vụ của mình. Nhưng phép so sánh dừng ở trách nhiệm: các frontend trong cùng document không có sẵn những bức tường cách ly như cửa hàng ngoài đời.
+
+Shell không nên biết query key nội bộ của catalog hay cấu trúc reducer của cart. Nếu mỗi thay đổi UI trong domain đều đòi sửa shell, hãy kiểm tra xem shell đang điều phối một public capability hay đã trở thành nơi chứa nghiệp vụ chung.
+
+Shell là vai trò kiến trúc, còn host và remote là vai trò tiêu thụ/cung cấp module trong cơ chế tích hợp như Module Federation. Chúng có thể trùng nhau nhưng không đồng nghĩa. Đọc [Application shell](/docs/kien-truc/application-shell) để thiết kế lifecycle và giới hạn trách nhiệm cụ thể.
+
+## Chọn độ hạt của điểm ghép
+
+Mình mặc định thử ranh giới theo route trước. Catalog giữ `/catalog/*`, cart giữ `/cart/*`; mỗi domain có đủ không gian để quản lý màn hình, state và subroute mà không phải đồng bộ mọi tương tác với phần khác.
+
+Một domain có thể sở hữu nhiều route. Ngược lại, một route có thể chứa nhiều fragment do các domain khác nhau sở hữu. URL không phải công thức tự động suy ra số micro-frontend.
+
+| Điểm ghép | Khi hợp lý | Chi phí cần chấp nhận |
+| --- | --- | --- |
+| App hoặc document độc lập | Một domain phục vụ trọn hành trình, link thường đủ nối trải nghiệm | Full-page navigation; thống nhất session, URL và hình thức UI |
+| Route trong shell | Cần trải nghiệm liên tục nhưng domain giữ được màn hình riêng | Routing, deep link, Back/Forward, lifecycle và fallback |
+| Fragment trong cùng trang | Một năng lực như mini-cart cần xuất hiện nhiều nơi và có nhu cầu release riêng | DOM/CSS, focus, loading, communication và nhiều version cùng hoạt động |
+
+Fragment không sai, nhưng cần lý do tốt hơn “component này dùng lại được”. Button hoặc Input thường nên là component trong design system, không phải đơn vị deploy riêng. Mini-cart có thao tác sửa/xóa hàng và owner rõ mới là ứng viên đáng cân nhắc.
+
+Một hướng đơn giản khác là để mỗi app trả document riêng và chuyển trang bằng link thông thường. Bạn không bắt buộc dựng SPA shell chỉ vì có nhiều frontend; đôi khi full-page navigation là đánh đổi hợp lý để giảm runtime orchestration.
+
+## Hiểu các cách composition
+
+*Composition* là cách các phần frontend được ghép thành trải nghiệm chung. Trước khi hỏi dùng loader nào, cần biết version của từng phần được chọn lúc nào, artifact nào phụ thuộc vào artifact nào và lỗi tích hợp xuất hiện ở đâu.
+
+### Build-time composition
+
+Shell khai báo dependency vào package catalog và cart; bundler resolve các version khi build ứng dụng tiêu thụ.
+
+```text
+Catalog package ──┐
+                  ├──► Build shell ──► Artifact ứng dụng ──► Browser
+Cart package ─────┘
+```
+
+Cách này giúp tách code, ownership và kiểm thử module mà không tạo thêm network boundary để tải app riêng. Đổi lại, publish package catalog mới chưa đổi code đang chạy: shell cần cập nhật dependency, build và deploy để người dùng nhận thay đổi.
+
+Đây là lựa chọn mình ưu tiên khi release chung vẫn phù hợp. Theo tiêu chí độc lập phát hành của lộ trình, nó thường là modular frontend với release chung, dù một số tài liệu vẫn xếp nó vào kỹ thuật tích hợp micro-frontend.
+
+Code splitting không đổi bản chất đó. Một chunk được browser tải muộn vẫn có thể thuộc cùng bản build với shell. Chi tiết contract, package và dependency được bàn trong [Build-time composition](/docs/kien-truc/build-time-composition).
+
+### Client-side runtime composition
+
+Catalog và cart có artifact riêng. Khi ứng dụng chạy, shell tải phần cần dùng và ghép nó theo route hoặc slot.
+
+```text
+Browser / Shell ──► Chọn tham chiếu catalog
+                ──► Tải entry và chunk
+                ──► Mount vào outlet hoặc render qua contract
+```
+
+Cách này mở đường cho việc thay catalog mà giữ nguyên artifact shell. Nhưng điều đó chỉ đúng khi cơ chế chọn version và contract cho phép: nếu mỗi URL catalog mới đều phải hardcode rồi rebuild shell, bạn vẫn bị ràng buộc ở bước release.
+
+Network lỗi, version không tương thích và mount thất bại trở thành vấn đề người dùng có thể gặp trong phiên sử dụng. Vì thế, runtime composition cần loading, timeout, fallback, telemetry và chính sách compatibility, không chỉ một lệnh tải module.
+
+Module Federation là một lựa chọn cung cấp/tiêu thụ module; single-spa thiên về orchestration lifecycle, import maps về module resolution. Các công cụ này có thể kết hợp và không thay thế quyết định domain ownership. Bài [Runtime composition](/docs/kien-truc/runtime-composition) giải thích đường tải và các failure modes.
+
+### Server-side composition
+
+Server hoặc edge ghép phần giao diện trước khi trả document cho browser. Chẳng hạn composer lấy nội dung sản phẩm từ catalog renderer, ghép với layout rồi trả HTML; browser tiếp tục tải asset cần cho tương tác.
+
+```text
+Browser ──► Composer tại server hoặc edge ──► Catalog renderer
+                       │
+                       └──► HTML đã ghép ──► Browser
+```
+
+Cách này đáng xem khi nội dung chính cần có trong HTML đầu tiên, chẳng hạn trang sản phẩm public. Nhưng chuyển điểm ghép sang server không loại bỏ coupling: bạn phải kiểm soát latency của renderer, cache, nội dung cá nhân hóa và khả năng khớp HTML với code hydrate.
+
+Domain renderer có thể phát hành riêng nếu contract và cách chọn phiên bản hỗ trợ điều đó. Nếu composer vẫn import mọi renderer vào một build chung, SSR không tự tạo release độc lập. Đọc [Server-side composition](/docs/kien-truc/server-side-composition) để phân biệt route integration, fragment composition và các trách nhiệm HTTP/cache.
+
+### Không nhầm thời điểm ghép với nơi render
+
+Ba tên gọi trên không phải ba hộp loại trừ nhau. Có hai trục cần tách:
+
+- **Thời điểm chọn và ghép phần frontend:** khi build hay khi hệ thống phục vụ/chạy ứng dụng.
+- **Nơi thực hiện việc ghép và render:** browser, server hoặc edge.
+
+Một ứng dụng import package catalog lúc build vẫn có thể SSR cả trang. Một composer có thể ghép catalog tại request time rồi để cart mount ở client. Server-side composition cũng có thể xảy ra khi prerender, không nhất thiết mỗi request đều gọi renderer.
+
+| Câu hỏi | Điều cần kiểm tra thay vì suy từ tên công cụ |
+| --- | --- |
+| Catalog có release riêng được không? | Artifact, version reference và contract có buộc shell rebuild không? |
+| Trang có nội dung khi chưa chạy JavaScript không? | HTML đầu tiên thực sự chứa gì? |
+| Remote lỗi có làm mất navigation không? | Điểm bắt lỗi, fallback và phạm vi isolation thực tế |
+| Rollback có áp dụng cho người đang mở tab không? | Module đã evaluate, session snapshot và cache đang giữ phiên bản nào? |
+
+Bạn có thể dùng kiến trúc hybrid, nhưng mỗi điểm ghép thêm một contract và một lớp vận hành. Mình chỉ kết hợp khi có yêu cầu cụ thể, không chọn hybrid chỉ để dùng hết các kỹ thuật.
+
+## Nhận diện coupling ở điểm bàn giao
+
+Tách bundle không xóa dependency nghiệp vụ. Catalog vẫn cần khả năng thêm SKU vào cart. Mục tiêu là để dependency đi qua một contract nhỏ, có semantics rõ, thay vì đi xuyên vào implementation nội bộ.
+
+| Loại coupling | Dấu hiệu trong shop | Hướng xử lý đầu tiên |
+| --- | --- | --- |
+| Implementation | Catalog import `cart/src/store` | Cung cấp public command/summary; cấm deep import xuyên domain |
+| State và dữ liệu | Shell sửa query cache của mọi domain | Để owner cập nhật dữ liệu; consumer đọc qua contract phù hợp |
+| Lifecycle | Chỉ thêm hàng được sau khi cart UI mount | Tách capability dữ liệu khỏi vòng đời màn hình cart |
+| Release | Mỗi thay đổi filter đều phải deploy cart | Kiểm tra shared package, version reference và contract đang kéo theo gì |
+| UI và runtime | CSS catalog đổi làm hỏng cart; script chiếm main thread | Đặt guardrail và chọn isolation theo yêu cầu, không theo số bundle |
+| Vận hành | Remote có pipeline nhưng không ai chịu trách nhiệm lỗi | Chốt owner, telemetry và đường rollback trước khi tách tiếp |
+
+Contract không chỉ là TypeScript interface. Nó còn phải nói command đã được xác nhận khi nào, lỗi nào có thể retry, route nào công khai và consumer phải làm gì khi dữ liệu chưa có. Type khớp nhưng semantics lệch vẫn có thể làm luồng mua hàng sai.
+
+Các phần cần dùng chung như design system, auth integration hay telemetry nên có owner và phạm vi rõ. Đừng biến một shared SDK thành nơi chứa toàn bộ model, store và business rule của shop; việc đó tái tạo release chung dưới tên khác.
+
+<Callout type="warn" title="Không đồng nhất fallback với isolation">
+  Error boundary có thể giúp xử lý một số lỗi render, nhưng không tự bắt lỗi tải module, mọi callback async hay script chặn main thread. Các remote cùng document cũng không tạo security boundary. Nếu tích hợp nội dung không tin cậy, cần thiết kế isolation và chính sách bảo mật riêng.
+</Callout>
+
+## Kiểm chứng bằng một lần release catalog
+
+Giả sử bạn đã chọn client-side runtime composition và muốn thử thêm bộ lọc thương hiệu. Đây là kịch bản minh họa cho pilot, không phải các lệnh chạy trong repository này.
+
+1. **Chốt thay đổi nội bộ.** Catalog thêm UI và query xử lý filter; public route, capability cart và contract shell giữ nguyên. Nếu catalog API cần mở rộng, ghi rõ dependency backend và cách rollout tương thích.
+2. **Build và kiểm thử artifact catalog mới.** Test logic nội bộ, contract và một số tổ hợp version shell/catalog còn trong cửa sổ hỗ trợ. Không chỉ test source trong workspace mà bỏ qua artifact được publish.
+3. **Publish artifact và cập nhật tham chiếu có kiểm soát.** Artifact shell và cart giữ nguyên. Cơ chế chọn version có thể là runtime config hoặc registry phù hợp; cần owner và quy trình rollout, không phải sửa tùy ý một URL production.
+4. **Thử cả phiên mới và phiên đang mở.** Phiên mới có thể chọn catalog mới; tab cũ có thể tiếp tục dùng bản đã tải. Đừng giả định cập nhật config sẽ thay code đã evaluate trong browser.
+5. **Gây lỗi tại boundary rồi khôi phục.** Thử entry/chunk không tải được và lỗi render. Kiểm tra navigation, fallback và telemetry; sau đó chọn lại bản catalog đã biết hoạt động.
+
+| Bằng chứng cần có | Dấu hiệu thiết kế chưa đạt mục tiêu |
+| --- | --- |
+| Shell và cart giữ artifact cho thay đổi tương thích này | Vẫn cần sửa shell để biết cấu trúc UI filter |
+| Phiên bản catalog đang chạy được nhận diện trong telemetry | Chỉ biết tên app, không biết tổ hợp artifact của phiên lỗi |
+| Catalog lỗi thì người dùng còn rời route được | Navigation phụ thuộc vào việc remote khởi tạo thành công |
+| Cart UI chưa mount nhưng command vẫn dùng được | Capability nghiệp vụ chỉ tồn tại trong component của trang cart |
+| Có đường khôi phục artifact và chính sách cho tab cũ | Xóa asset cũ rồi hy vọng browser sẽ tự cập nhật |
+
+Rollback đổi tham chiếu cho lần resolution tiếp theo không unload module đã chạy trong tab cũ. Cần giữ artifact cũ trong thời gian hỗ trợ và xác định khi nào cho phép tiếp tục phiên, khi nào cần reload có kiểm soát. Nếu release có migration dữ liệu backend, đổi frontend version cũng chưa chắc khôi phục được toàn bộ hành vi.
+
+Phép thử này không chứng minh toàn bộ hệ thống đã đúng. Nó cung cấp bằng chứng cho một mục tiêu cụ thể và chỉ ra coupling cần xử lý trước khi mở rộng. Hãy dùng thêm luồng E2E “tìm sản phẩm → thêm hàng → mở cart” để kiểm tra trải nghiệm xuyên domain.
+
+## Lộ trình đọc trong nhóm
+
+Đọc theo thứ tự dưới đây nếu bạn đang thiết kế lần đầu. Nếu đã có hệ thống, có thể bắt đầu ở bài tương ứng với điểm nghẽn, nhưng vẫn nên ghi lại mục tiêu và ranh giới trước khi đổi cơ chế tích hợp.
+
+| Bài | Câu hỏi chính | Đầu ra nên tự viết sau khi đọc |
+| --- | --- | --- |
+| [Chia domain và ranh giới](/docs/kien-truc/chia-domain) | Phần nào thay đổi cùng nhau và ai sở hữu? | Bản đồ capability, state và public boundary của từng domain |
+| [Application shell](/docs/kien-truc/application-shell) | Ai giữ route, lifecycle và trạng thái tích hợp? | Danh sách việc shell làm và không làm; contract với domain |
+| [Build-time composition](/docs/kien-truc/build-time-composition) | Package riêng giải quyết được gì nếu release chung? | Dependency direction và đường từ publish package đến người dùng |
+| [Runtime composition](/docs/kien-truc/runtime-composition) | Chọn, tải và ghép artifact riêng như thế nào? | Version resolution, loading/fallback và compatibility policy |
+| [Server-side composition](/docs/kien-truc/server-side-composition) | Ghép ở server/edge đem lại gì và chuyển chi phí đi đâu? | Contract renderer, cache policy và quan hệ HTML–client asset |
+| [Chọn kiến trúc bằng trade-off](/docs/kien-truc/chon-kien-truc) | Phương án nào phù hợp nhu cầu và khả năng vận hành? | Quyết định có lý do, phương án chưa chọn và điều kiện xem xét lại |
+
+Đây là lộ trình ra quyết định, không phải yêu cầu dùng cả ba cách composition. Bạn có thể kết thúc ở build-time composition nếu release chung phù hợp. Sau khi chốt nhu cầu runtime integration, mới chuyển sang nhóm [Module Federation](/docs/module-federation) hoặc [Các cách tích hợp khác](/docs/cac-cach-tich-hop) để chọn công cụ.
+
+## Bản quyết định kiến trúc tối thiểu
+
+Trước khi viết cấu hình, ghi một ADR — bản ghi quyết định kiến trúc — đủ ngắn để reviewer đọc và đủ cụ thể để thử. Ví dụ dưới đây là giả thuyết cho shop, không phải kết luận áp dụng cho mọi dự án.
+
+| Mục | Quyết định minh họa |
+| --- | --- |
+| Vấn đề | Catalog cần phát hành thay đổi UI nội bộ mà không chờ release cart |
+| Ranh giới | Catalog giữ `/catalog/*`; cart giữ `/cart/*`; shell giữ composition cấp app |
+| Lựa chọn | Client-side runtime composition theo route, vì cần release riêng và trải nghiệm trong cùng shell |
+| Contract | Route và lifecycle công khai; cart command/summary; context session tối thiểu |
+| Không thuộc phạm vi | Tạo remote cho từng widget; đưa business store vào shell; coi route guard là authorization backend |
+| Chi phí chấp nhận | Artifact resolution, compatibility, loading/fallback và telemetry xuyên phiên bản |
+| Phương án chưa chọn | Build-time composition đơn giản hơn nhưng cần release consumer; server composition chưa có yêu cầu HTML đầu tiên đủ rõ |
+| Kiểm chứng | Release filter catalog mà shell/cart giữ artifact; thử deep link, tab cũ, lỗi tải và rollback |
+| Ownership | Domain owner giữ artifact/contract; shell owner giữ integration; ghi rõ owner của runtime config và rollout |
+| Xem xét lại khi | Vẫn thường xuyên phải release đồng bộ; chi phí tích hợp vượt lợi ích tự chủ; yêu cầu SSR hoặc isolation thay đổi |
+
+Trong dự án thật, thay các nhận định bằng bằng chứng: loại thay đổi đang bị chờ, nơi pipeline chậm, yêu cầu UX và người chịu trách nhiệm sự cố. Nếu chưa biết baseline, hãy đo trước; không đặt một ngưỡng thành công tùy ý rồi dùng nó để biện minh cho kiến trúc.
+
+## Checklist trước khi chọn công cụ
+
+- [ ] Nêu được một thay đổi cần release riêng và một thay đổi vốn phải phối hợp.
+- [ ] Domain được chia theo capability và cụm thay đổi, không chỉ theo widget hoặc folder.
+- [ ] Mỗi domain có owner cho contract, kiểm thử, phát hành và khôi phục.
+- [ ] Shell giữ integration, không nhận toàn bộ state và nghiệp vụ của domain.
+- [ ] Đã chọn độ hạt app, route hay fragment với lý do cụ thể.
+- [ ] Biết version được chọn lúc nào và artifact nào phải build/deploy khi domain đổi.
+- [ ] Có semantics cho command, dữ liệu chưa biết, lỗi và lifecycle tại boundary.
+- [ ] Đã cân nhắc deep link, session, CSS, accessibility và trải nghiệm loading/fallback.
+- [ ] Có compatibility policy cho phiên cũ, asset cũ và rollback.
+- [ ] Có phép thử pilot và điều kiện để giữ modular frontend hoặc điều chỉnh ranh giới.
+
+Việc tiếp theo nên làm là chọn một tính năng sắp triển khai, vẽ bản đồ owner và ghi phần nào buộc phải đổi. Nếu chưa giải thích được vì sao một thay đổi nội bộ của catalog kéo theo cart, hãy sửa ranh giới hoặc contract trước khi thêm remote.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Chia domain và ranh giới" href="/docs/kien-truc/chia-domain" description="Bắt đầu từ capability và những phần thường thay đổi cùng nhau." />
+  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Thiết kế lớp tích hợp, lifecycle và giới hạn trách nhiệm của shell." />
+  <Card title="Chọn kiến trúc bằng trade-off" href="/docs/kien-truc/chon-kien-truc" description="Cân bằng release độc lập, UX và khả năng vận hành." />
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Đi sâu vào capability, semantics và compatibility giữa các phần." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Cam Jackson — Micro Frontends](https://martinfowler.com/articles/micro-frontends.html): lát cắt nghiệp vụ, independent deployment và các cách tích hợp ở build time, browser runtime và server.
+- [Martin Fowler — Bounded Context](https://martinfowler.com/bliki/BoundedContext.html): tư duy giữ model nhất quán trong một ranh giới và công bố điểm tích hợp giữa các context; bounded context không bắt buộc tương ứng một micro-frontend.

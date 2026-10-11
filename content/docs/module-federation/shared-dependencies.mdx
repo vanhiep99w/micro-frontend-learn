@@ -1,18 +1,427 @@
 ---
 title: "Shared dependencies"
-description: "Hiểu singleton, requiredVersion, eager và trade-off khi chia sẻ dependencies."
+description: "Hiểu share scope, singleton, requiredVersion, strictVersion và eager; chọn chính sách chia sẻ dependencies, xử lý subpath imports và kiểm chứng tương thích giữa host với remote."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell đã tải React, nhưng catalog cũng mang theo React trong artifact riêng. Nếu catalog chỉ là một app độc lập, hai bản thư viện có thể không phải vấn đề. Nhưng nếu shell render component của catalog trong cùng cây React, component dùng một React instance khác với renderer có thể gây lỗi Hooks. Ngược lại, ép cả hai dùng một instance chưa chắc an toàn nếu catalog cần API mà bản React đang chạy không có.
+
+`shared` giúp các build cung cấp và tiêu thụ dependencies qua một registry runtime chung. Bạn đổi việc tự chọn thư viện trong mỗi build lấy một hợp đồng tương thích giữa các build. Vì vậy, câu hỏi cần trả lời không chỉ là “giảm được bao nhiêu JavaScript?”, mà còn là “dependency nào phải cùng instance, và version nào các bên thực sự chấp nhận?”.
+
+<Callout type="info" title="Phạm vi và điều kiện đọc">
+  Bài dùng shop giả định gồm shell và catalog, với component React được remote expose để host render. Cấu hình minh họa dành cho `webpack.container.ModuleFederationPlugin` trong webpack 5, chạy ở browser; không phải cấu hình Next.js của site docs này. Bạn nên nắm `exposes`, `remotes` và container qua [trang Module Federation](/docs/module-federation). SSR và React Server Components cần kiểm tra integration riêng.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn dependency nào để share](#chọn-dependency-nào-để-share)
+- [Share scope hoạt động thế nào](#share-scope-hoạt-động-thế-nào)
+  - [Provider và consumer là hai vai trò khác nhau](#provider-và-consumer-là-hai-vai-trò-khác-nhau)
+  - [Module đã consume không tự đổi version](#module-đã-consume-không-tự-đổi-version)
+- [Đọc các tùy chọn shared](#đọc-các-tùy-chọn-shared)
+  - [Singleton không phải cam kết tương thích](#singleton-không-phải-cam-kết-tương-thích)
+  - [RequiredVersion và strictVersion](#requiredversion-và-strictversion)
+  - [Local fallback và import false](#local-fallback-và-import-false)
+- [Cấu hình React cho shell và catalog](#cấu-hình-react-cho-shell-và-catalog)
+  - [Policy ở cả hai build](#policy-ở-cả-hai-build)
+  - [Root package không bao phủ mọi subpath](#root-package-không-bao-phủ-mọi-subpath)
+- [Async bootstrap trước khi cân nhắc eager](#async-bootstrap-trước-khi-cân-nhắc-eager)
+  - [Tạo async boundary ở entry](#tạo-async-boundary-ở-entry)
+  - [Khi nào eager có lý do rõ ràng](#khi-nào-eager-có-lý-do-rõ-ràng)
+- [Chia sẻ code không tự chia sẻ state](#chia-sẻ-code-không-tự-chia-sẻ-state)
+- [Trade-off về bundle và quyền release](#trade-off-về-bundle-và-quyền-release)
+- [Debug lỗi shared dependencies](#debug-lỗi-shared-dependencies)
+  - [Phân loại triệu chứng](#phân-loại-triệu-chứng)
+  - [Quan sát share scope trong webpack](#quan-sát-share-scope-trong-webpack)
+- [Kiểm thử policy trước khi release](#kiểm-thử-policy-trước-khi-release)
+- [Checklist cho một dependency mới](#checklist-cho-một-dependency-mới)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Chọn dependency nào để share
 
-Bài này sẽ giúp bạn: hiểu singleton, requiredVersion, eager và trade-off khi chia sẻ dependencies.
+Mình mặc định bắt đầu với một danh sách nhỏ, có lý do cho từng entry. Không dùng `shared: { ...dependencies }` như một bước cấu hình bắt buộc: cách đó biến cả những helper thuần và dependency chỉ một remote dùng thành các điểm negotiation runtime.
 
-[Xem các bài trong nhóm Module Federation](/docs/module-federation).
+| Dependency hoặc nhu cầu | Lựa chọn khởi đầu | Lý do và điều kiện |
+| --- | --- | --- |
+| React dùng bởi component remote và renderer của shell | Share với `singleton` và version policy rõ ở các bên | Cần tránh component dùng React instance khác với renderer |
+| React DOM và các entry renderer đang dùng | Share các request thực tế, giữ tương thích với React | Root import và `react-dom/client` là các request khác nhau |
+| Thư viện context được provider ở shell và consumer ở remote dùng chung | Cân nhắc singleton cho module định nghĩa context | Provider và consumer phải tham chiếu cùng context object, đồng thời nằm trong cùng cây phù hợp |
+| Utility thuần, nhỏ, như helper định dạng chỉ catalog dùng | Giữ local | Tải trùng có thể rẻ hơn coupling và chi phí negotiation |
+| Thư viện lớn được nhiều remote dùng | Đo rồi quyết định share | Cần so sánh lượng code thực sự dùng, tree shaking, cache và initial load |
+| Store nghiệp vụ của cart | Không share chỉ để mọi remote ghi trực tiếp | State cần owner và public API; runtime sharing không thiết kế quyền ghi hộ bạn |
+| Widget có cây render độc lập và cần framework version riêng | Ưu tiên boundary cô lập nếu phù hợp | Không ép singleton chỉ vì cùng trang; kiểm tra lifecycle, CSS và các global side effects |
+
+“Cùng trang” không đồng nghĩa “phải share mọi thư viện”. Một iframe có JavaScript realm riêng; share scope của host không tự đi xuyên qua iframe. Ngược lại, hai React root trong cùng document có thể dùng chung React mà vẫn không chia sẻ context qua ranh giới root.
+
+## Share scope hoạt động thế nào
+
+Share scope là namespace runtime chứa shared keys và các version do các build cung cấp. Trong webpack, scope mặc định là `default`. Hai build chỉ có cơ hội tái sử dụng module nếu cùng tham gia đúng scope, dùng đúng key và import request của chúng thực sự được cấu hình thành shared consumer.
+
+Có thể hình dung scope như một quầy nhận linh kiện: mỗi build đăng ký linh kiện mình có, còn consumer nói nó cần loại nào và chấp nhận version nào. Nhưng quầy này không tải package từ npm, không tự nâng cấp thư viện và không chứng minh API tương thích; các module đều đến từ artifact đã build.
+
+```text
+Shell cung cấp React ────► scope: default ◄──── Catalog cung cấp React
+                          key: react
+                          các version + factory
+                                │
+                                ▼
+                          Consumer React
+                    chọn theo policy và trạng thái
+```
+
+Đây là sơ đồ registry, không phải sơ đồ network. Một provider có thể mới đăng ký factory mà chưa tải hoặc đánh giá toàn bộ code dependency.
+
+### Provider và consumer là hai vai trò khác nhau
+
+Một entry `shared.react` thường làm hai việc: cung cấp React local của build vào scope và thay các import phù hợp bằng shared consumption. Vì thế host không mặc nhiên là “máy chủ React”, còn remote không mặc nhiên chỉ được dùng React của host. Cả hai có thể là provider lẫn consumer.
+
+Với container API của webpack, `__webpack_init_sharing__('default')` khởi tạo sharing phía host, còn `container.init(scopeObject)` kết nối container với scope được truyền vào. Khi dùng `remotes` thông thường, webpack sinh phần plumbing này; đừng tự gọi lại trong mỗi component.
+
+Các khái niệm version cũng cần tách riêng:
+
+- Version **cung cấp** thường được suy ra từ `package.json` của dependency thực sự resolve khi build; lockfile giúp xác định bản đã cài.
+- `requiredVersion` là range **consumer chấp nhận**, thường lấy từ dependency declaration của ứng dụng.
+- Version **được consume** là kết quả runtime resolution. Nó có thể đến từ một build khác với build của consumer.
+
+Shell khai báo `^18.2.0` không có nghĩa shell đang cung cấp chính xác `18.2.0`. Lockfile có thể resolve một bản khác trong range. Muốn tái hiện lỗi, bạn cần cả range lẫn version thực tế của từng artifact.
+
+### Module đã consume không tự đổi version
+
+Khi chưa có singleton được load, webpack thường chọn version cao nhất trong các provider hiện có cho shared key đó. Nhưng một singleton đã được load sẽ không được thay nóng chỉ vì remote tải sau mang version mới hơn.
+
+Ví dụ minh họa: shell cung cấp và consume React `18.2.0` trước. Sau đó catalog mới được khởi tạo và cung cấp `18.3.1`. Không được kết luận React của phiên này tự nâng lên `18.3.1`. Nếu catalog yêu cầu `^18.3.1` và dùng strict singleton, nó có thể bị từ chối vì version singleton đang chạy không đáp ứng range.
+
+**Host không luôn thắng, và version cao nhất không luôn thắng bất kể thứ tự tải.** Provider availability cùng trạng thái đã consume đều ảnh hưởng kết quả. Các runtime mở rộng còn có thể có sharing strategy riêng; phải đọc đúng plugin và version đang dùng.
+
+Đây cũng là lý do rollback remote không đồng nghĩa rollback dependency đã đánh giá trong tab hiện tại. Với rollout hoặc rollback cần thay singleton, hãy kiểm thử trên một document mới và có chính sách cho tab cũ, thay vì giả định đổi URL remote là đủ.
+
+## Đọc các tùy chọn shared
+
+Bảng dưới mô tả các sharing hints của webpack 5 gốc. Đây không phải schema dùng chung cho mọi plugin mang tên Module Federation.
+
+| Tùy chọn | Ý nghĩa | Điều dễ hiểu nhầm |
+| --- | --- | --- |
+| `singleton` | Consumer dùng một version cho shared key trong scope | Không tự áp dụng cho mọi subpath, scope khác hay bản thư viện không đi qua shared consumption |
+| `requiredVersion` | Semver range consumer chấp nhận; `false` bỏ kiểm tra range | Không cài đặt hoặc nâng cấp package |
+| `strictVersion` | Không tiếp tục dùng một shared version không đáp ứng yêu cầu | Kết quả fallback hay throw còn phụ thuộc singleton và local fallback |
+| `eager` | Đưa provided và fallback module vào đường tải initial thay vì chunk async riêng | Không có nghĩa host sẽ được chọn làm provider |
+| `import` | Module local làm provider và fallback; mặc định theo shared entry | `false` tắt cung cấp và fallback local cho entry đó |
+| `shareScope` | Namespace để đăng ký và tìm module; mặc định `default` | Đổi tên scope không tạo sandbox |
+| `shareKey` | Key dùng khi đăng ký và tra cứu trong scope | Key khác nhau không chia sẻ được dù cùng package |
+| `packageName` | Package dùng để suy ra required version khi request không đủ rõ | Hữu ích cho subpath imports hoặc alias |
+| `version` | Metadata version của module được cung cấp, thường suy ra tự động | Ghi một version khác không biến code cũ thành code mới |
+
+Mình ưu tiên khai báo tường minh policy cho dependency có yêu cầu identity hoặc compatibility cao. Với utility ít ràng buộc, cấu hình đơn giản có thể đủ; đừng biến bảng này thành danh sách tùy chọn phải bật hết.
+
+### Singleton không phải cam kết tương thích
+
+`singleton: true` hướng tới một version được dùng cho **một shared key trong một scope**. Nó không kiểm tra mọi module trên trang để loại bỏ các bản trùng. Nếu catalog vẫn bundle React local qua một import không được intercept, bản đó nằm ngoài cam kết singleton của shared consumer.
+
+Vì vậy, các trường hợp sau vẫn có thể tồn tại cùng lúc:
+
+- Một React trong scope `default`, một React trong scope khác.
+- Một shared React và một React nằm bên trong bundle của package đã prebundle thư viện.
+- Các key `react`, `react/jsx-runtime` và `react-dom/client` với policy hoặc provider khác nhau.
+
+Singleton cũng không giải quyết API mismatch. Nếu React đang được chọn thiếu API catalog cần, dùng đúng một instance vẫn có thể lỗi. Và `react` với `react-dom` là hai key khác nhau: runtime không tự chọn chúng như một cặp version nguyên tử. Bạn phải quản lý sự tương thích của cặp này qua dependencies và kiểm thử.
+
+### RequiredVersion và strictVersion
+
+`requiredVersion: '^18.2.0'` diễn đạt range Semver, không phải “mọi version lớn hơn 18.2.0”. Trong ví dụ này, React `19.x` không nằm trong range. Bạn nên lấy range từ từng ứng dụng hoặc policy đã thống nhất, thay vì ghi một range rộng chỉ để bỏ warning.
+
+Với webpack gốc, có thể đọc hành vi theo bảng sau; giả sử không dùng eager consumption và dependency đã sẵn sàng qua async boundary:
+
+| Policy consumer | Khi không có version shared đáp ứng range |
+| --- | --- |
+| Không singleton, `strictVersion: true`, có fallback local | Dùng fallback local thay vì shared version không hợp lệ |
+| Không singleton, `strictVersion: true`, không có fallback | Throw khi không tìm được version hợp lệ |
+| Singleton, `strictVersion: false`, có singleton candidate | Có thể warning rồi dùng candidate không đáp ứng range |
+| Singleton, `strictVersion: true`, có candidate không hợp lệ | Throw; không âm thầm tạo singleton thứ hai từ fallback |
+| Không có provider cho key | Dùng local fallback nếu có; nếu không có thì lỗi |
+
+Khi không singleton, runtime có thể giữ nhiều version trong cùng scope và chọn bản phù hợp cho từng consumer. Điều đó hợp lý với thư viện có thể sống độc lập, nhưng không phù hợp nếu boundary bắt buộc có một identity chung.
+
+Trong webpack 5, mặc định `strictVersion` là `true` khi có local fallback và không singleton; các trường hợp khác mặc định `false`. Nó không có tác dụng kiểm tra version nếu không có required version. Với dependency quan trọng, khai báo rõ cả `requiredVersion` và `strictVersion` để người đọc config không phải đoán mặc định.
+
+Mình chọn strict singleton cho React trong mô hình component chung cây, **kèm fallback UI ở boundary remote**. Fail-fast giúp tránh chạy một tổ hợp không được hỗ trợ, nhưng có nghĩa một remote có thể không render. Error Boundary xử lý lỗi render; Promise reject từ bootstrap hoặc loader vẫn cần được bắt riêng. Fail-fast không phải lý do để làm cả shell biến mất.
+
+<Callout type="warn" title="Range hợp lệ chưa chứng minh UI chạy đúng">
+  Version thỏa Semver range chỉ là điều kiện resolution. Peer dependencies, hành vi thư viện, API thực sự dùng và contract của remote vẫn phải tương thích. Đừng đặt `requiredVersion: false` hay tắt strict chỉ để giấu lỗi mà chưa kiểm chứng tổ hợp đang chạy.
+</Callout>
+
+### Local fallback và import false
+
+Nếu không đặt `import: false`, mỗi build thường giữ dependency local để có thể cung cấp và fallback khi cần. Có local fallback không đồng nghĩa mọi bản local đều được tải hoặc đánh giá trong phiên; shared resolution có thể chọn một provider khác. Ngược lại, artifact có nhiều fallback không đồng nghĩa network chắc chắn chỉ tải một bản trong mọi tình huống.
+
+`import: false` biến entry thành consume-only: build không cung cấp dependency local qua entry đó. Ví dụ dưới là **biến thể cho catalog chạy dưới shell**, không phải policy mặc định cho mọi remote:
+
+```js title="Catalog consume-only React — phần shared"
+const deps = require('./package.json').dependencies;
+
+const shared = {
+  react: {
+    import: false,
+    singleton: true,
+    requiredVersion: deps.react,
+    strictVersion: true,
+  },
+};
+```
+
+Trong biến thể này, một provider khác trong scope phải cung cấp React phù hợp. Nếu muốn shell là provider đó, cần cấu hình shell, thứ tự bootstrap và các shared request liên quan nhất quán; `import: false` không tự chỉ định tên provider.
+
+Catalog mở standalone có thể không chạy vì không còn React local từ entry này. Nếu team cần standalone development, hãy có dev shell hoặc config dev riêng và kiểm thử lại config production. Chỉ dùng consume-only khi chấp nhận rõ dependency vận hành đó; nó không làm remote độc lập hơn.
+
+## Cấu hình React cho shell và catalog
+
+### Policy ở cả hai build
+
+Giả sử shell và catalog đều là ứng dụng React client-side, có `react` và `react-dom` trong `dependencies`. Ví dụ dưới đặt policy trong **webpack config của mỗi app**, đọc `package.json` của chính app đó. Không cần tạo một shared config file mới để hiểu ví dụ.
+
+```js title="Trong webpack.config.cjs của từng app"
+const { ModuleFederationPlugin } = require('webpack').container;
+const deps = require('./package.json').dependencies;
+
+function singletonPolicy(requiredVersion, packageName) {
+  return {
+    singleton: true,
+    requiredVersion,
+    strictVersion: true,
+    eager: false,
+    packageName,
+  };
+}
+
+const shared = {
+  react: singletonPolicy(deps.react, 'react'),
+  'react-dom': singletonPolicy(deps['react-dom'], 'react-dom'),
+  'react-dom/client': singletonPolicy(deps['react-dom'], 'react-dom'),
+  'react/jsx-runtime': singletonPolicy(deps.react, 'react'),
+  'react/jsx-dev-runtime': singletonPolicy(deps.react, 'react'),
+};
+
+// Trong plugins của shell:
+const shellFederation = new ModuleFederationPlugin({
+  name: 'shell',
+  remotes: {
+    catalog: 'catalog@https://assets.example.com/catalog/r17/remoteEntry.js',
+  },
+  shared,
+});
+
+// Trong plugins của catalog, ở config riêng của catalog:
+const catalogFederation = new ModuleFederationPlugin({
+  name: 'catalog',
+  filename: 'remoteEntry.js',
+  exposes: {
+    './ProductPage': './src/ProductPage.jsx',
+  },
+  shared,
+});
+```
+
+Đoạn trên minh họa hai phần plugin để đối chiếu, **không cài cả hai plugin vào một build**. Mỗi app giữ config riêng, đặt plugin tương ứng vào `plugins`, cùng `entry`, loaders, output và async bootstrap phù hợp. `output.uniqueName` phải khác giữa các build trên trang; public path của remote phải tìm đúng chunks của remote.
+
+Các entry JSX runtime dành cho build dùng automatic JSX transform; `react/jsx-dev-runtime` liên quan đến chế độ development. Hãy đối chiếu import graph thực tế thay vì thêm mọi subpath có thể có. Nếu dùng renderer hoặc integration khác, danh sách request cũng phải đổi theo.
+
+Ở đây vẫn có local providers ở mỗi build, để remote có thể chạy standalone với bootstrap phù hợp. Cả hai cùng khai báo singleton không đủ nếu version ranges không tương thích. Trước khi release, kiểm tra versions thực tế của React và React DOM trong lockfile, peer dependencies của các package dùng React và kết quả runtime ở các tổ hợp host–remote được hỗ trợ.
+
+### Root package không bao phủ mọi subpath
+
+Trong webpack 5 gốc, entry `react-dom` chủ yếu match request root. Nó không mặc nhiên thay `import { createRoot } from 'react-dom/client'` bằng cùng shared consumer. JSX transform cũng có thể sinh import `react/jsx-runtime` mà source code của bạn không viết trực tiếp.
+
+Có hai cách thông dụng:
+
+| Cách cấu hình | Khi chọn | Trade-off |
+| --- | --- | --- |
+| Liệt kê các request cụ thể như ví dụ trên | Bạn biết các entry thực sự dùng và muốn audit rõ | Cần cập nhật policy khi dependency graph thêm subpath |
+| Dùng prefix có dấu `/` cuối, như `react-dom/` | Package có nhiều subpath cần share | Scope có nhiều key hơn; có thể tăng overhead, nhất là development |
+
+Ví dụ prefix trong webpack gốc:
+
+```js title="Biến thể prefix — phần shared"
+const shared = {
+  'react-dom': {
+    singleton: true,
+    requiredVersion: deps['react-dom'],
+    strictVersion: true,
+  },
+  'react-dom/': {
+    singleton: true,
+    requiredVersion: deps['react-dom'],
+    strictVersion: true,
+    packageName: 'react-dom',
+  },
+};
+```
+
+Entry root vẫn cần nếu code có import root; prefix phục vụ các request dưới namespace đó. Prefix cũng không biến mọi subpath thành một module duy nhất: các request vẫn có shared keys tương ứng. Không gán `shareKey: 'react'` cho `react/jsx-runtime` chỉ để “gộp singleton”, vì hai module không có cùng exports và contract.
+
+Mình ưu tiên liệt kê request cụ thể với một boundary nhỏ. Khi chọn prefix, hãy dùng cùng cách ở các build tham gia và kiểm tra stats của cả production lẫn development. Alias, symlink, workspace packages hoặc thư viện prebundle React có thể tạo đường resolve khác; nhìn vào shared config thôi chưa đủ chứng minh không có duplicate.
+
+## Async bootstrap trước khi cân nhắc eager
+
+### Tạo async boundary ở entry
+
+Lỗi `Shared module is not available for eager consumption` thường xuất hiện khi entry cố consume đồng bộ một dependency mà runtime chưa thể cung cấp đồng bộ. Cách sửa khởi đầu với webpack là tách bootstrap bằng dynamic import, không phải bật eager cho mọi package.
+
+```js title="shell/src/index.js — entry nhẹ"
+import('./bootstrap').catch((error) => {
+  console.error('Shell bootstrap failed', error);
+  document.getElementById('root').textContent =
+    'Ứng dụng chưa khởi động được. Vui lòng tải lại trang.';
+});
+```
+
+```jsx title="shell/src/bootstrap.jsx — code render sau async boundary"
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+
+createRoot(document.getElementById('root')).render(<App />);
+```
+
+Giả sử HTML đã có phần tử `#root`. Entry không import React, React DOM hay một module gián tiếp kéo chúng vào theo đường đồng bộ. Nếu chuyển code sang `bootstrap` nhưng entry vẫn import một helper có dependency React, bạn có thể chưa tạo boundary đúng.
+
+Áp dụng nguyên tắc tương tự cho entry standalone của catalog nếu nó tự render. Khi host tiêu thụ exposed component, loader remote cũng cần async boundary và xử lý lỗi riêng. Dynamic import tạo cơ hội để runtime chuẩn bị shared dependencies; nó không sửa URL entry sai, chunk `404`, scope mismatch hay version mismatch.
+
+### Khi nào eager có lý do rõ ràng
+
+`eager: true` đưa provided và fallback module vào đường tải initial để dependency có thể dùng đồng bộ, thay vì đặt nó trong chunk async riêng. Đổi lại, các provided và fallback modules eager phải được tải theo đường này ngay cả khi runtime cuối cùng dùng provider khác.
+
+Nếu shell và mọi remote đều bật eager cho React để hết warning, bạn có thể trả lại chi phí tải trùng mà ban đầu muốn tránh. Eager cũng không buộc runtime chọn React của shell.
+
+Mình chỉ cân nhắc eager khi có yêu cầu startup đồng bộ thật sự, biết build nào chịu trách nhiệm cung cấp dependency và đã đo initial payload. Nếu cần, giới hạn nó ở điểm cung cấp có chủ đích, thường là shell, rồi kiểm tra các consumer còn lại. Với ứng dụng browser thông thường, async bootstrap là lựa chọn khởi đầu dễ quản lý hơn.
+
+## Chia sẻ code không tự chia sẻ state
+
+Shell và catalog cùng dùng một module thư viện không có nghĩa chúng dùng cùng mọi object do thư viện tạo ra. Hai lần gọi constructor vẫn tạo hai instance:
+
+```js title="Hai app cùng consume thư viện vẫn có thể tạo hai client"
+import { QueryClient } from '@tanstack/react-query';
+
+// Nếu mỗi app chạy dòng này, mỗi app có một QueryClient riêng.
+const queryClient = new QueryClient();
+```
+
+Nếu mục tiêu là dùng chung query cache, cần quyết định ai tạo client, ai quản lý lifecycle, và cách truyền instance hoặc provider vào cây render. Nếu mục tiêu là cùng context, provider và consumer cần cùng context object và cùng cây phù hợp. Share thư viện chỉ giúp giải quyết phần module identity, không thay những quyết định đó.
+
+Một module export sẵn store có thể đưa cùng object tới các consumer dùng đúng module instance, nhưng cũng tạo mutable state chung và coupling nghiệp vụ. Mình không expose store nội bộ của cart để catalog tự sửa. Catalog nên gọi API hoặc phát intent đã thống nhất; cart giữ quyền quyết định thay đổi dữ liệu. Xem [Giao tiếp và trạng thái](/docs/giao-tiep-va-trang-thai) cho thiết kế boundary này.
+
+## Trade-off về bundle và quyền release
+
+Share có thể giảm lượng code tải trùng, nhưng không có quy tắc “shared luôn làm bundle nhỏ hơn”. Một dependency local chỉ dùng vài exports có thể tree-shake tốt; shared module cần phục vụ nhiều consumer có thể giữ nhiều code hơn, tùy bundler, plugin và cách build. Đừng so kích thước một file entry rồi kết luận tổng trải nghiệm tốt hơn.
+
+Để quyết định share một thư viện lớn, đo trên cùng kịch bản trước và sau thay đổi:
+
+- Tổng bytes thực sự tải khi mở shell, vào catalog và đi qua remote thứ hai.
+- Số request và waterfall trên cold cache, warm cache.
+- Code dependency có bị tải nhiều bản hay nhiều subpath không.
+- Thời điểm shell usable, remote mounted và nội dung remote sẵn sàng.
+- Overhead do eager, local fallbacks và phần code không còn tree-shake như trước.
+
+Đánh đổi còn nằm ở quyền release. Catalog có thể deploy nội bộ riêng nhưng không tự nâng framework major nếu component của nó cần render trong cây của shell. Framework singleton trở thành một hợp đồng platform có owner, compatibility window và kế hoạch migration.
+
+Nếu cần chạy hai major framework trong lúc migration, đừng chỉ tách share scope rồi render component của bản mới trong cây của renderer cũ. Scope riêng là namespace riêng, không phải cơ chế isolation. Hãy thiết kế boundary có root và lifecycle độc lập, hoặc dùng iframe khi cần isolation mạnh hơn, rồi kiểm thử interactions thực tế.
+
+## Debug lỗi shared dependencies
+
+### Phân loại triệu chứng
+
+Đọc lỗi theo phase giúp tránh sửa sai tầng. Nếu entry hoặc chunk bị `404`, hãy sửa artifact graph và public path trước; thay `singleton` không làm file xuất hiện trên CDN.
+
+| Triệu chứng | Điều cần kiểm tra | Hướng xử lý |
+| --- | --- | --- |
+| `Shared module is not available for eager consumption` | Entry có consume đồng bộ trước async bootstrap không | Tách bootstrap và kiểm tra import graph; chỉ dùng eager nếu có yêu cầu rõ |
+| `Unsatisfied version` hoặc warning tương tự | Range consumer, version provider, singleton đã load | Chọn tổ hợp tương thích hoặc điều chỉnh policy sau kiểm chứng; không retry mù |
+| `Shared module ... doesn't exist in shared scope` | `import: false`, scope/key, provider đã được khởi tạo chưa | Bổ sung provider đúng và dùng cùng scope/key |
+| `Invalid hook call` | Duplicate React, cặp React–renderer, Rules of Hooks | Kiểm tra module identity và dependency graph; lỗi này không chỉ do federation |
+| Context nhận default hoặc không thấy provider | Context module có trùng không, provider có đúng cây không | Kiểm tra identity và tree boundary; singleton React không tự nối hai root |
+| Standalone catalog lỗi nhưng chạy dưới shell được | Dependency consume-only không có provider ở standalone | Cung cấp dev shell hoặc policy standalone có chủ đích |
+| Container đã được init với share scope khác | Loader tự init trùng hoặc dùng scope object khác | Dùng một đường khởi tạo nhất quán; không nuốt mọi lỗi `init` |
+| Duplicate dependency dù đã bật singleton | Subpath, alias, package prebundle, scope khác | Kiểm tra request thật và stats, không chỉ shared entry root |
+
+Một warning version vẫn là dấu hiệu cần điều tra dù UI đang render. Một nhánh API hiếm dùng có thể chỉ lỗi khi người dùng vào tính năng đó. Ngược lại, đừng gắn nhãn mọi lỗi React là duplicate React: vi phạm Rules of Hooks vẫn xảy ra với một instance duy nhất.
+
+### Quan sát share scope trong webpack
+
+Bạn có thể thêm đoạn chẩn đoán tạm sau khi đường tải federation cần kiểm tra đã hoàn tất. Đoạn này phải nằm trong code **được webpack biên dịch ở host**, không phải lệnh dán vào DevTools với giả định biến tồn tại trên `window`.
+
+```js title="Chẩn đoán tạm trong host webpack"
+const scope = __webpack_share_scopes__.default;
+const rows = Object.entries(scope?.react ?? {}).map(([version, entry]) => ({
+  key: 'react',
+  version,
+  from: entry.from,
+  loaded: Boolean(entry.loaded),
+  eager: Boolean(entry.eager),
+}));
+
+console.table(rows);
+```
+
+`__webpack_share_scopes__` là biến runtime đặc thù webpack; `from`, `loaded` và `eager` phản ánh metadata nội bộ tại thời điểm quan sát, không phải API nghiệp vụ ổn định. Scope có một version đã đăng ký không chứng minh mọi import React trên trang đều đi qua nó. Không gọi factory chỉ để debug vì có thể làm thay đổi trạng thái đang điều tra.
+
+Kết hợp ba lớp bằng chứng:
+
+1. **Build:** kiểm tra resolved versions, peer dependencies, stats và các module `consume shared`/`provide shared`; tìm cả subpath imports và bản thư viện bị nhúng sẵn.
+2. **Runtime:** ghi provider metadata sau các thứ tự tải khác nhau; với React, trong bản debug có kiểm soát có thể so sánh default export React phía host và remote bằng reference equality.
+3. **Hành vi:** render component dùng Hooks, đọc context do shell cung cấp và thực hiện những flow dùng API quan trọng của dependency.
+
+Log production nên chứa shell build ID, remote build ID, scope/key, required range, version quan sát được và phase lỗi. Không cần log token, user data hay toàn bộ store. Giữ chẩn đoán nội bộ ra khỏi public exports chính thức và gỡ code debug sau khi kiểm chứng.
+
+## Kiểm thử policy trước khi release
+
+Test “shell mới + catalog mới” chưa đủ cho deploy độc lập. Bạn cần kiểm thử các tổ hợp nằm trong compatibility window đã công bố, trên artifact production thực sự thay vì chỉ dựa vào dev server.
+
+| Kịch bản | Điều cần chứng minh |
+| --- | --- |
+| Shell hiện tại + catalog hiện tại | Render, Hooks, context và các flow chính hoạt động |
+| Shell cũ còn được hỗ trợ + catalog mới | Remote mới không yêu cầu dependency ngoài khả năng của shell đang chạy |
+| Shell mới + catalog cũ còn được hỗ trợ | Provider mới không làm consumer cũ bị mismatch |
+| Shell hiện tại + catalog rollback | Bản rollback còn artifacts và shared policy tương thích |
+| Shell consume singleton trước, rồi mới tải catalog | Không vô tình phụ thuộc một provider chỉ xuất hiện muộn |
+| Catalog được tải/preload trước các consumer khác | Kết quả không phá các consumer còn lại |
+| Một tổ hợp cố ý ngoài range | Strict policy từ chối như dự kiến; shell giữ navigation và fallback UI |
+| Catalog standalone nếu team hỗ trợ | Local providers hoặc dev shell đáp ứng đầy đủ dependencies |
+
+Một bài tập nhỏ có thể làm ngay với React 18, **chỉ là số version minh họa**:
+
+1. Cho shell cài `18.2.0`, catalog cài `18.3.1`, giữ React DOM tương ứng ở mỗi build và ranges `^18.2.0` ở cả hai. Kiểm tra runtime sau khi shell bootstrap rồi mới tải catalog, và trên một phiên mới với thứ tự tải khác.
+2. Siết range catalog thành `^18.3.1`. Khi shell đã consume singleton `18.2.0`, xác nhận catalog bị từ chối với strict policy và shell hiển thị fallback thay vì crash toàn trang.
+3. Dùng hai bản local không shared cho một utility không yêu cầu identity. Xác nhận chúng có thể cùng hoạt động, rồi đo xem share có thực sự giảm bytes tải trong flow của bạn không.
+
+Đừng hạ framework của ứng dụng chỉ để khớp bài tập. Chọn các version phù hợp với lab của bạn, reset document giữa các case và giữ nguyên artifacts để kết quả tái hiện được. Nếu thử nhiều remote, thêm trường hợp một remote tạo mismatch nhưng các domain khác vẫn usable.
+
+## Checklist cho một dependency mới
+
+Trước khi thêm một entry vào `shared`, mình muốn team trả lời được:
+
+- [ ] Share vì cần cùng identity hay vì muốn giảm network bytes? Có bằng chứng cho lý do đó chưa?
+- [ ] Owner của policy là ai, và build nào được phép cung cấp dependency?
+- [ ] Scope, key và các subpath imports thực tế đã được audit ở mọi build chưa?
+- [ ] `requiredVersion` phản ánh compatibility đã kiểm chứng, không phải range mở để giấu warning?
+- [ ] Singleton có đi kèm React–renderer hoặc peer dependency policy phù hợp không?
+- [ ] Đã quyết định rõ strict, local fallback, consume-only và standalone support chưa?
+- [ ] Entry có async bootstrap; eager chỉ bật tại điểm có lý do và số đo cụ thể?
+- [ ] Đã test version skew, thứ tự consume, tab mới và đường rollback?
+- [ ] Lỗi version có fallback UI và telemetry đủ để xác định artifact gây lỗi?
+- [ ] Không dùng shared như đường tắt để mọi domain ghi vào cùng mutable store?
+
+Nếu chưa trả lời được lý do share một utility, giữ nó local trước. Nếu boundary thực sự cần cùng React instance, hãy hoàn thiện policy cùng kiểm thử identity và version skew trước khi nối thêm remote.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cơ chế Module Federation" href="/docs/module-federation/co-che" description="Theo dõi container, share initialization và quá trình lấy module." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Thiết kế compatibility window và kiểm thử các tổ hợp host–remote." />
+  <Card title="Types và contracts" href="/docs/module-federation/types-contracts" description="Tách dependency policy khỏi public contract của remote." />
+  <Card title="Giao tiếp và trạng thái" href="/docs/giao-tiep-va-trang-thai" description="Xác định owner và cách truyền dữ liệu thay vì share store tùy ý." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Webpack — ModuleFederationPlugin và sharing hints](https://webpack.js.org/plugins/module-federation-plugin/): nguồn chính cho semantics của `requiredVersion`, `strictVersion`, `import`, `singleton`, `eager` và subpath sharing trong bài.
+- [Webpack — Module Federation concepts và troubleshooting](https://webpack.js.org/concepts/module-federation/): container initialization, async boundary và lỗi eager consumption.
+- [React — Invalid Hook Call Warning](https://react.dev/warnings/invalid-hook-call-warning): phân biệt duplicate React, renderer mismatch và vi phạm Rules of Hooks.
+- [Module Federation ecosystem — Shared configuration](https://module-federation.io/configure/shared.html): đối chiếu khi dùng plugin/runtime mở rộng. Không sao chép tùy chọn đặc thù của ecosystem sang webpack gốc mà chưa kiểm tra hỗ trợ.

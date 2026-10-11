@@ -1,18 +1,469 @@
 ---
 title: "Cơ chế Module Federation"
-description: "Theo dõi remote entry, container và quá trình host lấy module từ remote."
+description: "Theo dõi một federated import qua remote entry, container, share scope, module factory và cache để hiểu host thực sự lấy code từ remote như thế nào."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell vừa tải được `remoteEntry.js` của catalog với status `200`, nhưng mở trang sản phẩm vẫn gặp `ChunkLoadError`. Nếu entry đã tải xong, tại sao module chưa dùng được? Vì entry chỉ mở đường tới container; runtime còn phải khởi tạo sharing, lấy factory, tải các chunk cần thiết và đánh giá module trước khi shell nhận được exports.
+
+Bài này đi theo một request `import('catalog/ProductPage')` từ lúc webpack build shell đến lúc code catalog chạy trong browser. Khi hiểu từng mốc, bạn sẽ biết nên kiểm tra cấu hình, network, shared dependencies hay lifecycle UI, thay vì thử sửa mọi thứ cùng lúc.
+
+<Callout type="info" title="Phạm vi và điều kiện đọc">
+  Ví dụ dùng shop giả định gồm shell và catalog, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5 và remote dạng script container. Đây không phải cấu hình Module Federation cho Next.js của site docs này. Bạn nên biết JavaScript modules, Promise và code splitting; nếu chưa rõ host/remote, đọc [Module Federation](/docs/module-federation) trước. Sơ đồ text không cần plugin render bổ sung.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Hai build độc lập gặp nhau ở runtime](#hai-build-độc-lập-gặp-nhau-ở-runtime)
+  - [Remote tạo gì khi build](#remote-tạo-gì-khi-build)
+  - [Host biết gì khi build](#host-biết-gì-khi-build)
+- [Remote entry và container là hai thứ khác nhau](#remote-entry-và-container-là-hai-thứ-khác-nhau)
+  - [Ba tên cần phân biệt](#ba-tên-cần-phân-biệt)
+  - [Container API](#container-api)
+- [Theo dõi một federated import](#theo-dõi-một-federated-import)
+  - [Tải và thực thi remote entry](#tải-và-thực-thi-remote-entry)
+  - [Khởi tạo share scope](#khởi-tạo-share-scope)
+  - [Lấy module factory và tải chunk](#lấy-module-factory-và-tải-chunk)
+  - [Đánh giá module rồi trả exports](#đánh-giá-module-rồi-trả-exports)
+  - [Shell tích hợp public API](#shell-tích-hợp-public-api)
+- [Nhìn luồng qua container API](#nhìn-luồng-qua-container-api)
+- [Ví dụ tách tải module khỏi mount UI](#ví-dụ-tách-tải-module-khỏi-mount-ui)
+  - [Catalog expose một lifecycle API](#catalog-expose-một-lifecycle-api)
+  - [Shell tải rồi mount](#shell-tải-rồi-mount)
+  - [Async boundary ở entry của host](#async-boundary-ở-entry-của-host)
+- [Share scope trao đổi điều gì](#share-scope-trao-đổi-điều-gì)
+- [Cache và vòng đời trong một document](#cache-và-vòng-đời-trong-một-document)
+  - [HTTP cache khác module cache](#http-cache-khác-module-cache)
+  - [Import lại không đồng nghĩa chạy lại module](#import-lại-không-đồng-nghĩa-chạy-lại-module)
+  - [Deploy remote mới không thay code của tab cũ](#deploy-remote-mới-không-thay-code-của-tab-cũ)
+- [Tại sao entry tải được nhưng chunk vẫn lỗi](#tại-sao-entry-tải-được-nhưng-chunk-vẫn-lỗi)
+- [Chẩn đoán lỗi theo từng giai đoạn](#chẩn-đoán-lỗi-theo-từng-giai-đoạn)
+- [Giới hạn của cơ chế](#giới-hạn-của-cơ-chế)
+- [Bài tập quan sát runtime](#bài-tập-quan-sát-runtime)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Hai build độc lập gặp nhau ở runtime
 
-Bài này sẽ giúp bạn: theo dõi remote entry, container và quá trình host lấy module từ remote.
+Với import nội bộ như `import('./ProductPage')`, webpack biết implementation nằm trong dependency graph của build hiện tại. Với federated import, host chỉ biết một public request và cách tiếp cận remote. Implementation được compile bởi build catalog, rồi cung cấp qua container khi ứng dụng chạy.
 
-[Xem các bài trong nhóm Module Federation](/docs/module-federation).
+```text
+Build shell                         Build catalog
+    │                                    │
+    ▼                                    ▼
+Shell runtime + remote reference    Entry + chunks của catalog
+    │                                    │
+    └────────── gặp nhau trong browser ──┘
+```
+
+Điểm quan trọng không phải chỉ là code được tải muộn. Hai phía có artifact graph riêng: shell có thể được build hôm qua, còn catalog được build hôm nay. Khả năng ghép chúng phụ thuộc public contract và chính sách shared dependencies, không phải việc chúng cùng dùng một repository.
+
+### Remote tạo gì khi build
+
+Phần cấu hình sau minh họa build catalog. Entry, loaders và thư mục output được lược bỏ để tập trung vào federation:
+
+```js title="catalog/webpack.config.cjs — phần cấu hình liên quan"
+const { ModuleFederationPlugin } = require('webpack').container;
+
+module.exports = {
+  output: {
+    uniqueName: 'shop_catalog',
+    publicPath: 'auto',
+    chunkFilename: '[name].[contenthash].js',
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'catalog',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './ProductPage': './src/product-page.js',
+      },
+    }),
+  ],
+};
+```
+
+Webpack tạo container entry chứa giao diện truy cập các exposed modules và phần runtime liên quan. Implementation của `product-page.js` cùng dependencies có thể nằm trong những chunk khác. Cách chia chunk phụ thuộc toàn bộ cấu hình build, nên không thể suy ra số file chỉ từ một exposed key.
+
+`exposes` là bảng ánh xạ public key sang module nội bộ. Remote không mở toàn bộ cây source cho host: biết đường dẫn `src/internal-price.js` không có nghĩa host được phép lấy module đó qua container.
+
+### Host biết gì khi build
+
+Shell khai báo nơi tìm container:
+
+```js title="shell/webpack.config.cjs — phần cấu hình liên quan"
+const { ModuleFederationPlugin } = require('webpack').container;
+
+module.exports = {
+  output: {
+    uniqueName: 'shop_shell',
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shell',
+      remotes: {
+        catalog: 'catalog@https://assets.example.com/catalog/r17/remoteEntry.js',
+      },
+    }),
+  ],
+};
+```
+
+Khi gặp `import('catalog/ProductPage')`, webpack nhận ra `catalog` là remote alias, không phải npm package hay thư mục local. Nó sinh code để resolve container và lấy public key `./ProductPage`. Nó không tải source catalog về để compile chung với shell.
+
+URL `r17` trong ví dụ được chốt khi build host, nhưng code catalog vẫn tải ở runtime. Muốn host chọn `r18` mà không rebuild cần một cơ chế chọn remote khác; đó là phạm vi của [Dynamic remotes](/docs/module-federation/dynamic-remotes).
+
+## Remote entry và container là hai thứ khác nhau
+
+Remote entry là **artifact để tải**. Container là **giao diện runtime sau khi entry đã thực thi**.
+
+Trong cấu hình script remote ở trên, thực thi `remoteEntry.js` công bố container qua global tên `catalog`, thường truy cập được bằng `window.catalog`. Container không phải component; nó là object cho runtime gọi `init` và `get`.
+
+```text
+remoteEntry.js ── tải và thực thi ──► container catalog
+                                          │
+                                          └── get('./ProductPage') ──► factory
+```
+
+Entry không nhất thiết có tên `remoteEntry.js`; đó là convention được chọn bằng `filename`. Remote dạng ESM hoặc integration khác có thể công bố container theo cách khác. Đừng áp dụng `window.catalog` cho mọi artifact có chữ “federation”.
+
+### Ba tên cần phân biệt
+
+| Tên | Ví dụ | Dùng để làm gì |
+| --- | --- | --- |
+| Alias trong host | Key `catalog` của `remotes` | Prefix của `catalog/ProductPage` |
+| Tên container remote | `name: 'catalog'`, phần trước `@` | Tìm container sau khi script chạy |
+| Public module key | `./ProductPage` | Chọn exposed module trong container |
+
+Alias và container name đang giống nhau để dễ đọc, nhưng không bắt buộc. Nếu host dùng `products: 'catalog@https://…/remoteEntry.js'`, import sẽ là `products/ProductPage`, còn global container vẫn là `catalog`.
+
+`output.uniqueName` lại có nhiệm vụ khác: phân biệt runtime/chunk loading của các build cùng xuất hiện trên trang. Đặt container name đúng chưa đủ nếu hai build vẫn dùng cùng runtime name và gây collision.
+
+### Container API
+
+| API | Nhận gì | Ý nghĩa |
+| --- | --- | --- |
+| `init(shareScope)` | Object share scope từ consumer | Nối container vào cùng scope, đăng ký providers và khởi tạo sharing liên quan |
+| `get('./ProductPage')` | Public key đã expose | Trả module factory sau khi những điều kiện tải cần thiết hoàn tất |
+| `factory()` | Không có input nghiệp vụ | Đánh giá/lấy exposed module rồi trả exports |
+
+`init` và `get` là async-compatible: caller có thể `await` dù một số nhánh hoàn tất đồng bộ. Factory trong mô hình này được gọi đồng bộ; nó không phải hàm `mount` và không nhận DOM root hay props.
+
+Điểm phân biệt này giúp tránh một lỗi dễ mắc: gọi `container.get()` rồi cố render kết quả. Kết quả đó là factory, chưa phải export bạn định tiêu thụ.
+
+## Theo dõi một federated import
+
+Luồng dưới đây mô tả lần đầu shell cần module catalog. Runtime có thể preload, dùng cache hoặc xen kẽ việc tải và khởi tạo; đây là các mốc logic, không phải cam kết thứ tự tuyệt đối của từng network request.
+
+| Mốc | Chủ thể chính | Kết quả cần có trước khi đi tiếp |
+| --- | --- | --- |
+| Resolve remote | Host runtime | Container location tương ứng alias |
+| Load entry | Script loader và browser | Container xuất hiện sau khi entry chạy |
+| Initialize sharing | Host và remote runtimes | Các build tham gia cùng share scope |
+| Get module | Remote container | Factory của exposed key; chunk cần thiết đã sẵn sàng |
+| Evaluate | JavaScript runtime | Exports của module |
+| Integrate | Shell | Component được render hoặc public API được gọi |
+
+### Tải và thực thi remote entry
+
+Với `remotes` tĩnh dạng `name@url`, webpack sinh script-loading code. Bạn không cần tự thêm một script tag khác vào component để “kích hoạt” remote. Runtime chờ script load và tìm container đúng tên.
+
+Browser tải file và thực thi nó trong môi trường của document host. `200 OK` chỉ nói về HTTP response: response vẫn có thể là trang HTML fallback, JavaScript bị lỗi cú pháp, hoặc script không công bố container mà host đang tìm.
+
+Nếu đã có container phù hợp trong runtime hiện tại, đường đi có thể tái sử dụng nó thay vì tải lại entry. Vì thế khi đọc Network panel, đừng mặc định mỗi federated import phải tạo một request `remoteEntry.js` mới.
+
+### Khởi tạo share scope
+
+Host runtime khởi tạo scope, mặc định tên `default`, rồi truyền object đó cho container. Trong webpack, các API tương ứng là `__webpack_init_sharing__('default')`, `__webpack_share_scopes__.default` và `container.init(scope)`.
+
+Container tham gia scope bằng cách đăng ký các shared modules mà build của nó cung cấp và nối sharing tới remotes liên quan. Nếu catalog cũng consume remote khác, việc khởi tạo có thể lan tới container đó; runtime có cơ chế bảo vệ quá trình init khi graph chứa vòng lặp. Điều này không có nghĩa circular dependencies ở code ứng dụng trở nên dễ thiết kế hay không còn lỗi evaluation.
+
+Khởi tạo scope không phải “tải hết mọi dependency” và cũng chưa đảm bảo mọi version hợp lệ. Việc chọn provider và kiểm tra version còn diễn ra khi shared module được consume. Một lỗi version vì thế có thể lộ ra trong quá trình lấy hoặc đánh giá module, không nhất thiết ngay tại `init`.
+
+### Lấy module factory và tải chunk
+
+Runtime gọi `container.get('./ProductPage')`. Container tra mapping do `exposes` tạo ra, tải những chunk cần thiết rồi trả factory cho exposed module.
+
+Nếu public key không tồn tại, request này không tự rơi về một file có tên gần giống. Nếu chunk bị mất hoặc tải sai URL, Promise có thể reject dù entry đã tải thành công.
+
+Với ví dụ catalog, bạn có thể thấy entry, chunk của `ProductPage` và một vendor chunk. Nhưng build khác có thể gộp hoặc tách chúng khác đi; đừng viết kiểm thử dựa vào giả định “mỗi expose đúng một request”.
+
+### Đánh giá module rồi trả exports
+
+Có factory chưa đồng nghĩa toàn bộ top-level code của exposed module đã chạy. Runtime gọi factory để lấy module; lúc này webpack thực thi module chưa được đánh giá và các dependency cần thiết theo quy tắc của nó, hoặc trả kết quả đã cache.
+
+Nếu `product-page.js` có `console.log` ở top level, log đó xuất hiện khi module được đánh giá lần đầu. Nếu top level ném exception, federated import thất bại ngay cả khi các file đều đã tải xong.
+
+Trong đường container API đang xét, loading là bất đồng bộ, còn gọi factory để đánh giá module là đồng bộ. `import('catalog/ProductPage')` bọc quá trình này trong Promise và resolve thành module exports. Những `import()` khác do remote gọi về sau vẫn có thể tạo các lượt tải bất đồng bộ riêng.
+
+### Shell tích hợp public API
+
+Sau khi import resolve, shell mới có thứ để dùng: `module.default`, `module.mount` hoặc exports khác theo contract. Federation runtime không tự gọi `mount`, không chọn DOM root và không quyết định remote nằm ở route nào.
+
+Nếu export là React component, render thuộc trách nhiệm của React và shell. Nếu export là `mount`, shell gọi nó theo lifecycle contract. Cả hai đều diễn ra sau module resolution, nên “module loaded” và “UI usable” cần là hai mốc riêng khi đo trải nghiệm.
+
+## Nhìn luồng qua container API
+
+Đoạn sau mở phần plumbing để bạn đọc cơ chế. Nó chỉ minh họa đường gọi thủ công trong **code host đã được webpack compile**, sau khi script entry của remote đã chạy và cung cấp `window.catalog`.
+
+```js title="Minh họa container API, không phải loader production"
+async function readProductPageFromLoadedContainer() {
+  // Các identifier này do webpack hỗ trợ trong bundle host.
+  await __webpack_init_sharing__('default');
+
+  const container = window.catalog;
+  if (!container || typeof container.get !== 'function') {
+    throw new Error('Catalog container chưa sẵn sàng');
+  }
+
+  await container.init(__webpack_share_scopes__.default);
+  const factory = await container.get('./ProductPage');
+  const moduleExports = factory();
+
+  return moduleExports;
+}
+```
+
+Đây không phải JavaScript để paste nguyên vào DevTools console: các identifier webpack không mặc nhiên là thuộc tính global của browser. Đoạn này cũng không tải entry, không quản lý concurrency, không timeout và không thực hiện policy chọn artifact.
+
+Khi dùng `remotes` thông thường, hãy để webpack xử lý plumbing và viết `await import('catalog/ProductPage')`. Đường gọi thủ công là cách nhìn API, không phải bước bổ sung phải chạy trước mỗi import.
+
+<Callout type="warn" title="Đừng trộn hai loader cho cùng một container">
+  Tự chèn lại entry hoặc tự gọi `init` bên cạnh đường import do webpack quản lý dễ tạo race và khởi tạo trùng. Container giữ object scope đã nhận; gọi lại bằng một object scope khác có thể gây lỗi “already been initialized with a different share scope”. Nếu viết dynamic loader, cần tái sử dụng entry/container và Promise khởi tạo theo cùng định danh remote, không dùng `catch` rỗng để bỏ qua mọi lỗi init.
+</Callout>
+
+## Ví dụ tách tải module khỏi mount UI
+
+Để nhìn rõ ranh giới, ví dụ này expose một lifecycle API dùng DOM thuần thay vì React component. Tên public vẫn là `./ProductPage`; contract gồm named export `mount(root, options)` trả về cleanup function. Tên module không quyết định hình dạng exports.
+
+Các snippet là minh họa cho hai app webpack đã có entry và HTML, không phải project scaffold đầy đủ. Ví dụ không cần shared framework dependency; khi đổi sang component React trong cùng cây render, bạn cần thiết kế shared policy phù hợp ở cả hai build.
+
+### Catalog expose một lifecycle API
+
+```js title="catalog/src/product-page.js"
+console.log('[catalog] ProductPage module evaluated');
+
+export function mount(root, { onSelect }) {
+  const section = document.createElement('section');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Xem sản phẩm minh họa';
+
+  const handleClick = () => onSelect('demo-product');
+  button.addEventListener('click', handleClick);
+  section.append(button);
+  root.append(section);
+
+  return function unmount() {
+    button.removeEventListener('click', handleClick);
+    section.remove();
+  };
+}
+```
+
+Top-level log thuộc module evaluation. DOM chỉ được tạo khi host gọi `mount`, còn cleanup chỉ chạy khi host gọi hàm trả về. Federation không tự thực hiện hai thao tác sau.
+
+`root` dành riêng cho catalog; callback `onSelect` là capability shell truyền vào. Remote không cần import router nội bộ của shell để báo người dùng chọn sản phẩm.
+
+### Shell tải rồi mount
+
+```js title="shell/src/open-catalog.js"
+export async function openCatalog(root, onSelect) {
+  let phase = 'load-module';
+
+  try {
+    const catalogModule = await import('catalog/ProductPage');
+    phase = 'validate-contract';
+
+    if (typeof catalogModule.mount !== 'function') {
+      throw new Error('Catalog không cung cấp mount theo contract');
+    }
+
+    phase = 'mount';
+    const unmount = catalogModule.mount(root, { onSelect });
+    return unmount;
+  } catch (error) {
+    // Minh họa telemetry; production nên thêm build IDs và correlation ID.
+    console.error('[shell] Catalog failed', { phase, error });
+    root.textContent = 'Catalog chưa sẵn sàng. Bạn vẫn có thể dùng navigation.';
+    return () => root.replaceChildren();
+  }
+}
+```
+
+Shell gọi `openCatalog` khi route cần domain này, chờ cleanup rồi lưu nó để gọi lúc rời route. Host thật cũng phải xử lý trường hợp route đã đổi trong lúc Promise còn pending: không mount kết quả tải muộn vào một view đã bị bỏ, và không để hai lần mở route tạo hai instance ngoài ý muốn.
+
+Kiểm tra `typeof mount` chỉ xác nhận hình dạng tối thiểu, không chứng minh semantics hay toàn bộ input/output đúng contract. Tương tự, `try/catch` này bắt load rejection và lỗi mount đồng bộ, không bắt mọi exception trong event handler hoặc Promise do remote tạo sau đó.
+
+Ở đây phase `load-module` gộp entry, init, get và evaluation vì `import()` là một Promise bên ngoài. Muốn phân biệt chính xác các phase bên trong cần thêm dấu vết Network, error cause hoặc instrumentation của runtime đang dùng; không suy ra phase chỉ từ dòng `await`.
+
+### Async boundary ở entry của host
+
+Một cách bootstrap thường dùng trong webpack là để entry tải module khởi tạo ứng dụng bằng dynamic import:
+
+```js title="shell/src/index.js"
+import('./bootstrap').catch((error) => {
+  console.error('[shell] Bootstrap failed', error);
+});
+```
+
+```js title="shell/src/bootstrap.js"
+import { openCatalog } from './open-catalog';
+
+const root = document.querySelector('#catalog-root');
+if (!root) throw new Error('Thiếu catalog-root trong HTML của shell');
+
+// Demo mở catalog ngay; app thật gọi theo route và lưu cleanup.
+const cleanup = await openCatalog(root, (productId) => {
+  console.log('[shell] Selected product', productId);
+});
+
+// Khi shell rời route, gọi cleanup().
+```
+
+Async bootstrap boundary đặc biệt hữu ích khi code khởi tạo app consume shared dependencies: runtime có cơ hội hoàn tất phần tải/khởi tạo cần thiết trước khi app dùng chúng. Nó không bắt buộc preload mọi remote.
+
+Nếu gặp “Shared module is not available for eager consumption”, mình kiểm tra entry và async boundary trước. Bật `eager: true` cho mọi thư viện có thể khiến provided/fallback modules được tải sớm và phình initial payload; đó là thay đổi loading policy, không phải cách sửa mọi lỗi thứ tự khởi tạo.
+
+## Share scope trao đổi điều gì
+
+Bạn có thể hình dung share scope là bảng đăng ký providers theo shared key và version. Host và remote đưa thông tin cung cấp vào bảng; code consume chọn provider theo policy của build đó.
+
+```text
+Host providers ──► share scope "default" ◄── Catalog providers
+                            │
+                            ▼
+                  Shared dependency consumer
+```
+
+Các entries chứa thông tin runtime để lấy module, không chỉ chuỗi version. Tên scope giống nhau là điều kiện cấu hình; khi init container, object scope thực tế cũng phải nhất quán. Tạo hai object riêng đều gọi là “default” không khiến chúng trở thành cùng scope.
+
+Không có quy tắc tổng quát “host luôn thắng”. Provider được dùng phụ thuộc key, scope, versions, `requiredVersion`, `singleton`, fallback và trạng thái đã consume. Đặc biệt, một shared version đã được dùng không thể được thay nóng an toàn chỉ vì remote đến sau cung cấp version mới hơn.
+
+`init` là bước kết nối sharing, không phải chứng nhận tương thích của mọi dependency. Nó cũng không nối state nghiệp vụ: hai build cùng dùng code của một thư viện store vẫn có thể tạo hai store instance khác nhau. Chi tiết các sharing hints và chiến lược React nằm ở [Shared dependencies](/docs/module-federation/shared-dependencies).
+
+## Cache và vòng đời trong một document
+
+Sau lần tải đầu tiên, nhiều thao tác không cần lặp lại. Nhưng từ “cache” ở đây có nhiều tầng; trộn chúng sẽ dẫn tới kỳ vọng sai khi test deploy hoặc rollback.
+
+### HTTP cache khác module cache
+
+| Tầng | Giữ gì | Điều nó không làm |
+| --- | --- | --- |
+| Browser/CDN HTTP cache | Response của entry, chunk và assets theo HTTP policy | Không quyết định React/DOM instance nào được tạo |
+| Container và chunk-loading state | Container đã có, chunk đã tải và trạng thái/Promise trong runtime | Không tự dọn UI khi route đổi |
+| Webpack module cache | Kết quả module evaluation trong runtime tương ứng | Không biến mọi lần gọi hàm tạo instance thành cùng một instance |
+| Application state | Root, subscriptions, store/query client theo owner | Không được federation tự cleanup |
+
+DevTools “Disable cache” chủ yếu tác động HTTP cache khi công cụ đang mở. Nó không xóa module đã được đánh giá trong document hiện tại. Reload tạo document/runtime mới, còn entry response mới hay cũ vẫn phụ thuộc network, HTTP policy và có thể cả service worker của app.
+
+### Import lại không đồng nghĩa chạy lại module
+
+Trong cùng runtime và cùng module identity, import thành công lần hai thường dùng module đã đánh giá, không chạy lại top-level code. Với demo trên, mở catalog, cleanup rồi mở lại thường chỉ log “module evaluated” một lần, nhưng tạo DOM mới ở mỗi lần gọi `mount`.
+
+```text
+Lần đầu: import ──► load/evaluate ──► exports ──► mount A
+Lần sau: import ──► cached exports ─────────────► mount B
+```
+
+Vì vậy unmount UI không unload module khỏi webpack. Nếu remote tạo listener hoặc timer ở top level, cleanup của component không tự biết tới chúng. Mình ưu tiên tạo resources theo instance trong `mount` và dọn chúng qua cleanup, tránh dùng top-level side effects để quản lý lifecycle màn hình.
+
+Nhận định cache này áp dụng cho cùng runtime/module identity. Hai runtime độc lập hoặc hai bản dependency được bundle riêng vẫn có thể đánh giá code nhiều lần. Không nên dùng một top-level biến làm bằng chứng rằng “toàn bộ trang chỉ có đúng một instance”.
+
+### Deploy remote mới không thay code của tab cũ
+
+Giả sử document đã tải catalog `r17`; server sau đó chọn `r18` cho người dùng mới. Module `r17` đã đánh giá vẫn tồn tại trong tab cũ. Import cùng request trong tab đó không tự lấy implementation mới chỉ vì file trên server đổi.
+
+Nếu tab cũ chưa tải một lazy chunk của `r17`, nó vẫn có thể cần chunk đó khi người dùng mở chức năng khác. Xóa artifacts cũ ngay sau deploy khiến tab đang mở lỗi dù bản release mới hoàn toàn tốt.
+
+Mình mặc định giữ artifact graph bất biến theo release và một lựa chọn remote nhất quán cho mỗi document. Muốn nâng remote giữa phiên phải thiết kế riêng cho container identity, module cache, shared versions, UI instances và state; đổi URL không đủ để biến đó thành hot swap an toàn.
+
+## Tại sao entry tải được nhưng chunk vẫn lỗi
+
+Entry là điểm vào một graph, không phải bằng chứng rằng cả graph dùng được. Một tình huống giả định:
+
+```text
+Entry mong muốn: https://assets.example.com/catalog/r17/remoteEntry.js
+Chunk đúng:      https://assets.example.com/catalog/r17/731.a1b2.js
+Chunk tải nhầm:  https://shop.example.com/731.a1b2.js
+```
+
+Nếu remote tạo chunk URL theo base của shell thay vì nơi lưu artifacts catalog, entry có thể `200` nhưng chunk bị `404`. `output.publicPath: 'auto'` giúp webpack suy ra base trong nhiều script-loading setup; bạn vẫn phải kiểm tra URL thực tế nếu dùng proxy, CDN hoặc topology khác.
+
+Các nguyên nhân cần tách biệt:
+
+- **Sai base URL:** chunk được tìm ở origin/path không thuộc release catalog.
+- **Deploy không đồng bộ:** entry mới xuất hiện trước khi chunks của nó được publish đầy đủ.
+- **Artifact cũ bị xóa:** entry hoặc tab cũ vẫn tham chiếu chunk đã mất.
+- **Runtime collision:** hai build dùng cùng `output.uniqueName` hoặc container names xung đột.
+- **Asset pipeline khác:** CSS, font hoặc ảnh cần thêm rules và URL policy riêng; chunk JavaScript tải được chưa đảm bảo mọi assets tải được.
+
+Với script remote, tải cross-origin không có nghĩa mọi lỗi đều là CORS. Classic script loading, ESM, `fetch` manifest, CSS/font và API requests có yêu cầu browser khác nhau. Hãy đọc request type và lỗi cụ thể; CSP hoặc MIME sai cũng có thể chặn code.
+
+Mình kiểm tra URL chunk và Initiator trước khi sửa `publicPath`. Nếu URL đúng nhưng artifact thiếu, đổi base URL chỉ che khuất lỗi publish hoặc retention.
+
+## Chẩn đoán lỗi theo từng giai đoạn
+
+| Giai đoạn | Dấu hiệu thường gặp | Kiểm tra trước |
+| --- | --- | --- |
+| Resolve/load entry | `ScriptExternalLoadError`, entry không tải được hoặc container missing | Alias, container name, URL, status/body, CSP và remote format |
+| Initialize sharing | “already been initialized with a different share scope” | Có loader thứ hai, script bị chèn lại hoặc object scope không nhất quán không |
+| Get exposed module | “Module … does not exist in container” | Public key có `./`, đúng hoa/thường và đúng release đã deploy không |
+| Load dependent chunk | `ChunkLoadError` | URL thực tế, response body, `publicPath`, artifact retention và deploy graph |
+| Consume shared dependency | Version mismatch hoặc eager-consumption error | Scope/key, version policy, async bootstrap và thời điểm consume |
+| Evaluate module | Exception trước khi import resolve | Stack trace và top-level code của exposed module/dependencies |
+| Integrate UI | Import resolve nhưng export không đúng hoặc mount/render lỗi | Export shape, input contract, framework compatibility và shell boundary |
+| Run domain behavior | UI hiện nhưng tương tác/API lỗi | Lifecycle, event handlers, domain API và business state |
+
+Thông điệp cụ thể có thể khác theo webpack/plugin version. Bảng là hướng tìm nguyên nhân, không phải parser phân loại lỗi theo string. Một Promise reject từ `import()` có thể bọc lỗi ở nhiều mốc bên trong.
+
+Khi gửi telemetry, ghi ít nhất host build, remote build nếu xác định được, remote alias, exposed key, phase quan sát được và error cause. Nếu entry chưa chạy, có thể bạn chỉ biết release dự kiến từ config chứ chưa xác nhận build thực tế; nên phân biệt hai thông tin đó. Không gửi token hoặc query nhạy cảm trong URL.
+
+Retry chỉ hữu ích khi nguyên nhân có khả năng tạm thời và loader cho phép phục hồi. Missing public key hoặc version mismatch cố định không được chữa bằng retry liên tục. Ngay cả với lỗi network, không giả định gọi lại cùng `import()` luôn tạo request mới: runtime có thể giữ trạng thái lỗi; cần kiểm chứng hành vi loader cụ thể và cung cấp đường reload khi cần.
+
+<Callout type="warn" title="Load boundary không thay thế UI boundary">
+  Bắt Promise reject của federated import bảo vệ đường tải module. React Error Boundary, nếu dùng React, bảo vệ một phần lỗi render/lifecycle của cây UI, không tự bắt mọi lỗi event handler hay async task. Shell cần loading/fallback và lifecycle policy riêng; federation không cung cấp chúng chỉ bằng khai báo `remotes`.
+</Callout>
+
+## Giới hạn của cơ chế
+
+Module Federation nối modules giữa các build; nó không cung cấp sandbox. Script catalog chạy trong document shell với quyền JavaScript tương ứng của trang, có thể truy cập DOM và những tài nguyên origin cho phép. Một remote khác origin không có nghĩa nó được cách ly như iframe khác origin.
+
+Cơ chế này cũng không tự giải quyết các ranh giới sau:
+
+- Public exports tải được không chứng minh contract tương thích; types lúc build không validate implementation vừa deploy.
+- Dependency singleton không đảm bảo CSS isolation, route ownership hay dùng chung state instance.
+- Cleanup của UI không xóa module cache hoặc thay thế shared modules đã consume.
+- Luồng browser script container không chứng minh cùng cấu hình hoạt động với SSR, hydration hoặc React Server Components.
+- Một container có thể consume container khác, nhưng chuỗi phụ thuộc đó tăng failure paths và coupling vận hành.
+
+Nếu bạn chỉ cần tải muộn code thuộc cùng một release, dynamic import local thường đủ. Chọn federation khi thực sự cần boundary giữa các build và sẵn sàng quản lý contract cùng artifact lifecycle; không chọn chỉ để biến mọi module thành network dependency.
+
+## Bài tập quan sát runtime
+
+Thực hiện trên hai app webpack thử nghiệm của bạn, không trên site docs này. Dùng demo DOM ở trên để tránh nhầm lỗi sharing React với lỗi loader.
+
+1. **Quan sát lần tải đầu.** Mở document mới, vào catalog và xem Network theo cột Initiator. Tìm entry rồi các chunk cần thiết; ghi thời điểm log “module evaluated”. Số request không phải giá trị cố định.
+2. **Phân biệt evaluation và mount.** Rời route, gọi cleanup rồi quay lại trong cùng document. Xác nhận DOM được tạo lại nhưng top-level log không xuất hiện lại cho module đã cache.
+3. **Chặn entry.** Dùng request blocking, reload rồi mở catalog. Shell phải hiển thị fallback; các chức năng không phụ thuộc catalog vẫn dùng được.
+4. **Chặn một chunk.** Xác định chunk cần khi lấy `ProductPage`, chặn nó rồi reload. Entry vẫn có thể tải thành công, nhưng import reject; kiểm tra phase và URL lỗi.
+5. **Làm sai public key.** Trong bản test, import `catalog/UnknownPage`. Quan sát lỗi get/module mapping thay vì tìm một file `UnknownPage.js` trên CDN.
+6. **Gây lỗi evaluation.** Trong bản test remote, thêm `throw new Error('demo evaluation failure')` ở top level. Phân biệt file tải xong với module đánh giá thành công; bỏ thay đổi sau khi test.
+7. **Kiểm tra tab cũ.** Giữ tab đã tải `r17`, triển khai `r18` và mở tab mới theo config chọn release mới. Tab cũ không tự thay implementation. Nếu có lazy feature chưa mở, xác nhận chunks của release cũ vẫn tồn tại.
+
+Với app dùng shared framework, thêm kiểm thử mismatch version và eager consumption theo policy đã chọn. Kết quả cần ghi lại là artifact nào được dùng, import thất bại ở đâu và shell còn usable thế nào, không chỉ “hai dev server nối được với nhau”.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cấu hình exposes và remotes" href="/docs/module-federation/exposes-remotes" description="Thiết kế public keys, alias và container location cho từng build." />
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Đi sâu vào providers, singleton, version policy, fallback và eager." />
+  <Card title="Dynamic remotes" href="/docs/module-federation/dynamic-remotes" description="Chọn artifact ở runtime và quản lý loader, cache cùng rollback." />
+  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Đặt routing, loading, lifecycle và failure boundary quanh remote." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack — Module Federation concepts](https://webpack.js.org/concepts/module-federation/): loading và evaluation, dynamic containers, container API, sharing, async bootstrap và troubleshooting.
+- [webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): `name`, `filename`, `remotes`, `remoteType`, `exposes` và sharing hints.
+- [webpack — Public Path](https://webpack.js.org/guides/public-path/): cách thiết lập base URL cho assets, bao gồm automatic public path.
+- [webpack — Module methods](https://webpack.js.org/api/module-methods/#import-1): dynamic import và Promise trả về module.

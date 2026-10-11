@@ -1,23 +1,174 @@
 ---
 title: "Nền tảng"
-description: "Hiểu bài toán, lợi ích và chi phí trước khi chọn micro-frontend."
+description: "Hiểu bài toán, lợi ích, chi phí và ranh giới phát hành của micro-frontend trước khi chọn kiến trúc hoặc công cụ."
 ---
 
-Đây là trang khung cho nhóm **Nền tảng**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử team catalog đã làm xong bộ lọc sản phẩm, nhưng chưa thể đưa lên production vì phải chờ team cart hoàn tất thay đổi giỏ hàng trong cùng một bản release. Bạn đã chia code thành component và folder riêng; việc phát hành vẫn bị buộc vào nhau. Đây là loại vấn đề cần xem xét trước khi hỏi “cấu hình Module Federation thế nào?”.
+
+Nhóm **Nền tảng** giúp bạn phân biệt vấn đề tổ chức code với vấn đề phát hành, hiểu cái giá của việc tách frontend và chọn một điểm bắt đầu phù hợp. Mình khuyên bạn bắt đầu bằng một frontend có module nghiệp vụ rõ ràng; chỉ thêm ranh giới deploy khi có nhu cầu cụ thể để kiểm chứng.
+
+<Callout type="info" title="Phạm vi nhóm bài">
+  Đây là trang định hướng, không phải hướng dẫn cài đặt. Bạn chỉ cần biết component, build và deploy ở mức cơ bản; chưa cần biết Module Federation. Ví dụ xuyên suốt là shop gồm shell, catalog và cart, dùng để giải thích kiến trúc, không phải ứng dụng lab có sẵn trong repository này.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bắt đầu từ điểm nghẽn thực tế](#bắt-đầu-từ-điểm-nghẽn-thực-tế)
+- [Mô hình shop để cùng hình dung](#mô-hình-shop-để-cùng-hình-dung)
+- [Lợi ích luôn đi cùng chi phí](#lợi-ích-luôn-đi-cùng-chi-phí)
+- [Những điều không nên đánh đồng](#những-điều-không-nên-đánh-đồng)
+- [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
+- [Kiến thức cần chuẩn bị](#kiến-thức-cần-chuẩn-bị)
+- [Bài tập trước khi chọn công cụ](#bài-tập-trước-khi-chọn-công-cụ)
+  - [Viết giả thuyết cho một ranh giới](#viết-giả-thuyết-cho-một-ranh-giới)
+  - [Tự kiểm tra trước khi đi tiếp](#tự-kiểm-tra-trước-khi-đi-tiếp)
+- [Bước tiếp theo](#bước-tiếp-theo)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bắt đầu từ điểm nghẽn thực tế
 
-Hiểu bài toán, lợi ích và chi phí trước khi chọn micro-frontend.
+“Frontend lớn quá” chưa cho bạn biết cần thay đổi kiến trúc ở đâu. Một component khó đọc, một pipeline chậm và một team phải chờ release của team khác là ba vấn đề khác nhau. Nếu dùng cùng một giải pháp cho cả ba, bạn có thể chỉ chuyển sự phức tạp từ source code sang runtime và vận hành.
 
-## Các bài trong nhóm
+| Điều bạn quan sát được | Hướng xử lý nên xem trước |
+| --- | --- |
+| Component dài, logic nghiệp vụ lẫn nhau | Tách component và module theo domain, làm rõ giao diện công khai |
+| Không biết ai review hoặc xử lý lỗi một phần | Làm rõ ownership, quy tắc import và đường tiếp nhận sự cố |
+| Build hoặc CI chậm | Đo bước chậm, kiểm tra cache và phạm vi build/test |
+| Trang tải chậm hoặc bundle lớn | Đo hiệu năng, xem dependency, code splitting và lazy loading |
+| Thay đổi nội bộ một domain luôn phải chờ release của domain khác | Đánh giá khả năng phát hành độc lập và chi phí composition |
+| Cần thay dần một phần ứng dụng cũ | Đánh giá migration theo route hoặc phạm vi nghiệp vụ có contract rõ |
 
-- [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi) — Phân biệt micro-frontend với chia component và hiểu mục tiêu deploy độc lập.
-- [Khi nào nên và không nên dùng?](/docs/nen-tang/khi-nao-nen-dung) — So sánh monolith, modular frontend và micro-frontend theo nhu cầu thực tế.
-- [Kiến thức cần có](/docs/nen-tang/kien-thuc-can-co) — Ôn JavaScript modules, TypeScript, bundlers, HTTP và kiến thức frontend cần thiết.
-- [Thuật ngữ cốt lõi](/docs/nen-tang/thuat-ngu) — Làm rõ host, remote, shell, composition, isolation và independent deployment.
-- [Team ownership và Conway's Law](/docs/nen-tang/team-ownership) — Gắn ranh giới ứng dụng với team ownership và trách nhiệm vận hành.
+*Modular frontend* tổ chức code thành các module có ranh giới rõ, nhưng vẫn có thể build và deploy như một đơn vị. *Micro-frontend* đi thêm một bước: các phần frontend có khả năng phát hành độc lập được ghép thành một trải nghiệm lớn hơn. Vì thế, tách module thường là bước có ích ngay cả khi cuối cùng bạn không chọn micro-frontend.
+
+Câu hỏi đáng giữ trong suốt nhóm bài này là: **thay đổi nào cần tới người dùng mà không buộc những phần không liên quan phải phát hành lại?** Nếu chưa nêu được một thay đổi như vậy, mình chưa vội tạo remote.
+
+## Mô hình shop để cùng hình dung
+
+Trong shop minh họa, shell giữ khung trải nghiệm và ghép phần nội dung theo URL. Catalog phụ trách tìm, lọc và xem sản phẩm; cart phụ trách trải nghiệm giỏ hàng.
+
+```text
+Shop: một trải nghiệm cho người dùng
+└── Shell: layout, navigation, composition
+    ├── Catalog: tìm, lọc, xem sản phẩm
+    └── Cart: xem và cập nhật giỏ hàng
+```
+
+Đây là sơ đồ trách nhiệm, không phải cấu trúc folder hay yêu cầu rằng cả hai phần luôn xuất hiện cùng lúc. Shell có thể chọn catalog ở `/products` và cart ở `/cart`; cách ghép cụ thể sẽ được học ở nhóm Kiến trúc.
+
+Giả sử catalog thêm một cách sắp xếp sản phẩm mà không đổi giao diện tích hợp. Mục tiêu là team catalog có thể kiểm thử, phát hành và theo dõi thay đổi đó trong khi artifact của shell và cart giữ nguyên. Shell có thể cần cập nhật cấu hình chọn phiên bản catalog; điều đó không nhất thiết yêu cầu build lại shell, nhưng đường cập nhật phải có kiểm soát và không trở thành một hàng chờ thủ công mới.
+
+Vậy catalog và cart có hoàn toàn độc lập không? Không. Luồng “xem sản phẩm → thêm vào giỏ → mở cart” vẫn đi qua nhiều ranh giới, nên cần **contract**: thỏa thuận về giao diện, dữ liệu và hành vi mà các bên sử dụng. Thay đổi contract có thể cần phối hợp; mục tiêu là giảm phối hợp bắt buộc cho thay đổi nội bộ, không phải loại bỏ mọi trao đổi giữa các team.
+
+Backend vẫn phải kiểm tra quyền, giá, tồn kho và thao tác cập nhật giỏ. Tách frontend không biến UI thành nơi có thể tự quyết các quy tắc đó, cũng không bắt buộc mỗi phần frontend phải có một microservice riêng.
+
+## Lợi ích luôn đi cùng chi phí
+
+Bạn không chỉ tách một bundle. Bạn tạo thêm các ranh giới cần duy trì qua nhiều phiên bản, nhiều lần release và nhiều tình huống lỗi.
+
+| Lợi ích muốn đạt | Điều phải làm để lợi ích đó có thật |
+| --- | --- |
+| Phát hành catalog mà không chờ cart | Có artifact và đường phát hành riêng; contract tương thích; cơ chế chọn phiên bản rõ ràng |
+| Team chủ động trong phạm vi của mình | Có quyền quyết định trong guardrail, owner vận hành, dashboard và phương án khôi phục |
+| Migration từng phần thay vì viết lại toàn bộ | Giữ phần cũ và mới tích hợp được; quản lý routing, auth và trải nghiệm trong giai đoạn chuyển tiếp |
+| Code nghiệp vụ ít phụ thuộc chéo hơn | Không import module nội bộ của app khác hoặc dùng shared store như đường tắt |
+| Giới hạn ảnh hưởng của một số lỗi | Thiết kế isolation, loading, fallback và cleanup; kiểm chứng giới hạn thực tế của cơ chế ghép |
+
+Chi phí không chỉ nằm trong pipeline. Nếu các phần tải riêng khi chạy, bạn cần xử lý lỗi tải code và trạng thái chờ. Khi nhiều artifact cùng tồn tại, cần biết người dùng đang chạy tổ hợp phiên bản nào; khi dùng chung trang, CSS, dependency và main thread vẫn có thể gây ảnh hưởng chéo.
+
+Ngoài kiểm thử từng phần, bạn vẫn cần kiểm chứng contract và những luồng người dùng quan trọng xuyên ứng dụng. Catalog render đúng và cart render đúng không đủ chứng minh nút “Thêm vào giỏ” hoạt động đúng khi ghép chúng lại.
+
+<Callout type="warn" title="Độc lập phát hành không phải độc lập tuyệt đối">
+  Micro-frontend không tự làm trang nhanh hơn, không tự cách ly lỗi hay tạo security boundary. Nếu các team vẫn phải sửa và deploy mọi phần cùng nhau cho hầu hết thay đổi, nhiều remote có thể chỉ tạo ra một hệ thống phát hành ràng buộc với chi phí vận hành cao hơn.
+</Callout>
+
+Bài [Khi nào nên và không nên dùng?](/docs/nen-tang/khi-nao-nen-dung) sẽ đi sâu vào cách cân nhắc những chi phí này. Ở đây, bạn chỉ cần nhớ: lợi ích cần gắn với một hành vi có thể kiểm chứng, không phải số lượng repository hay công cụ đã cài.
+
+## Những điều không nên đánh đồng
+
+Có vài dấu hiệu nhìn giống micro-frontend nhưng không đủ để kết luận hệ thống đã có ranh giới phát hành tốt:
+
+- **Component riêng không đồng nghĩa với đơn vị deploy riêng.** Nó có thể vẫn thuộc cùng một bản build và release.
+- **Lazy loading không đồng nghĩa với deploy độc lập.** Một chunk được tải muộn vẫn có thể được tạo và phát hành cùng shell.
+- **Nhiều repo hoặc nhiều pipeline không chứng minh tính độc lập.** Nếu version phải tăng đồng bộ, các phần vẫn ràng buộc ở khâu tích hợp.
+- **Micro-frontend không đồng nghĩa với Module Federation.** Federation là một cách cung cấp và tiêu thụ module giữa các build, không phải toàn bộ kiến trúc.
+- **Shell không luôn đồng nghĩa với host.** Shell là vai trò điều phối trải nghiệm; host và remote là vai trò tích hợp, thường được dùng trong ngữ cảnh federation.
+- **Một team không bắt buộc tương ứng với một remote.** Ranh giới nên bám vào phạm vi nghiệp vụ và nhu cầu thay đổi, không bám máy móc vào sơ đồ tổ chức.
+
+Bạn cũng không cần nhiều framework để áp dụng micro-frontend. Mặc định, mình giữ stack quen thuộc và nhất quán để giảm chi phí tooling, dependency và hỗ trợ vận hành; chỉ thêm khác biệt khi có lý do rõ, chẳng hạn migration từng phần từ ứng dụng cũ.
+
+Khi gặp tên gọi mới, dùng [Thuật ngữ cốt lõi](/docs/nen-tang/thuat-ngu) để tra nghĩa và giới hạn của nó. Đừng suy ra khả năng cách ly hoặc phát hành chỉ từ chữ `remote` trong cấu hình.
+
+## Lộ trình đọc trong nhóm
+
+Nếu mới bắt đầu, bạn có thể đi theo thứ tự dưới đây. Mỗi bài trả lời một câu hỏi khác nhau; trang tổng quan này không thay thế các phần giải thích chi tiết đó.
+
+| Thứ tự | Bài đọc | Điều bạn nên trả lời được sau khi đọc |
+| --- | --- | --- |
+| 1 | [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi) | Vì sao ranh giới phát hành khác với việc tách component hoặc package? |
+| 2 | [Khi nào nên và không nên dùng?](/docs/nen-tang/khi-nao-nen-dung) | Điểm nghẽn hiện tại có đáng để trả thêm chi phí tích hợp và vận hành không? |
+| 3 | [Kiến thức cần có](/docs/nen-tang/kien-thuc-can-co) | Bạn cần ôn phần nào để hiểu đường đi từ source code tới UI và debug lỗi tải app? |
+| 4 | [Thuật ngữ cốt lõi](/docs/nen-tang/thuat-ngu) | Shell, host, remote, composition, isolation và independent deployment khác nhau thế nào? |
+| 5 | [Team ownership và Conway's Law](/docs/nen-tang/team-ownership) | Ai duy trì contract, có quyền release và chịu trách nhiệm khi luồng người dùng bị lỗi? |
+
+Thứ tự này không phải điều kiện cứng. Nếu còn yếu về modules, HTTP hoặc lifecycle, hãy đọc **Kiến thức cần có** sớm hơn. Nếu đang đánh giá một dự án thật và đã quen mô hình, bắt đầu từ **Khi nào nên và không nên dùng?**, rồi đọc **Team ownership** để kiểm tra nhu cầu kỹ thuật có khớp với khả năng tổ chức hay không.
+
+## Kiến thức cần chuẩn bị
+
+Để đọc nhóm Nền tảng, bạn chưa cần thuộc cấu hình bundler. Nhưng trước khi chuyển sang thực hành tích hợp, nên tự giải thích được những việc sau:
+
+- `import`/`export` nối module như thế nào; `import()` trả về Promise và có thể thất bại ra sao.
+- Build tạo artifact JavaScript/CSS nào, và trình duyệt tải chúng từ URL nào.
+- HTTP status, origin, CORS và cache ảnh hưởng thế nào đến việc tải code hoặc gọi API.
+- Component hoặc ứng dụng được mount, unmount và cleanup ra sao; CSS và side effect có thể vượt ranh giới như thế nào.
+- TypeScript kiểm tra code trước khi chạy, nhưng không tự validation dữ liệu hoặc contract của artifact khác version tại runtime.
+
+Bạn chỉ cần một framework quen thuộc để bắt đầu. Kubernetes, nhiều framework hay kinh nghiệm microservices không phải điều kiện tiên quyết; hiểu DevTools, request mạng và lifecycle thường giúp bạn tiến nhanh hơn việc học thêm công cụ ở giai đoạn này.
+
+Bài [Kiến thức cần có](/docs/nen-tang/kien-thuc-can-co) có ví dụ và checklist để bạn ôn đúng chỗ, thay vì học toàn bộ toolchain trước khi thử một ranh giới nhỏ.
+
+## Bài tập trước khi chọn công cụ
+
+### Viết giả thuyết cho một ranh giới
+
+Chọn một thay đổi nội bộ trong shop, chẳng hạn thêm cách sắp xếp sản phẩm. Chưa viết cấu hình federation; trước hết, thử ghi một bản đề xuất ngắn:
+
+| Câu hỏi | Câu trả lời minh họa |
+| --- | --- |
+| Vấn đề hiện tại là gì? | Catalog phải chờ release cart dù thay đổi bộ lọc không liên quan đến giỏ hàng |
+| Phạm vi muốn tách là gì? | Trải nghiệm tìm, lọc và xem sản phẩm; chưa tách từng nút hoặc component |
+| Ai chịu trách nhiệm? | Team catalog duy trì UI, contract tích hợp, release và theo dõi lỗi thuộc phạm vi mình |
+| Phần nào cần giữ ổn định? | Route công khai, giao diện với shell và contract thêm sản phẩm vào giỏ |
+| Thành công được kiểm chứng ra sao? | Người dùng nhận catalog mới mà shell và cart không cần đổi artifact; luồng thêm vào giỏ vẫn hoạt động |
+| Nếu có lỗi thì làm gì? | Nhận biết version gây lỗi, có đầu mối xử lý và cách chọn lại artifact ổn định nếu các contract còn tương thích |
+
+Đây là giả thuyết để thử nghiệm, không phải khẳng định shop trong repository đã có những năng lực đó. Khi triển khai, bạn cần kiểm chứng cả cách chọn version, compatibility, tín hiệu lỗi và phương án khôi phục.
+
+Nếu bản đề xuất cho thấy hầu hết thay đổi catalog vẫn cần sửa cart và shell, hãy xem lại ranh giới trước khi chọn công cụ. Nếu lý do chờ là một chính sách phê duyệt chung, tách artifact có thể bỏ phụ thuộc kỹ thuật nhưng không tự bỏ được thời gian chờ tổ chức.
+
+### Tự kiểm tra trước khi đi tiếp
+
+- [ ] Bạn mô tả được điểm nghẽn bằng một tình huống cụ thể, không chỉ nói “frontend lớn”.
+- [ ] Bạn phân biệt được tách component, tách module và tách đơn vị deploy.
+- [ ] Bạn nêu được một thay đổi tương thích có thể phát hành riêng và một thay đổi contract cần phối hợp.
+- [ ] Bạn xác định được owner của phần muốn tách và đầu mối cho luồng người dùng xuyên ứng dụng.
+- [ ] Bạn biết những contract nào cần giữ ổn định và những chi phí mới nào cần kiểm chứng.
+- [ ] Bạn đã cân nhắc một modular frontend đơn giản hơn, thay vì mặc định phải có nhiều remote.
+
+Nếu chưa trả lời được các câu trên, hãy quay lại bài tương ứng trong lộ trình. Một bản build host/remote chạy thành công không thay thế được các quyết định này.
+
+## Bước tiếp theo
+
+Nếu mới đến trang này, bắt đầu bằng **Micro-frontend là gì?**. Khi đã đọc các bài Nền tảng và viết được giả thuyết cho một ranh giới, bạn có thể sang nhóm **Bắt đầu** để chuẩn bị ví dụ nhỏ, hoặc nhóm **Kiến trúc** để xem cách chia domain và composition.
+
+Các nhóm phía sau có thể còn trang khung; liên kết dưới đây chỉ hướng đọc tiếp, không khẳng định đã có lab chạy được.
+
+<Cards>
+  <Card title="Micro-frontend là gì?" href="/docs/nen-tang/micro-frontend-la-gi" description="Hiểu ranh giới phát hành qua shop gồm shell, catalog và cart." />
+  <Card title="Khi nào nên và không nên dùng?" href="/docs/nen-tang/khi-nao-nen-dung" description="So sánh lựa chọn và kiểm chứng nhu cầu trước khi tách ứng dụng." />
+  <Card title="Bắt đầu" href="/docs/bat-dau" description="Chuẩn bị môi trường và tìm hiểu ví dụ host/remote đầu tiên." />
+  <Card title="Kiến trúc và ranh giới" href="/docs/kien-truc" description="Chọn phạm vi nghiệp vụ và cách ghép các phần frontend." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, trên martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): định nghĩa kiến trúc, independent deployment, autonomous teams và các đánh đổi về tích hợp, dependency và vận hành.

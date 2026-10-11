@@ -1,18 +1,597 @@
 ---
 title: "Server-side composition"
-description: "Ghép nội dung phía server hoặc edge và phân tích SSR, SEO, caching."
+description: "Ghép giao diện micro-frontend phía server hoặc edge: chọn boundary, giữ SSR và hydration tương thích, thiết kế cache và xử lý lỗi từng fragment."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử trang sản phẩm của shop gồm thông tin từ catalog, gợi ý mua thêm và badge cart. Bạn muốn người dùng nhận được tên, ảnh và mô tả sản phẩm ngay trong HTML đầu tiên, nhưng không muốn một lần cart timeout khiến cả trang không tải được. Nếu mỗi team render một phần giao diện, ai sẽ ghép chúng, chọn HTTP status và quyết định nội dung nào được cache?
+
+Server-side composition đưa việc ghép giao diện về server hoặc edge trước khi trả document cho browser. Nó có thể giúp nội dung chính xuất hiện mà không phải chờ JavaScript phía client, nhưng đổi lại bạn phải quản lý dependency giữa các renderer, cache và phiên bản hydration. **Ghép ở server không tự tạo independent deployment, cũng không tự làm trang nhanh hơn.**
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài dùng shop giả định với catalog, recommendations và cart. Ví dụ code minh họa contract, không phải implementation có sẵn trong repository này. Sơ đồ dùng text để hiển thị trực tiếp, không cần cấu hình Mermaid. Chi tiết riêng của Next.js được tách sang bài [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Server-side composition giải quyết gì](#server-side-composition-giải-quyết-gì)
+  - [Phân biệt composition với SSR](#phân-biệt-composition-với-ssr)
+  - [Không phải mọi thứ chạy ở server đều là micro-frontend](#không-phải-mọi-thứ-chạy-ở-server-đều-là-micro-frontend)
+- [Các cách ghép phía server và edge](#các-cách-ghép-phía-server-và-edge)
+  - [Ghép theo route](#ghép-theo-route)
+  - [Ghép fragment tại origin](#ghép-fragment-tại-origin)
+  - [Ghép tại edge và ESI](#ghép-tại-edge-và-esi)
+- [Kiến trúc và luồng một request](#kiến-trúc-và-luồng-một-request)
+  - [Ranh giới trách nhiệm](#ranh-giới-trách-nhiệm)
+  - [Thứ tự xử lý trước khi gửi HTML](#thứ-tự-xử-lý-trước-khi-gửi-html)
+- [Thiết kế contract cho fragment](#thiết-kế-contract-cho-fragment)
+  - [Input nhỏ và có request scope](#input-nhỏ-và-có-request-scope)
+  - [Output không chỉ là một chuỗi HTML](#output-không-chỉ-là-một-chuỗi-html)
+- [Ví dụ ghép catalog và recommendations](#ví-dụ-ghép-catalog-và-recommendations)
+- [SSR hydration và phiên bản artifact](#ssr-hydration-và-phiên-bản-artifact)
+  - [Một cây framework hay các island độc lập](#một-cây-framework-hay-các-island-độc-lập)
+  - [Giữ lần render đầu tiên giống server](#giữ-lần-render-đầu-tiên-giống-server)
+  - [Server Components không phải HTML fragment thông thường](#server-components-không-phải-html-fragment-thông-thường)
+- [Caching mà không rò dữ liệu người dùng](#caching-mà-không-rò-dữ-liệu-người-dùng)
+  - [Tách các lớp cache](#tách-các-lớp-cache)
+  - [Cache key và biến thể nội dung](#cache-key-và-biến-thể-nội-dung)
+  - [Trang public và nội dung cá nhân hóa](#trang-public-và-nội-dung-cá-nhân-hóa)
+  - [TTL invalidation và cache của fallback](#ttl-invalidation-và-cache-của-fallback)
+- [Latency streaming và SEO](#latency-streaming-và-seo)
+  - [Song song không loại bỏ critical path](#song-song-không-loại-bỏ-critical-path)
+  - [Streaming cần một protocol rõ ràng](#streaming-cần-một-protocol-rõ-ràng)
+  - [Ai sở hữu HTTP status và metadata](#ai-sở-hữu-http-status-và-metadata)
+- [Resilience theo mức độ thiết yếu](#resilience-theo-mức-độ-thiết-yếu)
+- [Security tại boundary ghép HTML](#security-tại-boundary-ghép-html)
+- [Deploy độc lập và rollback](#deploy-độc-lập-và-rollback)
+- [Quan sát và kiểm thử](#quan-sát-và-kiểm-thử)
+- [Khi nào nên chọn và khi nào nên tránh](#khi-nào-nên-chọn-và-khi-nào-nên-tránh)
+- [Checklist trước khi triển khai](#checklist-trước-khi-triển-khai)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Server-side composition giải quyết gì
 
-Bài này sẽ giúp bạn: ghép nội dung phía server hoặc edge và phân tích SSR, SEO, caching.
+Khi browser phải tải shell, tìm remote, tải chunk rồi mới fetch dữ liệu sản phẩm, nội dung chính có thể nằm cuối một waterfall. Bạn có thể chuyển fetch và render nội dung này về server, để document đầu tiên đã có thông tin có ích. Với trang public, cách này cũng giúp crawler hoặc client không chạy JavaScript đọc được nội dung cần thiết.
 
-[Xem các bài trong nhóm Kiến trúc và ranh giới](/docs/kien-truc).
+Trong một hệ thống nhiều team, bài toán còn là quyền sở hữu: catalog giữ renderer của sản phẩm, recommendations giữ renderer của gợi ý, còn composer giữ bố cục trang và chính sách tích hợp. Composer giống bàn đóng gói nhận các món đã chuẩn bị rồi xếp vào một hộp: nó quyết định vị trí và món nào bắt buộc phải có, không nên tự nấu lại nghiệp vụ của từng domain. Giới hạn của phép so sánh là HTML, CSS và JavaScript khi vào cùng document vẫn có thể ảnh hưởng nhau.
+
+### Phân biệt composition với SSR
+
+SSR trả lời câu hỏi **giao diện được render ở đâu**. Composition trả lời **các phần có owner khác nhau được ghép thế nào và khi nào**. Hai khái niệm có thể đi cùng nhau nhưng không đồng nghĩa.
+
+| Khái niệm | Quyết định chính | Ví dụ |
+| --- | --- | --- |
+| SSR | Render giao diện thành HTML trên server | Một ứng dụng duy nhất render toàn bộ trang sản phẩm |
+| Build-time composition | Chọn và ghép dependency khi build | Shell import package catalog, rồi cả ứng dụng dùng SSR |
+| Client-side runtime composition | Chọn và tải phần giao diện trong browser | Shell tải remote rồi mount catalog vào outlet |
+| Server-side composition | Ghép phần giao diện tại server hoặc edge | Composer lấy HTML từ catalog và recommendations trước khi trả trang |
+
+Server-side composition có thể dùng module cùng process hoặc gọi renderer qua HTTP. Nó cũng có thể diễn ra ở request time, thay vì build time. Vì vậy các cách phân loại không phải những hộp loại trừ nhau: một trang có thể ghép package ở build time, SSR tại origin, rồi mount cart badge ở client.
+
+### Không phải mọi thứ chạy ở server đều là micro-frontend
+
+Nếu một BFF gọi ba API JSON rồi một renderer thuộc cùng team dựng cả trang, đó là data aggregation. Chưa có bằng chứng bạn đã chia frontend ownership. Trong server-side micro-frontend, domain thường sở hữu cả phần trình bày, contract tích hợp và trách nhiệm release của phần giao diện đó.
+
+Tương tự, SSR trong một monolith với nhiều thư mục không mặc nhiên là micro-frontend. Nếu đổi catalog luôn phải build và deploy cùng shell, bạn có modularity nhưng chưa có deployment independence. Đây vẫn có thể là lựa chọn tốt; đừng thêm network boundary chỉ để đổi tên kiến trúc.
+
+## Các cách ghép phía server và edge
+
+Mình bắt đầu bằng boundary theo route khi một domain có thể sở hữu cả hành trình. Fragment composition chỉ đáng thêm khi cùng một trang thật sự cần nhiều phần do các domain khác nhau sở hữu.
+
+### Ghép theo route
+
+Reverse proxy hoặc gateway chuyển `/catalog/*` tới ứng dụng catalog và `/cart/*` tới ứng dụng cart. Mỗi ứng dụng trả một document hoàn chỉnh, có layout chung qua design system hoặc template contract. Đây chủ yếu là route-level integration, không phải ghép nhiều fragment vào một response.
+
+Cách này ít điểm tích hợp hơn. Full-page navigation thường dễ vận hành hơn việc giữ một SPA xuyên qua các app, nhưng bạn cần thống nhất session, URL, redirect, navigation và hình thức của header. Nếu muốn chuyển trang không reload document, bạn phải thiết kế thêm client navigation protocol; proxy routing không tự làm việc đó.
+
+### Ghép fragment tại origin
+
+Một composer ở origin dựng document và lấy phần HTML của từng domain. Có hai biến thể đáng tách riêng:
+
+| Biến thể | Lợi ích | Coupling cần chấp nhận |
+| --- | --- | --- |
+| Import renderer vào cùng process | Không có network hop giữa composer và renderer; dễ dùng cùng cây framework | Dependency/framework tương thích; đổi package thường cần rebuild hoặc redeploy composer |
+| Gọi fragment service qua HTTP | Domain có thể release renderer riêng; fragment có cache riêng | Thêm latency, timeout, schema validation, capacity và failure handling |
+
+Không nhất thiết mọi fragment đều phải hydrate. Mô tả sản phẩm có thể chỉ là HTML, còn một widget chọn biến thể cần JavaScript. Càng ít vùng cần client runtime, càng ít code và lifecycle phải ghép ở browser.
+
+### Ghép tại edge và ESI
+
+Edge composer có thể là worker chạy code hoặc proxy hỗ trợ **Edge Side Includes**, viết tắt ESI. Với ESI, response cha chứa chỉ dẫn include; proxy đã bật ESI processing lấy các fragment rồi ghép chúng trước khi gửi cho browser.
+
+```html title="Template minh họa cho proxy hỗ trợ ESI"
+<main>
+  <esi:include src="/fragments/product/sku-42" />
+</main>
+<aside aria-label="Sản phẩm liên quan">
+  <esi:include src="/fragments/recommendations/sku-42" />
+</aside>
+```
+
+Đây không phải Web Component và browser không tự fetch nội dung của `esi:include`. Nếu proxy không xử lý ESI, bạn chưa có giao diện sản phẩm đúng. Fragment và template cha có thể được cache theo chính sách riêng, nhưng cách truyền cookie, xử lý lỗi, nested include và streaming phụ thuộc implementation.
+
+Chẳng hạn, Varnish chỉ hỗ trợ một phần ESI; không nên suy từ một ví dụ ESI sang tính năng mà mọi CDN đều có. Đường dẫn fragment cũng cần route tới backend đã cấu hình, không phải URL tùy ý do request bên ngoài cung cấp.
+
+Edge gần người dùng không có nghĩa renderer cũng gần người dùng. Nếu mỗi cache miss đều gọi về origin xa, network fan-out có thể làm request chậm hơn. Mình chọn edge composition khi fragment public có khả năng tái sử dụng cao và platform hỗ trợ rõ các policy cần dùng; với logic auth hoặc nghiệp vụ phức tạp, origin composer thường dễ kiểm soát hơn.
+
+## Kiến trúc và luồng một request
+
+Một mô hình đơn giản là ghép catalog bắt buộc với recommendations tùy chọn tại origin. Cart badge được tải ở browser để document public không chứa dữ liệu session.
+
+```text
+Browser ──► CDN ──► Origin composer ──► Catalog renderer
+                         │
+                         └────────────► Recommendations renderer
+
+Composer ──► Document chứa layout + product + recommendations
+Browser  ──► Cart API sau đó, theo session của người dùng
+```
+
+Hai renderer được gọi song song nếu input đã đủ. Sơ đồ không có nghĩa CDN luôn cache document: composer có thể trả `no-store`, trong khi fragment public được cache ở một lớp riêng.
+
+### Ranh giới trách nhiệm
+
+| Thành phần | Sở hữu | Không nên sở hữu |
+| --- | --- | --- |
+| Composer | Route-to-domain mapping, layout, slot, deadline, chọn version, response cuối | Rule giá, thuật toán gợi ý, mutable cart store |
+| Catalog renderer | Markup sản phẩm, dữ liệu render, metadata đề xuất và trạng thái không tồn tại | Cookie/session toàn shop, HTTP status của mọi slot |
+| Recommendations renderer | Markup gợi ý, dữ liệu và trạng thái không có gợi ý | Quyết định trang sản phẩm được index hay trả lỗi |
+| CDN hoặc edge | Cache key, policy lưu trữ, purge và composition nếu được cấu hình | Suy đoán nội dung nào private khi contract không nói rõ |
+| Client runtime | Hydration hoặc enhancement vùng được giao, interaction và cleanup | Thay DOM của slot khác hay hydrate cả document bất chấp boundary |
+
+Composer giữ vai trò tương tự [Application shell](/docs/kien-truc/application-shell), nhưng request lifecycle không giống browser mount lifecycle. Trên server, không có `HTMLElement` để truyền vào `mount`; cần contract render riêng.
+
+### Thứ tự xử lý trước khi gửi HTML
+
+1. Parse URL và validate route params, locale, tenant hoặc market nếu có. Xác định owner của route.
+2. Xác nhận session và authorization nếu nội dung cần bảo vệ. Chọn scope dữ liệu trước khi dùng cache.
+3. Chọn một release snapshot cho request: template, renderer build, client assets và contract version.
+4. Gọi các renderer độc lập song song với deadline và cancellation. Không fetch cả trang chỉ để hiện một slot nhỏ.
+5. Phân loại kết quả: domain not found, dependency lỗi hay slot tùy chọn không có nội dung.
+6. Chọn HTTP status, redirect, metadata và cache policy của document cuối.
+7. Gửi HTML; nếu có hydration, gửi bootstrap data và asset reference tương thích với HTML đó.
+
+Với streaming, một phần bước gửi HTML có thể bắt đầu sớm hơn. Tuy nhiên auth, policy cache và các quyết định HTTP quan trọng vẫn cần được giải quyết trước khi commit headers. Đừng stream nội dung riêng tư rồi mới kiểm tra quyền ở cuối request.
+
+## Thiết kế contract cho fragment
+
+Contract không nên dừng ở “gọi endpoint này và nối string”. Bạn cần biết fragment thuộc slot nào, được phép tạo DOM gì, render theo context nào và cần artifact gì ở client.
+
+### Input nhỏ và có request scope
+
+Một input cho product renderer có thể gồm `productId`, `locale`, `market`, `currency`, release được chọn và trace context. Chỉ thêm auth projection hoặc credential nếu renderer thực sự cần truy cập dữ liệu riêng tư, với audience và scope phù hợp.
+
+Không chuyển toàn bộ request headers hoặc cookie jar cho mọi renderer. Recommendations public không cần session cookie của cart. Backend của từng domain vẫn phải kiểm tra authorization; composer kiểm tra entry không thay thế việc đó.
+
+Dữ liệu riêng tư phải nằm trong request scope. Một singleton renderer có thể giữ immutable template hoặc connection pool, nhưng không được giữ `currentUser`, `currentTenant` hoặc cart snapshot rồi dùng lại cho request tiếp theo. Lỗi này có thể xuất hiện khi hai request chạy đồng thời, ngay cả khi bạn đã tắt HTTP cache.
+
+### Output không chỉ là một chuỗi HTML
+
+Với fragment không interactive, envelope có thể rất nhỏ. Với fragment cần hydration, hãy công bố thêm bootstrap data, asset reference và render context thay vì để composer bóc thông tin từ HTML.
+
+| Trường hoặc quy ước | Ý nghĩa cần thống nhất |
+| --- | --- |
+| `contractVersion` | Schema và semantics của response; khác với version nghiệp vụ |
+| `buildId` | Artifact renderer cụ thể đã tạo HTML |
+| `html` | HTML subtree cho slot, không phải một document có `html`, `head`, `body` riêng |
+| `outcome` nếu có | Phân biệt nội dung tồn tại, domain not found và empty state hợp lệ |
+| Asset manifest | CSS, client entry và dependency tương thích; URL bất biến theo build |
+| Bootstrap data | Chỉ dữ liệu public hoặc dữ liệu người dùng được phép thấy; đủ cho render đầu tiên |
+| Metadata proposal | Title, canonical, robots, structured data do route owner đề xuất |
+| Cache policy | Nội dung public/private, dimensions của cache key, freshness và invalidation |
+| Slot semantics | DOM ownership, heading level, ID prefix, sizing và accessibility |
+
+Composer tổng hợp theo policy đã định, không gộp mọi header của fragment vào response cuối. Một fragment không được tùy ý đổi document status, đặt cookie hay ghi đè canonical của route khác.
+
+Nếu fragment là một React island độc lập, root của island phải có ranh giới rõ. Nếu nó thuộc một cây React duy nhất, framework cần render cây đó theo protocol của mình; không thể coi HTML tùy ý từ service khác là React component có context và lifecycle tương đương.
+
+## Ví dụ ghép catalog và recommendations
+
+Ví dụ dưới chọn **buffered HTML composition**, không streaming và không hydration. Hai renderer trả JSON có ba field `contractVersion`, `buildId`, `html`; `html` chỉ chứa markup tin cậy, không có script hoặc document-level tags. Release snapshot được chọn trước khi render và không đổi giữa request.
+
+Đoạn TypeScript dùng `fetch`, `AbortSignal.any` và `AbortSignal.timeout` của Node.js 22 trở lên. Endpoint và build ID là ví dụ giả định; renderer phải còn phục vụ build được pin. Locale được cố định để không làm mờ ví dụ về cache key.
+
+```ts title="Ví dụ composer phía origin"
+type Fragment = {
+  contractVersion: 1;
+  buildId: string;
+  html: string;
+};
+
+type SelectedRenderer = Readonly<{
+  endpoint: string;
+  buildId: string;
+  timeoutMs: number;
+}>;
+
+// Snapshot lấy từ cấu hình release tin cậy, không từ query của user.
+const release = {
+  catalog: {
+    endpoint: 'https://catalog.internal/builds/catalog-b42/product',
+    buildId: 'catalog-b42',
+    timeoutMs: 800,
+  },
+  recommendations: {
+    endpoint: 'https://recommendations.internal/builds/reco-b17/products',
+    buildId: 'reco-b17',
+    timeoutMs: 250,
+  },
+} as const;
+
+async function fetchFragment(
+  renderer: SelectedRenderer,
+  productId: string,
+  signal: AbortSignal,
+): Promise<Fragment> {
+  const url = new URL(renderer.endpoint);
+  url.searchParams.set('productId', productId);
+  url.searchParams.set('locale', 'vi-VN');
+
+  const response = await fetch(url, {
+    signal: AbortSignal.any([
+      signal,
+      AbortSignal.timeout(renderer.timeoutMs),
+    ]),
+    redirect: 'error',
+    headers: { Accept: 'application/json' },
+  });
+
+  // Không forward Cookie hoặc Authorization của browser.
+  if (!response.ok) {
+    throw new Error(`Renderer HTTP ${response.status}`);
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.split(';')[0].trim().toLowerCase() !== 'application/json') {
+    throw new Error('Unexpected fragment content type');
+  }
+
+  const value: unknown = await response.json();
+  if (
+    typeof value !== 'object' || value === null ||
+    !('contractVersion' in value) || value.contractVersion !== 1 ||
+    !('buildId' in value) || value.buildId !== renderer.buildId ||
+    !('html' in value) || typeof value.html !== 'string'
+  ) {
+    throw new Error('Incompatible fragment');
+  }
+
+  return {
+    contractVersion: 1,
+    buildId: renderer.buildId,
+    html: value.html,
+  };
+}
+
+export async function composeProductPage(
+  productId: string,
+  requestSignal: AbortSignal,
+) {
+  const work = new AbortController();
+  const signal = AbortSignal.any([requestSignal, work.signal]);
+
+  try {
+    const [product, recommendations] = await Promise.all([
+      fetchFragment(release.catalog, productId, signal),
+      fetchFragment(release.recommendations, productId, signal)
+        .catch((): Fragment => {
+          // Client disconnect hoặc request bị hủy: không dựng fallback tiếp.
+          signal.throwIfAborted();
+          return {
+            contractVersion: 1,
+            buildId: release.recommendations.buildId,
+            html: '<p>Gợi ý hiện chưa sẵn sàng.</p>',
+          };
+        }),
+    ]);
+
+    signal.throwIfAborted();
+    return {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+      body: `<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><title>Chi tiết sản phẩm</title></head>
+<body>
+  <main>${product.html}</main>
+  <aside aria-label="Sản phẩm liên quan">${recommendations.html}</aside>
+</body>
+</html>`,
+    };
+  } finally {
+    // Dừng sibling fetch nếu catalog fail hoặc request kết thúc.
+    work.abort();
+  }
+}
+```
+
+Các budget `800 ms` và `250 ms` chỉ để minh họa, không phải khuyến nghị cho production. Timeout bao phủ cả fetch và đọc body; chỉ dùng `Promise.race` để bỏ chờ thì request upstream vẫn có thể chạy tiếp. Abort phía caller cũng không đảm bảo renderer đã dừng toàn bộ công việc backend của nó.
+
+Catalog là nội dung thiết yếu nên lỗi của nó làm hàm reject. Recommendations là tùy chọn nên có thể trả fallback. Không đổi lỗi catalog thành một trang `200` với khung trống; HTTP handler bên ngoài cần map lỗi đã phân loại thành status phù hợp và không ghi response nếu client đã ngắt kết nối.
+
+<Callout type="warn" title="Đây chưa phải composer production đầy đủ">
+  Type check trên chỉ xác nhận envelope, không sanitize HTML. Ví dụ cũng chưa có giới hạn response size, telemetry, metadata, CSS manifest, rate limit hay outcome cho sản phẩm không tồn tại. Domain not found phải có contract riêng để map thành `404`; không coi mọi upstream `404` là sản phẩm không tồn tại, vì endpoint hoặc build cũng có thể bị thiếu. `no-store` được chọn cho response cuối để tránh giả định sai về cache trong ví dụ.
+</Callout>
+
+## SSR hydration và phiên bản artifact
+
+HTML hiện ra không có nghĩa widget đã interactive. Form có thể hoạt động bằng submit thông thường nếu server hỗ trợ, nhưng một component phụ thuộc event handler JavaScript cần runtime phía client. Hydration là nối runtime đó vào HTML đã render, không phải render mới lên bất kỳ markup nào.
+
+### Một cây framework hay các island độc lập
+
+Có hai mô hình phổ biến, và chúng có contract khác nhau:
+
+| Mô hình | Cách render và hydrate | Hệ quả |
+| --- | --- | --- |
+| Một cây framework chung | Một renderer điều phối cây và framework hydrate theo protocol của nó | Context dùng chung dễ hơn, nhưng version/framework coupling chặt hơn |
+| Các island có root riêng | Composer ghép các subtree; mỗi island hydrate root của mình | Lifecycle và context riêng; cần bridge có chủ đích, tránh root chồng lấn |
+
+Trong mô hình island, shell có thể là HTML tĩnh bao quanh các root rời nhau. Đừng hydrate toàn document bằng một React tree rồi lại hydrate các subtree đó bằng những React root độc lập không được thiết kế để phối hợp. Một DOM subtree cần owner rõ; CSS, ID và portal cũng phải có quy ước.
+
+Với React, dùng `hydrateRoot` cho vùng HTML do React render và cần hydrate. `createRoot` dành cho client rendering không dựa vào server markup. Một fragment HTML tĩnh không cần gọi cả hai API.
+
+### Giữ lần render đầu tiên giống server
+
+Giả sử catalog build `b42` tạo HTML, nhưng bootstrap script tải URL `latest` vừa trỏ sang `b43`. Nếu hai version render khác nhau, hydration có thể mismatch ngay cả khi data API không lỗi.
+
+Một render snapshot nên giữ cùng nhau:
+
+```text
+HTML của catalog-b42
+  ├── Client entry bất biến của catalog-b42
+  ├── CSS tương ứng với catalog-b42
+  └── Bootstrap data + locale + ID prefix của lần render đó
+```
+
+Các giá trị này cần được pin ở server và gửi tới browser. Client dùng bootstrap data cho lần render đầu, rồi mới revalidate theo policy. Đọc lại giá mới, timezone của máy, `Date.now()` hoặc random ID trước khi hydrate có thể làm output khác HTML.
+
+Với nhiều React root, prefix cho ID do `useId` tạo cần khác nhau giữa các island và giống nhau giữa server/client của cùng island. React context không tự truyền qua các root độc lập chỉ vì chúng dùng cùng package React.
+
+Serialize bootstrap data bằng cơ chế an toàn của framework hoặc serializer phù hợp với HTML context. Một `<script type="application/json">` vẫn có thể bị kết thúc bởi chuỗi `</script>` nếu bạn nhét JSON chưa escape vào HTML. Không gửi token, cookie hoặc object user nội bộ xuống page source.
+
+<Callout type="warn" title="Không dùng suppression để che version skew">
+  Hydration mismatch là lỗi cần sửa. `suppressHydrationWarning` không phải compatibility layer cho hai build khác nhau. Ghi nhận build ID, slot và loại lỗi để tìm nguyên nhân, nhưng không đưa raw bootstrap data nhạy cảm vào telemetry.
+</Callout>
+
+### Server Components không phải HTML fragment thông thường
+
+React Server Components, thường viết tắt RSC, là mô hình component và transport riêng, không đồng nghĩa với SSR HTML. Framework có thể kết hợp RSC với SSR để tạo HTML ban đầu, nhưng RSC payload còn chứa thông tin cần thiết cho client tree và module references.
+
+Không ghép payload của hai ứng dụng Next.js độc lập như ghép hai string HTML rồi kỳ vọng navigation và hydration hoạt động. Build manifests, client references, routing và version của framework cần integration hỗ trợ cụ thể. Nếu không có contract đó, giữ boundary theo route/document hoặc dùng island với contract rõ thường dễ kiểm soát hơn.
+
+## Caching mà không rò dữ liệu người dùng
+
+Cache là lý do hấp dẫn để ghép fragment ở server hoặc edge, nhưng cũng là nơi một lỗi boundary biến thành rò dữ liệu. Fragment public và document chứa fragment private là hai đối tượng khác nhau; header của fragment không tự điều khiển cache của document cuối.
+
+### Tách các lớp cache
+
+| Lớp | Đối tượng cache | Cần kiểm soát |
+| --- | --- | --- |
+| Data cache của domain | Dữ liệu sản phẩm hoặc gợi ý | Data owner, scope, freshness và invalidation |
+| Fragment cache | HTML hoặc envelope của một slot | Product, locale, market, build và auth scope nếu có |
+| Template cache | Layout hoặc template có include placeholders | Template version và contract của slot |
+| Full-page cache | Document đã ghép hoàn chỉnh | Toàn bộ biến thể ảnh hưởng tới output, đặc biệt personalization |
+| Asset cache | JS, CSS, ảnh theo URL versioned | URL bất biến, retention của artifact cũ |
+
+Bạn có thể cache catalog public mà không cache full page. Ngược lại, cache full page chứa tên user khiến mọi policy an toàn của catalog trở nên vô nghĩa nếu page key không có boundary riêng tư đúng.
+
+Ví dụ ESI có thể cache template cha trước khi include được xử lý. Điều đó không có nghĩa response đã ghép được phép lưu tiếp ở một shared cache phía sau. Phải kiểm tra toàn bộ topology: browser → CDN khác → proxy ESI → origin, không chỉ cache của một hop.
+
+### Cache key và biến thể nội dung
+
+Một key fragment public minh họa:
+
+```text
+product-html:v1:catalog-b42:sku-42:locale=vi-VN:market=VN:currency=VND
+```
+
+Key phải phản ánh input thực sự làm thay đổi output. Nếu giá khác theo market mà key chỉ có SKU, user có thể thấy giá của market khác. Nếu fragment cache không có build dimension hoặc invalidation tương đương, composer có thể ghép HTML cũ với client assets mới.
+
+Mình ưu tiên các dimension hữu hạn, đã normalize và validate. Query tùy ý, raw cookie hoặc toàn bộ `Accept-Language` có thể tạo vô số biến thể và làm hit rate giảm mạnh. Với HTTP cache, `Vary` khai báo những request header ảnh hưởng tới response, nhưng custom cache key của CDN vẫn phải được cấu hình và kiểm thử.
+
+`Vary: Cookie` không thay thế thiết kế auth scope. Nó có thể tạo key rất lớn, và không đảm bảo một CDN có cache rule tùy chỉnh sẽ xử lý personalization đúng. Với private content, mặc định không đưa vào shared cache; chỉ thay đổi khi có mô hình phân vùng và kiểm chứng rõ ràng.
+
+### Trang public và nội dung cá nhân hóa
+
+Trang sản phẩm với badge cart có ba lựa chọn:
+
+| Phương án | Đánh đổi |
+| --- | --- |
+| Ghép cả dữ liệu session tại server, trả document không được shared-cache | SSR đầy đủ hơn, nhưng giảm khả năng cache full page và phải quản lý private request scope |
+| Trả document public; tải cart badge ở client | Full-page cache đơn giản hơn, nhưng badge có loading và request riêng |
+| Cache template public; include private tại một lớp composition chuyên biệt | Tận dụng fragment public, nhưng phải đảm bảo output sau include không rơi vào shared cache khác |
+
+Mặc định mình chọn document public với enhancement cho widget cá nhân hóa nhỏ. Nếu tài khoản hoặc cart là nội dung chính của route, server rendering private có thể hợp lý hơn; khi đó policy không được đánh đổi tính đúng đắn lấy hit rate.
+
+Các header minh họa sau áp dụng cho **response cuối**, không phải quy tắc để tự động merge header fragment:
+
+```http title="Nội dung public với freshness budget minh họa"
+Cache-Control: public, max-age=0, s-maxage=60
+```
+
+```http title="Nội dung riêng tư không được lưu"
+Cache-Control: no-store
+```
+
+`private` cho phép private cache như browser lưu nhưng cấm shared cache; `no-store` yêu cầu không lưu response. `no-cache` không có nghĩa “không lưu”: cache vẫn có thể lưu nhưng phải revalidate trước khi dùng lại. Với dữ liệu nhạy cảm cần không lưu, chọn `no-store`, đồng thời kiểm tra CDN không override policy.
+
+Đừng forward `Set-Cookie` của một fragment rồi vẫn coi page là public. Cookie cần owner và policy riêng. HTTP headers cũng không tự dọn cache của service worker, query client hoặc mutable object trong process; các lớp đó cần lifecycle độc lập.
+
+### TTL invalidation và cache của fallback
+
+Cache key đúng mới giải quyết đúng biến thể; bạn vẫn phải quyết định stale bao lâu là chấp nhận được. Mô tả sản phẩm và giá có thể có freshness budget khác nhau, nhưng giá hiển thị cũng không thay thế việc backend xác nhận giá lúc tạo đơn.
+
+Khi nội dung thay đổi, domain phát tín hiệu invalidation theo product hoặc cache tag. Fragment cache và full-page cache cần xử lý dependency tương ứng: purge fragment không chắc xóa được mọi page đã ghép chứa fragment cũ. Versioned assets được cache lâu là tốt, nhưng không nên sửa nội dung tại chính URL đó.
+
+Fallback do dependency lỗi cần policy riêng. Một trang có “Gợi ý hiện chưa sẵn sàng” được cache lâu sẽ tiếp tục hiển thị lỗi sau khi service phục hồi. Hãy không cache hoặc dùng TTL ngắn có chủ đích cho degraded response; nếu dùng stale fragment cũ, chỉ dùng khi vẫn đúng scope, build tương thích và còn trong freshness budget.
+
+Không dùng stale nội dung riêng tư sau logout hoặc đổi tenant chỉ vì cache có dữ liệu. Auth scope và quyền truy cập phải được xác nhận trước khi trả dữ liệu đã lưu.
+
+## Latency streaming và SEO
+
+### Song song không loại bỏ critical path
+
+Ghép ba fragment không đồng nghĩa latency bằng tổng thời gian của ba renderer. Nếu input độc lập, bạn có thể gọi song song; nhưng response buffered vẫn chờ phần chậm nhất trong các phần mà composer quyết định chờ.
+
+```text
+Buffered composition, bỏ qua cache hit:
+T_response ≈ T_preparation + max(T_catalog, T_recommendations) + T_assembly
+```
+
+Giả sử catalog mất `120 ms`, recommendations mất `400 ms`, assembly mất `10 ms` và bỏ qua preparation/network khác. Chờ cả hai cho response khoảng `410 ms`; fetch tuần tự khoảng `530 ms`. Đây chỉ là phép tính minh họa. Nếu recommendations có timeout `250 ms`, buffered response vẫn có thể chờ tới khoảng `260 ms` để nhận fallback, dù catalog đã xong từ trước.
+
+Muốn bỏ sự chờ của recommendations, bạn có thể bỏ slot đó khỏi response đầu và tải ở client, hoặc dùng streaming protocol hỗ trợ cập nhật slot. Chỉ viết `Promise.all` không làm phần chậm biến mất.
+
+Ngoài thời gian renderer, cần đo cache miss, connection setup, queueing, data fetch, render CPU và body size. Fan-out tăng số request trên mỗi page view, nên capacity và backpressure của các renderer cũng là một phần của thiết kế frontend.
+
+### Streaming cần một protocol rõ ràng
+
+Streaming gửi layout hoặc phần sẵn sàng trước, rồi gửi phần còn lại. Nó có thể giảm thời gian tới nội dung có ích, nhưng một buffer ở proxy/CDN có thể khiến browser chỉ nhận dữ liệu khi gần xong toàn bộ response.
+
+Đừng tự stream bằng cách nối các React SSR stream độc lập bất kỳ. Các marker, script chèn nội dung, ID, CSP nonce và thứ tự bootstrap phải tương thích. Với nhiều island, cần contract riêng cho từng root; với một cây framework, dùng streaming API mà framework hỗ trợ.
+
+Khi headers đã gửi, bạn không thể đổi `200` thành `404`, thêm redirect hoặc thay cache policy như chưa commit response. Vì vậy sản phẩm có tồn tại không, user có quyền không và metadata thiết yếu thường phải được xác định trước mốc bắt đầu stream.
+
+React có API streaming với shell readiness, all readiness và abort; việc lỗi bên trong một Suspense boundary được recover thế nào phụ thuộc renderer. Không áp semantics đó cho mọi HTTP fragment service. Cũng không coi client Error Boundary là cách bắt lỗi fetch/render xảy ra ở origin composer.
+
+### Ai sở hữu HTTP status và metadata
+
+Route owner đề xuất metadata từ nội dung chính; composer quyết định document cuối theo contract. Recommendations không được thêm canonical thứ hai hoặc tùy tiện đổi robots của trang sản phẩm.
+
+| Tình huống | Policy document hợp lý để thiết kế |
+| --- | --- |
+| Sản phẩm tồn tại, recommendations lỗi | `200`, nội dung chính đầy đủ, slot gợi ý có fallback |
+| Catalog xác nhận sản phẩm không tồn tại | `404` với trang not found và metadata phù hợp |
+| Không xác định được sản phẩm vì renderer lỗi | Lỗi `5xx` theo policy, không giả thành `404` hoặc product page rỗng |
+| Route cần đăng nhập | Redirect hoặc response auth theo policy trước khi gửi private content |
+| Widget cart lỗi | Không biến cả trang thành lỗi, nhưng cũng không hiển thị số lượng `0` như một kết luận |
+
+SSR giúp đưa nội dung vào HTML, không đảm bảo SEO tốt. Bạn vẫn cần URL có thể crawl, status đúng, title/canonical/robots thống nhất, structured data đúng với nội dung hiển thị và link có thể sử dụng. Nội dung quan trọng không nên chỉ nằm trong placeholder chờ JavaScript mà crawler mục tiêu không chạy.
+
+Hãy kiểm thử raw HTML và hành vi của crawler mục tiêu. Nếu chọn chờ toàn bộ nội dung cho crawler thay vì streaming, cần timeout và sự nhất quán nội dung; không dùng user-agent branching để cung cấp hai nội dung nghiệp vụ khác nhau.
+
+## Resilience theo mức độ thiết yếu
+
+Một page-level timeout duy nhất không đủ để quyết định trải nghiệm. Bạn cần phân loại slot trước khi viết fallback.
+
+| Slot | Mức độ thiết yếu | Khi lỗi |
+| --- | --- | --- |
+| Product detail | Bắt buộc cho route sản phẩm | Trả lỗi phù hợp hoặc stale public snapshot được policy cho phép |
+| Recommendations | Tùy chọn | Omit, fallback hoặc stale compatible fragment |
+| Cart badge | Cá nhân hóa, không quyết định nội dung sản phẩm | Hiển thị trạng thái chưa biết; có đường truy cập cart |
+| Giá hoặc tổng tiền trong checkout | Thiết yếu cho quyết định nghiệp vụ | Chặn thao tác hoặc yêu cầu xác nhận lại, không bịa giá/fallback thành công |
+
+Composer cần request deadline chung và budget riêng cho dependency. Không để mỗi renderer dùng toàn bộ page budget rồi retry thêm nhiều lần. Retry phải có giới hạn, chỉ khi lỗi có thể phục hồi và còn thời gian; circuit breaker, concurrency limit hoặc bulkhead giúp một renderer quá tải không chiếm hết tài nguyên composer.
+
+Khi client ngắt kết nối, hủy công việc chưa cần nữa. Khi render thiết yếu fail, dừng sibling work nếu không còn consumer. Không trả HTML của response cũ vào slot mới khi navigation hoặc request generation đã thay đổi ở client.
+
+Fallback cũng là giao diện: nó cần heading hợp lý, không phá landmark và không gây layout shift lớn. Nếu slot private chưa xác nhận, dùng trạng thái chưa biết thay vì một giá trị nghiệp vụ giả. “Cart hiện chưa tải được” khác hoàn toàn với “Cart trống”.
+
+## Security tại boundary ghép HTML
+
+Fragment service nội bộ vẫn là một trust boundary. Khi HTML được ghép vào document, nó chạy trong context của origin trang; khác hostname của renderer không tự tạo sandbox.
+
+Những policy cần thống nhất:
+
+- **Nguồn tin cậy:** endpoint và asset đến từ release registry đã kiểm soát; không nhận URL fragment tùy ý từ query hoặc header. Kiểm soát redirect, DNS/egress và protocol để tránh SSRF.
+- **HTML safety:** renderer escape dữ liệu theo đúng context. Nếu nguồn HTML không tin cậy, sanitize bằng policy phù hợp hoặc dùng isolation boundary khác; schema validation không ngăn XSS.
+- **Credential scope:** chỉ truyền credential cần thiết tới audience đúng. Không forward raw cookie, Authorization hoặc private headers cho mọi domain.
+- **CSP và script ownership:** thống nhất nguồn script/style, inline script policy và bootstrap ownership. Tránh để fragment tự thêm script tùy ý vào HTML.
+- **Nonce và cache:** nonce theo response phải nhất quán giữa CSP header và script tags; không ghép script có nonce cũ từ cache vào response có nonce mới. Chọn cơ chế rewrite hoặc policy hash/external assets có chủ đích.
+- **Header ownership:** composer giữ `Set-Cookie`, security headers và redirect policy của response cuối; không merge chúng một cách mù quáng.
+- **Resource limits:** giới hạn response size, thời gian, số include và độ sâu nested fragment. HTML rất lớn hoặc include vòng lặp cũng có thể làm composer cạn tài nguyên.
+
+Cùng document cũng đồng nghĩa CSS global có thể làm hỏng phần khác. Scope class, dùng design tokens và quy tắc reset chung; ID trong DOM phải duy nhất. Shadow DOM có thể giúp encapsulate style nhưng không biến JavaScript thành sandbox. Xem thêm [Security](/docs/production/security) và [CSS isolation](/docs/ui-va-framework/css-isolation).
+
+## Deploy độc lập và rollback
+
+HTTP fragment boundary có thể cho catalog deploy riêng, nhưng điều đó chỉ đúng nếu composer hiểu contract còn được hỗ trợ và có thể chọn release mới mà không phải sửa nghiệp vụ trong shell. Nếu hai bên luôn phải đổi schema cùng lúc, bạn đã chuyển lockstep release từ package manager sang network.
+
+Một rollout an toàn có thể đi theo thứ tự:
+
+1. Publish renderer mới cùng client assets/CSS ở URL versioned; chưa chuyển traffic.
+2. Test contract và render/hydration với composer hiện tại, cả phiên bản cũ còn được hỗ trợ.
+3. Cập nhật release registry cho cohort nhỏ. Mỗi request chọn snapshot nhất quán, tránh chọn renderer mới nhưng assets cũ.
+4. Theo dõi dependency latency, cache behavior, render lỗi và hydration mismatch trước khi tăng rollout.
+5. Nếu cần rollback, chuyển registry về release trước; giữ renderer và assets cũ vẫn truy cập được.
+
+Nếu release registry được cache ở nhiều nơi, rollout không đồng thời là trạng thái bình thường. Cần thiết kế compatibility window thay vì giả định mọi process và CDN nhìn thấy version mới cùng lúc.
+
+Cached HTML có thể sống lâu hơn thời điểm deploy. Browser tab hoặc document được CDN phục vụ vẫn tham chiếu chunk cũ, nên không xóa asset cũ ngay sau rollout. Retention phải tính tới TTL, stale window và thời gian hỗ trợ phiên đang mở. Rollback cũng không khôi phục được artifact đã bị xóa hoặc dữ liệu đã migration phá compatibility.
+
+Với renderer import cùng process, thay package thường cần rebuild/redeploy composer. Với server runtime module loading, còn phải quản lý executable code trust và dependency compatibility. Việc có một URL remote trên server không chứng minh được bất kỳ module nào cũng an toàn hoặc chạy được trong edge runtime.
+
+## Quan sát và kiểm thử
+
+Khi trang chậm, bạn cần biết nó chờ catalog, recommendations, cache hay hydration; chỉ có log “render page failed” sẽ không chỉ ra domain owner.
+
+Trace nên nối composer tới renderer và data fetch. Các dimension hữu ích gồm route pattern, slot, composer/renderer build ID, contract version, cache hit/miss, timeout, fallback, response commit và duration. Tránh raw token, cookie, session ID hoặc URL chứa dữ liệu nhạy cảm; cũng không dùng product ID tùy ý làm label metric có cardinality không giới hạn.
+
+Đo ít nhất thời gian tới byte đầu, nội dung chính, LCP và interaction của vùng cần JavaScript. Với streaming, thêm mốc shell sent và critical content completed; TTFB thấp với một skeleton rỗng chưa phải kết quả tốt.
+
+| Kịch bản | Điều cần xác nhận |
+| --- | --- |
+| Mở trực tiếp URL sản phẩm, không chạy JS | Nội dung chính và metadata vẫn có ích; links/form hoạt động theo mức enhancement đã cam kết |
+| Sản phẩm không tồn tại | Domain outcome map thành `404`, không thành soft 404 `200` |
+| Catalog timeout hoặc trả body sai schema | Lỗi được phân loại, không ghép nội dung không tương thích |
+| Recommendations timeout | Fallback đúng slot, catalog vẫn dùng được, degraded page không cache quá lâu |
+| Client ngắt kết nối | Hủy pending work; không cố ghi response đã đóng |
+| Hai user hoặc tenant request đồng thời | Không dùng chung mutable request state hoặc private cache entry |
+| User A truy cập rồi user B dùng cùng CDN path | Không nhận private HTML của A; test cả cache hit và miss |
+| Đổi locale, currency, market | Cache key không trộn biến thể; bootstrap data khớp HTML |
+| HTML cũ còn trong cache khi deploy mới | Client tải đúng build, asset cũ tồn tại, hydration không mismatch |
+| Rollback release registry | Request mới chọn snapshot cũ nhất quán; không lẫn HTML/CSS/client entry |
+| Streaming qua CDN/proxy thật | Flush có hiệu lực, auth/status/cache policy được chọn trước commit |
+| Fragment chứa dữ liệu có ký tự HTML hoặc `</script>` | Escape/serialization an toàn, không XSS |
+| Slot CSS/ID va chạm | Không phá layout, label hoặc accessibility của slot khác |
+
+Contract test kiểm tra schema và semantics; integration test kiểm tra composer với renderer; browser E2E xác nhận hydration, interaction và DOM ownership. Cache correctness phải test qua topology thực tế hoặc môi trường mô phỏng tương đương, không chỉ gọi trực tiếp origin.
+
+## Khi nào nên chọn và khi nào nên tránh
+
+Mình chọn server-side fragment composition khi nội dung HTML ban đầu có giá trị rõ, một trang cần nhiều domain có frontend owner riêng, và team chấp nhận vận hành renderer, cache, release registry cùng observability. Trang catalog public với nội dung cacheable và widget enhancement nhỏ là một ứng viên dễ bắt đầu hơn checkout nhiều state.
+
+Nếu một domain có thể sở hữu toàn document, route-level integration thường đơn giản hơn. Nếu các team cùng framework, cùng release và chỉ cần ranh giới code, modular frontend với SSR thường đủ. Nếu ứng dụng nội bộ chủ yếu là workflow interactive, ít giá trị từ HTML ban đầu, client-side composition có thể hợp lý hơn network fan-out cho từng page request.
+
+Đừng chọn fragment composition chỉ vì SEO, edge hay independent deployment nghe hấp dẫn. Hãy xác định nội dung nào phải có trước JavaScript, slot nào thực sự thuộc team khác và lỗi nào cần được cô lập. Nếu không có nhu cầu đó, một renderer thống nhất ít contract hơn và dễ giữ status, metadata, hydration đúng hơn.
+
+## Checklist trước khi triển khai
+
+- [ ] Boundary là route, module cùng process hay fragment service; deployment independence được đánh giá đúng.
+- [ ] Mỗi slot có owner, DOM contract, mức độ thiết yếu và fallback.
+- [ ] Route params, locale, market và auth scope được validate trước cache/render.
+- [ ] Session state theo request, không nằm trong mutable singleton.
+- [ ] Deadline, timeout, cancellation, concurrency và response-size limit đã xác định.
+- [ ] Domain not found được phân biệt với upstream failure hoặc missing artifact.
+- [ ] Document status, metadata, cookie và security headers có một owner cuối.
+- [ ] HTML, CSS, client entry và bootstrap data thuộc cùng render snapshot tương thích.
+- [ ] Hydration root không chồng lấn; ID prefix và context bridge được thống nhất.
+- [ ] Fragment key đủ dimensions; full-page cache không lưu dữ liệu private ngoài policy.
+- [ ] Purge, stale window và cache của fallback đã kiểm thử.
+- [ ] Streaming được kiểm thử qua proxy/CDN; không quyết định HTTP semantics sau commit.
+- [ ] Endpoint/asset allowlist, escaping, serialization và CSP được review.
+- [ ] Rollout/rollback giữ được renderer và assets của phiên bản còn được tham chiếu.
+- [ ] Contract, cache isolation, version skew và lỗi từng dependency có test.
+
+Bước tiếp theo: lấy một route sản phẩm, đánh dấu nội dung bắt buộc và widget có thể enhancement ở client. Viết contract cho một fragment public trước, thử timeout và cache miss có điều khiển, rồi đo tới nội dung chính. Chỉ mở rộng composition khi boundary đầu tiên đã giữ được tính đúng đắn qua deploy và rollback.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Giữ trách nhiệm điều phối tách khỏi nghiệp vụ domain." />
+  <Card title="Next.js và SSR" href="/docs/ui-va-framework/nextjs-ssr" description="Xem boundary render và hydration trong một framework cụ thể." />
+  <Card title="Caching" href="/docs/trien-khai/caching" description="Quản lý freshness, cache key và invalidation khi triển khai." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Phối hợp release và giữ compatibility giữa các artifact." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [React — hydrateRoot](https://react.dev/reference/react-dom/client/hydrateRoot): yêu cầu HTML ban đầu tương thích, lựa chọn root và `identifierPrefix`.
+- [React — renderToPipeableStream](https://react.dev/reference/react-dom/server/renderToPipeableStream): streaming, shell readiness, status code và abort của React renderer.
+- [React — Server Components](https://react.dev/reference/rsc/server-components): phân biệt component chạy phía server với cơ chế SSR và client integration.
+- [Varnish — Content composition with Edge Side Includes](https://www.varnish.org/docs/users-guide/esi/): fragment cache, bật ESI processing và giới hạn implementation.
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control): semantics của `private`, `no-store`, `no-cache` và `s-maxage`.
+- [MDN — HTTP caching](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching): shared/private caches, biến thể qua `Vary` và nội dung cá nhân hóa.
