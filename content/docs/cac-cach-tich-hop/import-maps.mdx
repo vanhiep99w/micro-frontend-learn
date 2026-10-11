@@ -1,18 +1,655 @@
 ---
 title: "ES modules và import maps"
-description: "Ánh xạ module URLs và quản lý loading bằng ES modules cùng import maps."
+description: "Ghép shell, catalog và cart bằng native ES modules; hiểu import maps, dependency sharing, lifecycle và cách deploy hoặc rollback theo release URL."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop đã build xong, nhưng catalog cần chuyển sang một release mới. Bạn muốn shell vẫn gọi `import('@shop/catalog')`, còn địa chỉ file do cấu hình lúc phục vụ trang quyết định. ES modules cùng import maps cho phép làm điều đó mà không cần một federation container.
+
+Nhưng đổi được URL mới chỉ giải quyết bước tìm module. Ai mount giao diện, ai cleanup listener, React có bị tải hai bản không, và tab đang mở có nhận release mới không? Bài này tách những trách nhiệm đó, rồi dựng một ví dụ nhỏ để bạn kiểm chứng ngay trong browser.
+
+<Callout type="info" title="Phạm vi bài viết">
+  Ví dụ dùng native ESM trong browser, DOM API và shop giả định với shell, catalog, cart. Đây là mã thực hành để tạo ở thư mục riêng, không phải mã ứng dụng có sẵn trong repository hay cấu hình cho Next.js của site docs. Bạn cần biết `import`, `export`, Promise và HTTP cơ bản. Sơ đồ text không cần plugin bổ sung.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Import maps giải quyết phần nào](#import-maps-giải-quyết-phần-nào)
+  - [Ba trách nhiệm cần tách](#ba-trách-nhiệm-cần-tách)
+  - [Khi nào mình chọn cách này](#khi-nào-mình-chọn-cách-này)
+- [Browser resolve module như thế nào](#browser-resolve-module-như-thế-nào)
+  - [URL và bare specifier](#url-và-bare-specifier)
+  - [Khai báo map trước module](#khai-báo-map-trước-module)
+  - [Exact match và prefix match](#exact-match-và-prefix-match)
+  - [Scopes chọn theo URL của importer](#scopes-chọn-theo-url-của-importer)
+- [Luồng tải trong shop](#luồng-tải-trong-shop)
+- [Ví dụ shop chạy bằng native ESM](#ví-dụ-shop-chạy-bằng-native-esm)
+  - [Tạo HTML và import map](#tạo-html-và-import-map)
+  - [Tạo cart controller](#tạo-cart-controller)
+  - [Tạo catalog và cart UI](#tạo-catalog-và-cart-ui)
+  - [Shell quản lý loading và lifecycle](#shell-quản-lý-loading-và-lifecycle)
+  - [Chạy và kiểm chứng](#chạy-và-kiểm-chứng)
+- [Build output phải còn là browser ESM](#build-output-phải-còn-là-browser-esm)
+  - [Giữ external import để map có tác dụng](#giữ-external-import-để-map-có-tác-dụng)
+  - [CSS asset và public path](#css-asset-và-public-path)
+- [Chia sẻ dependency không phải thương lượng version](#chia-sẻ-dependency-không-phải-thương-lượng-version)
+- [Deploy canary và rollback](#deploy-canary-và-rollback)
+  - [Chốt map cho mỗi document](#chốt-map-cho-mỗi-document)
+  - [Publish artifact trước cấu hình](#publish-artifact-trước-cấu-hình)
+  - [Tab cũ không tự đổi module](#tab-cũ-không-tự-đổi-module)
+- [Loading lỗi và giới hạn của retry](#loading-lỗi-và-giới-hạn-của-retry)
+- [CORS CSP và ranh giới bảo mật](#cors-csp-và-ranh-giới-bảo-mật)
+- [Native ESM es-module-shims và SystemJS](#native-esm-es-module-shims-và-systemjs)
+- [Chẩn đoán lỗi thường gặp](#chẩn-đoán-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Import maps giải quyết phần nào
 
-Bài này sẽ giúp bạn: ánh xạ module URLs và quản lý loading bằng ES modules cùng import maps.
+Import map là bảng ánh xạ **module specifier sang URL** mà browser dùng khi resolve `import` và `import()`. Bạn có thể hình dung nó như danh bạ: code dùng tên `@shop/catalog`, còn danh bạ chỉ ra địa chỉ hiện tại của catalog.
 
-[Xem các bài trong nhóm Các cách tích hợp khác](/docs/cac-cach-tich-hop).
+Danh bạ không kiểm tra người ở địa chỉ đó có đúng API bạn cần hay không. Tương tự, map không validate export, không mount component và không xác nhận một release tương thích với shell.
+
+### Ba trách nhiệm cần tách
+
+| Lớp | Trách nhiệm | Không làm thay bạn |
+| --- | --- | --- |
+| Import map | Resolve tên module thành URL, có thể khác nhau theo scope | Chọn version bằng semver, kiểm tra contract |
+| ESM loader của browser | Tải module graph, liên kết import/export và evaluate code | Routing, mount/unmount UI, fallback nghiệp vụ |
+| Composition layer của shell | Chọn tính năng, gọi lifecycle, nối capability và hiển thị loading/lỗi | Tạo isolation bảo mật giữa các module |
+
+Một lần `import('@shop/catalog')` thành công trả về module namespace chứa các export. Browser không biết export nào là trang catalog. Shell hoặc một orchestrator như single-spa phải gọi API tích hợp đã thống nhất.
+
+So với Module Federation, native import maps không cung cấp container API `get`/`init` hay share scope để thương lượng dependency. So với single-spa, import maps không phải lifecycle framework. Bạn có thể phối hợp chúng, nhưng đừng coi chúng là những công cụ cùng một lớp.
+
+### Khi nào mình chọn cách này
+
+Mình chọn native ESM cùng import maps khi các team có thể xuất browser-compatible ESM, public API nhỏ và rõ, còn platform muốn quản lý release URL từ một cấu hình chung. Cách này phù hợp để ghép theo trang hoặc capability, đặc biệt khi không cần sharing runtime theo cơ chế của federation.
+
+Nếu các phần luôn build và deploy cùng nhau, package import trong một frontend modular thường đơn giản hơn. Nếu stack phụ thuộc nhiều vào federation sharing hoặc bundler runtime, chuyển sang native ESM chỉ để có một file JSON sẽ làm tăng công việc build và vận hành. Nếu cần chạy code không đáng tin cậy, import maps không thay được isolation của iframe.
+
+## Browser resolve module như thế nào
+
+### URL và bare specifier
+
+Các import sau có địa chỉ mà browser tự resolve được:
+
+```js
+import { formatPrice } from './format-price.js';
+import { mount } from '/catalog/r17/entry.js';
+import { createClient } from 'https://assets.example.com/client/r3/entry.js';
+```
+
+Relative import trong file module được resolve theo **URL của file importer**, không phải thư mục của shell. Nếu `/catalog/r17/entry.js` import `./chunks/list.js`, browser tải `/catalog/r17/chunks/list.js`.
+
+Còn các tên dưới đây là bare specifier. Browser không tự tìm chúng trong `node_modules`:
+
+```js
+import { mount } from '@shop/catalog';
+import React from 'react';
+```
+
+Đây là chỗ import map tham gia. TypeScript `paths`, webpack alias hoặc alias của Vite không tự trở thành cấu hình browser. Ngược lại, import map trong HTML không mặc nhiên điều khiển resolver của Node.js, build tool, worker hay worklet.
+
+### Khai báo map trước module
+
+```html
+<script type="importmap">
+{
+  "imports": {
+    "@shop/catalog": "/catalog/r17/entry.js",
+    "@shop/cart": "/cart/r8/entry.js"
+  }
+}
+</script>
+<script type="module" src="/shell.js"></script>
+```
+
+Nội dung map phải là JSON hợp lệ: không comment, không trailing comma. Các URL tương đối trong map được resolve theo base URL của document; dùng URL tuyệt đối hoặc root-relative giúp giảm nhầm lẫn khi HTML được phục vụ ở nhiều route. Nếu có thẻ `<base>`, hãy tính cả ảnh hưởng của nó.
+
+<Callout type="warn" title="Native import map không tải qua src">
+  Không dùng `<script type="importmap" src="/import-map.json">`. Native import map cần JSON inline. Nếu map nằm ở endpoint riêng, server có thể nhúng JSON vào HTML, hoặc bootstrap phải fetch, validate và đăng ký map trước khi tải bất kỳ module nào phụ thuộc nó. Không để script module chạy đua với request lấy map.
+</Callout>
+
+Browser mới có thể hỗ trợ nhiều map và merge chúng với các ràng buộc, nhưng mức hỗ trợ không đồng nhất. Mapping đã đăng ký hoặc specifier đã resolve không được tùy ý ghi đè bằng map thêm sau. Mặc định mình dùng **một map được chốt trước module graph** để dễ kiểm thử và vận hành.
+
+### Exact match và prefix match
+
+```json
+{
+  "imports": {
+    "@shop/catalog": "/catalog/r17/entry.js",
+    "@shop/catalog/": "/catalog/r17/",
+    "@shop/catalog/admin/": "/catalog-admin/r2/"
+  }
+}
+```
+
+| Import | URL kết quả |
+| --- | --- |
+| `@shop/catalog` | `/catalog/r17/entry.js` |
+| `@shop/catalog/utils.js` | `/catalog/r17/utils.js` |
+| `@shop/catalog/admin/page.js` | `/catalog-admin/r2/page.js` |
+
+Key không có `/` cuối chỉ khớp chính xác. Khi key dùng prefix và kết thúc bằng `/`, value cũng phải kết thúc bằng `/`; browser nối phần còn lại vào value. Nếu có nhiều key khớp, key cụ thể hơn được chọn, không phải key viết trước.
+
+Browser không tự thêm `.js` hay thử `index.js` như một số resolver của Node.js hoặc bundler. Với map trên, `@shop/catalog/utils` trỏ tới `/catalog/r17/utils`, không phải `/catalog/r17/utils.js`.
+
+Với micro-frontend, mình ưu tiên exact mapping cho entry public. Prefix mapping tiện cho thư viện nhiều subpath, nhưng mở cả thư mục khiến consumer dễ import file nội bộ và phá boundary.
+
+### Scopes chọn theo URL của importer
+
+Giả sử catalog mới cần formatter v2, còn cart vẫn dùng formatter v1:
+
+```json
+{
+  "imports": {
+    "@shop/catalog": "/catalog/r17/entry.js",
+    "@shop/cart": "/cart/r8/entry.js",
+    "@shop/formatter": "/shared/formatter/v1/entry.js"
+  },
+  "scopes": {
+    "/catalog/r17/": {
+      "@shop/formatter": "/shared/formatter/v2/entry.js"
+    }
+  }
+}
+```
+
+`import('@shop/catalog')` từ shell vẫn dùng global map. Khi file `/catalog/r17/entry.js` hoặc một chunk trong thư mục đó import `@shop/formatter`, scoped mapping chọn v2. Import từ cart dùng v1.
+
+Scope khớp với URL **của module thực hiện import**, không phải route UI, tên application hay nơi module được mount. Nếu catalog import một helper ở `/shared/helper.js`, rồi helper import formatter, lần resolve đó xét URL `/shared/helper.js`; scope của catalog không tự truyền xuống toàn bộ graph.
+
+Nếu nhiều scope khớp, browser thử scope cụ thể nhất, rồi các scope ít cụ thể hơn và cuối cùng global `imports` khi không có mapping phù hợp. Scopes hữu ích cho dependency độc lập, nhưng không phải sandbox và không đảm bảo singleton xuyên các scope.
+
+## Luồng tải trong shop
+
+```text
+HTML có import map ──► shell.js
+                          │
+                  import('@shop/catalog')
+                          │ resolve tên thành URL
+                          ▼
+                  /catalog/r17/entry.js
+                          │ tải và evaluate module graph
+                          ▼
+                  module namespace có mount
+                          │ shell gọi mount(container, props)
+                          ▼
+                       Catalog UI
+```
+
+Bạn cần phân biệt ba thời điểm: **resolve địa chỉ**, **evaluate module**, và **mount giao diện**. Import top-level có thể chạy code ngay khi module evaluate, dù người dùng chưa mở trang. Vì vậy, remote nên export function và tránh gắn global listener, sửa DOM hay khởi động mutation ngay ở top-level.
+
+Trong một document với cùng loader, import cùng URL module thông thường dùng lại cùng module instance; evaluate không lặp lại mỗi lần mount UI. Do đó, state top-level có thể sống lâu hơn component. Nếu muốn state theo lần mount, tạo nó trong `mount`; nếu muốn cart sống suốt phiên shell, tạo controller ở composition layer rồi truyền cùng instance cho các consumer.
+
+## Ví dụ shop chạy bằng native ESM
+
+Lab này chứng minh bốn việc: resolve bằng bare specifier, tải UI theo route, giữ cart state khi đổi trang và cleanup subscription. Nó chưa có backend, auth, giá tiền, persistence hay retry tự động; hash route được dùng để không cần cấu hình rewrite của web server.
+
+Tạo thư mục thực hành riêng với năm file bên dưới. Version `1.0.0` chỉ là nhãn artifact của lab, browser không diễn giải nó như semver.
+
+```text
+import-map-shop/
+├── index.html
+├── shell.js
+├── catalog/1.0.0/entry.js
+└── cart/1.0.0/
+    ├── controller.js
+    └── entry.js
+```
+
+Contract UI của ví dụ là `mount(container, { cart })` chạy đồng bộ và trả về function cleanup đồng bộ. Đây là API do lab định nghĩa, không phải chuẩn lifecycle do ESM quy định.
+
+### Tạo HTML và import map
+
+```html title="index.html"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Shop với import maps</title>
+    <script type="importmap">
+    {
+      "imports": {
+        "@shop/catalog": "./catalog/1.0.0/entry.js",
+        "@shop/cart": "./cart/1.0.0/entry.js",
+        "@shop/cart-controller": "./cart/1.0.0/controller.js"
+      }
+    }
+    </script>
+    <script type="module" src="./shell.js"></script>
+  </head>
+  <body>
+    <header>
+      <a href="#catalog">Catalog</a>
+      <a href="#cart">Giỏ hàng</a>
+      <span> Tổng số lượng: <strong id="badge">—</strong></span>
+    </header>
+    <main id="outlet" aria-live="polite"></main>
+  </body>
+</html>
+```
+
+Module script không có `async` được thực thi sau khi HTML đã parse, nên shell có thể lấy các DOM node trên. Map nằm trước script module để mọi bare specifier cần dùng đều đã có địa chỉ.
+
+### Tạo cart controller
+
+Implementation thuộc cart domain; shell chỉ tạo instance và nối nó vào các UI. Lab dùng dữ liệu in-memory và hai SKU cố định, không import store hay component từ catalog.
+
+```js title="cart/1.0.0/controller.js"
+export function createCartController() {
+  const allowedSkus = new Set(['ao-thun-den', 'tui-vai']);
+  const quantities = new Map();
+  const listeners = new Set();
+
+  function getSnapshot() {
+    return [...quantities].map(([sku, quantity]) => ({ sku, quantity }));
+  }
+
+  return {
+    getSnapshot,
+    getSummary() {
+      return getSnapshot().reduce((sum, item) => sum + item.quantity, 0);
+    },
+    addItem(sku) {
+      if (!allowedSkus.has(sku)) throw new Error('SKU không hợp lệ');
+      quantities.set(sku, (quantities.get(sku) ?? 0) + 1);
+      for (const listener of listeners) listener();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+```
+
+`getSnapshot()` trả về dữ liệu mới để consumer không sửa trực tiếp state nội bộ. `subscribe()` trả unsubscribe; contract production cần chốt thêm cách xử lý lỗi observer, mutation bất đồng bộ và schema dữ liệu, không chỉ tên function.
+
+### Tạo catalog và cart UI
+
+Catalog nhận capability qua props thay vì import implementation của cart. Trong lab, command chạy đồng bộ và dữ liệu cố định; khi nối backend bạn cần trạng thái pending và xử lý lỗi riêng cho thao tác thêm giỏ.
+
+```js title="catalog/1.0.0/entry.js"
+export function mount(container, { cart }) {
+  const section = document.createElement('section');
+  const heading = document.createElement('h2');
+  heading.textContent = 'Catalog';
+  section.append(heading);
+
+  for (const [sku, name] of [
+    ['ao-thun-den', 'Áo thun đen'],
+    ['tui-vai', 'Túi vải'],
+  ]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.sku = sku;
+    button.textContent = `Thêm ${name}`;
+    section.append(button);
+  }
+
+  function onClick(event) {
+    const button = event.target.closest('button[data-sku]');
+    if (button && section.contains(button)) cart.addItem(button.dataset.sku);
+  }
+
+  section.addEventListener('click', onClick);
+  container.replaceChildren(section);
+
+  return () => {
+    section.removeEventListener('click', onClick);
+    section.remove();
+  };
+}
+```
+
+Cart UI đọc snapshot hiện có **trước khi chờ thông báo mới**. Nhờ vậy, thêm sản phẩm ở catalog rồi mới mở cart lần đầu vẫn thấy dữ liệu.
+
+```js title="cart/1.0.0/entry.js"
+export function mount(container, { cart }) {
+  const section = document.createElement('section');
+  container.replaceChildren(section);
+
+  function render() {
+    const heading = document.createElement('h2');
+    heading.textContent = 'Giỏ hàng';
+    const list = document.createElement('ul');
+    const items = cart.getSnapshot();
+
+    for (const item of items) {
+      const row = document.createElement('li');
+      row.textContent = `${item.sku}: ${item.quantity}`;
+      list.append(row);
+    }
+
+    const empty = document.createElement('p');
+    empty.textContent = 'Giỏ đang rỗng';
+    section.replaceChildren(heading, items.length ? list : empty);
+  }
+
+  render();
+  const unsubscribe = cart.subscribe(render);
+  return () => {
+    unsubscribe();
+    section.remove();
+  };
+}
+```
+
+### Shell quản lý loading và lifecycle
+
+Shell dùng loader function với specifier cố định. Cách này giới hạn route được phép tải và dễ audit hơn việc chuyển input người dùng trực tiếp vào `import()`.
+
+```js title="shell.js"
+import { createCartController } from '@shop/cart-controller';
+
+const outlet = document.querySelector('#outlet');
+const badge = document.querySelector('#badge');
+const cart = createCartController();
+const loaders = {
+  catalog: () => import('@shop/catalog'),
+  cart: () => import('@shop/cart'),
+};
+
+function updateBadge() {
+  badge.textContent = String(cart.getSummary());
+}
+updateBadge();
+cart.subscribe(updateBadge); // Subscription sống cùng shell trong document này.
+
+let cleanup;
+let navigationId = 0;
+
+async function navigate() {
+  const id = ++navigationId;
+  const route = location.hash.slice(1) || 'catalog';
+  const load = Object.hasOwn(loaders, route) ? loaders[route] : null;
+
+  cleanup?.();
+  cleanup = undefined;
+  outlet.replaceChildren();
+
+  if (!load) {
+    outlet.textContent = 'Không tìm thấy trang';
+    return;
+  }
+
+  outlet.textContent = 'Đang tải…';
+  try {
+    const module = await load();
+    if (id !== navigationId) return;
+    if (typeof module.mount !== 'function') {
+      throw new Error('Module không export mount');
+    }
+
+    outlet.replaceChildren();
+    const dispose = module.mount(outlet, { cart });
+    if (typeof dispose !== 'function') {
+      throw new Error('mount phải trả về function cleanup');
+    }
+    cleanup = dispose;
+  } catch (error) {
+    if (id !== navigationId) return;
+    console.error('Không thể mở route', { route, error });
+    const message = document.createElement('p');
+    message.textContent = 'Không thể mở phần này. Hãy tải lại trang.';
+    const reload = document.createElement('button');
+    reload.textContent = 'Tải lại trang';
+    reload.addEventListener('click', () => location.reload());
+    outlet.replaceChildren(message, reload);
+  }
+}
+
+window.addEventListener('hashchange', navigate);
+navigate();
+```
+
+`navigationId` ngăn catalog tải chậm ghi đè cart sau khi bạn đã đổi route. Nó chỉ bỏ qua kết quả import cũ; không hủy network request hoặc ngăn module đó evaluate.
+
+Controller được import tĩnh vì cart capability là dependency cần cho lab này. Nếu controller không tải được, shell module chưa chạy nên fallback bên trong `navigate()` cũng chưa hoạt động. Muốn catalog vẫn dùng được khi cart capability lỗi, bạn phải thêm bootstrap boundary riêng, trạng thái capability không khả dụng và nút thêm bị vô hiệu hóa; không hiển thị badge `0` để che lỗi.
+
+<Callout type="warn" title="Cleanup là contract cần kiểm thử">
+  Shell không thể cứu mọi remote sai contract. Nếu `mount` ném lỗi sau khi gắn global listener, hoặc không trả cleanup hợp lệ, xóa DOM không đủ để dọn tài nguyên. Remote phải rollback phần đã khởi tạo khi mount thất bại và đảm bảo cleanup an toàn. Nếu cần lifecycle bất đồng bộ, hãy thiết kế orchestrator tương ứng thay vì thay function bằng Promise trong ví dụ này.
+</Callout>
+
+### Chạy và kiểm chứng
+
+Từ thư mục `import-map-shop`, phục vụ bằng HTTP, chẳng hạn nếu máy có Python 3:
+
+```bash
+python3 -m http.server 8080
+```
+
+Mở `http://localhost:8080/`, không mở `index.html` qua `file://`. Đây không phải lệnh chạy site docs trong repository.
+
+| Thao tác | Kết quả cần thấy |
+| --- | --- |
+| Mở trang, chưa vào cart | Controller và catalog được tải; cart UI entry chưa cần tải |
+| Thêm áo hai lần, túi một lần | Badge là `3` |
+| Mở Giỏ hàng lần đầu | Hai dòng với quantity `2` và `1`, không bắt đầu từ giỏ rỗng |
+| Qua lại catalog và cart nhiều lần | State còn nguyên; một lần bấm chỉ cộng một đơn vị |
+| Reload document | Cart in-memory reset về rỗng, đúng giới hạn lab |
+| Đổi hash nhanh khi bật network throttling | UI cuối cùng khớp hash mới nhất |
+| Đổi URL catalog trong map thành file không tồn tại rồi reload | Header còn hiện; vùng nội dung báo lỗi |
+
+Trong DevTools Network, kiểm tra URL entry và Initiator của từng request. Muốn chứng minh chọn release mà không sửa shell, copy catalog sang `catalog/1.1.0/entry.js`, đổi heading và chỉ sửa map trong HTML. Document mới phải dùng bản `1.1.0`, trong khi `shell.js` giữ nguyên. Lab sửa HTML thủ công; production có thể nhúng map từ release registry lúc phục vụ HTML.
+
+## Build output phải còn là browser ESM
+
+Lab dùng JavaScript thuần để bạn thấy trực tiếp hành vi của browser. Với React, Vue hoặc TypeScript, bạn thường vẫn cần bundler để compile JSX/TS, tối ưu và chia chunk. Import maps không thay compiler hay pipeline build.
+
+### Giữ external import để map có tác dụng
+
+Nếu bundler đã nhúng React vào catalog bundle, mapping `react` trong HTML không thể lấy bản đó ra. Nếu bundler rewrite `@shop/catalog` thành URL hoặc module ID riêng, browser cũng không còn resolve tên gốc qua map.
+
+Ví dụ cấu hình Rollup cho một React entry:
+
+```js title="rollup.config.mjs — phần output và external"
+export default {
+  input: 'src/entry.js',
+  external: ['react', 'react-dom/client', 'react/jsx-runtime'],
+  output: {
+    dir: 'dist',
+    format: 'es',
+    entryFileNames: 'entry.js',
+    chunkFileNames: 'chunks/[name]-[hash].js',
+  },
+};
+```
+
+Đây chỉ là phần cấu hình minh họa, chưa có plugin compile JSX/TS. Các package và subpath thực sự xuất hiện trong output phải được externalize và map đủ; tùy build còn có `react-dom` hoặc `react/jsx-dev-runtime`. Đừng đoán chỉ từ import trong source, vì compiler có thể sinh thêm import.
+
+Kiểm tra artifact cuối cùng:
+
+- Entry có export ESM public mà shell cần, không phải CommonJS `require` hoặc webpack container kiểu classic script.
+- Bare specifier còn lại đều có mapping phù hợp.
+- Relative chunk import trỏ vào release directory và toàn bộ chunk được publish.
+- Module graph không phụ thuộc trực tiếp vào Node built-in hay global như `process` mà browser không có.
+
+Import map không đọc `package.json` exports hoặc tự chuyển npm package thành browser ESM. URL trỏ tới file CommonJS không trở thành ESM chỉ vì nằm trong map. Nếu dùng CDN chuyển đổi package, cần kiểm tra graph được sinh ra, pin version và xem dependency của nó có đi qua map của bạn hay đã bị rewrite thành URL riêng.
+
+### CSS asset và public path
+
+Import map không resolve `<link href>`, `<img src>` hay chuỗi URL truyền vào `fetch`. Một `src="./logo.svg"` được gán lên element thường resolve theo document, không theo file remote.
+
+Với asset thuộc release remote, bạn có thể tính địa chỉ từ module:
+
+```js
+const logoUrl = new URL('./assets/logo.svg', import.meta.url).href;
+const image = document.createElement('img');
+image.src = logoUrl;
+image.alt = 'Shop';
+```
+
+CSS cũng cần chính sách riêng: shell tải stylesheet trước, remote tạo link theo URL release, hoặc build pipeline đảm nhận. Syntax import CSS do bundler hỗ trợ không mặc nhiên là syntax browser portable. Prefix class hoặc Shadow DOM có thể giúp giới hạn ảnh hưởng CSS; import map tự nó không tạo CSS isolation.
+
+## Chia sẻ dependency không phải thương lượng version
+
+Khi shell và remote đều resolve một dependency tới cùng URL ESM trong cùng document và loader, chúng dùng chung module instance. Nhưng map không có tùy chọn `singleton`, `requiredVersion` hay thuật toán chọn version phù hợp.
+
+Ví dụ cấu hình địa chỉ của các browser ESM artifact do platform đã build và publish:
+
+```json
+{
+  "imports": {
+    "react": "/vendor/react/approved/index.js",
+    "react/jsx-runtime": "/vendor/react/approved/jsx-runtime.js",
+    "react-dom/client": "/vendor/react-dom/approved/client.js"
+  }
+}
+```
+
+`approved` ở đây là nhãn minh họa, không nên dùng làm URL mutable trên production. Hãy thay bằng release hoặc content hash bất biến. Đồng thời kiểm tra `react-dom/client` và JSX runtime thực sự dùng cùng React instance, thay vì chứa React đã bundle hoặc import một URL khác.
+
+Hai file có cùng nội dung nhưng URL khác nhau vẫn có thể tạo instance khác nhau. Hai URL khác query string cũng có thể tạo identity riêng. Một remote bundle sẵn React sẽ không chia sẻ bản `react` trong map của shell.
+
+Nếu bạn truyền React component để render dưới root của shell, framework identity và version compatibility là ràng buộc rất quan trọng. Nếu mỗi remote tự tạo root và boundary chỉ truyền dữ liệu hoặc DOM container, bạn có thể cho phép nhiều runtime độc lập, nhưng phải chấp nhận tăng tải và không trao đổi Context hay framework object tùy ý.
+
+<Callout type="warn" title="Scopes không sửa được incompatibility">
+  Tách React bằng scopes có thể tạo nhiều bản React, chứ không làm component của một bản tương thích với renderer của bản khác. Mình chỉ dùng scoped dependency version khi boundary thật sự cho phép nhiều instance, chẳng hạn formatter thuần và stateless. Với dependency cần dùng chung, platform phải chốt bộ version đã kiểm thử.
+</Callout>
+
+Contract ứng dụng cũng cần kiểm tra riêng. `import()` thành công không chứng minh `mount` đúng kiểu, props đúng schema hay cleanup đúng hành vi. Các team nên có contract tests và integration tests chạy trên tổ hợp shell, remote và dependency map chuẩn bị promote.
+
+## Deploy canary và rollback
+
+### Chốt map cho mỗi document
+
+Mặc định mình để server hoặc edge chọn một **snapshot map** trước khi trả HTML. Shell không cần build lại khi URL catalog đổi, miễn là public contract vẫn tương thích. Tuy nhiên, nếu map được đóng cứng vào HTML lúc build, bạn vẫn phải phát hành HTML mới; browser không tự đi tìm một cấu hình mới ở nơi khác.
+
+Snapshot nên có revision để log và trace, chẳng hạn `shop-map-r18`. Revision là metadata của release registry hoặc HTML bootstrap, không phải một trường cấu hình chuẩn bạn tùy ý thêm vào schema import map.
+
+Canary chọn snapshot theo cohort trước khi tải module graph. Nếu map hoặc HTML được cá nhân hóa theo cookie, cache CDN phải tách đúng biến thể hoặc không cache shared response đó. Nếu không, người thuộc cohort ổn định có thể nhận map canary từ cache.
+
+### Publish artifact trước cấu hình
+
+Thứ tự phát hành nên là:
+
+1. Upload toàn bộ entry, chunk, CSS và asset vào release directory bất biến, ví dụ `/catalog/r18/`.
+2. Kiểm tra availability, MIME, CORS, CSP và contract với shell cùng dependency snapshot dự kiến.
+3. Promote map để `@shop/catalog` trỏ tới `/catalog/r18/entry.js`.
+4. Theo dõi lỗi theo map revision và release URL; rollback con trỏ nếu bản mới có vấn đề.
+
+Nếu promote map trước khi chunk upload xong, entry có thể tải được nhưng graph vẫn lỗi. Nếu ghi đè file dưới `/catalog/latest/`, các cache khác nhau có thể nhận entry mới và chunk cũ, làm release không còn một snapshot đáng tin cậy.
+
+| Tài nguyên | Chính sách mặc định |
+| --- | --- |
+| Entry và chunk ở URL release bất biến | Có thể cache dài với `Cache-Control: public, max-age=31536000, immutable` |
+| HTML chứa map hoặc endpoint cấu hình mutable | Cache ngắn hoặc revalidate theo yêu cầu rollout; không đánh dấu immutable |
+| Artifact release cũ | Giữ đủ lâu để tab cũ còn tải lazy chunk và để rollback |
+| HTML theo cohort hoặc người dùng | Có cache key và policy phù hợp, không vô tình chia sẻ giữa các cohort |
+
+Rollback thường là cho **document mới** nhận lại map trước đó, không phải thay bundle ngay trong các tab đã mở. Giữ artifact cũ và bộ dependency tương ứng để snapshot cũ vẫn hoạt động.
+
+### Tab cũ không tự đổi module
+
+Một tab đã nhận map r17 sẽ tiếp tục dùng mapping đó ngay cả khi server promote r18. Nếu catalog đã evaluate, sửa DOM của thẻ import map không unload module, xóa side effect hay thay reference mà consumer đang giữ.
+
+Ngay cả khi browser hỗ trợ đăng ký thêm map, nó không phải API hot-swap. Các ràng buộc merge và module identity vẫn tồn tại. Thêm query string để ép URL mới có thể tạo instance thứ hai và nhân đôi singleton; đừng dùng cách này như retry mặc định.
+
+Nếu có release quan trọng bắt buộc áp dụng, shell cần chính sách phát hiện revision mới và đề nghị reload tại thời điểm an toàn. Với giỏ in-memory của lab, reload mất state; ứng dụng thật cần persistence hoặc đồng bộ backend phù hợp. Import maps không giải quyết bài toán chuyển state giữa hai release.
+
+## Loading lỗi và giới hạn của retry
+
+Bạn nên phân loại lỗi theo phase thay vì gọi mọi thứ là “remote không tải được”:
+
+| Phase | Ví dụ | Boundary nên xử lý |
+| --- | --- | --- |
+| Resolve | Thiếu mapping cho `@shop/catalog` hoặc một dependency | Validate map và artifact trước release |
+| Fetch | 404, mất mạng, CORS, MIME sai | Loader hiển thị lỗi cục bộ và ghi release URL |
+| Link hoặc evaluate | Thiếu named export, syntax không được hỗ trợ, top-level ném lỗi | Contract test, browser test và rollback release |
+| Mount | Export đúng tên nhưng gọi sai props hoặc khởi tạo UI thất bại | Lifecycle boundary và cleanup của remote |
+| Sau mount | Click handler, render tiếp theo hoặc request dữ liệu lỗi | Remote UI hoặc framework Error Boundary phù hợp |
+
+`try/catch` quanh `await import()` và lời gọi `mount()` không bắt được mọi lỗi xảy ra sau đó trong event handler hoặc asynchronous task. Cần instrumentation và error boundary ở nơi thực sự thực thi thao tác đó.
+
+Native `import()` không nhận `AbortSignal`. Nếu bạn race import với timeout, bạn chỉ ngừng chờ kết quả; module vẫn có thể tải và evaluate sau timeout. Dùng navigation token để ngăn mount muộn, tránh side effect top-level, và không coi timeout là cơ chế hủy code.
+
+ESM không cung cấp API unload module hay xóa module cache. Lỗi evaluate có thể được giữ lại, còn retry sau lỗi fetch hoặc link cũng không nên được coi là chắc chắn tạo một lần tải mới trên mọi browser và loader. Lab chọn reload document làm recovery path rõ ràng, thay vì hứa nút retry cùng URL sẽ sửa mọi lỗi. Production cần kiểm thử policy retry, bảo toàn state và không retry vô hạn.
+
+## CORS CSP và ranh giới bảo mật
+
+Nếu module graph nằm trên origin CDN khác shell, response module cần CORS phù hợp. Với asset công khai không dùng credential, server có thể trả `Access-Control-Allow-Origin: *`; môi trường dùng credential cần cấu hình origin cụ thể và policy riêng. Kiểm tra cả entry lẫn chunk, không chỉ file đầu tiên.
+
+Native import map không có attribute `crossorigin` để điều khiển request module. Fetch policy thuộc module loading và script liên quan. Đừng giả định cookie của shell sẽ đi theo mọi request tới CDN khác origin.
+
+Với CSP, JSON inline trong import map cần được cho phép bằng nonce hoặc hash phù hợp; các module URL cũng phải được policy cho phép. Nếu server nhúng map động, dùng serializer an toàn cho ngữ cảnh HTML script để chuỗi dữ liệu không đóng thẻ script ngoài ý muốn. Không nối trực tiếp URL từ input người dùng vào HTML.
+
+Import map có thể khai báo trường `integrity` ánh xạ URL module sang SRI metadata ở browser hỗ trợ tính năng đó. Attribute `integrity` trên chính thẻ `script type="importmap"` không phải cách làm đúng. SRI trên một entry cũng không tự bảo vệ mọi dependency; nếu dùng cơ chế này, generate và kiểm tra metadata cho những URL cần bảo vệ, đồng thời xác minh browser target hỗ trợ nó.
+
+<Callout type="warn" title="Map là một phần của code supply chain">
+  Người sửa map có thể đổi module URL sang code khác. Code đó chạy trong ngữ cảnh trang shell, không bị sandbox theo origin nơi file được tải. Cần giới hạn origin và đường dẫn được phép, phân quyền promote, audit revision và kiểm tra artifact. CORS chỉ quyết định có được tải tài nguyên; nó không làm remote trở thành code an toàn.
+</Callout>
+
+Không cho query parameter như `?catalogUrl=...` tùy ý ghi đè map production. Dev override nên giới hạn ở môi trường phát triển hoặc preview có policy rõ ràng. Nếu cần boundary cho code không đáng tin cậy, xem [iframe isolation](/docs/cac-cach-tich-hop/iframe).
+
+## Native ESM es-module-shims và SystemJS
+
+Native import maps được các browser hiện đại hỗ trợ, nhưng bạn vẫn phải kiểm tra danh sách browser của sản phẩm. Hỗ trợ import maps cơ bản không đồng nghĩa hỗ trợ nhiều map hoặc trường `integrity`.
+
+```js
+const supportsImportMaps = HTMLScriptElement.supports?.('importmap') === true;
+```
+
+Kiểm tra trên chỉ báo tính năng cơ bản. Nó không chứng minh mọi khả năng nâng cao bạn định dùng đều hoạt động.
+
+| Cách tải | Map và entry | Lưu ý |
+| --- | --- | --- |
+| Native browser | `type="importmap"`, `type="module"`, `import()` và ESM output | Lựa chọn của lab; ít lớp loader nhất khi browser target phù hợp |
+| es-module-shims | ESM; có polyfill mode và shim mode với API riêng như `importShim()` | Pin loader version, kiểm tra browser và CSP; không mặc định mọi native dynamic import đều được polyfill |
+| SystemJS | Thường dùng `type="systemjs-importmap"`, `System.import()` và output `System.register` | Loader và module format khác; không thay cú pháp trong lab rồi mong giữ nguyên hành vi |
+
+Với es-module-shims, README mô tả edge case: module native đã chạy nhưng chỉ gặp bare specifier không hỗ trợ ở dynamic import thì polyfill mode không tự chạy lại toàn bộ module để sửa lỗi đó. Cần chọn bootstrap và API loader đúng theo hướng dẫn, không chỉ thêm một script rồi coi mọi `import()` được bảo vệ.
+
+Mình bắt đầu bằng native nếu browser target cho phép. Chỉ thêm shim hoặc loader khác khi có yêu cầu cụ thể và test cho nó. Trộn native loader với shim hoặc SystemJS mà không kiểm soát có thể tạo graph và module instance riêng; dependency singleton cần được kiểm tra lại.
+
+## Chẩn đoán lỗi thường gặp
+
+| Triệu chứng | Kiểm tra trước | Hướng xử lý |
+| --- | --- | --- |
+| `Failed to resolve module specifier` | Map có được đăng ký trước module không; dependency nào thiếu key | Xem bare specifier trong artifact, thêm mapping đúng và reload |
+| Strict MIME checking báo `text/html` | URL module có bị SPA fallback trả HTML thay vì JS không | Loại trừ đường dẫn asset khỏi rewrite; trả JavaScript MIME và status đúng |
+| Entry 200 nhưng UI không lên | Chunk, named export và lỗi top-level trong Console | Kiểm tra toàn bộ module graph, không chỉ entry |
+| Chạy local được, CDN bị CORS | Response header của entry và từng chunk | Áp dụng CORS đúng cho cả release directory |
+| Đổi map nhưng tab vẫn dùng bản cũ | Tab đã nhận map nào; HTML hoặc service worker đang cache gì | Xem revision, test trên document mới và sửa cache policy |
+| Có hai React instance | Output có bundle React không; scoped URL hoặc query có khác không | Kiểm tra externalization và graph URL thực tế |
+| Điều hướng nhanh hiện sai trang | Import cũ resolve sau import mới | Dùng navigation token, không mount kết quả cũ |
+| Listener hoặc state nhân đôi | Side effect top-level, thiếu cleanup hoặc tải thêm URL version khác | Kiểm thử lifecycle, chỉ tạo controller theo ownership đã chốt |
+| Asset tải từ origin của shell | Relative URL trong DOM resolve theo document | Dùng URL release hoặc `new URL(..., import.meta.url)` khi phù hợp |
+
+Khi báo lỗi, ghi ít nhất route, specifier, entry URL, map revision, phase và browser version. Có source map theo đúng release giúp tìm lỗi evaluate hoặc mount; không đưa token hay dữ liệu nhạy cảm vào log.
+
+## Checklist trước production
+
+- [ ] Browser matrix đã kiểm tra đúng tính năng cần dùng, không chỉ native ESM cơ bản.
+- [ ] Map được validate và đăng ký trước graph phụ thuộc; chọn một snapshot rõ ràng cho document.
+- [ ] Artifact là browser-compatible ESM; mọi external bare specifier đều resolve được.
+- [ ] Public API và lifecycle có contract tests, gồm mount lỗi và cleanup khi đổi route.
+- [ ] Dependency cần chia sẻ resolve về graph đã phê duyệt, không có bản bundle ẩn hoặc URL identity ngoài ý muốn.
+- [ ] Shell có loading, fallback cục bộ và xử lý kết quả import muộn; dependency bootstrap có boundary riêng nếu cần.
+- [ ] Retry và reload policy được kiểm thử, có cách giữ state cần thiết.
+- [ ] Entry, chunk, CSS và asset được upload đầy đủ trước khi promote map.
+- [ ] URL artifact bất biến; map hoặc HTML mutable có cache policy đúng cho rollout và cohort.
+- [ ] Có release retention, rollback snapshot và log đủ revision để chẩn đoán tab cũ.
+- [ ] CORS, CSP, serializer HTML và quyền chỉnh sửa map đã được review.
+
+Bước thực hành tiếp theo là phát hành catalog `1.1.0` chỉ bằng đổi map, sau đó chủ động làm thiếu một chunk và rollback. Kiểm tra riêng document mới lẫn tab cũ: hai nhóm này không nhất thiết đang dùng cùng release.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="single-spa và lifecycle" href="/docs/cac-cach-tich-hop/single-spa" description="Thêm orchestrator khi routing và lifecycle vượt quá ví dụ shell nhỏ." />
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="So sánh URL-based sharing với cơ chế sharing của Module Federation." />
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Chốt API tích hợp thay vì chỉ chốt địa chỉ module." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Vận hành release snapshot, canary và phục hồi khi bản mới lỗi." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [MDN — script type importmap](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap): schema, prefix mapping, scopes, integrity và quy tắc merge nhiều map.
+- [MDN — JavaScript modules](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules): module resolution, browser loading, MIME và khác biệt giữa môi trường runtime.
+- [MDN — import expression](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import): dynamic import, module namespace, caching và giới hạn reload module.
+- [es-module-shims — README](https://github.com/guybedford/es-module-shims): polyfill mode, shim mode, dynamic import edge case và instance sharing.
+- [SystemJS — README](https://github.com/systemjs/systemjs): loader API, `System.register` và import map integration của SystemJS.

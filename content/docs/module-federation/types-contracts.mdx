@@ -1,18 +1,690 @@
 ---
 title: "Types và contracts"
-description: "Quản lý TypeScript types cùng hợp đồng runtime giữa các ứng dụng."
+description: "Phân phối TypeScript declarations cho exposed modules, kiểm tra contract ở runtime và giữ types khớp với remote khi các ứng dụng deploy độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell build thành công với `catalog/productApi`, nhưng catalog vừa deploy một bản trả `priceMinor` thành string thay vì number. TypeScript ở shell vẫn hiển thị type cũ, autocomplete vẫn đúng, và lỗi chỉ xuất hiện khi người dùng mở trang sản phẩm. Vì code catalog được tải lúc chạy, một build xanh của shell không chứng minh remote đang deploy giữ đúng lời hứa.
+
+Bài này nối hai phần thường bị tách rời: **types giúp kiểm tra code trước khi chạy; contract xác định điều hai ứng dụng phải giữ khi chạy cùng nhau**. Mình sẽ dùng một public API nhỏ của catalog để đi từ declarations tới runtime validation, rồi chọn cách phân phối types phù hợp với việc release độc lập.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Ví dụ dùng shop giả định gồm shell và catalog, không phải source ứng dụng có sẵn trong repository này. Phần declarations thủ công áp dụng cho ứng dụng TypeScript với webpack 5; phần tự động hóa dùng riêng `@module-federation/enhanced/webpack`. Đây không phải hướng dẫn tích hợp Federation vào Next.js hay SSR. Bạn nên nắm [exposes và remotes](/docs/module-federation/exposes-remotes) trước khi đọc.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Types không phải runtime contract](#types-không-phải-runtime-contract)
+  - [Hai đường phân phối khác nhau](#hai-đường-phân-phối-khác-nhau)
+  - [Một contract cần công bố những gì](#một-contract-cần-công-bố-những-gì)
+- [Thiết kế public API của catalog](#thiết-kế-public-api-của-catalog)
+  - [Định nghĩa types và semantics](#định-nghĩa-types-và-semantics)
+  - [Remote triển khai public entry](#remote-triển-khai-public-entry)
+- [Khai báo module ở host](#khai-báo-module-ở-host)
+  - [Ambient declaration có type cụ thể](#ambient-declaration-có-type-cụ-thể)
+  - [Những cách làm mất type safety](#những-cách-làm-mất-type-safety)
+- [Chọn cách phân phối types](#chọn-cách-phân-phối-types)
+  - [Contract package có version](#contract-package-có-version)
+  - [Declarations sinh từ remote build](#declarations-sinh-từ-remote-build)
+  - [Giới hạn phụ thuộc xuyên boundary](#giới-hạn-phụ-thuộc-xuyên-boundary)
+- [Tự động hóa với enhanced](#tự-động-hóa-với-enhanced)
+  - [Sinh và tải declarations](#sinh-và-tải-declarations)
+  - [Cho TypeScript resolve thư mục types](#cho-typescript-resolve-thư-mục-types)
+  - [Dev thuận tiện nhưng CI phải tái lập được](#dev-thuận-tiện-nhưng-ci-phải-tái-lập-được)
+- [Validate contract ở runtime](#validate-contract-ở-runtime)
+  - [Decode dữ liệu từ unknown](#decode-dữ-liệu-từ-unknown)
+  - [Kiểm tra exports và tạo adapter](#kiểm-tra-exports-và-tạo-adapter)
+  - [Fallback và telemetry đúng boundary](#fallback-và-telemetry-đúng-boundary)
+- [Giữ types khớp với release](#giữ-types-khớp-với-release)
+  - [Phân biệt package version và protocol version](#phân-biệt-package-version-và-protocol-version)
+  - [Kiểm tra tương thích theo hai chiều](#kiểm-tra-tương-thích-theo-hai-chiều)
+- [Kiểm thử trước khi công bố API](#kiểm-thử-trước-khi-công-bố-api)
+  - [Type tests và decoder tests](#type-tests-và-decoder-tests)
+  - [Contract tests với artifact thật](#contract-tests-với-artifact-thật)
+- [Chẩn đoán lỗi types và contracts](#chẩn-đoán-lỗi-types-và-contracts)
+- [Checklist cho một exposed module](#checklist-cho-một-exposed-module)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Types không phải runtime contract
 
-Bài này sẽ giúp bạn: quản lý TypeScript types cùng hợp đồng runtime giữa các ứng dụng.
+### Hai đường phân phối khác nhau
 
-[Xem các bài trong nhóm Module Federation](/docs/module-federation).
+Với `import('catalog/productApi')`, bundler biết cách tải container và lấy exposed module. TypeScript lại cần declarations mô tả module đó để kiểm tra code shell. Plugin webpack tích hợp không tự biến `exposes` thành declarations mà host có thể dùng.
+
+```text
+Trước khi chạy:
+  Declarations hoặc contract package ──► TypeScript của shell
+
+Khi chạy trong browser:
+  Remote entry và chunks ──► Module catalog ──► Adapter của shell
+```
+
+Hai đường này có thể lấy artifact của hai release khác nhau. Ví dụ shell typecheck với declarations của catalog r18, nhưng runtime config trỏ tới r17. Chỉ sửa `tsconfig.json` không làm browser đổi remote; chỉ đổi URL remote cũng không cập nhật types trong source shell.
+
+Bạn có thể xem `.d.ts` như bản mô tả ổ cắm, còn module runtime là thiết bị thật được giao đến. Bản mô tả giúp thiết kế đúng chỗ cắm, nhưng không kiểm tra thiết bị trong thùng có đúng model. Với code, kiểm tra đó là runtime validation và integration tests; analogy này không có nghĩa chỉ cần kiểm tra tên export là đủ.
+
+<Callout type="warn" title="Type assertion không kiểm tra remote">
+  `as CatalogProductModuleV1`, generic kiểu `loadRemote<T>()` nếu API hỗ trợ, hoặc một ambient declaration đều chỉ mô tả kỳ vọng cho TypeScript. Chúng không xác minh shape của module, dữ liệu trả về hay hành vi của implementation đang chạy.
+</Callout>
+
+### Một contract cần công bố những gì
+
+Contract không chỉ là danh sách props hoặc interface. Public boundary nên ghi rõ những điều consumer dựa vào:
+
+| Phần contract | Ví dụ với catalog |
+| --- | --- |
+| Public request và exports | `catalog/productApi`, named exports `contract` và `getProductSummary` |
+| Input và output | Product ID không rỗng; trả summary hoặc `null` |
+| Semantics | Giá theo đơn vị minor của currency; `null` là không có sản phẩm |
+| Hành vi lỗi | Input sai bị reject; lỗi đọc dữ liệu không biến thành `null` |
+| Side effects và lifecycle | Import không tự mount UI; function không cần `this` |
+| Compatibility | Consumer bỏ qua field output chưa biết; currency v1 là tập đóng |
+| Ownership và hỗ trợ | Team catalog sở hữu API, công bố version và policy deprecation |
+
+Với component, cần thêm ý nghĩa props, callbacks, cập nhật props và cleanup. Với `mount`, cần nói khi nào ready, ai sở hữu DOM container, unmount có idempotent không và tác vụ muộn bị xử lý thế nào. Những vấn đề đó được phân tích rộng hơn ở [Contracts giữa ứng dụng](/docs/giao-tiep-va-trang-thai/contracts); bài này tập trung vào exposed module qua Federation.
+
+## Thiết kế public API của catalog
+
+### Định nghĩa types và semantics
+
+Mình mặc định dùng một public entry nhỏ theo domain, không expose store hoặc model database. Ví dụ `getProductSummary` chỉ trả phần shell cần để hiển thị sản phẩm, để catalog còn tự do thay cache, backend và cách tổ chức source.
+
+Giả sử package `@shop/catalog-contracts` công bố declarations sau qua entry types của package. Đây là package riêng của ví dụ, không cần tạo hay cài vào site docs này.
+
+```ts title="@shop/catalog-contracts — public types"
+export interface ProductSummaryV1 {
+  readonly productId: string;
+  readonly name: string;
+  readonly priceMinor: number;
+  readonly currency: 'VND' | 'USD';
+}
+
+export interface CatalogProductModuleV1 {
+  readonly contract: {
+    readonly protocol: 'shop.catalog.product.v1';
+    readonly buildId: string;
+  };
+
+  readonly getProductSummary: (
+    productId: string,
+  ) => Promise<ProductSummaryV1 | null>;
+}
+```
+
+Interface này đi kèm các quy tắc:
+
+- `productId` và `name` là string không rỗng sau khi trim. ID có phân biệt chữ hoa/thường; không tự trim hay sửa ID trước lookup.
+- `priceMinor` là số nguyên an toàn, không âm, biểu diễn **minor unit của currency**. Ví dụ `1999` USD là 19,99 USD; `1999` VND là 1.999 VND vì VND không có chữ số thập phân theo quy ước này. Không mặc định chia mọi giá cho 100.
+- `null` nghĩa là không tìm thấy sản phẩm. Lỗi mạng, timeout hoặc backend lỗi khiến Promise reject, không được đổi thành `null` hay sản phẩm giá `0`.
+- Function là read-only, không đòi caller bind `this`; import module không tự mount UI hoặc đăng ký listener global.
+- Output v1 cho phép field bổ sung, nhưng consumer chỉ dựa vào các field công bố. `currency` là tập đóng gồm VND và USD; thêm currency cần xem lại compatibility, không chỉ sửa union.
+
+`readonly` ngăn một số phép gán trong TypeScript, không freeze object ở runtime. Consumer cũng không nên đoán output là object có identity ổn định hoặc chia sẻ state với remote.
+
+### Remote triển khai public entry
+
+Public entry dưới đây dùng fixture để minh họa contract; chưa có backend, cache hay policy timeout của ứng dụng thật.
+
+```ts title="catalog/src/public/productApi.ts"
+import type {
+  CatalogProductModuleV1,
+  ProductSummaryV1,
+} from '@shop/catalog-contracts';
+
+export const contract: CatalogProductModuleV1['contract'] = {
+  protocol: 'shop.catalog.product.v1',
+  // Minh họa; production lấy build ID từ pipeline.
+  buildId: 'catalog-r17-example',
+};
+
+const exampleProduct: ProductSummaryV1 = {
+  productId: 'sku-123',
+  name: 'Áo cotton',
+  priceMinor: 199000,
+  currency: 'VND',
+};
+
+export const getProductSummary:
+  CatalogProductModuleV1['getProductSummary'] = async (productId) => {
+    if (typeof productId !== 'string' || productId.trim().length === 0) {
+      throw new TypeError('productId phải là string không rỗng');
+    }
+
+    if (productId !== exampleProduct.productId) return null;
+    return { ...exampleProduct };
+  };
+```
+
+Gắn public entry vào remote config:
+
+```js title="Trích phần exposes trong config catalog"
+exposes: {
+  './productApi': './src/public/productApi.ts',
+}
+```
+
+Bundler vẫn cần loader hoặc integration để build TypeScript; đoạn này chỉ minh họa mapping, không phải config webpack hoàn chỉnh. Host dùng alias `catalog` trong `remotes` và import `catalog/productApi`. Tên container có thể là `catalog_app`, không bắt buộc giống alias.
+
+Gắn type vào từng export phát hiện nhiều lỗi implementation ngay trong catalog. Nhưng vẫn cần kiểm tra **namespace export thật**: nếu ai đó xóa `getProductSummary` khỏi public entry, type của function ở file nội bộ không bảo vệ host.
+
+```ts title="catalog/type-tests/public-api.ts"
+import * as publicApi from '../src/public/productApi';
+import type { CatalogProductModuleV1 } from '@shop/catalog-contracts';
+
+// Chạy bằng tsc --noEmit cùng source của catalog.
+publicApi satisfies CatalogProductModuleV1;
+```
+
+`satisfies` kiểm tra cấu trúc ở compile time, không sinh runtime validator và không chứng minh Promise luôn trả dữ liệu hợp lệ từ backend.
+
+## Khai báo module ở host
+
+### Ambient declaration có type cụ thể
+
+Với webpack gốc, cách khởi đầu đơn giản là để host khai báo public request chính xác, rồi tham chiếu types từ contract package thay vì chép lại interface.
+
+```ts title="shell/src/types/catalog.d.ts"
+declare module 'catalog/productApi' {
+  import type { CatalogProductModuleV1 } from '@shop/catalog-contracts';
+
+  export const contract: CatalogProductModuleV1['contract'];
+  export const getProductSummary:
+    CatalogProductModuleV1['getProductSummary'];
+}
+```
+
+File này là ambient module declaration. **Không thêm `import` hoặc `export {}` ở top level của file** trong cách khai báo này: file sẽ thành external module, và `declare module` có thể được hiểu là module augmentation thay vì định nghĩa một remote module mới. Import type nằm bên trong block như ví dụ là chủ ý.
+
+Đảm bảo file được TypeScript đưa vào program. Với app frontend dùng bundler, một cấu hình tối thiểu có thể là:
+
+```json title="shell/tsconfig.json — minh họa, ghép với cấu hình app"
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "include": ["src"]
+}
+```
+
+`include: ["src"]` bao gồm `.d.ts` trong `src/types`; app React cần giữ thêm các option JSX và cấu hình riêng hiện có. Contract package phải resolve được trong shell. Không đổi app Node/SSR sang `moduleResolution: "bundler"` chỉ để làm mất một lỗi resolution.
+
+Sau đó TypeScript hiểu module:
+
+```ts title="shell/src/catalog-usage.ts"
+export async function showProductSummary() {
+  const catalog = await import('catalog/productApi');
+  const product = await catalog.getProductSummary('sku-123');
+
+  if (product !== null) {
+    console.log(product.name, product.priceMinor);
+  }
+}
+```
+
+Đây là ví dụ type usage, chưa có xử lý lỗi runtime. Trong app, caller cần bắt lỗi và hiển thị fallback như phần validation bên dưới.
+
+### Những cách làm mất type safety
+
+Cách khai báo sau làm lỗi “không tìm thấy module” biến mất, nhưng cũng bỏ hầu hết khả năng kiểm tra exports và dữ liệu:
+
+```ts title="Không dùng làm contract production"
+declare module 'catalog/*';
+```
+
+Tương tự, `const catalog: any = await import(...)` cho phép gọi method không tồn tại. Cast cả namespace sang interface chỉ thay lỗi sớm bằng một lời khẳng định mà compiler không kiểm chứng.
+
+Một bẫy khác là map `catalog/*` trực tiếp vào source của remote trong monorepo. TypeScript có thể kiểm tra source mới nhất, còn browser vẫn tải build cũ trên CDN. Mình chỉ dùng mapping source cho workflow local được ghi rõ; CI release cần kiểm tra declarations hoặc contract artifact của release được hỗ trợ.
+
+<Callout type="warn" title="Paths không phải loader">
+  TypeScript `paths` không viết lại import trong JavaScript emit và không tạo container Federation. Đừng cấu hình bundler alias `catalog/productApi` sang file local chỉ vì `paths` có mapping: bạn có thể vô tình bundle implementation catalog vào shell thay vì tải remote.
+</Callout>
+
+## Chọn cách phân phối types
+
+### Contract package có version
+
+Một package như `@shop/catalog-contracts` là lựa chọn mặc định của mình khi team muốn thiết kế public API ổn định trước implementation. Host và remote đều dùng package, nhưng nâng version theo nhu cầu thay vì buộc mọi ứng dụng rebuild đồng thời.
+
+Package có thể chứa types, protocol identifiers, validators thuần và fixtures. Nếu chỉ chứa types, công bố `.d.ts` qua `types` và, khi dùng export map, entry `types` tương ứng. Các entry public phải resolve được với module resolution mà consumer sử dụng.
+
+`import type` không tạo runtime import. Nếu package có validator hoặc constants được import như value, những phần đó phải có JavaScript artifact thật; một package chỉ có `.d.ts` không cung cấp function runtime.
+
+Không đưa React Context, Redux store, query client hay session service vào package contract. Chúng làm boundary phụ thuộc instance và lifecycle, trong khi types thuần không cần `shared` hoặc `singleton`. Xem [Shared dependencies](/docs/module-federation/shared-dependencies) cho trường hợp thư viện có yêu cầu identity.
+
+Trade-off là declarations vẫn có thể lệch implementation. Vì vậy provider phải chạy type tests và contract tests, không chỉ cài đúng package rồi coi như đã tương thích.
+
+### Declarations sinh từ remote build
+
+Sinh declarations từ public entries giảm công sức đồng bộ chữ ký function. Với TypeScript thuần, bước build declarations có thể dùng config riêng:
+
+```json title="catalog/tsconfig.public-types.json — minh họa"
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationDir": "./dist-types"
+  },
+  "include": ["src/public/productApi.ts"]
+}
+```
+
+```bash title="Chạy trong project catalog"
+npx tsc -p tsconfig.public-types.json
+```
+
+`include` chọn entry ban đầu, không loại các file mà entry import khỏi dependency graph. Compiler có thể phát hành declarations của dependencies nội bộ; kiểm tra output để không vô tình công bố cả implementation model.
+
+Ngoài ra, `tsc` không tự biết host đặt alias là `catalog`. Declarations vừa sinh cần được đóng gói thành package, map tới public request hoặc xử lý bằng tooling Federation. Bạn vẫn phải quản lý dependency types như `@shop/catalog-contracts` xuất hiện trong output.
+
+Mình chọn generated declarations khi public surface lớn hoặc hay thay chữ ký, nhưng vẫn viết semantics riêng. Compiler không sinh được cam kết “`null` chỉ khi không tìm thấy” hoặc “unmount dừng subscription”.
+
+### Giới hạn phụ thuộc xuyên boundary
+
+Public types càng kéo nhiều dependency, host càng phải biết chuyện bên trong remote. Ví dụ export `AxiosResponse<InternalProduct>` buộc host hiểu HTTP client và model nội bộ, dù nhu cầu chỉ là tên và giá sản phẩm.
+
+Với React component, việc dùng `ComponentType<ProductPageProps>` có thể hợp lý nếu hai bên đã thống nhất React boundary. Nhưng `@types/react` của compiler và React instance ở browser là hai vấn đề riêng: typecheck thành công không phát hiện mọi lỗi duplicate React hay shared version mismatch.
+
+Không nên re-export type của remote thứ hai qua catalog chỉ vì tiện. Bạn tạo chuỗi phụ thuộc catalog → pricing → host, khiến host thiếu declarations hoặc phải theo release của nhiều provider. Nếu thực sự cần boundary lồng nhau, công bố nó như API có owner và kiểm thử; đừng để nó xuất hiện ngẫu nhiên do inferred types.
+
+## Tự động hóa với enhanced
+
+### Sinh và tải declarations
+
+`@module-federation/enhanced` có cơ chế `dts` để sinh và tiêu thụ remote types. **Đây không phải option của `webpack.container.ModuleFederationPlugin` tích hợp.** Các plugin Vite khác nhau cũng không mặc nhiên hỗ trợ cùng option hoặc cùng artifact layout.
+
+Ví dụ dưới đây là phần plugins của hai webpack config dùng enhanced; các phần entry, output, TypeScript loader và shared dependencies không được lặp lại. Pin version integration và kiểm tra API của version đó trước khi áp dụng.
+
+```js title="catalog/webpack.config.cjs — phần plugins"
+const { ModuleFederationPlugin } = require('@module-federation/enhanced/webpack');
+
+module.exports = {
+  // Các phần build còn lại của catalog đặt ở đây.
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'catalog_app',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './productApi': './src/public/productApi.ts',
+      },
+      dts: {
+        generateTypes: { abortOnError: true },
+        consumeTypes: false,
+      },
+    }),
+  ],
+};
+```
+
+```js title="shell/webpack.config.cjs — phần plugins"
+const { ModuleFederationPlugin } = require('@module-federation/enhanced/webpack');
+
+module.exports = {
+  // Các phần build còn lại của shell đặt ở đây.
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shell',
+      remotes: {
+        catalog: 'catalog_app@https://assets.example.com/catalog/r17/mf-manifest.json',
+      },
+      dts: {
+        generateTypes: false,
+        consumeTypes: { abortOnError: true },
+      },
+    }),
+  ],
+};
+```
+
+Ví dụ giả định publisher đã phát hành manifest hợp lệ cho enhanced. Theo tài liệu hiện hành, type archive mặc định có tên `@mf-types.zip`; consumer tải rồi giải nén vào thư mục `@mf-types`. Tooling cũng có declarations cho runtime API như `loadRemote` khi các option tương ứng bật.
+
+Upload artifacts types mà integration sinh cùng release, không chỉ upload entry JavaScript. Nếu types nằm ở location khác địa chỉ tooling suy ra, enhanced có `dts.consumeTypes.remoteTypeUrls` để chỉ định URL thực; cấu hình đúng remote name, host alias và artifact URLs theo version plugin.
+
+`abortOnError: true` giúp lỗi sinh/tải types không bị bỏ qua trong quy trình build. Nó không bảo đảm mọi task CI dùng đúng types: một job chỉ chạy `tsc` mà chưa chạy bước tải declarations vẫn có thể đọc cache cũ.
+
+### Cho TypeScript resolve thư mục types
+
+Sau khi declarations đã được tải, TypeScript cần resolve public request về output đó. Với layout mặc định có các file public dưới `@mf-types/catalog`, có thể giới hạn mapping vào alias catalog:
+
+```json title="shell/tsconfig.json — phần bổ sung"
+{
+  "compilerOptions": {
+    "paths": {
+      "catalog/*": ["./@mf-types/catalog/*"]
+    }
+  },
+  "include": ["src", "./@mf-types/**/*"]
+}
+```
+
+Kiểm tra cây output thực tế trước khi copy mapping; nếu đổi `typesFolder` hoặc alias, mapping phải đổi theo. Tài liệu enhanced cũng minh họa wildcard `"*": ["./@mf-types/*"]`; mình ưu tiên mapping hẹp để một thư mục generated không vô tình chi phối các request khác.
+
+`include` còn hữu ích cho declarations augment runtime API. Giữ các `paths` và `include` hiện có khi ghép cấu hình, không thay nguyên object rồi làm mất alias của app. Nếu đang dùng generated types cho `catalog/productApi`, bỏ ambient declaration thủ công tương ứng để chỉ còn một nguồn mô tả module.
+
+Với webpack watch, loại thư mục downloaded types khỏi watcher của bundler để tránh vòng lặp fetch types → thay file → build → fetch lại:
+
+```js title="Phần watchOptions trong config shell"
+watchOptions: {
+  ignored: ['**/node_modules/**', '**/@mf-types/**'],
+}
+```
+
+Đây là cấu hình watcher của webpack, không phải yêu cầu TypeScript bỏ qua declarations. Editor vẫn cần thấy types để cập nhật gợi ý.
+
+### Dev thuận tiện nhưng CI phải tái lập được
+
+Type hot reload hữu ích trong dev: đổi public signature ở catalog và shell thấy gợi ý mới. Nhưng CI không nên tải types từ một URL `latest` có thể thay nội dung giữa hai lần chạy.
+
+Mình dùng quy trình release như sau:
+
+1. Chốt release hoặc contract package mà job sẽ kiểm tra, cùng version compiler và integration.
+2. Sinh/tải declarations vào workspace sạch, hoặc khôi phục cache có key theo artifact bất biến.
+3. Xác minh artifacts cần thiết tồn tại, chạy `tsc --noEmit` và type tests.
+4. Chạy integration tests với remote artifact thuộc tổ hợp release được hỗ trợ.
+5. Lưu release IDs, URLs và artifact digest vào kết quả CI để lần sau tái hiện được.
+
+Nếu provider chưa sẵn sàng, không âm thầm dùng types bất kỳ còn sót trong máy runner. Có thể dùng artifact đã pin và đã xác minh từ cache; nếu không có, job phải thất bại rõ ràng.
+
+Với dynamic remotes, một shell có thể chọn nhiều build ở runtime. Tooling không thể khiến TypeScript tự biết mọi module mà manifest tương lai sẽ công bố. Hãy thiết kế interface ổn định cho slot/capability đó, kiểm tra provider ở runtime và giữ ma trận release hỗ trợ; không tải types tùy ý trong browser để thay cho việc này.
+
+## Validate contract ở runtime
+
+### Decode dữ liệu từ unknown
+
+Ngay cả khi import đã có type, dữ liệu thực tế vẫn cần kiểm tra ở boundary phù hợp. Ví dụ dưới đây đặt decoder ở shell; trong hệ thống lớn, validator thuần có thể được công bố cùng contract package.
+
+```ts title="shell/src/catalog-boundary.ts — decoder"
+import type {
+  CatalogProductModuleV1,
+  ProductSummaryV1,
+} from '@shop/catalog-contracts';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value);
+}
+
+function isNonBlank(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function decodeProductSummaryV1(
+  value: unknown,
+): ProductSummaryV1 | null {
+  if (value === null) return null;
+
+  if (!isRecord(value)
+    || !isNonBlank(value.productId)
+    || !isNonBlank(value.name)
+    || typeof value.priceMinor !== 'number'
+    || !Number.isSafeInteger(value.priceMinor)
+    || value.priceMinor < 0
+    || (value.currency !== 'VND' && value.currency !== 'USD')) {
+    throw new TypeError('Invalid catalog product summary v1');
+  }
+
+  // Chỉ giữ projection của contract v1, không giữ object remote.
+  return Object.freeze({
+    productId: value.productId,
+    name: value.name,
+    priceMinor: value.priceMinor,
+    currency: value.currency,
+  });
+}
+```
+
+Decoder chấp nhận field bổ sung nhưng loại chúng khỏi model consumer. Nó không coercion `"199000"` thành `199000` hay biến giá sai thành `0`, vì những cách “cứu dữ liệu” đó dễ che lỗi producer.
+
+`Object.freeze` ở đây là shallow freeze và đủ cho DTO chỉ có primitive fields. Nó không phải cơ chế bảo mật, cũng không thay chính sách copy cho model có object lồng nhau. Nếu dùng Zod, Valibot hoặc JSON Schema thay decoder thủ công, giữ cùng quy tắc về unknown fields, null và coercion.
+
+### Kiểm tra exports và tạo adapter
+
+Descriptor `contract` trong ví dụ là **named export do hai team tự thỏa thuận**, không phải field chuẩn tự xuất hiện trong Federation manifest. Host đọc nó sau khi module đã tải và đánh giá.
+
+Thêm hàm dưới đây vào cùng file decoder:
+
+```ts title="shell/src/catalog-boundary.ts — adapter"
+export function adaptCatalogProductV1(
+  raw: unknown,
+): CatalogProductModuleV1 {
+  if (!isRecord(raw)
+    || !isRecord(raw.contract)
+    || raw.contract.protocol !== 'shop.catalog.product.v1'
+    || !isNonBlank(raw.contract.buildId)
+    || typeof raw.getProductSummary !== 'function') {
+    throw new TypeError('Unsupported catalog product module');
+  }
+
+  const buildId = raw.contract.buildId;
+  const readProduct = raw.getProductSummary;
+
+  return {
+    contract: {
+      protocol: 'shop.catalog.product.v1',
+      buildId,
+    },
+    async getProductSummary(productId) {
+      if (!isNonBlank(productId)) {
+        throw new TypeError('productId phải là string không rỗng');
+      }
+
+      const payload: unknown = await readProduct(productId);
+      const product = decodeProductSummaryV1(payload);
+
+      if (product !== null && product.productId !== productId) {
+        throw new TypeError('Catalog trả sản phẩm khác ID được yêu cầu');
+      }
+
+      return product;
+    },
+  };
+}
+```
+
+Adapter chỉ xác minh descriptor và sự tồn tại của function trước khi tạo client. Function có thể trả sai dữ liệu ở lần gọi sau, nên mỗi kết quả vẫn phải decode. `await` chấp nhận cả giá trị đồng bộ, vì vậy adapter chuẩn hóa kết quả thành Promise; nó không chứng minh remote tuân thủ mọi chi tiết hành vi async.
+
+```ts title="shell/src/load-catalog.ts"
+import { adaptCatalogProductV1 } from './catalog-boundary';
+
+export async function loadCatalogProductV1() {
+  // Ambient/generated types phục vụ compiler; runtime bắt đầu từ unknown.
+  const raw: unknown = await import('catalog/productApi');
+  return adaptCatalogProductV1(raw);
+}
+```
+
+Không có cast cả module sang interface. Client trả về có type vì shell tự xây dựng adapter, kiểm tra input và decode output. Tuy nhiên, adapter không chứng minh giá được tính đúng, request không có side effect hay provider đáp ứng SLA; những điều đó cần behavior tests và chính sách vận hành.
+
+<Callout type="warn" title="Validation không sandbox code remote">
+  JavaScript remote đã chạy trước khi host đọc export `contract`. Descriptor giúp kiểm tra compatibility, không khiến code không tin cậy trở nên an toàn. Chỉ tải remote từ publisher tin cậy; authorization và dữ liệu giá dùng khi thanh toán vẫn phải được backend xác minh.
+</Callout>
+
+### Fallback và telemetry đúng boundary
+
+Bao việc tải module và gọi API bằng async error handling ở flow UI. Khi thất bại, giữ shell và vùng UI khác hoạt động; hiển thị “Chưa tải được sản phẩm” thay vì giá `0` hoặc “không có sản phẩm”. Với React component, lỗi render cần Error Boundary riêng; `try/catch` quanh `import()` không bắt lỗi React render diễn ra sau đó.
+
+Phân loại lỗi ít nhất thành ba stage:
+
+| Stage | Ví dụ | Policy khởi đầu |
+| --- | --- | --- |
+| Load | Entry/chunk không tải được, shared dependency lỗi | Fallback; retry theo policy loader và cache |
+| Contract | Sai protocol hoặc thiếu export | Không gọi API; chọn build tương thích hoặc fallback |
+| Call và decode | Promise reject, output sai hoặc ID không khớp | Không dùng dữ liệu; report và cho phép phục hồi phù hợp |
+
+Ghi alias, public request, stage, shell build, remote URL/release, remote build ID nếu đã đọc được và protocol được yêu cầu. Không log toàn bộ payload theo mặc định. Nếu load thất bại trước khi module có mặt, metadata release từ runtime config vẫn hữu ích; không cố truy cập descriptor chưa tải được.
+
+Một timeout ở shell không tự hủy function remote. Nếu cần cancellation, phải công bố input như `AbortSignal` cùng semantics và kiểm tra integration tương ứng. Không thêm option rồi giả định mọi provider cũ đều hiểu nó.
+
+## Giữ types khớp với release
+
+### Phân biệt package version và protocol version
+
+| Định danh | Ví dụ minh họa | Vai trò |
+| --- | --- | --- |
+| Contract package version | `@shop/catalog-contracts@1.4.0` | Dependency dùng lúc phát triển và typecheck |
+| Protocol ID | `shop.catalog.product.v1` | Public behavior mà module runtime cam kết |
+| Remote build ID | `catalog-r17-example` | Implementation cụ thể để debug và rollback |
+| Artifact release URL | `/catalog/r17/remoteEntry.js` | Chọn bộ entry, chunks và metadata được phát hành |
+
+Một remote build mới có thể giữ protocol v1. Package minor có thể bổ sung một API khác mà không đổi protocol hiện có. Ngược lại, đổi nghĩa `priceMinor` từ minor unit thành major unit là breaking dù TypeScript vẫn thấy `number`.
+
+Lockfile của shell pin contract package, không pin remote browser sẽ tải. Với generated types, lưu quan hệ giữa declarations và remote release; với package contract ổn định, lưu provider build nào đã được kiểm chứng hỗ trợ protocol đó. Không yêu cầu mọi implementation phải trùng một declarations build nếu chúng đều giữ contract đã công bố.
+
+Mình ưu tiên artifact URL bất biến theo release, publish JS/chunks/types trước rồi mới cập nhật routing. Một release record riêng có thể lưu `buildId`, protocol IDs, entry URL và types digest; đừng giả định bạn được thêm field tùy ý vào `mf-manifest.json` mà mọi integration sẽ hiểu.
+
+### Kiểm tra tương thích theo hai chiều
+
+Khi deploy độc lập, cần xét **host cũ + remote mới** và **host mới + remote cũ** trong cửa sổ rollback. “Compile được với HEAD của monorepo” chỉ kiểm tra một tổ hợp, không đại diện cho browser giữ bundle cũ.
+
+| Thay đổi | Điều cần kiểm tra |
+| --- | --- |
+| Thêm output optional | Host cũ bỏ qua field; host mới có fallback khi remote cũ thiếu field |
+| Thêm input bắt buộc | Host cũ không truyền được: breaking |
+| Đổi named export thành default export | Consumer đọc namespace khác: breaking dù component/function giữ nguyên |
+| Đổi `priceMinor` sang string | Decoder/type consumer cũ không nhận: breaking |
+| Giữ type number nhưng đổi đơn vị giá | Breaking về semantics; cần test nghiệp vụ |
+| Thêm currency vào output union đóng | Host cũ có thể reject hoặc không render được: không mặc định tương thích |
+| Thêm method optional | Host mới phải kiểm tra capability trước khi gọi remote cũ |
+
+Khi cần breaking change, mở public key mới như `./productApiV2` hoặc công bố protocol mới qua boundary đã có quy tắc negotiation. Giữ v1 trong giai đoạn migration, chuyển host dần, rồi gỡ sau cửa sổ hỗ trợ và rollback. Không ghi `.v2` vào descriptor nhưng vẫn route host v1 tới đó rồi mong decoder tự hiểu.
+
+Có thể triển khai cùng public key và từ chối protocol không hỗ trợ, nhưng đó là fallback có kiểm soát, không phải seamless compatibility. Nếu tính năng bắt buộc phải hoạt động, release routing hoặc adapter phải chọn một provider tương thích thật.
+
+## Kiểm thử trước khi công bố API
+
+### Type tests và decoder tests
+
+Type tests kiểm tra trải nghiệm mà declarations đưa cho consumer. Ví dụ sau chạy bằng `tsc --noEmit`, không cần tải remote:
+
+```ts title="shell/type-tests/catalog.ts"
+import type { CatalogProductModuleV1 } from '@shop/catalog-contracts';
+
+function checkConsumerTypes(api: CatalogProductModuleV1) {
+  api.getProductSummary('sku-123');
+
+  // @ts-expect-error productId phải là string
+  api.getProductSummary(123);
+
+  // @ts-expect-error public API không công bố store nội bộ
+  api.store;
+}
+
+void checkConsumerTypes;
+```
+
+`@ts-expect-error` khiến test fail nếu dòng đó bất ngờ không còn báo lỗi, chẳng hạn vì API bị đổi thành `any`. Ngoài test interface package, thêm test import từ `catalog/productApi` trong program của shell để bảo vệ ambient/generated declarations thực sự được resolve.
+
+Decoder tests kiểm tra cả fixture hợp lệ và lỗi runtime:
+
+```ts title="shell/tests/catalog-boundary.test.ts"
+import assert from 'node:assert/strict';
+import { decodeProductSummaryV1 } from '../src/catalog-boundary';
+
+const valid = {
+  productId: 'sku-123',
+  name: 'Áo cotton',
+  priceMinor: 199000,
+  currency: 'VND',
+};
+
+assert.deepEqual(decodeProductSummaryV1(valid), valid);
+assert.equal(decodeProductSummaryV1(null), null);
+assert.deepEqual(
+  decodeProductSummaryV1({ ...valid, campaignLabel: 'Ví dụ' }),
+  valid,
+);
+
+for (const invalid of [
+  undefined,
+  [],
+  { ...valid, priceMinor: '199000' },
+  { ...valid, priceMinor: -1 },
+  { ...valid, priceMinor: Number.MAX_SAFE_INTEGER + 1 },
+  { ...valid, currency: 'EUR' },
+  { ...valid, productId: '   ' },
+]) {
+  assert.throws(() => decodeProductSummaryV1(invalid), TypeError);
+}
+```
+
+Chạy bằng test runner hỗ trợ TypeScript hoặc compile sang JavaScript trước. Test này không tải Federation container; nó chỉ bảo vệ decoder. Thêm test adapter từ chối descriptor sai, thiếu function, function trả sai ID và Promise reject mà không bị chuyển thành `null`.
+
+### Contract tests với artifact thật
+
+Provider nên chạy test consumer expectations với public entry thật. Sau đó có một tầng browser integration tải container đã build, vì import trực tiếp source không phát hiện lỗi public key, default/named exports, entry URL hay share scope.
+
+| Host | Remote | Điều cần chứng minh |
+| --- | --- | --- |
+| Cũ còn hỗ trợ | Mới | Export và semantics v1 vẫn giữ nguyên |
+| Mới | Cũ được phép rollback | Fallback/capability hoạt động, không gọi method chưa có |
+| Mới | Mới | API mới và dữ liệu đúng |
+| Bất kỳ | Protocol không hỗ trợ | Không dùng output sai; fallback và telemetry rõ |
+
+Test cả `null` và rejection: nếu mock luôn trả sản phẩm hợp lệ, consumer dễ vô tình biến lỗi backend thành “hết sản phẩm”. Với semantics giá, dùng fixtures VND và USD để phát hiện consumer chia mọi giá cho 100; validator shape không bắt được lỗi đó.
+
+Để phát hiện declarations lệch runtime, deliberately ghép host với một remote build cũ trong môi trường test. Nếu kết quả duy nhất là “đổi mọi dependency lên mới nhất”, quy trình chưa bảo vệ deploy độc lập.
+
+## Chẩn đoán lỗi types và contracts
+
+| Triệu chứng | Kiểm tra trước | Không nên sửa bằng |
+| --- | --- | --- |
+| `Cannot find module 'catalog/productApi'` | `.d.ts` có trong program không, alias/key có đúng không, generated types đã tải chưa | Wildcard declaration không có types |
+| `.d.ts` tồn tại nhưng khai báo không có tác dụng | Top-level import/export, tsconfig thực tế và `include` | Thêm `any` vào consumer |
+| Editor đúng nhưng CI fail | Compiler/config khác, bước tải types chưa chạy, cache hoặc artifact URL sai | Bỏ bước typecheck |
+| Build lặp trong dev | Watcher theo dõi downloaded types hoặc output | Cho compiler bỏ toàn bộ declarations |
+| Sinh `.d.ts` kéo theo type nội bộ | Public signature bị inferred từ implementation, dependency type chưa được công bố | Copy nguyên source remote sang host |
+| Typecheck xanh nhưng thiếu export lúc chạy | Generated types và remote release lệch; public key hoặc export shape đã đổi | Cast namespace sang interface |
+| Output cùng type nhưng giá sai | Đơn vị currency hoặc semantics thay đổi | Coercion hoặc default giá về `0` |
+| Chỉ lỗi sau rollback | Host mới gọi capability mà remote cũ không có | Giả định lockfile đã pin runtime remote |
+
+Khi debug program TypeScript, chạy trong project shell với compiler dependency đã cài:
+
+```bash title="Kiểm tra cấu hình và resolution của shell"
+npx tsc -p tsconfig.json --showConfig
+npx tsc -p tsconfig.json --listFilesOnly
+npx tsc -p tsconfig.json --noEmit --traceResolution
+```
+
+`--listFilesOnly` giúp xác nhận ambient declaration có được đưa vào program không. `--traceResolution` hữu ích với package types và `paths`; một request được đáp ứng bởi ambient module không nhất thiết có physical file resolution thành công trong trace. Đọc hai kết quả cùng nhau, rồi kiểm tra runtime URL riêng trong DevTools.
+
+`skipLibCheck` có thể bỏ qua lỗi bên trong declaration files, nhưng không tải remote types và không validate module runtime. Đừng bật nó như một cách chứng minh hai ứng dụng tương thích.
+
+## Checklist cho một exposed module
+
+- [ ] Public request, named/default exports và owner được ghi rõ.
+- [ ] Input/output có semantics, đơn vị, nullability và hành vi lỗi, không chỉ type.
+- [ ] Types không expose store hoặc framework/client model nội bộ không cần thiết.
+- [ ] Host có declarations cụ thể từ một nguồn; không che lỗi bằng `any` hoặc wildcard.
+- [ ] Provider kiểm tra namespace public entry với contract ở compile time.
+- [ ] Sinh/tải declarations là bước CI có thể tái lập, lỗi không bị bỏ qua.
+- [ ] Runtime release và artifact types có quan hệ kiểm chứng được; URL không thay nội dung tùy ý.
+- [ ] Host kiểm tra protocol/export và validate dữ liệu ở boundary phù hợp.
+- [ ] Validation không coercion lỗi nghiệp vụ thành giá trị có vẻ hợp lệ.
+- [ ] Có fallback và telemetry phân biệt load, contract, call/decode.
+- [ ] Ma trận test bao gồm host cũ, remote cũ và rollback được phép.
+- [ ] Breaking change có migration path và cửa sổ deprecation rõ.
+
+Bước thực hành: chọn một exposed module đang được khai báo bằng `any`, viết public type nhỏ nhất mà host thật sự cần, rồi chạy host với remote cũ và một fixture trả sai shape. Bạn sẽ biết phần nào đang được TypeScript bảo vệ và phần nào vẫn cần runtime contract trước khi mở rộng API.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cấu hình exposes và remotes" href="/docs/module-federation/exposes-remotes" description="Nối public request với container và phân biệt named/default exports." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Thiết kế khả năng tương thích khi host và remote release riêng." />
+  <Card title="Contracts giữa ứng dụng" href="/docs/giao-tiep-va-trang-thai/contracts" description="Semantics, lifecycle, capability negotiation và migration ở các boundary." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm thử kỳ vọng consumer với provider thay vì chỉ dựa vào mock." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Module Federation — dts](https://module-federation.io/configure/dts): cấu hình sinh/tải declarations, `abortOnError`, type artifacts và URL tùy chỉnh.
+- [Module Federation — Type Hinting](https://module-federation.io/guide/basic/type-prompt): `paths`, declarations cho runtime API và tránh vòng lặp watcher.
+- [TypeScript — Ambient modules](https://www.typescriptlang.org/docs/handbook/modules/reference.html#ambient-modules): phân biệt ambient module declaration với module augmentation.
+- [TypeScript — paths](https://www.typescriptlang.org/docs/handbook/modules/reference.html#paths): mapping cho compiler không thay import trong output JavaScript.
+- [TypeScript — Type assertions](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-assertions): assertion bị xóa khi compile và không tạo runtime check.
+- [Semantic Versioning 2.0.0](https://semver.org/): version dựa trên public API và compatibility đã công bố.

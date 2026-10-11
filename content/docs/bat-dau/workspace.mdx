@@ -3,16 +3,464 @@ title: "Cấu trúc workspace"
 description: "Sắp xếp apps, packages, scripts và port cho workspace thực hành."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+import { File, Folder, Files } from 'fumadocs-ui/components/files';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Khi shell, catalog và cart cùng nằm trong một repo, rất dễ import thẳng source của nhau để làm cho ứng dụng chạy trước. Cách đó tiện trong vài phút đầu, nhưng khiến bạn khó biết mình đang tích hợp ba frontend hay chỉ chia một ứng dụng thành ba thư mục.
+
+Bài này thiết lập workspace cho shop mẫu: mỗi app có tên package, lệnh chạy và artifact riêng; phần dùng chung có ranh giới rõ ràng. Mình chọn **npm workspaces và webpack 5** cho ví dụ, để bước tiếp theo có thể thêm React và Module Federation mà không đổi bundler.
+
+<Callout type="info" title="Workspace thực hành, không phải repo tài liệu">
+  Repo `micro-frontend-learn` hiện là site Next.js + Fumadocs. Các đường dẫn và lệnh bên dưới dành cho một thư mục mới tên `shop-workspace`, đặt bên cạnh repo tài liệu. Không sửa `package.json` của site docs để làm bài thực hành.
+
+  Kết thúc bài, bạn sẽ có ba trang standalone tối thiểu. Chúng chưa dùng React, chưa expose remote và chưa tải code của nhau; đó là nội dung của bài tiếp theo.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Workspace giải quyết việc gì](#workspace-giải-quyết-việc-gì)
+- [Cấu trúc thư mục và quyền sở hữu](#cấu-trúc-thư-mục-và-quyền-sở-hữu)
+  - [Apps là các đơn vị chạy và build](#apps-là-các-đơn-vị-chạy-và-build)
+  - [Packages chỉ chứa phần dùng chung có chủ đích](#packages-chỉ-chứa-phần-dùng-chung-có-chủ-đích)
+  - [Scripts ở root chỉ điều phối](#scripts-ở-root-chỉ-điều-phối)
+- [Tên package và port local](#tên-package-và-port-local)
+- [Tạo workspace tối thiểu](#tạo-workspace-tối-thiểu)
+  - [Tạo thư mục và cấu hình root](#tạo-thư-mục-và-cấu-hình-root)
+  - [Khai báo ba app](#khai-báo-ba-app)
+  - [Cài tooling vào đúng workspace](#cài-tooling-vào-đúng-workspace)
+  - [Tạo entry và cấu hình build cho từng app](#tạo-entry-và-cấu-hình-build-cho-từng-app)
+- [Chạy và kiểm tra cấu trúc](#chạy-và-kiểm-tra-cấu-trúc)
+  - [Chạy ba dev server](#chạy-ba-dev-server)
+  - [Kiểm tra artifact riêng](#kiểm-tra-artifact-riêng)
+  - [Lockfile và cài đặt lại](#lockfile-và-cài-đặt-lại)
+- [Khi nào thêm shared package](#khi-nào-thêm-shared-package)
+- [Những lỗi thường gặp](#những-lỗi-thường-gặp)
+- [Checklist trước khi thêm Federation](#checklist-trước-khi-thêm-federation)
+- [Bước tiếp theo](#bước-tiếp-theo)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Workspace giải quyết việc gì
 
-Bài này sẽ giúp bạn: sắp xếp apps, packages, scripts và port cho workspace thực hành.
+Nếu đặt ba project độc lập cạnh nhau, bạn sẽ phải vào từng thư mục để cài dependency và chạy lệnh. Workspace giúp package manager nhận diện các package local, quản lý dependency graph bằng một lockfile ở root và chọn app cần chạy bằng tên package.
 
-[Xem các bài trong nhóm Bắt đầu](/docs/bat-dau).
+Nhưng workspace chỉ là cách tổ chức source và tooling. Nó không quyết định browser tải catalog lúc nào, không tạo `remoteEntry.js` và không đảm bảo các frontend deploy độc lập.
+
+```text
+npm workspaces       → quản lý package local và lệnh phát triển
+webpack của mỗi app  → tạo artifact cho app đó
+Module Federation    → tích hợp module giữa các build ở runtime
+```
+
+Ví dụ, shell dùng `import { CatalogPage } from '@shop/catalog'` rồi bundler đóng code catalog vào artifact của shell thì đó vẫn là build-time composition. Việc catalog có một `package.json` riêng không biến import ấy thành remote loading.
+
+Mình dùng monorepo ở bài thực hành vì bạn có thể nhìn toàn bộ ví dụ và sửa contract trong một chỗ. Khi các team đã có repository và pipeline riêng, không cần gom về một repo chỉ để dùng micro-frontend. Phần lựa chọn repository được tách ở [Monorepo và multi-repo](/docs/kiem-thu-va-tooling/monorepo-multi-repo).
+
+## Cấu trúc thư mục và quyền sở hữu
+
+Đây là cấu trúc đạt được sau các bước bên dưới. Thư mục `packages` ban đầu để trống; `node_modules` và `dist` không được commit.
+
+<Files>
+  <Folder name="shop-workspace" defaultOpen>
+    <Folder name="apps" defaultOpen>
+      <Folder name="shell" defaultOpen>
+        <Folder name="src" defaultOpen>
+          <File name="index.js" />
+        </Folder>
+        <File name="package.json" />
+        <File name="webpack.config.cjs" />
+        <Folder name="dist (sinh khi build)" />
+      </Folder>
+      <Folder name="catalog">
+        <Folder name="src">
+          <File name="index.js" />
+        </Folder>
+        <File name="package.json" />
+        <File name="webpack.config.cjs" />
+        <Folder name="dist (sinh khi build)" />
+      </Folder>
+      <Folder name="cart">
+        <Folder name="src">
+          <File name="index.js" />
+        </Folder>
+        <File name="package.json" />
+        <File name="webpack.config.cjs" />
+        <Folder name="dist (sinh khi build)" />
+      </Folder>
+    </Folder>
+    <Folder name="packages (chưa có package)" />
+    <File name="package.json" />
+    <File name="package-lock.json (sinh khi cài)" />
+    <File name=".nvmrc" />
+    <File name=".gitignore" />
+  </Folder>
+</Files>
+
+### Apps là các đơn vị chạy và build
+
+| App | Trách nhiệm trong shop mẫu | Không nên sở hữu |
+| --- | --- | --- |
+| `shell` | Layout chung, điều hướng cấp ứng dụng, vùng mount remote và fallback | Logic lọc sản phẩm hoặc tính giỏ hàng |
+| `catalog` | Danh sách, tìm kiếm và chi tiết sản phẩm | Store nội bộ của cart |
+| `cart` | Thao tác giỏ hàng, số lượng và hiển thị tổng tiền theo contract | Component hoặc state riêng của catalog |
+
+Mỗi app có `src`, cấu hình bundler và thư mục output riêng. Ở bài này, cả ba đều chạy standalone để bạn kiểm tra được app nào hỏng mà không phải mở shell trước.
+
+Đừng để `apps/shell/src` import từ `../../catalog/src/...`. Đường dẫn đó bỏ qua public boundary và buộc shell biết cấu trúc nội bộ của catalog. Khi thêm Federation, shell sẽ consume module qua public request được khai báo, không qua đường dẫn filesystem của remote.
+
+### Packages chỉ chứa phần dùng chung có chủ đích
+
+`packages` dành cho code được consume như dependency khi phát triển hoặc build, không phải chỗ chuyển mọi đoạn code lặp lại vào đó. Có thể thêm các package sau khi thật sự có nhu cầu:
+
+| Package dự kiến | Nội dung phù hợp | Nội dung cần tránh |
+| --- | --- | --- |
+| `@shop/contracts` | Public types, payload sự kiện, schema và quy ước tương thích | Store, API client hoặc implementation của một domain |
+| `@shop/ui` | Button, dialog, token giao diện; không chứa luật nghiệp vụ | Component tự truy cập cart store hoặc catalog API |
+| `@shop/tooling` | Cấu hình lint hoặc helper build có owner rõ ràng | Cấu hình Federation riêng của mọi app trộn vào một object lớn |
+
+Các package này **chưa được tạo trong bài**. Giữ `packages` trống cũng được: không cần một shared package chỉ để cây thư mục trông đầy đủ.
+
+Một dependency nằm trong workspace không đồng nghĩa với dependency nằm trong `shared` của Module Federation. Workspace linking xảy ra ở máy phát triển/build; Federation sharing là cơ chế runtime riêng. Với React, còn phải kiểm tra cách bundler resolve và đóng gói dependency, không chỉ nhìn xem root có mấy thư mục `node_modules`.
+
+### Scripts ở root chỉ điều phối
+
+Root nên trả lời những câu hỏi như “chạy catalog bằng lệnh nào?” hoặc “build cả ba app ra sao?”. Cấu hình entry, output và plugin vẫn nằm trong từng app, vì đó là phần quyết định artifact của app ấy.
+
+Mình chưa thêm Nx, Turborepo hay shared webpack config ở bước này. Ba app nhỏ chưa cần task cache hoặc task graph phức tạp; cấu hình ngắn, tách riêng giúp bạn nhìn rõ boundary. Khi có package phải build trước consumer hoặc CI bắt đầu tốn thời gian, mới bổ sung cơ chế điều phối phù hợp.
+
+## Tên package và port local
+
+Dùng một bảng port cố định ngay từ đầu để shell không tải nhầm remote. Các số dưới đây là quy ước của lab, không phải yêu cầu của webpack hoặc Federation.
+
+| Thư mục | Tên package npm | Vai trò dự kiến | URL local |
+| --- | --- | --- | --- |
+| `apps/shell` | `@shop/shell` | Host | `http://localhost:3000` |
+| `apps/catalog` | `@shop/catalog` | Remote catalog | `http://localhost:3001` |
+| `apps/cart` | `@shop/cart` | Remote cart | `http://localhost:3002` |
+
+Tên package dùng để chọn workspace trong lệnh npm. Tên container Federation, alias mà host dùng và public module key là các tên khác; chúng sẽ được khai báo ở bước tích hợp. Đừng suy ra URL remote từ tên package.
+
+<Callout type="warn" title="Port 3000 có thể đang dành cho site docs">
+  Site tài liệu Next.js cũng mặc định chạy ở port `3000`. Trước khi chạy shell, dừng dev server của site docs hoặc chạy site docs ở port khác. Nếu đổi port một remote sau này, phải cập nhật cả URL mà host dùng để tải entry.
+</Callout>
+
+Hai port khác nhau là hai origin khác nhau. Giữ cùng hostname `localhost` trong cả lệnh chạy lẫn URL cấu hình; đừng trộn tùy tiện với `127.0.0.1`. Bài này chưa có request cross-origin giữa các app, nên chưa cần mở CORS. Khi dùng ESM remote, API hoặc manifest, hãy cấu hình CORS theo loại request thực tế, không mặc định thêm `Access-Control-Allow-Origin: *` cho mọi thứ.
+
+## Tạo workspace tối thiểu
+
+Bạn cần Node.js 22 trở lên và npm đi kèm Node. Các lệnh tạo thư mục dùng shell kiểu Bash/Zsh; trên PowerShell, tạo cây thư mục tương đương rồi dùng cùng các lệnh npm.
+
+<Steps>
+<Step>
+
+### Tạo thư mục và cấu hình root
+
+Từ thư mục cha nơi bạn muốn đặt project thực hành, chạy:
+
+```bash
+mkdir shop-workspace
+cd shop-workspace
+mkdir -p apps/shell/src apps/catalog/src apps/cart/src packages
+```
+
+Tạo các file dưới đây bằng editor. Đừng chạy `npm install` trước khi đã có `package.json` của cả ba app ở bước kế tiếp.
+
+```json title="shop-workspace/package.json"
+{
+  "name": "shop-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:shell": "npm run dev --workspace=@shop/shell",
+    "dev:catalog": "npm run dev --workspace=@shop/catalog",
+    "dev:cart": "npm run dev --workspace=@shop/cart",
+    "build": "npm run build --workspace=@shop/shell --workspace=@shop/catalog --workspace=@shop/cart"
+  }
+}
+```
+
+`private: true` ngăn publish nhầm package root lên registry. `workspaces` khai báo các thư mục package cần nhận diện; bản thân một thư mục chưa có `package.json` thì chưa phải workspace package.
+
+```text title="shop-workspace/.nvmrc"
+22
+```
+
+`.nvmrc` chọn major Node cho người dùng nvm; nó không tự cài hoặc đổi Node trong mọi terminal. Nếu bạn dùng nvm, chạy `nvm use` tại root và kiểm tra lại bằng `node --version`.
+
+```gitignore title="shop-workspace/.gitignore"
+node_modules/
+dist/
+coverage/
+*.log
+```
+
+</Step>
+<Step>
+
+### Khai báo ba app
+
+```json title="shop-workspace/apps/shell/package.json"
+{
+  "name": "@shop/shell",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "webpack serve --config webpack.config.cjs --mode development --port 3000",
+    "build": "webpack --config webpack.config.cjs --mode production"
+  }
+}
+```
+
+```json title="shop-workspace/apps/catalog/package.json"
+{
+  "name": "@shop/catalog",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "webpack serve --config webpack.config.cjs --mode development --port 3001",
+    "build": "webpack --config webpack.config.cjs --mode production"
+  }
+}
+```
+
+```json title="shop-workspace/apps/cart/package.json"
+{
+  "name": "@shop/cart",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "webpack serve --config webpack.config.cjs --mode development --port 3002",
+    "build": "webpack --config webpack.config.cjs --mode production"
+  }
+}
+```
+
+Tên package phải duy nhất trong workspace. Khi npm chạy script của một app, working directory là thư mục app đó, nên `webpack.config.cjs` được tìm ngay cạnh `package.json` của app.
+
+Không thêm `@shop/catalog` hoặc `@shop/cart` vào `dependencies` của shell chỉ vì shell sẽ là host. Remote được tải ở runtime không bắt buộc là npm dependency của host; package contract là chuyện khác.
+
+</Step>
+<Step>
+
+### Cài tooling vào đúng workspace
+
+Chạy từ root `shop-workspace`:
+
+```bash
+npm install --save-dev --save-exact webpack@5 webpack-cli@6 webpack-dev-server@5 html-webpack-plugin@5 --workspace=@shop/shell --workspace=@shop/catalog --workspace=@shop/cart
+```
+
+Lệnh này chọn các major tương thích cho ví dụ và ghi version được resolve chính xác vào `devDependencies` của từng app. Nó cũng sinh một `package-lock.json` ở root. `html-webpack-plugin` tạo HTML có script tag đúng với output, để bạn không phải sửa HTML thủ công sau mỗi lần build.
+
+Tooling thuộc app nào thì khai báo trong manifest của app đó. npm có thể hoist package lên `node_modules` ở root, nhưng vị trí vật lý trên disk không thay cho khai báo dependency. Việc app chạy được nhờ dependency chỉ khai báo ở root có thể che lỗi khi tách app sang project khác.
+
+</Step>
+<Step>
+
+### Tạo entry và cấu hình build cho từng app
+
+Chưa cần React để kiểm tra workspace. Entry này chỉ xác nhận mỗi dev server phục vụ đúng app và JavaScript đã chạy.
+
+```js title="shop-workspace/apps/shell/src/index.js"
+const heading = document.createElement('h1');
+heading.textContent = 'Shop shell';
+
+const status = document.createElement('p');
+status.textContent = 'Shell đang chạy standalone. Chưa kết nối remote.';
+
+document.body.append(heading, status);
+```
+
+```js title="shop-workspace/apps/catalog/src/index.js"
+const heading = document.createElement('h1');
+heading.textContent = 'Shop catalog';
+
+const status = document.createElement('p');
+status.textContent = 'Catalog đang chạy standalone. Chưa expose module.';
+
+document.body.append(heading, status);
+```
+
+```js title="shop-workspace/apps/cart/src/index.js"
+const heading = document.createElement('h1');
+heading.textContent = 'Shop cart';
+
+const status = document.createElement('p');
+status.textContent = 'Cart đang chạy standalone. Chưa expose module.';
+
+document.body.append(heading, status);
+```
+
+Tạo `webpack.config.cjs` với nội dung sau **trong cả ba app**: `apps/shell`, `apps/catalog` và `apps/cart`. Config lấy tên app từ `package.json` nằm cạnh nó, nên có thể dùng cùng nội dung ở bước tối thiểu này.
+
+```js title="webpack.config.cjs — đặt một bản trong mỗi app"
+const path = require('node:path');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+const { name } = require('./package.json');
+
+module.exports = {
+  context: __dirname,
+  entry: './src/index.js',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: '[name].[contenthash].js',
+    publicPath: 'auto',
+    uniqueName: name.replace(/[^a-zA-Z0-9_]/g, '_'),
+    clean: true,
+  },
+  plugins: [
+    new HtmlWebpackPlugin({
+      title: name,
+    }),
+  ],
+  devServer: {
+    host: 'localhost',
+    static: false,
+  },
+};
+```
+
+`context` giữ việc resolve entry gắn với thư mục app. `output.path` tách artifact thành ba thư mục `dist`; `uniqueName` tạo tên runtime riêng khi các build sau này cùng xuất hiện trên một trang. Các app mẫu sinh lần lượt `_shop_shell`, `_shop_catalog` và `_shop_cart`.
+
+`publicPath: 'auto'` để webpack suy ra base URL cho asset runtime; nó không khai báo URL remote cho host. `static: false` tắt việc phục vụ thêm thư mục static ngoài webpack assets. HTML do plugin sinh vẫn được dev middleware phục vụ.
+
+Mình dùng đuôi `.cjs` để cấu hình webpack có CommonJS rõ ràng, không phụ thuộc vào việc bạn có thêm `"type": "module"` trong manifest sau này. Config hiện chưa có JSX loader, React hoặc `ModuleFederationPlugin`; không dùng nó như một cấu hình Federation hoàn chỉnh.
+
+</Step>
+</Steps>
+
+## Chạy và kiểm tra cấu trúc
+
+### Chạy ba dev server
+
+Mở ba terminal, **mỗi terminal đều ở root `shop-workspace`**:
+
+```bash title="Terminal 1"
+npm run dev:shell
+```
+
+```bash title="Terminal 2"
+npm run dev:catalog
+```
+
+```bash title="Terminal 3"
+npm run dev:cart
+```
+
+Mở các URL trong bảng port. Kết quả đúng là:
+
+| URL | Nội dung nhìn thấy |
+| --- | --- |
+| `http://localhost:3000` | Heading `Shop shell` và trạng thái chưa kết nối remote |
+| `http://localhost:3001` | Heading `Shop catalog` và trạng thái chưa expose module |
+| `http://localhost:3002` | Heading `Shop cart` và trạng thái chưa expose module |
+
+Sửa heading của catalog rồi kiểm tra lại trang catalog. Shell không cần import source catalog để thay đổi ấy xuất hiện trên trang standalone của catalog.
+
+<Callout type="warn" title="Không dùng lệnh tuần tự để chạy nhiều server lâu dài">
+  `npm run dev --workspaces` không phải trình quản lý process chạy song song. npm chạy script theo thứ tự workspace; một dev server không kết thúc có thể giữ lệnh ở workspace đầu tiên. Dùng ba terminal ở bước này. Nếu muốn một lệnh `dev` duy nhất, hãy thêm công cụ điều phối process song song và cấu hình dừng các process khi thoát.
+</Callout>
+
+### Kiểm tra artifact riêng
+
+Từ root, chạy:
+
+```bash
+npm run build
+```
+
+Mỗi app phải có `dist/index.html` và JavaScript do webpack sinh. Tên JavaScript chứa hash nên không nên kiểm tra bằng một tên file cố định. Dev server thường phục vụ output trong memory; việc trang dev mở được không chứng minh thư mục `dist` đã có trên disk.
+
+Để kiểm tra riêng một app:
+
+```bash
+npm run build --workspace=@shop/catalog
+```
+
+Lệnh này chỉ chọn script build của catalog, không build shell hay cart. Với cấu hình hiện tại, catalog cũng không cần artifact của hai app còn lại để build.
+
+Root `build` liệt kê rõ ba app cần build. Nếu sau này thêm package cần compile trước app, phải bổ sung thứ tự hoặc task graph; npm không tự suy ra topological build order từ dependencies. Đừng thêm `--if-present` để che việc một app quên khai báo script bắt buộc.
+
+`dist` riêng là điều kiện thuận tiện để deploy riêng, **không phải bằng chứng đã có independent deployment**. Còn phải kiểm tra public contract, URL artifact và tính tương thích với consumer đã phát hành.
+
+### Lockfile và cài đặt lại
+
+Commit `package.json` ở root, manifest của từng app, cấu hình, source và **một `package-lock.json` ở root**. Không chạy một vòng `npm install` riêng trong từng app và duy trì nhiều lockfile cho cùng workspace.
+
+Trên checkout mới, chạy từ root:
+
+```bash
+npm ci
+npm run build
+```
+
+`npm ci` cần lockfile có sẵn và khớp manifest. Nếu bạn chủ động thêm hoặc nâng dependency, dùng `npm install` với workspace đích, kiểm tra diff manifest/lockfile rồi commit; không xóa lockfile như bước sửa lỗi mặc định.
+
+Các version cụ thể được lưu trong lockfile của lần cài đặt. Nếu bài thực hành cần tái lập ở nhiều máy, dùng chung lockfile đã kiểm tra thay vì mỗi máy resolve lại các major trong lệnh cài tooling.
+
+## Khi nào thêm shared package
+
+Giả sử catalog phát sự kiện yêu cầu thêm một SKU vào giỏ, còn cart cần hiểu payload ấy. Bạn có lý do để thêm `packages/contracts` với tên `@shop/contracts`: public type hoặc schema của sự kiện là phần hai bên phải thống nhất, còn store và cách tính tổng vẫn do cart sở hữu.
+
+Khi đã tạo manifest và public entry hợp lệ cho package đó, có thể khai báo dependency cho consumer từ root:
+
+```bash
+npm install @shop/contracts --workspace=@shop/catalog --workspace=@shop/cart
+```
+
+Lệnh trên dành cho **workspace đã có package local `@shop/contracts`**, không phải bước phải chạy của bài hiện tại. npm có thể link workspace local phù hợp thay vì tải từ registry. Kiểm tra manifest, lockfile và public exports để chắc consumer dùng đúng package.
+
+Trong ví dụ npm này, không dùng `workspace:*` theo thói quen từ pnpm/Yarn: đó không phải dependency protocol được npm workspaces hỗ trợ theo cách ấy. Nếu chuyển package manager, chuyển cả quy ước manifest, lockfile và lệnh CI một cách có chủ đích.
+
+Với TypeScript, một package chỉ chứa types có thể được consume bằng `import type`, không tạo dependency JavaScript runtime từ import đó. Nếu package export schema dùng để validate dữ liệu, schema là code runtime và phải có entry JavaScript phù hợp. Type không tự validate payload nhận từ remote.
+
+Mình chỉ tách shared package khi có public API nhỏ và owner chịu trách nhiệm về thay đổi. Nếu package bắt đầu re-export mọi store và component của cả catalog lẫn cart, hãy thu hẹp nó thay vì xem đó là lợi ích của monorepo. Đọc thêm [Contracts giữa các frontend](/docs/giao-tiep-va-trang-thai/contracts) trước khi chốt payload và versioning.
+
+## Những lỗi thường gặp
+
+| Dấu hiệu | Điều cần kiểm tra | Cách xử lý |
+| --- | --- | --- |
+| npm không tìm thấy workspace | Terminal có đang ở root không; tên package có đúng và manifest đã tồn tại không | Kiểm tra `workspaces`, `apps/*/package.json` và tên sau `--workspace` |
+| Báo `Missing script: dev` hoặc `build` | Workspace được chọn có script đó không | Thêm script đúng cho app; không bỏ qua lỗi bằng `--if-present` |
+| Báo `webpack: not found` | Đã cài tooling vào workspace chưa; có bỏ dev dependencies khi cài không | Cài lại từ root theo lệnh của bài; không phụ thuộc webpack global |
+| Báo `EADDRINUSE` | Port của app có bị site docs hoặc process khác chiếm không | Dừng process đang chiếm port hoặc đổi port và các URL liên quan |
+| Build không tìm thấy `./src/index.js` | Entry có tồn tại trong app và config có `context: __dirname` không | Tạo đúng file; giữ đường resolve gắn với app |
+| Dev chạy nhưng không thấy `dist` | Bạn mới chạy dev server hay đã chạy build | Chạy script `build` để sinh artifact trên disk |
+| Shell build kéo theo source catalog | Có import đường dẫn nội bộ hoặc npm package implementation không | Phân biệt build-time dependency với runtime remote; sửa integration boundary |
+| `npm ci` thất bại do manifest và lockfile khác nhau | Manifest vừa thay đổi nhưng lockfile chưa cập nhật không | Chạy `npm install` để cập nhật có chủ đích, review và commit cả hai |
+
+Đừng sửa lỗi port bằng cách cho server chọn port ngẫu nhiên rồi quên URL mà host đang dùng. Với một lab Federation, địa chỉ remote ổn định giúp bạn phân biệt lỗi cấu hình URL với lỗi build hoặc contract.
+
+## Checklist trước khi thêm Federation
+
+- [ ] Project thực hành nằm riêng với site Next.js + Fumadocs.
+- [ ] npm nhận diện được `@shop/shell`, `@shop/catalog` và `@shop/cart`.
+- [ ] Mỗi app khai báo tooling của mình, không chỉ dùng dependency hoist tình cờ.
+- [ ] Ba trang standalone mở được ở port đã quy ước.
+- [ ] Build cả workspace tạo ba artifact riêng; build catalog riêng cũng thành công.
+- [ ] Shell không import source nội bộ của catalog hoặc cart.
+- [ ] Chỉ có một lockfile workspace, được commit cùng manifests.
+- [ ] Chưa xem standalone page là remote: `remoteEntry.js` chưa tồn tại trong cấu hình này.
+
+## Bước tiếp theo
+
+Giữ workspace này cho bước thêm React và Federation: bắt đầu với shell và catalog, kiểm tra một public module trước, rồi mới đưa cart vào luồng tích hợp. Không cần tạo mọi shared package hoặc một pipeline production để chứng minh host tải được remote đầu tiên.
+
+<Cards>
+  <Card title="Host và remote đầu tiên" href="/docs/bat-dau/host-remote-dau-tien" description="Thêm React và Module Federation vào ví dụ nhỏ nhất." />
+  <Card title="Chạy và kiểm tra local" href="/docs/bat-dau/chay-local" description="Kiểm tra luồng tải module sau khi host và remote đã được kết nối." />
+  <Card title="Exposes và remotes" href="/docs/module-federation/exposes-remotes" description="Phân biệt public module key, alias của host và URL container entry." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [npm workspaces](https://docs.npmjs.com/cli/v11/using-npm/workspaces) — chọn workspace, thêm dependency và thứ tự chạy script.
+- [npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci) — cài đặt theo lockfile trong checkout sạch hoặc CI.
+- [webpack dev server](https://webpack.js.org/configuration/dev-server/) — host, port, static content và dev middleware.
+- [webpack output](https://webpack.js.org/configuration/output/) — `path`, `publicPath`, `uniqueName` và `clean`.

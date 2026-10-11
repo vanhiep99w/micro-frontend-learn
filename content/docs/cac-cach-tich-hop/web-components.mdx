@@ -1,18 +1,672 @@
 ---
 title: "Web Components"
-description: "Dùng custom elements và Shadow DOM làm ranh giới tích hợp đa framework."
+description: "Dùng custom elements và Shadow DOM làm boundary đa framework: contract, lifecycle, tải module và tích hợp vào shell."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop dùng React, nhưng team catalog muốn triển khai một phần giao diện bằng Vue. Bạn cần một cách ghép UI mà shell không phải hiểu component API, router hay store của Vue. Web Components cho phép đưa phần đó ra ngoài dưới dạng một HTML element có contract rõ ràng, chẳng hạn `<shop-product-card>`.
+
+Nhưng một tag mới chưa giải quyết hết bài toán micro-frontend. Bạn vẫn phải quyết định ai tải bundle, ai sở hữu state và chuyện gì xảy ra khi element bị tháo khỏi trang. Bài này đi từ boundary của trình duyệt đến một ví dụ có thể kiểm tra được, thay vì chỉ dừng ở `customElements.define()`.
+
+<Callout type="info" title="Phạm vi ví dụ">
+  Repository hiện là site tài liệu, chưa có implementation shop bên dưới. Các tên file và URL trong bài là ví dụ cho lab riêng. Ví dụ dùng autonomous custom element, global registry và client-side rendering; không yêu cầu cài thêm thư viện vào site này.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Web Components giải quyết phần nào](#web-components-giải-quyết-phần-nào)
+  - [Ba mảnh của boundary](#ba-mảnh-của-boundary)
+  - [Không thay thế loader hay orchestrator](#không-thay-thế-loader-hay-orchestrator)
+- [Khi nào nên chọn](#khi-nào-nên-chọn)
+- [Thiết kế contract cho shop](#thiết-kế-contract-cho-shop)
+  - [Attributes properties và methods](#attributes-properties-và-methods)
+  - [Commands và events không có cùng ý nghĩa](#commands-và-events-không-có-cùng-ý-nghĩa)
+- [Viết custom element tối thiểu](#viết-custom-element-tối-thiểu)
+  - [Implementation của product card](#implementation-của-product-card)
+  - [Ghép vào shell không phụ thuộc framework](#ghép-vào-shell-không-phụ-thuộc-framework)
+- [Lifecycle và cleanup](#lifecycle-và-cleanup)
+  - [Mount lại là tình huống bình thường](#mount-lại-là-tình-huống-bình-thường)
+  - [Async work sau khi disconnect](#async-work-sau-khi-disconnect)
+- [Shadow DOM và CSS contract](#shadow-dom-và-css-contract)
+  - [Những gì được cô lập và những gì vẫn đi qua](#những-gì-được-cô-lập-và-những-gì-vẫn-đi-qua)
+  - [Theme slots và overlays](#theme-slots-và-overlays)
+- [Tải bundle và quản lý phiên bản](#tải-bundle-và-quản-lý-phiên-bản)
+  - [Loading registration và readiness](#loading-registration-và-readiness)
+  - [Registry không phải bộ quản lý version](#registry-không-phải-bộ-quản-lý-version)
+- [Tích hợp với framework](#tích-hợp-với-framework)
+  - [Adapter cho shell React](#adapter-cho-shell-react)
+  - [Framework chạy bên trong element](#framework-chạy-bên-trong-element)
+- [SSR accessibility và bảo mật](#ssr-accessibility-và-bảo-mật)
+- [Kiểm thử boundary](#kiểm-thử-boundary)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist trước khi đưa vào production](#checklist-trước-khi-đưa-vào-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Web Components giải quyết phần nào
 
-Bài này sẽ giúp bạn: dùng custom elements và Shadow DOM làm ranh giới tích hợp đa framework.
+Web Components là nhóm API của nền tảng web, không phải một framework riêng. Trong micro-frontend, giá trị chính của nó là **boundary tích hợp dựa trên DOM**: shell cấu hình element qua public API, còn element tự quản lý UI bên trong.
 
-[Xem các bài trong nhóm Các cách tích hợp khác](/docs/cac-cach-tich-hop).
+```text
+Shell
+  │  properties / attributes / methods
+  ▼
+<shop-product-card>                 ← public boundary
+  └── Shadow root
+        ├── CSS nội bộ
+        └── UI: DOM thuần hoặc framework riêng
+  │
+  └── CustomEvent ─────────────────► Shell
+```
+
+Bạn có thể hình dung custom element như một thiết bị có cổng kết nối chuẩn: bên ngoài biết đầu vào và tín hiệu đầu ra, không cần biết mạch bên trong. Điểm dừng của phép so sánh là element vẫn chạy trong cùng JavaScript runtime với shell; nó không có một môi trường thực thi độc lập.
+
+### Ba mảnh của boundary
+
+| Mảnh | Trách nhiệm | Có bắt buộc dùng cùng nhau không? |
+| --- | --- | --- |
+| Custom Elements | Đặt tên tag, đăng ký class và nhận lifecycle callbacks | Có thể dùng mà không có Shadow DOM |
+| Shadow DOM | Tạo cây DOM nội bộ với boundary cho selectors và styles | Có thể gắn vào một host element phù hợp mà không tạo custom element |
+| HTML templates và slots | Tái sử dụng cấu trúc hoặc cung cấp điểm chèn nội dung từ shell | Dùng khi contract cần composition nội dung |
+
+Bài này chọn element kế thừa `HTMLElement`, với tên có dấu gạch nối như `shop-product-card`. Đây là **autonomous custom element**, khác với customized built-in như mở rộng một `button` qua attribute `is`. Mình chọn autonomous element làm mặc định vì customized built-ins có giới hạn hỗ trợ, đặc biệt trên Safari.
+
+Shadow DOM là lựa chọn cho encapsulation, không phải điều kiện để một tag trở thành custom element. Nếu bạn chủ động dùng light DOM để chia sẻ stylesheet, hãy ghi rõ quyết định đó trong CSS contract thay vì hứa hẹn isolation mà implementation không cung cấp.
+
+### Không thay thế loader hay orchestrator
+
+`customElements.define()` chỉ đăng ký tên tag với một class. Nó không tìm bundle trên CDN, không chia sẻ React giữa các remote và không tự kích hoạt ứng dụng theo route.
+
+| Cơ chế | Câu hỏi nó trả lời |
+| --- | --- |
+| Web Components | Shell nói chuyện với UI qua boundary nào? |
+| ES modules và import maps | Module được tải từ URL nào? |
+| Module Federation | Module được expose và dependency được chia sẻ thế nào? |
+| single-spa | Ứng dụng nào được mount hoặc unmount theo route? |
+| iframe | Có cần document và môi trường thực thi riêng không? |
+
+Các cơ chế có thể kết hợp. Một bundle đăng ký custom element có thể được tải bằng ES modules hoặc Module Federation; một orchestrator có thể quyết định khi nào chèn element vào DOM. Vì vậy, “chọn Web Components” chưa đủ để suy ra rằng bạn đã có deploy độc lập.
+
+## Khi nào nên chọn
+
+Mình ưu tiên Web Components khi cần ghép một vùng UI có boundary nhỏ giữa các framework, hoặc cung cấp widget cho nhiều ứng dụng không cùng stack. Với shop, product card hay vùng catalog có API nhỏ là ứng viên hợp lý hơn một element cố điều khiển toàn bộ router và session của shell.
+
+| Tình huống | Hướng chọn mặc định | Lý do |
+| --- | --- | --- |
+| Shell React, widget từ team dùng framework khác | Cân nhắc custom element | DOM contract không yêu cầu shell hiểu component của framework kia |
+| Các consumer đều dùng React và cần chia sẻ Context sâu | Ưu tiên React component với contract rõ ràng | Chuyển qua DOM boundary sẽ phải xây thêm adapters và mất kết nối Context tự nhiên |
+| Cần hạn chế CSS của widget ảnh hưởng trang chủ | Custom element với Shadow DOM | Selectors nội bộ và bên ngoài có boundary rõ hơn |
+| Chạy nội dung từ bên không đáng tin cậy | Cân nhắc iframe với chính sách sandbox phù hợp | Shadow DOM không cô lập quyền truy cập JavaScript |
+| Trang catalog phụ thuộc SSR và SEO | Đánh giá pipeline SSR trước | Có tag trong HTML không đồng nghĩa có nội dung sản phẩm trong HTML ban đầu |
+| Một team nhỏ, một lịch deploy | Bắt đầu bằng frontend modular | DOM adapters, versioning và vận hành nhiều bundle có thể là chi phí không cần thiết |
+
+Đổi framework bên trong mà không sửa shell chỉ khả thi nếu contract giữ nguyên. Nếu shell query class CSS nội bộ, gọi store của remote hoặc phụ thuộc cấu trúc shadow tree, boundary đa framework đã bị thủng.
+
+## Thiết kế contract cho shop
+
+Ví dụ dưới dùng một product card để làm rõ từng điểm giao tiếp. Đây là widget minh họa, không phải khuyến nghị tách mỗi card thành một micro-frontend hay một bundle. Trong ứng dụng thật, nhiều instance có thể dùng chung một bundle; boundary ownership thường nên nằm ở mức vùng catalog.
+
+### Attributes properties và methods
+
+HTML attributes mang giá trị dạng chuỗi; JavaScript properties có thể nhận object và function. Đừng đưa cả product snapshot vào attribute rồi buộc hai bên parse JSON mỗi lần cập nhật nếu bạn đã tích hợp qua JavaScript.
+
+| Public API | Loại | Quy ước của ví dụ |
+| --- | --- | --- |
+| `locale` | Attribute | Dùng để format giá; mặc định `vi-VN` |
+| `disabled` | Boolean attribute | Có mặt nghĩa là vô hiệu hóa thao tác, bất kể giá trị chuỗi |
+| `product` | Property | Snapshot `{ sku, name, priceVnd }`; shell thay cả object khi cập nhật |
+| `addItem` | Property chứa function | Nhận `{ sku, quantity }`, trả `Promise<void>` từ cart controller |
+| `shop:cart-add-succeeded` | DOM event | Thông báo command đã thành công; payload có version và định danh sản phẩm |
+| `--shop-accent` | CSS custom property | Token màu cho nút |
+| `action` | Shadow part | Điểm styling công khai cho nút, truy cập bằng `::part(action)` |
+
+`disabled="false"` vẫn có nghĩa disabled trong contract này. Muốn bật lại, shell phải xóa attribute, ví dụ `element.toggleAttribute('disabled', false)`.
+
+Property không tự phản chiếu thành attribute. Method như `focusAction()` cũng có thể là public API nếu cần, nhưng hãy định nghĩa rõ điều kiện gọi và kết quả. Mình chưa thêm method vào ví dụ vì không có nhu cầu thực tế nào buộc shell điều khiển nội bộ card.
+
+### Commands và events không có cùng ý nghĩa
+
+Một lần bấm thêm sản phẩm là **yêu cầu thay đổi giỏ**, không phải bằng chứng giỏ đã thay đổi. Card gọi `addItem()` để nhận kết quả thành công hoặc thất bại; cart controller vẫn là bên duy nhất sở hữu nghiệp vụ giỏ.
+
+```text
+Card ── addItem({ sku, quantity: 1 }) ──► Cart controller
+                                             │
+                                  xác nhận và cập nhật state
+                                             │
+          Card ◄── Promise resolve/reject ────┘
+            │
+            └── resolve → shop:cart-add-succeeded
+
+Shell badge ◄── snapshot/subscription ── Cart controller
+```
+
+Event thành công dùng cho thông báo hoặc analytics, **không dùng để shell tự cộng badge**. Badge phải đọc snapshot hoặc subscription từ owner của cart như trong [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop).
+
+Nếu muốn dùng event cho command thay vì function property, bạn phải thiết kế thêm phản hồi, correlation ID, timeout và quy tắc chỉ một handler xử lý. `dispatchEvent()` không trả một Promise kết quả nghiệp vụ và không chờ async listeners. Với cùng runtime, function contract thường ít bất ngờ hơn.
+
+Đối với public event phát từ một node bên trong shadow tree, `bubbles: true` giúp event đi lên tổ tiên, còn `composed: true` cho phép đi qua shadow boundary. Hai tùy chọn không thay thế nhau. Ví dụ phát từ host element nhưng vẫn bật cả hai để event đi được ra ngoài nếu host nằm trong một shadow tree khác.
+
+Đừng đọc node nội bộ từ `event.target` để lấy SKU: event có thể bị retarget khi đi qua Shadow DOM. Dùng payload `detail` đã thống nhất. `CustomEvent.detail` cũng không tự clone dữ liệu; hãy gửi snapshot nhỏ, không gửi mutable store, token hoặc DOM node.
+
+## Viết custom element tối thiểu
+
+Hai đoạn JavaScript dưới có thể dùng trong một lab ES modules. Lưu implementation thành `/assets/catalog.v1.js` trong ứng dụng lab rồi để shell import nó. URL này không phải asset đã có trong repository tài liệu.
+
+### Implementation của product card
+
+Card chỉ giữ local UI state như pending và message. Nó không tạo cart controller, không ghi `localStorage` và không tính summary giỏ hàng.
+
+```js title="assets/catalog.v1.js"
+const template = document.createElement('template');
+template.innerHTML = `
+  <style>
+    :host { display: block; font: inherit; color: inherit; }
+    article { border: 1px solid #aaa; border-radius: 8px; padding: 16px; }
+    h3 { margin: 0 0 8px; }
+    button { font: inherit; padding: 8px 12px; cursor: pointer; }
+    button:not(:disabled) { background: var(--shop-accent, #dce8ff); }
+    button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+    button:disabled { cursor: not-allowed; }
+  </style>
+  <article>
+    <h3></h3>
+    <p data-price></p>
+    <button type="button" part="action" disabled>Thêm vào giỏ</button>
+    <p role="status" aria-live="polite"></p>
+  </article>
+`;
+
+export class ShopProductCard extends HTMLElement {
+  static observedAttributes = ['locale', 'disabled'];
+
+  #product = null;
+  #addItem = null;
+  #pending = false;
+  #operation = 0;
+  #listeners = null;
+  #name;
+  #price;
+  #button;
+  #status;
+
+  constructor() {
+    super();
+    const root = this.attachShadow({ mode: 'open' });
+    root.append(template.content.cloneNode(true));
+    this.#name = root.querySelector('h3');
+    this.#price = root.querySelector('[data-price]');
+    this.#button = root.querySelector('button');
+    this.#status = root.querySelector('[role="status"]');
+  }
+
+  set product(value) {
+    if (
+      value !== null &&
+      (!value || typeof value.sku !== 'string' || !value.sku ||
+        typeof value.name !== 'string' ||
+        !Number.isSafeInteger(value.priceVnd) || value.priceVnd < 0)
+    ) {
+      throw new TypeError('Invalid product snapshot');
+    }
+    this.#product = value === null ? null : {
+      sku: value.sku,
+      name: value.name,
+      priceVnd: value.priceVnd,
+    };
+    this.#render();
+  }
+
+  get product() {
+    return this.#product === null ? null : { ...this.#product };
+  }
+
+  set addItem(value) {
+    if (value !== null && typeof value !== 'function') {
+      throw new TypeError('addItem must be a function or null');
+    }
+    this.#addItem = value;
+    this.#render();
+  }
+
+  get addItem() {
+    return this.#addItem;
+  }
+
+  connectedCallback() {
+    this.#listeners?.abort();
+    this.#listeners = new AbortController();
+    this.#button.addEventListener('click', () => void this.#submit(), {
+      signal: this.#listeners.signal,
+    });
+    this.#render();
+  }
+
+  disconnectedCallback() {
+    this.#listeners?.abort();
+    this.#listeners = null;
+    this.#operation += 1;
+    this.#pending = false;
+    this.#status.textContent = '';
+  }
+
+  attributeChangedCallback() {
+    this.#render();
+  }
+
+  #render() {
+    this.#name.textContent = this.#product?.name ?? 'Chưa có sản phẩm';
+    let formatter;
+    try {
+      formatter = new Intl.NumberFormat(this.getAttribute('locale') || 'vi-VN', {
+        style: 'currency', currency: 'VND',
+      });
+    } catch {
+      formatter = new Intl.NumberFormat('vi-VN', {
+        style: 'currency', currency: 'VND',
+      });
+    }
+    this.#price.textContent = this.#product
+      ? formatter.format(this.#product.priceVnd)
+      : '';
+    this.#button.disabled = this.hasAttribute('disabled') || this.#pending ||
+      !this.#product || !this.#addItem;
+    this.#button.textContent = this.#pending ? 'Đang thêm…' : 'Thêm vào giỏ';
+  }
+
+  async #submit() {
+    if (!this.isConnected || this.#button.disabled) return;
+    const command = { sku: this.#product.sku, quantity: 1 };
+    const addItem = this.#addItem;
+    const operation = ++this.#operation;
+    this.#pending = true;
+    this.#status.textContent = '';
+    this.#render();
+
+    try {
+      await addItem(command);
+      if (!this.isConnected || operation !== this.#operation) return;
+      this.#status.textContent = 'Đã thêm vào giỏ.';
+      this.dispatchEvent(new CustomEvent('shop:cart-add-succeeded', {
+        detail: Object.freeze({ version: 1, ...command }),
+        bubbles: true,
+        composed: true,
+      }));
+    } catch {
+      if (!this.isConnected || operation !== this.#operation) return;
+      this.#status.textContent = 'Chưa thể xác nhận thêm vào giỏ. Hãy kiểm tra giỏ.';
+    } finally {
+      if (operation === this.#operation) {
+        this.#pending = false;
+        this.#render();
+      }
+    }
+  }
+}
+
+if (!customElements.get('shop-product-card')) {
+  customElements.define('shop-product-card', ShopProductCard);
+}
+```
+
+Template chứa markup tĩnh do developer kiểm soát; tên sản phẩm được gán bằng `textContent`. Không nội suy tên, mô tả hoặc HTML từ API vào `innerHTML`. Nếu nội dung rich text thật sự cần thiết, hãy có pipeline sanitize riêng.
+
+Mỗi thao tác chụp lại `sku` và function `addItem` trước khi `await`, nên thay property trong lúc pending không đổi command đã gửi. Trong lab, nên giữ nguyên product của một instance suốt một thao tác; khi dùng danh sách, key instance theo SKU thay vì tái sử dụng card đang pending cho sản phẩm khác.
+
+### Ghép vào shell không phụ thuộc framework
+
+Đoạn sau có một cart owner in-memory rất nhỏ để bạn quan sát kết quả. Đây là mock cho lab, không thay backend validation hoặc controller đầy đủ của shop.
+
+```html title="Vùng render trong shell lab"
+<div id="catalog-slot"></div>
+<p id="cart-count" role="status">Giỏ: 0</p>
+<script type="module" src="/shell.js"></script>
+```
+
+```js title="shell.js"
+const slot = document.querySelector('#catalog-slot');
+const count = document.querySelector('#cart-count');
+const lines = new Map();
+const knownSkus = new Set(['ao-thun-den']);
+
+const cartController = {
+  async addItem({ sku, quantity }) {
+    if (!knownSkus.has(sku) || !Number.isInteger(quantity) || quantity < 1) {
+      throw new Error('Invalid cart command');
+    }
+    lines.set(sku, (lines.get(sku) ?? 0) + quantity);
+    const total = [...lines.values()].reduce((sum, value) => sum + value, 0);
+    count.textContent = `Giỏ: ${total}`;
+  },
+};
+
+slot.textContent = 'Đang tải catalog…';
+try {
+  await import('/assets/catalog.v1.js');
+  if (!customElements.get('shop-product-card')) {
+    throw new Error('Catalog did not register shop-product-card');
+  }
+
+  const card = document.createElement('shop-product-card');
+  card.product = { sku: 'ao-thun-den', name: 'Áo thun đen', priceVnd: 150000 };
+  card.addItem = (command) => cartController.addItem(command);
+  card.setAttribute('locale', 'vi-VN');
+  card.addEventListener('shop:cart-add-succeeded', (event) => {
+    // Notification/analytics only; badge was updated by the owner above.
+    console.info('Cart command succeeded', event.detail);
+  });
+  slot.replaceChildren(card);
+} catch (error) {
+  slot.textContent = 'Không tải được catalog. Hãy thử tải lại trang.';
+  console.error('Catalog loading failed', error);
+}
+```
+
+Mở trang qua HTTP server có hỗ trợ ES modules, không mở trực tiếp bằng `file://`. Khi thành công, bạn thấy một áo giá `150.000 ₫`; bấm thêm hai lần thì badge là `2`, và hai event thành công xuất hiện trong console. Thử cho mock `addItem()` throw trước khi sửa `lines`: card hiện thông báo không xác nhận được, badge giữ nguyên và không phát event thành công.
+
+Shell đợi module đăng ký element rồi mới tạo instance và gán properties. Nếu gán `product` vào một tag chưa được upgrade, giá trị có thể trở thành own property che mất setter trên prototype khi class được đăng ký sau đó. Mặc định mình tránh vấn đề này bằng thứ tự tải trên; library hỗ trợ pre-upgrade properties cần chủ động đọc, xóa rồi gán lại chúng qua setter.
+
+## Lifecycle và cleanup
+
+### Mount lại là tình huống bình thường
+
+Browser gọi `connectedCallback()` khi element được nối vào document và `disconnectedCallback()` khi nó bị tháo ra. Một instance có thể đi qua các callbacks này nhiều lần, kể cả khi shell chỉ di chuyển node bằng các DOM APIs thông thường.
+
+| Callback | Việc nên làm | Việc nên tránh |
+| --- | --- | --- |
+| `constructor()` | Khởi tạo fields, shadow root và cấu trúc nội bộ | Đọc children/attributes của host để quyết định bootstrap; bắt đầu network request |
+| `connectedCallback()` | Gắn listeners, subscribe, render theo input hiện tại | Tạo thêm shadow root hoặc framework app mỗi lần mà không kiểm tra |
+| `attributeChangedCallback()` | Xử lý attributes trong `observedAttributes` | Giả định element đã connected hoặc mọi input đã có |
+| `disconnectedCallback()` | Hủy listeners, unsubscribe, cleanup UI runtime | Xóa state nghiệp vụ dùng chung chỉ vì UI unmount |
+| `adoptedCallback()` | Xử lý tài nguyên gắn với document khi được chuyển sang document khác | Giả định việc đổi document không ảnh hưởng styles hoặc resource references |
+
+Ví dụ tạo shadow root đúng một lần trong constructor và tạo listener scope mới cho mỗi lần connect. `AbortController` ở đây hủy listeners bằng option `signal`; nó chưa hủy request nghiệp vụ nào.
+
+Với browser hỗ trợ, `Element.moveBefore()` kết hợp `connectedMoveCallback()` có thể giữ lifecycle phù hợp khi di chuyển node. Đừng lấy API này làm điều kiện ngầm của ví dụ: hãy kiểm tra browser matrix, và vẫn thiết kế mount/unmount an toàn cho các thao tác DOM thông thường.
+
+### Async work sau khi disconnect
+
+Một request có thể hoàn thành sau khi người dùng rời trang. `#operation` trong ví dụ là generation counter: disconnect làm counter thay đổi, nên response cũ không viết message hoặc phát UI event cho lần mount mới.
+
+Điều đó **không có nghĩa mutation đã bị hủy**. Command thêm giỏ vẫn có thể hoàn thành ở controller hoặc backend. Badge và Cart UI phải đọc state từ owner, kể cả khi card không còn tồn tại để phát event thành công.
+
+Đối với request chỉ đọc dữ liệu phục vụ UI, bạn có thể abort `fetch` khi unmount nếu contract cho phép. Với mutation, cần chính sách riêng về pending operations, idempotency và kết quả không xác định. Không tự gửi lại thao tác chỉ vì một response cũ bị bỏ qua, và không hứa “abort là chưa thêm giỏ”.
+
+Khi reconnect, ví dụ reset pending cục bộ và cho phép thao tác mới. Đây là giới hạn của lab: nếu cần chặn thao tác trùng xuyên navigation, pending và request ID phải được quản lý tại controller, không chỉ trong card.
+
+## Shadow DOM và CSS contract
+
+### Những gì được cô lập và những gì vẫn đi qua
+
+Shadow DOM ngăn selectors thông thường từ document đi vào cây nội bộ. Ví dụ `document.querySelector('shop-product-card button')` không tìm nút trong shadow tree, và rule `button { ... }` ở stylesheet của shell không trực tiếp style nút đó.
+
+Nhưng đây không phải bức tường kín:
+
+- Các giá trị CSS kế thừa như `color` và `font-family` có thể đi từ host vào cây nội bộ.
+- CSS custom properties có thể kế thừa và được component dùng làm design tokens.
+- Shell vẫn có thể style chính host element, chẳng hạn width, margin hoặc display.
+- Nội dung được đưa vào `<slot>` vẫn thuộc light DOM; nó không tự trở thành DOM riêng của component.
+- Với `mode: 'open'`, JavaScript có thể truy cập `element.shadowRoot`.
+
+Mình chọn `open` mặc định để debug và kiểm thử dễ hơn, nhưng vẫn coi shadow tree là implementation detail. `closed` làm `element.shadowRoot` trả `null`; nó không ngăn code cùng runtime thực hiện hành vi nguy hiểm và không tạo security boundary.
+
+### Theme slots và overlays
+
+Public styling API của card có thể dùng từ shell như sau:
+
+```css title="Stylesheet của shell"
+shop-product-card {
+  --shop-accent: #dce8ff;
+  max-width: 28rem;
+}
+
+shop-product-card::part(action) {
+  border-radius: 999px;
+}
+```
+
+Token và part là contract cần versioning. Nếu shell đã dùng `::part(action)`, đổi tên part mà không thông báo là breaking change dù JavaScript API không đổi. Không hướng dẫn consumer dùng `shadowRoot.querySelector()` để sửa style như một public API.
+
+Nếu cần shell chèn nội dung, component có thể định nghĩa `<slot name="footer">`. Shell cung cấp child có `slot="footer"`; hãy thống nhất nội dung được phép, hành vi focus và fallback. `::slotted()` chỉ nhắm tới assigned elements trực tiếp, không phải công cụ tùy ý style mọi descendant của nội dung được chèn.
+
+Với UI dùng framework, CSS của remote phải thực sự được đưa vào shadow root bằng cơ chế build/runtime phù hợp. Nhiều bundler hoặc CSS-in-JS library mặc định inject style vào `document.head`; khi đó component đã có shadow root nhưng UI bên trong vẫn thiếu style.
+
+Overlays cũng cần xem kỹ. Dialog hoặc tooltip portal ra `document.body` sẽ rời khỏi shadow boundary, nên có thể mất theme, bị CSS global ảnh hưởng hoặc sai focus behavior. Chọn container overlay rõ ràng, hoặc dùng cơ chế top layer phù hợp như native dialog; chỉ tăng `z-index` không sửa được mọi lỗi boundary.
+
+## Tải bundle và quản lý phiên bản
+
+### Loading registration và readiness
+
+Có ba mốc khác nhau:
+
+1. **Module tải và evaluate xong:** `import()` resolve.
+2. **Tên element đã đăng ký:** `customElements.get()` có constructor hoặc `whenDefined()` resolve.
+3. **Instance dùng được:** input đã đủ, UI hoặc dữ liệu cần thiết đã sẵn sàng.
+
+`whenDefined()` chỉ nói về mốc hai, không nói remote đã fetch dữ liệu hay render xong. Ví dụ trên đăng ký đồng bộ khi module evaluate nên shell kiểm tra bằng `get()` và báo lỗi nếu không đúng contract. Nếu registration diễn ra async, dùng `whenDefined()` với deadline; chờ sai tag có thể treo mãi.
+
+Loader production cần loading state, timeout hữu hạn và fallback riêng. Timeout của Promise chỉ ngừng chờ, không nhất thiết ngừng tải/evaluate module. Sau timeout, không mount instance vào route người dùng đã rời; cần kiểm tra cancellation hoặc generation ở phía shell.
+
+URL cross-origin dùng ES module phải có CORS phù hợp, đúng JavaScript MIME type và được CSP của trang cho phép. Assets được bundle tải tiếp như CSS, fonts và images cũng phải có base URL đúng. Shadow DOM không sửa lỗi đường dẫn hay chính sách tải tài nguyên.
+
+### Registry không phải bộ quản lý version
+
+Với global registry `window.customElements`, một tên đã đăng ký không thể được redefine bằng class mới trong cùng document. `customElements.define()` lần hai cho cùng tên sẽ throw.
+
+Guard ở cuối ví dụ tránh lỗi đăng ký lại, nhưng có một giới hạn dễ bỏ sót: nếu bundle A đã đăng ký version cũ, bundle B chạy sau sẽ bỏ qua đăng ký và trang vẫn dùng A. **Guard không chứng minh hai version tương thích.**
+
+| Thay đổi | Cách xử lý hợp lý |
+| --- | --- |
+| Thêm property optional hoặc token mới, giữ behavior cũ | Giữ tên tag, kiểm thử consumer cũ |
+| Đổi payload event, bỏ property hoặc thay nghĩa command | Release breaking version với kế hoạch migration |
+| Cần chạy hai major version cùng trang | Có thể dùng tên khác như `shop-product-card-v2`, kèm adapter nếu cần |
+| HMR muốn thay constructor đã đăng ký | Có thể cần full reload hoặc cơ chế riêng của thư viện; không redefine tùy ý |
+
+Scoped custom element registries cho phép thu hẹp phạm vi tên, nhưng cần đánh giá hỗ trợ browser và tooling trước khi dùng. Chúng không phải điều kiện của ví dụ này và cũng không tự quản lý dependency versions cho bạn.
+
+Để deploy độc lập, shell cần chọn được URL release tương thích mà không rebuild nếu đó là mục tiêu của hệ thống. Một runtime manifest hoặc import map có thể điều phối URL; publish các asset bất biến, đổi manifest sau khi asset đã sẵn sàng và giữ bản cũ để rollback. Import URL mới không thay class đã đăng ký trên tab đang mở; chính sách refresh hoặc chuyển version của tab hiện hữu phải được xác định riêng.
+
+Nếu framework được bundle vào mỗi remote, bạn có thể tải nhiều bản framework trong cùng trang. Đó có thể là lựa chọn chấp nhận được cho boundary độc lập, nhưng cần đo transfer size, parse/evaluate và memory thay vì cho rằng Web Components tự deduplicate dependencies.
+
+## Tích hợp với framework
+
+### Adapter cho shell React
+
+React 19 hỗ trợ custom HTML elements tốt hơn, bao gồm properties và custom events. Tuy nhiên, phiên bản React, thời điểm element được define và typings vẫn ảnh hưởng cách tích hợp. Một adapter nhỏ bằng DOM APIs giúp bạn chỉ rõ thứ tự tải, gán input và cleanup mà không cần khai báo tag tùy chỉnh trong JSX.
+
+Adapter nhận `loadDefinition()` từ composition layer để không gắn việc render vào loader của một bundler cụ thể. Function này trả Promise khi bundle đã tải/evaluate, dùng URL release được shell chọn và nên có deadline. Trong lab ES modules, logic của nó có thể giống lệnh `import()` ở trên; với React dùng bundler hoặc Next.js, cấu hình runtime loading và client boundary theo công cụ bạn chọn.
+
+```tsx title="ProductCardAdapter.tsx"
+import { useEffect, useRef, useState } from 'react';
+
+type Product = { sku: string; name: string; priceVnd: number };
+type AddItem = (command: { sku: string; quantity: number }) => Promise<void>;
+type CardElement = HTMLElement & {
+  product: Product | null;
+  addItem: AddItem | null;
+};
+
+type Props = {
+  product: Product;
+  addItem: AddItem;
+  onAdded: (sku: string) => void;
+  loadDefinition: () => Promise<void>;
+};
+
+export function ProductCardAdapter(props: Props) {
+  const host = useRef<HTMLDivElement>(null);
+  const card = useRef<CardElement | null>(null);
+  const current = useRef(props);
+  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  useEffect(() => {
+    current.current = props;
+    if (card.current) {
+      card.current.product = props.product;
+      card.current.addItem = props.addItem;
+    }
+  }, [props.product, props.addItem, props.onAdded]);
+
+  const loadDefinition = props.loadDefinition;
+  useEffect(() => {
+    let active = true;
+    let instance: CardElement | null = null;
+    const listeners = new AbortController();
+    setPhase('loading');
+
+    async function mount() {
+      try {
+        await loadDefinition();
+        if (!active || !host.current) return;
+        if (!customElements.get('shop-product-card')) {
+          throw new Error('Missing custom element registration');
+        }
+        instance = document.createElement('shop-product-card') as CardElement;
+        instance.product = current.current.product;
+        instance.addItem = current.current.addItem;
+        instance.addEventListener('shop:cart-add-succeeded', (event) => {
+          const detail = (event as CustomEvent).detail;
+          if (detail?.version === 1 && typeof detail.sku === 'string') {
+            current.current.onAdded(detail.sku);
+          }
+        }, { signal: listeners.signal });
+        card.current = instance;
+        host.current.replaceChildren(instance);
+        setPhase('ready');
+      } catch (error) {
+        if (active) {
+          setPhase('error');
+          console.error('Product card mount failed', error);
+        }
+      }
+    }
+
+    void mount();
+    return () => {
+      active = false;
+      listeners.abort();
+      instance?.remove();
+      if (card.current === instance) card.current = null;
+    };
+  }, [loadDefinition]);
+
+  return (
+    <section>
+      {phase === 'loading' && <p role="status">Đang tải catalog…</p>}
+      {phase === 'error' && <p role="alert">Không tải được catalog.</p>}
+      <div ref={host} />
+    </section>
+  );
+}
+```
+
+React sở hữu `div` container, adapter sở hữu custom element, còn custom element sở hữu shadow tree. React không render children vào vùng mà remote tự quản lý. Effect cập nhật input để thay props không cần unmount element; callback đọc từ ref để không giữ handler cũ.
+
+Giữ reference của `loadDefinition` ổn định, chẳng hạn export một loader dùng chung thay vì tạo function inline mỗi lần shell render. Loader nên cache Promise theo URL và có deadline; không tải một bundle riêng cho mỗi card và không để loading vô hạn. Nếu loader dùng script element, nó phải tự quản lý lifecycle của script riêng với lifecycle của từng instance. Hủy effect chỉ ngăn mount muộn; module đã bắt đầu tải vẫn có thể evaluate và đăng ký tag.
+
+React Strict Mode có thể chạy thêm chu kỳ setup/cleanup của effects trong development. `active` guard, cleanup listener và registration guard giúp adapter không chèn instance của một effect đã kết thúc. Đây vẫn là ca cần kiểm thử, không phải lý do tắt Strict Mode.
+
+`onAdded` chỉ xử lý notification; không viết một bản sao của cart state trong React wrapper. Nếu cần badge, hãy kết nối shell với cart controller qua contract riêng.
+
+### Framework chạy bên trong element
+
+Bên trong custom element, bạn có thể mount React root, Vue app hoặc Angular component vào container trong shadow root. Public contract vẫn là properties, methods và DOM events; component nội bộ không trở thành API công khai chỉ vì dùng một framework quen thuộc.
+
+| Framework nội bộ | Mount | Cleanup cần thiết |
+| --- | --- | --- |
+| React | `createRoot(container)` rồi render | `root.unmount()`; mount lại phải tạo root mới |
+| Vue | `createApp(...)` rồi `app.mount(container)` | `app.unmount()` và tạo app mới khi cần reconnect |
+| Angular | Có thể dùng Angular Elements để tạo custom element | Theo lifecycle của wrapper và phiên bản Angular đang dùng |
+| DOM thuần hoặc Lit | Render vào root/container | Cleanup subscriptions, observers, timers và listeners ngoài element |
+
+React Context của shell không tự truyền vào một React root độc lập bên trong element, kể cả khi hai bên dùng cùng version React. Với Vue injection và các DI scopes khác cũng cần adapter hoặc input rõ ràng. Truyền locale, session capability hoặc service interface qua contract, không import provider nội bộ của shell.
+
+Nếu element có router con, shell vẫn nên sở hữu navigation cấp ứng dụng. Đừng để cả shell lẫn remote cùng xử lý mọi `popstate` hoặc tự thay toàn bộ history mà không thống nhất route ownership.
+
+## SSR accessibility và bảo mật
+
+**SSR:** Ví dụ dùng `HTMLElement`, `document` và registry của browser nên không được import/evaluate trên server. Server có thể xuất tag custom element, nhưng tag rỗng không có nghĩa sản phẩm đã được SSR. Declarative Shadow DOM là một hướng hỗ trợ markup từ server; muốn hydration đúng còn cần pipeline tương thích với framework và cách component attach/reuse shadow root.
+
+Nếu trang sản phẩm cần SEO hoặc first render có nội dung, hãy kiểm tra HTML server thực sự trả về. Đừng lấy việc “custom tag hợp lệ trong HTML” làm bằng chứng crawler hay người dùng không chạy JavaScript nhận được nội dung.
+
+**Accessibility:** Custom tag không tự có semantics như button. Ví dụ dùng native `button`, heading và vùng `role="status"` bên trong để giữ hành vi keyboard và thông báo kết quả. Heading level cần phù hợp nơi nhúng; `h3` trong lab không phải lựa chọn đúng cho mọi consumer. Với component có input/form, cân nhắc form-associated custom elements và `ElementInternals` thay vì giả định input trong shadow tree tự tham gia form bên ngoài như mong muốn.
+
+Kiểm tra keyboard, focus khi mount/unmount, accessible name và screen reader trên browser mục tiêu. Quan hệ label hoặc ARIA qua shadow boundary không nên được suy luận chỉ từ một ID trùng tên; ưu tiên quan hệ nội bộ và API accessibility phù hợp.
+
+**Bảo mật:** Remote script chạy cùng trang có thể truy cập tài nguyên mà JavaScript của trang được phép truy cập, sửa DOM, đọc storage và gọi APIs với quyền của ứng dụng. Shadow DOM không chặn XSS hoặc code độc hại; `mode: 'closed'` cũng không thay đổi điều đó.
+
+<Callout type="warn" title="Chọn sandbox theo trust boundary">
+  Chỉ tải custom element bundles từ nguồn bạn tin cậy, với chính sách CSP và release review phù hợp. Nếu cần nhúng mã từ bên không đáng tin cậy, đánh giá iframe khác origin với sandbox và giao thức message hạn chế. iframe cũng cần cấu hình đúng; nó không tự an toàn chỉ vì được tạo ra.
+</Callout>
+
+Không phát token, PII hoặc dữ liệu nhạy cảm trong DOM events chỉ để các phần khác đọc tiện hơn. Với auth, ưu tiên capability nhỏ theo contract đã thống nhất và giữ validation cuối cùng ở backend.
+
+## Kiểm thử boundary
+
+Dùng real browser cho các ca liên quan Shadow DOM, event propagation, focus và module loading. Unit tests trong môi trường DOM giả lập vẫn hữu ích cho validation, nhưng không đủ để chứng minh behavior của toàn bộ boundary.
+
+| Ca kiểm tra | Cách làm | Kết quả cần đạt |
+| --- | --- | --- |
+| Properties trước mount | Define tag, gán `product` và `addItem`, rồi append | UI đúng ngay lần render đầu, không gọi command trong constructor |
+| Boolean attribute | Đặt `disabled="false"`, sau đó xóa attribute | Ban đầu không bấm được; xóa attribute mới bật lại |
+| Cập nhật input | Đổi product snapshot và locale | Nội dung/giá cập nhật; locale sai có fallback |
+| Thành công | Mock command resolve | Hết pending, một event có payload đúng; badge đọc state owner |
+| Thất bại | Mock reject trước khi đổi state | Không có event thành công, không báo thêm giỏ thành công |
+| Pending | Bấm nhanh nhiều lần trước khi Promise settle | Chỉ một command từ instance đang pending |
+| Reconnect | Remove rồi append cùng instance nhiều lần | Một click chỉ gọi một handler; không tích lũy listeners |
+| Disconnect lúc pending | Remove, reconnect, rồi resolve command cũ | Response cũ không ghi message hoặc phát event cho lần mount mới |
+| Event boundary | Bọc host trong shadow tree khác, nghe ở shell | Public event đến shell; consumer dùng `detail`, không dựa vào DOM nội bộ |
+| CSS isolation | Thêm rule global `button` ở shell | Nút nội bộ không bị selector đó style trực tiếp; token/part vẫn hoạt động |
+| Remote lỗi | Chặn URL module hoặc bỏ registration | Có fallback riêng, không chờ vô hạn trong loader production |
+| Version conflict | Tải hai bundle dùng cùng tên tag | Phát hiện hoặc có chính sách version rõ ràng, không coi guard là compatibility check |
+| Keyboard và focus | Dùng Tab/Enter, unmount khi đang focus | Thao tác được, focus trở về vị trí có ý nghĩa theo chính sách shell |
+| React lifecycle | Chạy wrapper trong Strict Mode | Không có instance/listener còn sót từ effect đã cleanup |
+
+Global registry khó reset giữa tests; dùng tên riêng cho từng fixture hoặc tạo page/context mới khi cần test constructors khác nhau cho cùng tag. Khi kiểm thử API công khai, ưu tiên role, property và event assertions thay vì snapshot toàn bộ shadow markup. Chỉ query shadow internals trong tests của chính implementation.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân nên kiểm tra | Hướng xử lý |
+| --- | --- | --- |
+| Tag có trong DOM nhưng không render | Bundle chưa tải hoặc chưa define đúng tên | Kiểm tra Network, lỗi evaluate và `customElements.get()` |
+| `NotSupportedError` khi define | Tên hoặc constructor đã được đăng ký trong registry | Dùng một registration owner; xử lý version conflict thay vì nuốt mọi lỗi |
+| Object biến thành chuỗi | Gán object bằng attribute hoặc framework serialize sai | Gán property sau registration, dùng adapter rõ ràng |
+| Setter không chạy sau upgrade | Own property được gán trước khi define che setter | Đợi registration hoặc hỗ trợ pre-upgrade property replay |
+| `disabled="false"` vẫn khóa nút | Boolean attribute theo presence | Xóa attribute để bật |
+| Event không đến shell | Thiếu bubbling/composed hoặc nghe sai scope | Kiểm tra nơi dispatch và cả hai flags |
+| Style remote mất khi thêm Shadow DOM | CSS vẫn được inject vào `document.head` | Đưa stylesheet vào đúng shadow root |
+| Modal bị sai style/focus | Portal đã rời boundary hoặc focus chưa được điều phối | Cấu hình overlay container/top layer và focus policy |
+| Một click gọi nhiều request sau navigation | Thiếu cleanup listener/subscription | Cleanup mỗi lần disconnect và kiểm thử reconnect |
+| Badge lệch sau khi rời catalog | Badge dựa vào event UI của card đã unmount | Đọc snapshot/subscription từ cart owner |
+| Release mới nhưng tab vẫn dùng class cũ | Registry không redefine và module được cache | Có chính sách refresh/migration, không hứa hot-swap bằng URL mới |
+| Build SSR báo `HTMLElement is not defined` | Import browser-only implementation trên server | Chuyển loader vào client lifecycle/boundary |
+
+## Checklist trước khi đưa vào production
+
+- [ ] Boundary đủ lớn theo ownership; không chia bundle theo từng UI control chỉ để có nhiều remote.
+- [ ] Attributes, properties, commands, events, tokens và parts có contract và owner.
+- [ ] Cart owner xác nhận mutation; UI events không tạo thêm writer cho giỏ.
+- [ ] Loader có deadline, fallback, URL allowlist và chính sách retry phù hợp.
+- [ ] Đăng ký tag có chính sách version rõ ràng; rollback và tab đang mở đã được cân nhắc.
+- [ ] Cleanup bao gồm listeners, subscriptions, observers, timers và framework root.
+- [ ] Pending/late responses và mutation có kết quả không xác định có behavior đã thống nhất.
+- [ ] CSS, fonts, images và overlays được kiểm tra trong đúng boundary.
+- [ ] Payload events không lộ dữ liệu nhạy cảm; remote code nằm trong trust boundary được phép.
+- [ ] Browser matrix, SSR/hydration và accessibility đã được kiểm thử theo nhu cầu thật.
+- [ ] Log phân biệt lỗi tải module, registration, mount và command; có remote version để truy vết.
+
+Bước thực hành tiếp theo là chạy card trong hai shell có stack khác nhau nhưng dùng cùng contract. Sau đó thử tháo card khi command còn pending và kiểm tra Cart UI vẫn đọc đúng state. Nếu hai ca này đúng, bạn mới có bằng chứng boundary hoạt động, không chỉ bằng chứng một custom tag render được.
+
+## Tài liệu tham khảo
+
+- [MDN — Using custom elements](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_custom_elements): registration, lifecycle, attributes và scoped registries.
+- [MDN — Using shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM): CSS/DOM encapsulation, open/closed mode và Declarative Shadow DOM.
+- [MDN — Event composed](https://developer.mozilla.org/en-US/docs/Web/API/Event/composed): event propagation qua shadow boundary.
+- [React — Custom HTML elements](https://react.dev/reference/react-dom/components#custom-html-elements): cách React tương tác với properties và events của custom elements.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="ES modules và import maps" href="/docs/cac-cach-tich-hop/import-maps" description="Tách contract DOM khỏi cách chọn URL và tải module." />
+  <Card title="iframe isolation" href="/docs/cac-cach-tich-hop/iframe" description="Đánh giá boundary mạnh hơn khi cần document và trust model riêng." />
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Versioning inputs, commands và events giữa các phần của shop." />
+  <Card title="CSS isolation" href="/docs/ui-va-framework/css-isolation" description="Chọn ranh giới style và xử lý theme, assets, overlays." />
+</Cards>

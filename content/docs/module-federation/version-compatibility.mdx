@@ -1,18 +1,504 @@
 ---
 title: "Version compatibility"
-description: "Thiết kế khả năng tương thích khi host và remote release ở thời điểm khác nhau."
+description: "Thiết kế compatibility window, kiểm tra contract và shared dependencies, kiểm thử các cặp host–remote, rollout và rollback khi các ứng dụng release độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell đang mở trong tab của khách hàng từ sáng, còn catalog vừa deploy buổi chiều. Khi khách chuyển sang trang sản phẩm, shell cũ có thể tải catalog mới. Hai pipeline đều xanh, nhưng callback mà catalog gọi đã đổi từ một chuỗi `productId` thành một object: tải module thành công, thao tác thêm vào giỏ vẫn lỗi.
+
+Release độc lập không có nghĩa là các version tự tương thích. Bạn cần quyết định những cặp host–remote nào được phép chạy, giữ contract trong một khoảng thời gian rõ ràng và có đường xử lý khi một cặp không được hỗ trợ. Đây là việc thiết kế release, không chỉ là thêm `requiredVersion` vào webpack config.
+
+<Callout type="info" title="Phạm vi của bài">
+  Bài dùng shop giả định gồm shell và catalog, với React component được host render. Các chi tiết sharing nói về `webpack.container.ModuleFederationPlugin` của webpack 5 ở browser. Descriptor và compatibility gate bên dưới là quy ước ứng dụng tự xây, không phải tính năng tự có của webpack hay schema `mf-manifest.json` của runtime mở rộng. SSR và React Server Components cần policy riêng cho server, client và hydration.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Tương thích là quan hệ giữa các bản build](#tương-thích-là-quan-hệ-giữa-các-bản-build)
+  - [Ba loại version cần tách riêng](#ba-loại-version-cần-tách-riêng)
+  - [Những lớp có thể không tương thích](#những-lớp-có-thể-không-tương-thích)
+- [SemVer và shared không thay thế contract](#semver-và-shared-không-thay-thế-contract)
+  - [SemVer chỉ có nghĩa khi public API rõ ràng](#semver-chỉ-có-nghĩa-khi-public-api-rõ-ràng)
+  - [RequiredVersion kiểm tra dependency chứ không kiểm tra remote](#requiredversion-kiểm-tra-dependency-chứ-không-kiểm-tra-remote)
+- [Công bố compatibility window](#công-bố-compatibility-window)
+  - [Lập ma trận host và remote](#lập-ma-trận-host-và-remote)
+  - [Tính cả tab cũ và cache](#tính-cả-tab-cũ-và-cache)
+- [Thay đổi contract theo expand migrate contract](#thay-đổi-contract-theo-expand-migrate-contract)
+  - [Thay đổi bổ sung có default an toàn](#thay-đổi-bổ-sung-có-default-an-toàn)
+  - [Breaking change cần giữ hai đường API](#breaking-change-cần-giữ-hai-đường-api)
+  - [Thứ tự deploy và điều kiện loại bỏ API cũ](#thứ-tự-deploy-và-điều-kiện-loại-bỏ-api-cũ)
+- [Kiểm tra compatibility trước khi tải remote](#kiểm-tra-compatibility-trước-khi-tải-remote)
+  - [Descriptor gắn với artifact bất biến](#descriptor-gắn-với-artifact-bất-biến)
+  - [Gate chọn contract mà hai bên cùng hỗ trợ](#gate-chọn-contract-mà-hai-bên-cùng-hỗ-trợ)
+  - [Gate không chứng minh mọi hành vi runtime](#gate-không-chứng-minh-mọi-hành-vi-runtime)
+- [Nâng cấp shared dependencies](#nâng-cấp-shared-dependencies)
+- [Kiểm thử các tổ hợp được hỗ trợ](#kiểm-thử-các-tổ-hợp-được-hỗ-trợ)
+  - [Test gate và ma trận contract](#test-gate-và-ma-trận-contract)
+  - [Integration test trên artifact production](#integration-test-trên-artifact-production)
+- [Rollout và rollback không phá phiên đang chạy](#rollout-và-rollback-không-phá-phiên-đang-chạy)
+- [Chẩn đoán lỗi compatibility](#chẩn-đoán-lỗi-compatibility)
+- [Checklist trước khi release](#checklist-trước-khi-release)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Tương thích là quan hệ giữa các bản build
 
-Bài này sẽ giúp bạn: thiết kế khả năng tương thích khi host và remote release ở thời điểm khác nhau.
+“Catalog r18 chạy tốt” chưa phải kết luận đầy đủ. Nó chạy tốt với shell nào, contract nào, dependency instance nào và cấu hình runtime nào? Cùng một artifact có thể chạy với shell mới nhưng không chạy với shell cũ.
 
-[Xem các bài trong nhóm Module Federation](/docs/module-federation).
+Hãy hình dung contract như đầu nối: hai thiết bị cùng hãng không có nghĩa cắm vào nhau được. Nhưng với phần mềm, khớp hình dạng vẫn chưa đủ; callback, lifecycle và ý nghĩa dữ liệu cũng phải khớp. TypeScript có thể giúp kiểm tra hình dạng tại build time, còn compatibility cần kiểm chứng cả hành vi của tổ hợp runtime thực tế.
+
+### Ba loại version cần tách riêng
+
+| Loại version | Ví dụ minh họa | Trả lời câu hỏi nào? |
+| --- | --- | --- |
+| Artifact hoặc build ID | `shell-r42`, `catalog-r18`, commit SHA | Chính xác code nào đang chạy và rollback về đâu? |
+| Public contract version | Catalog API major `1` hoặc `2` | Exports, props, callbacks và semantics nào được hỗ trợ? |
+| Dependency version | React `18.2.0`, React DOM `18.2.0` | Consumer có chấp nhận thư viện mà runtime cung cấp không? |
+
+Hai catalog build khác nhau có thể cùng hỗ trợ contract v1. Một catalog build cũng có thể hỗ trợ cả v1 và v2 trong giai đoạn migration. Số `18` trong `catalog-r18` không phải React major, cũng không phải contract major.
+
+Mình dùng build ID bất biến để pin artifact và ghi telemetry; dùng contract version để quyết định API; dùng dependency metadata để audit sharing. Không ép cả ba vào một số version vì chúng thay đổi vì những lý do khác nhau.
+
+### Những lớp có thể không tương thích
+
+| Lớp | Ví dụ lỗi | Biện pháp chính |
+| --- | --- | --- |
+| Container và module format | Loader chờ script container nhưng nhận ESM; exposed key đã bị xóa | Ghi rõ protocol, bundler/plugin version và kiểm thử loader |
+| Public API | Host truyền `onAddToCart(id)`, remote gọi `onAddToCart({ productId, quantity })` | Contract version, adapter và contract tests |
+| Shared dependencies | Singleton React đã load không đáp ứng range của remote | Policy sharing và integration tests |
+| Shell capabilities | Remote cần cart API mà shell cũ không cung cấp | Capability negotiation trước khi load |
+| Hành vi và dữ liệu | Cùng kiểu `number` nhưng giá chuyển từ đơn vị tiền sang đơn vị nhỏ nhất | Contract semantics, schema và business-flow tests |
+| Assets và cache | Entry của r18 tham chiếu chunk đã bị xóa | Artifact bất biến, retention và publish nguyên bộ |
+
+Version check không phải thuốc chữa mọi lớp. Nếu API đổi đơn vị tiền nhưng không đổi contract, descriptor vẫn có thể nói “tương thích”. Đó là lỗi khai báo hoặc kiểm thử contract, không phải lỗi thuật toán chọn version.
+
+## SemVer và shared không thay thế contract
+
+### SemVer chỉ có nghĩa khi public API rõ ràng
+
+Theo SemVer, sau `1.0.0`, patch dành cho bug fix tương thích ngược, minor cho tính năng public API tương thích ngược và major cho thay đổi không tương thích. Điều kiện đi kèm là public API phải được xác định rõ. Với version `0.y.z`, không nên mặc định API ổn định.
+
+Trong micro-frontend, public API không chỉ là file `.d.ts`. Nó gồm exposed module names, props bắt buộc, callback payload, events, lifecycle, cách trả lỗi và các capability mà remote đòi hỏi từ shell. Cả route hoặc storage key cũng thành contract nếu ứng dụng khác phụ thuộc vào chúng.
+
+Ví dụ, thêm prop optional có default giữ hành vi cũ thường là thay đổi bổ sung. Đổi callback từ đồng bộ sang async, đổi ý nghĩa `null`, hay yêu cầu thêm capability bắt buộc có thể phá consumer dù tên hàm và nhiều types vẫn giữ nguyên.
+
+<Callout type="warn" title="Không nới range để hợp thức hóa breaking change">
+  Range rộng như `*` hoặc `^1.0.0 || ^2.0.0` chỉ là lời tuyên bố consumer chấp nhận các version đó. Nó không sinh adapter. Chỉ công bố hỗ trợ nhiều major khi code và test thực sự hỗ trợ các contract tương ứng.
+</Callout>
+
+### RequiredVersion kiểm tra dependency chứ không kiểm tra remote
+
+Trong webpack 5, `shared.react.requiredVersion` kiểm tra version của **shared React**, không kiểm tra version của `catalog/ProductPage`. Webpack không tự suy ra catalog r18 có tương thích với shell r42 hay không từ tên artifact hoặc `package.json` của ứng dụng.
+
+Ví dụ dưới là policy cho một shared key, không phải compatibility policy hoàn chỉnh:
+
+```js title="Phần shared trong webpack config của một app"
+react: {
+  singleton: true,
+  requiredVersion: '^18.2.0',
+  strictVersion: true,
+}
+```
+
+`^18.2.0` không bao gồm React `19.x`. Với strict singleton, khi candidate được chọn không đáp ứng range, consumer có thể throw thay vì tiếp tục dùng version không hợp lệ. Nhưng kể cả khi shared check thành công, remote vẫn có thể gọi callback sai contract.
+
+`singleton` cũng không có nghĩa “luôn lấy React của shell” hay “mỗi lần load remote lại chọn version mới nhất”. Provider có sẵn và trạng thái đã consume ảnh hưởng kết quả; singleton đã load không được thay nóng chỉ vì provider mới xuất hiện. Chi tiết fallback, subpath imports và async bootstrap nằm ở [Shared dependencies](/docs/module-federation/shared-dependencies).
+
+## Công bố compatibility window
+
+Compatibility window là tập host, remote và contract mà team cam kết duy trì trong một khoảng hỗ trợ. Nó giống một lịch bảo trì API hơn là một cờ bật/tắt trong webpack.
+
+Mình bắt đầu bằng policy ngắn, có owner và điều kiện hết hạn. Chẳng hạn: catalog mới phải hỗ trợ contract v1 cho những shell còn trong window; shell mới vẫn dùng được catalog rollback đã chỉ định; cả hai được kiểm thử trên artifacts đã publish. Đây là ví dụ policy, không phải quy tắc `N-1` áp dụng được cho mọi hệ thống.
+
+### Lập ma trận host và remote
+
+Giả sử có các bản build sau, chỉ xét lớp public contract:
+
+| Build | Contract hỗ trợ | Vai trò trong migration |
+| --- | --- | --- |
+| Shell H1 | v1 | Host cũ còn được hỗ trợ |
+| Shell H2 | v1 và v2, ưu tiên v2 | Host mới có đường quay lại v1 |
+| Catalog C1 | v1 | Remote cũ, ứng viên rollback |
+| Catalog C2 | v1 và v2 | Remote bridge, giữ cả hai API |
+| Catalog C3 | v2 | Remote đã bỏ v1 |
+
+Ma trận cần kiểm thử là:
+
+| Host và remote | C1 | C2 | C3 |
+| --- | --- | --- | --- |
+| H1 | Cho phép, dùng v1 | Cho phép, dùng v1 | Từ chối có fallback |
+| H2 | Cho phép, dùng v1 | Cho phép, dùng v2 | Cho phép, dùng v2 |
+
+“Cho phép” ở bảng này nghĩa là contract gate có thể chọn một API chung. Để cho phép ở production, tổ hợp còn phải thỏa shared policy, shell capabilities, backend contract và integration tests.
+
+H2 hỗ trợ v1 để có thể rollback catalog về C1. Nếu H2 chỉ hỗ trợ v2, đường rollback đó không còn hợp lệ. Vì vậy, kiểm tra **host mới với remote cũ** quan trọng không kém kiểm tra **host cũ với remote mới**.
+
+### Tính cả tab cũ và cache
+
+Deploy shell mới không thay JavaScript trong tab đã mở. Một tab có thể còn shell cũ nhưng chưa load catalog; lúc người dùng vào trang sản phẩm, nó mới đọc registry và gặp remote mới. Browser cache, CDN và service worker có thể kéo dài sự tồn tại của bản cũ theo các cơ chế khác nhau.
+
+Thời điểm bỏ v1 phải dựa trên thời gian hỗ trợ phiên cũ, độ trễ phân phối cấu hình và cơ chế kết thúc hoặc nâng cấp phiên. Ví dụ giả định: team chọn window bảy ngày. Con số đó chỉ có ý nghĩa nếu shell cũ có chính sách hết hạn phù hợp, telemetry đủ để quan sát consumer và các artifacts cần cho phiên trong window vẫn tồn tại.
+
+Không thấy request v1 trong một giờ chưa chứng minh mọi tab H1 đã biến mất. Tab ngủ có thể quay lại sau đó. Bạn cần một trong các cách sau, tùy yêu cầu sản phẩm:
+
+- Giữ endpoint/contract và route artifact cũ đến hết window đã công bố.
+- Yêu cầu phiên quá hạn mở document mới, sau khi bảo toàn dữ liệu người dùng theo chính sách sản phẩm.
+- Cho host quá hạn nhận fallback rõ ràng, thay vì để remote lỗi ở giữa thao tác.
+
+Không ép reload âm thầm khi người dùng đang có form chưa lưu. Việc lưu giỏ hàng, draft hay auth state qua reload cần thiết kế riêng; compatibility policy không được bỏ qua dữ liệu đó.
+
+## Thay đổi contract theo expand migrate contract
+
+Để không phải deploy các team đúng cùng một giây, hãy mở rộng khả năng hỗ trợ trước, chuyển consumer sau, rồi mới bỏ API cũ. Ba bước này thường được gọi là **expand → migrate → contract**; từ “contract” cuối cùng là thu hẹp API, không phải tên public contract.
+
+### Thay đổi bổ sung có default an toàn
+
+Giả sử v1 nhận các props sau:
+
+```ts title="Catalog contract v1 hiện có"
+export type ProductPagePropsV1 = {
+  productId: string;
+  onAddToCart: (productId: string) => void;
+};
+```
+
+Thêm `currency?: string` có thể tương thích ngược nếu remote dùng một default đã được định nghĩa trong contract khi prop vắng mặt. Đừng dùng default “đoán từ locale” nếu nó làm thay đổi cách tính hoặc hiển thị giá với host cũ.
+
+Ngược lại, thêm `currency: string` bắt buộc sẽ khiến host cũ thiếu input. Chỉ thêm dấu `?` trong type cũng không giúp nếu code runtime vẫn throw khi không có prop. Test cần mount component bằng đúng props của consumer cũ.
+
+### Breaking change cần giữ hai đường API
+
+Giả sử catalog mới cho phép thêm nhiều sản phẩm một lần và đổi callback payload:
+
+```ts title="Catalog contract v2"
+export type AddToCartV2 = {
+  productId: string;
+  quantity: number;
+};
+
+export type ProductPagePropsV2 = {
+  productId: string;
+  onAddToCart: (item: AddToCartV2) => void;
+};
+```
+
+Không thay implementation v1 tại cùng exposed key rồi hy vọng shell cũ hiểu object mới. Trong bridge build C2, giữ hai module có tên rõ ràng:
+
+```js title="Phần exposes của catalog bridge build"
+exposes: {
+  './ProductPage': './src/contracts/v1/ProductPage.tsx',
+  './ProductPageV2': './src/contracts/v2/ProductPage.tsx',
+}
+```
+
+Implementation v1 có thể bọc core v2 bằng adapter, nhưng adapter phải giữ semantics cũ. Ví dụ, nếu v1 chỉ hỗ trợ thêm một sản phẩm, đường v1 cần khóa `quantity` về `1` ở cả UI lẫn logic. Bỏ `quantity` khỏi callback trong khi UI vẫn cho chọn `3` sẽ làm sai giỏ hàng dù type check vẫn qua.
+
+Không cố adapter khi hai semantics không thể chuyển đổi an toàn. Khi đó, giữ implementation cũ trong window hoặc điều hướng host cũ tới trải nghiệm riêng. Giữ một API lỗi để tránh tăng major không phải backward compatibility.
+
+### Thứ tự deploy và điều kiện loại bỏ API cũ
+
+Với ma trận H1/H2 và C1/C2/C3, mình chọn trình tự sau:
+
+1. **Expand:** publish C2 có v1 và v2. Kiểm thử H1–C2 trước khi đưa C2 tới người dùng H1.
+2. **Migrate:** publish H2, ưu tiên v2 nhưng vẫn có code gọi v1. Kiểm thử H2–C1 để giữ đường rollback remote.
+3. **Observe:** đo contract thực sự được chọn, build IDs và lỗi theo từng tổ hợp. Giữ routing cho host trong window.
+4. **Contract:** chỉ route C3 tới host đủ khả năng dùng v2. Bỏ v1 sau khi đáp ứng policy hết hạn, hoặc tiếp tục route H1 tới C2 nếu H1 còn được hỗ trợ.
+
+```text
+C2: v1 + v2  →  H2: v1 + v2  →  Kết thúc hỗ trợ H1  →  C3: chỉ v2
+    expand          migrate          hết window             contract
+```
+
+Điều kiện loại bỏ API gồm cả code đã ship, cấu hình routing và rollback target. Nếu C2 vẫn là rollback target, H2 phải giữ đường gọi C2 hợp lệ. Nếu muốn xóa cả đường v1 khỏi H2, cần đánh giá lại ma trận và thay rollback target; không chỉ xóa adapter trong một PR.
+
+## Kiểm tra compatibility trước khi tải remote
+
+Runtime registry có thể chọn candidate theo host build, contract hoặc cohort. Sau đó host vẫn nên kiểm tra descriptor trước khi thực thi remote. Gate này giúp từ chối một cặp không được hỗ trợ trước khi container có cơ hội đăng ký shared providers hoặc chạy code.
+
+```text
+Registry chọn candidate → Host kiểm tra descriptor → Loader tải đúng artifact
+                                     │
+                            Không phù hợp: fallback
+```
+
+Gate là nơi thực thi policy, không phải nơi tự động “tìm đại version chạy được”. Mình ưu tiên candidate từ danh sách đã được kiểm thử và routing rõ ràng, thay vì quét toàn bộ lịch sử releases rồi chọn số lớn nhất.
+
+### Descriptor gắn với artifact bất biến
+
+Ví dụ descriptor ứng dụng cho C2:
+
+```json title="catalog-r18.compat.json — schema riêng của ứng dụng"
+{
+  "schemaVersion": 1,
+  "remote": "catalog",
+  "buildId": "catalog-r18",
+  "remoteEntry": "https://assets.example.com/catalog/r18/remoteEntry.js",
+  "supportedContractMajors": [1, 2],
+  "requiresShellCapabilities": ["cart.add.v1"]
+}
+```
+
+Trong ví dụ này, `cart.add.v1` là public API của shell mà cả hai contract catalog cần, không phải dependency npm. H2 có thể chuyển payload v2 thành lời gọi phù hợp ở phía shell. Nếu contract mới thực sự cần capability khác, hãy khai báo yêu cầu đó; descriptor đơn giản này dùng chung một tập yêu cầu cho cả artifact. Hệ thống cần yêu cầu khác nhau theo từng contract nên mở rộng schema để mô tả theo contract.
+
+Descriptor phải được tạo từ build và kiểm tra cùng artifact. URL r18 không được ghi đè bằng code r19. Registry mutable chỉ đổi **con trỏ** tới descriptor đã publish; không sửa metadata r18 để tuyên bố code cũ hỗ trợ thêm v2.
+
+Webpack không tự đọc trường `supportedContractMajors`. Nếu bạn dùng runtime mở rộng với `mf-manifest.json`, vẫn cần xác định metadata compatibility của ứng dụng nằm ở đâu và được kiểm tra bằng cơ chế nào. Không đưa schema trên vào runtime đó rồi mặc định nó sẽ hiểu.
+
+### Gate chọn contract mà hai bên cùng hỗ trợ
+
+Đoạn JavaScript sau kiểm tra shape cơ bản và chọn major cao nhất mà cả hai bên hỗ trợ. Nó không tải network hay import remote, nên có thể test độc lập.
+
+```js title="compatibility.mjs — code minh họa cho shell, không phải file của site docs"
+const exposedModuleByMajor = new Map([
+  [1, './ProductPage'],
+  [2, './ProductPageV2'],
+]);
+
+export function selectCatalogContract(input, host) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('INVALID_DESCRIPTOR');
+  }
+
+  const isStringList = (value) =>
+    Array.isArray(value) &&
+    value.every((item) => typeof item === 'string' && item.length > 0);
+
+  if (
+    input.schemaVersion !== 1 ||
+    input.remote !== 'catalog' ||
+    typeof input.buildId !== 'string' ||
+    input.buildId.length === 0 ||
+    typeof input.remoteEntry !== 'string' ||
+    !Array.isArray(input.supportedContractMajors) ||
+    input.supportedContractMajors.length === 0 ||
+    !input.supportedContractMajors.every(
+      (major) => Number.isInteger(major) && major > 0,
+    ) ||
+    !isStringList(input.requiresShellCapabilities)
+  ) {
+    throw new Error('INVALID_DESCRIPTOR');
+  }
+
+  const candidates = input.supportedContractMajors.filter(
+    (major) =>
+      host.supportedContractMajors.includes(major) &&
+      exposedModuleByMajor.has(major),
+  );
+
+  if (candidates.length === 0) {
+    throw new Error('NO_COMMON_CONTRACT');
+  }
+
+  const missing = input.requiresShellCapabilities.filter(
+    (capability) => !host.capabilities.includes(capability),
+  );
+  if (missing.length > 0) {
+    throw new Error(`MISSING_SHELL_CAPABILITY: ${missing.join(', ')}`);
+  }
+
+  const contractMajor = Math.max(...candidates);
+  return {
+    remoteBuildId: input.buildId,
+    remoteEntry: input.remoteEntry,
+    contractMajor,
+    exposedModule: exposedModuleByMajor.get(contractMajor),
+  };
+}
+```
+
+`host` là cấu hình local tin cậy, được ship cùng shell; H1 khai báo `[1]`, H2 khai báo `[1, 2]`. Host không chỉ ghi `[1, 2]` trong config mà phải có hai đường tạo props và xử lý callback thực sự tương ứng. Nếu ưu tiên v1 trong giai đoạn rollout, hãy đổi policy chọn một cách tường minh và kiểm thử policy đó; version cao hơn không tự có nghĩa an toàn hơn.
+
+Kết quả gate được truyền sang loader container để lấy exposed key tương ứng. Bảng ánh xạ nằm trong host để contract v1 không bị descriptor âm thầm chuyển sang một module có semantics khác. Loader cần dùng **chính candidate đã kiểm tra**, không fetch lại một URL `latest` có thể đã trỏ sang build khác.
+
+<Callout type="warn" title="Compatibility gate không phải sandbox hay security gate">
+  Ví dụ chỉ kiểm tra compatibility metadata. Production còn cần validate URL, origin allowlist, quyền sửa registry, nguồn artifact và policy tải script. Một descriptor hợp lệ không chứng minh remote đáng tin cậy; code Module Federation chạy với quyền của trang chứa nó.
+</Callout>
+
+### Gate không chứng minh mọi hành vi runtime
+
+Gate loại bỏ mismatch đã khai báo, nhưng không chứng minh implementation đúng. Artifact có thể quảng cáo v1 mà xóa exposed key v1; React provider đã load có thể không phù hợp; backend mới có thể đã bỏ endpoint mà remote rollback còn gọi.
+
+Vì vậy, sau gate vẫn có các điểm lỗi riêng: tải entry, init container, lấy module, evaluate factory, render component và chạy nghiệp vụ. Loader rejection cần được bắt tại đường gọi; React Error Boundary xử lý lỗi render của cây phù hợp, không tự bắt mọi Promise rejection hay lỗi event handler.
+
+Nếu gate từ chối candidate, lựa chọn an toàn là fallback UI hoặc một artifact khác **đã được kiểm chứng với host này**. Nếu container đã init hoặc code đã evaluate, không giả định đổi URL trong cùng tab sẽ khôi phục trạng thái sạch. Các side effects và shared modules có thể đã tồn tại; trường hợp đó cần policy mở document mới thay vì retry mù.
+
+## Nâng cấp shared dependencies
+
+Migration contract và migration dependency có thể diễn ra riêng, nhưng phải kiểm thử kết hợp. Catalog hỗ trợ v1/v2 không đảm bảo React mà shell đang chạy đáp ứng những API implementation mới dùng.
+
+Mình tránh gộp nâng React major với đổi public contract major trong cùng rollout nếu có thể. Tách hai thay đổi giúp biết tổ hợp lỗi vì callback hay vì framework. Nếu cần nâng major framework, có thể chuẩn bị một cohort với shell và remote đã kiểm thử chung, hoặc chọn boundary cô lập hơn; không nới `requiredVersion` để giấu mismatch.
+
+Với mỗi artifact, hãy ghi lại:
+
+- Package versions thực tế từ lockfile, không chỉ ranges trong `package.json`.
+- Policy `shared` của các request thực sự dùng, gồm subpath như `react/jsx-runtime` hoặc `react-dom/client` nếu có.
+- Bundler, plugin/runtime version, share scope và remote format.
+- Version và provider thực sự được consume trong các scenario test quan trọng.
+
+Đặc biệt, `react` và `react-dom` là các shared keys khác nhau; runtime không chọn chúng như một cặp nguyên tử. Một version thỏa range của từng key riêng vẫn cần kiểm tra sự tương thích của renderer, React và peer dependencies liên quan.
+
+Hãy test cả việc shell consume singleton trước khi catalog xuất hiện. Nếu chỉ test catalog được init sớm trên trang trống, bạn có thể bỏ sót lỗi của tab đã chạy lâu. Trên một document mới, tập providers có sẵn khác cũng có thể cho kết quả khác. Việc chọn provider có chi tiết riêng theo runtime; không suy hành vi của runtime mở rộng từ webpack 5 gốc.
+
+## Kiểm thử các tổ hợp được hỗ trợ
+
+### Test gate và ma trận contract
+
+Test gate không cần browser. Ví dụ dưới dùng `node:test` và module minh họa ở trên để khóa lại ma trận public contract:
+
+```js title="compatibility.test.mjs"
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { selectCatalogContract } from './compatibility.mjs';
+
+const host = (majors) => ({
+  supportedContractMajors: majors,
+  capabilities: ['cart.add.v1'],
+});
+
+const descriptor = (majors) => ({
+  schemaVersion: 1,
+  remote: 'catalog',
+  buildId: 'catalog-test-build',
+  remoteEntry: 'https://assets.example.com/catalog/test/remoteEntry.js',
+  supportedContractMajors: majors,
+  requiresShellCapabilities: ['cart.add.v1'],
+});
+
+for (const [name, hostMajors, remoteMajors, expected] of [
+  ['H1-C1', [1], [1], 1],
+  ['H1-C2', [1], [1, 2], 1],
+  ['H2-C1 rollback', [1, 2], [1], 1],
+  ['H2-C2', [1, 2], [1, 2], 2],
+  ['H2-C3', [1, 2], [2], 2],
+]) {
+  test(name, () => {
+    const selected = selectCatalogContract(
+      descriptor(remoteMajors), host(hostMajors),
+    );
+    assert.equal(selected.contractMajor, expected);
+    assert.equal(
+      selected.exposedModule,
+      expected === 1 ? './ProductPage' : './ProductPageV2',
+    );
+  });
+}
+
+test('H1-C3 bị từ chối', () => {
+  assert.throws(
+    () => selectCatalogContract(descriptor([2]), host([1])),
+    /NO_COMMON_CONTRACT/,
+  );
+});
+
+test('Thiếu capability bị từ chối', () => {
+  assert.throws(
+    () => selectCatalogContract(descriptor([1]), {
+      supportedContractMajors: [1], capabilities: [],
+    }),
+    /MISSING_SHELL_CAPABILITY/,
+  );
+});
+
+test('Schema lạ và metadata lỗi bị từ chối', () => {
+  for (const input of [
+    { ...descriptor([1]), schemaVersion: 2 },
+    { ...descriptor([1]), supportedContractMajors: ['1'] },
+    { ...descriptor([1]), requiresShellCapabilities: 'cart.add.v1' },
+  ]) {
+    assert.throws(
+      () => selectCatalogContract(input, host([1])),
+      /INVALID_DESCRIPTOR/,
+    );
+  }
+});
+```
+
+Chạy bằng `node --test compatibility.test.mjs` sau khi đặt hai snippet vào môi trường ví dụ. Đây là test của policy chọn contract, không phải bằng chứng React component đã tương thích. Một test bổ sung quan trọng ở tầng orchestration là: khi gate từ chối, loader không được gọi và fallback vẫn cho người dùng điều hướng.
+
+### Integration test trên artifact production
+
+CI cần tải artifacts cũ thật, thay vì rebuild source cũ bằng lockfile và toolchain mới rồi gọi đó là “test version cũ”. Pin build IDs, descriptor và registry fixture để tái hiện tổ hợp.
+
+| Scenario | Điều cần chứng minh |
+| --- | --- |
+| H1–C2 | Props/callback v1 và hành vi cũ vẫn đúng |
+| H2–C1 | Host có đường v1; rollback remote không phá business flow |
+| H2–C2 | Gate chọn v2, callback truyền đúng `productId` và `quantity` |
+| H1–C3 | Từ chối trước khi tải entry, fallback không làm mất navigation |
+| Shared dependency không phù hợp | Lỗi được phân loại, boundary đúng policy, không dùng sai version âm thầm |
+| Shell cũ đang mở, sau đó registry đổi | Lazy load vẫn theo policy cho host đó, không tự lọt sang cặp bị cấm |
+| Entry hợp lệ nhưng chunk thiếu | Load failure có fallback; không nhầm với contract mismatch |
+| Catalog rollback với backend hiện tại | API/data contracts của backend vẫn được hỗ trợ |
+
+Với nhiều remotes, kiểm thử từng cặp chưa đủ nếu chúng tương tác qua shared dependencies hoặc capabilities chung. Chạy thêm scenario toàn shell với tập remotes được route trong production, gồm thứ tự navigation quan trọng. Không cần quét mọi tích Descartes của mọi bản lịch sử; cần test tập tổ hợp policy thực sự cho phép và những tổ hợp cố ý bị chặn.
+
+Contract tests tập trung vào payload và semantics ở boundary; integration tests kiểm tra container, shared resolution và render; E2E kiểm tra flow nghiệp vụ. Ba tầng trả lời các câu hỏi khác nhau, không thay nhau chỉ bằng một snapshot UI.
+
+## Rollout và rollback không phá phiên đang chạy
+
+Một release tương thích vẫn có thể lỗi nếu artifact publish thiếu chunk hoặc registry đổi sai cohort. Mình dùng quy trình sau:
+
+1. **Publish artifact bất biến:** upload toàn bộ entry, chunks và assets của release. Kiểm tra các URL mà entry tham chiếu trước khi đưa candidate vào registry.
+2. **Gắn descriptor:** xác nhận build ID, exposed keys, contract hỗ trợ và capability yêu cầu đúng với artifact. Lưu kết quả ma trận test theo build IDs.
+3. **Route theo host và cohort:** chỉ chọn candidate trong allowlist tổ hợp đã kiểm thử. Host H1 không được nhận C3 chỉ vì C3 là release mới nhất.
+4. **Pin cho phiên:** khi một remote đã được chọn và load, giữ build đó trong document. Registry đổi không nên tự thay implementation giữa một thao tác đang chạy; nếu chọn remote muộn, vẫn phải dùng policy của host hiện tại.
+5. **Canary và quan sát:** theo dõi lỗi theo host build, remote build, contract được chọn và cohort. Rollout rộng hơn sau khi các điều kiện vận hành của team đạt yêu cầu.
+6. **Rollback có kiểm chứng:** đổi con trỏ về artifact mà từng host được route tới vẫn hỗ trợ. Giữ assets của cả release bị rollback lẫn release cũ cho những phiên còn dùng chúng theo window.
+
+Pin phiên cũng cần giới hạn hỗ trợ; nó không có nghĩa giữ build cũ vô thời hạn. Retention của entry và chunks phải bao phủ những phiên được phép tiếp tục chạy. Với đường versioned thực sự bất biến, có thể dùng cache dài; với con trỏ registry mutable, dùng TTL/revalidation phù hợp để rollback được phân phối. Không chọn một TTL cố định mà chưa xét CDN và service worker của hệ thống.
+
+<Callout type="warn" title="Rollback đổi routing, không hoàn tác JavaScript đã chạy">
+  Đổi registry chỉ ảnh hưởng các lần chọn remote tiếp theo theo policy loader. Nó không tháo module đã evaluate, khôi phục singleton đã consume hay hoàn tác thay đổi state/data. Nếu cần thay artifact trong tab đang chạy, xác định rõ khi nào phải mở document mới và cách bảo toàn dữ liệu người dùng.
+</Callout>
+
+“Last known good” cần có ngữ cảnh: tốt với host nào và contract nào? C1 tốt với H1 không tự tốt với một H3 đã bỏ v1. Đồng thời, remote rollback có thể vẫn gọi backend API đã bị xóa. Rollback frontend không rollback backend, nên compatibility window phải bao gồm các API hoặc events xuyên qua boundary đó.
+
+## Chẩn đoán lỗi compatibility
+
+Ghi context ngay tại boundary, trước và sau khi load. Tối thiểu cần `hostBuildId`, `remoteName`, `remoteBuildId`, contract được chọn, descriptor schema, cohort và phase lỗi. Thêm dependency/provider runtime khi có công cụ quan sát phù hợp, nhưng không gửi tokens, PII hoặc toàn bộ props vào telemetry.
+
+| Triệu chứng | Kiểm tra đầu tiên | Hướng xử lý |
+| --- | --- | --- |
+| `NO_COMMON_CONTRACT` | Host và descriptor có major chung không? Routing có sai host không? | Route về artifact đã hỗ trợ hoặc fallback; không retry cùng candidate |
+| `MISSING_SHELL_CAPABILITY` | Shell build có API remote yêu cầu không? | Dùng remote cũ phù hợp hoặc yêu cầu nâng phiên theo policy |
+| Exposed module không tồn tại | Descriptor có khớp artifact và key webpack không? | Sửa publish/routing; test exposed keys trong CI |
+| Shared version bị từ chối | Versions được cung cấp, singleton đã consume và range consumer | Khôi phục tổ hợp đã kiểm thử; không tắt strict để che lỗi |
+| `ChunkLoadError` hoặc 404 assets | Entry/chunk có cùng release? Retention và public path có đúng không? | Sửa assets/cache policy; không kết luận ngay là API breaking change |
+| Module tải được nhưng callback hoặc dữ liệu sai | Payload và semantics thực sự của contract | Chặn rollout, sửa adapter và bổ sung test hành vi |
+| Chỉ lỗi ở tab cũ | Host build, thời điểm chọn remote, service worker và singleton đã load | Tái hiện bằng session dài; áp dụng policy hết window |
+
+Tách mismatch cố định khỏi lỗi network tạm thời. Retry có giới hạn có thể giúp lỗi tải, nhưng không làm H1 hiểu v2. Fallback nên nói rõ tính năng chưa khả dụng và giữ các phần shell độc lập hoạt động, thay vì biến mismatch của catalog thành trang trắng toàn bộ.
+
+## Checklist trước khi release
+
+- [ ] Build ID, contract version và dependency versions được ghi riêng.
+- [ ] Public API bao gồm exposed keys, props, callbacks, semantics và shell capabilities.
+- [ ] Các cặp host–remote được hỗ trợ và cố ý bị chặn có ma trận rõ ràng.
+- [ ] Remote mới đã test với host cũ trong window; host mới đã test với remote rollback.
+- [ ] Breaking change có bridge/adapter hoặc routing riêng, không âm thầm ghi đè contract cũ.
+- [ ] Gate validate metadata trước khi load và loader dùng đúng candidate đã kiểm tra.
+- [ ] Shared policy được test với singleton đã consume và các request/subpath thực tế.
+- [ ] Artifacts và descriptor bất biến; entry, chunks, assets được publish nguyên bộ.
+- [ ] Cache, session pinning và retention bao phủ compatibility window đã công bố.
+- [ ] Rollback target tương thích cả host đang phục vụ lẫn backend hiện tại.
+- [ ] Telemetry phân biệt mismatch, load failure, render failure và lỗi nghiệp vụ.
+- [ ] Việc hết hạn host cũ có fallback hoặc đường nâng phiên không làm mất dữ liệu.
+
+Trước thay đổi tiếp theo, hãy điền ma trận bằng build IDs thực tế của hệ thống và chạy một case host cũ tải remote mới sau khi registry đổi. Nếu chưa nói được case đó chọn contract nào và fallback ở đâu, chưa nên bỏ API cũ.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Hiểu singleton, requiredVersion, strictVersion và kết quả resolution runtime." />
+  <Card title="Types và contracts" href="/docs/module-federation/types-contracts" description="Tách TypeScript declarations khỏi hợp đồng runtime giữa các ứng dụng." />
+  <Card title="Dynamic remotes" href="/docs/module-federation/dynamic-remotes" description="Nạp remote qua runtime registry thay vì URL gắn cứng lúc build." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Tổ chức canary, routing và phục hồi phiên bản trên production." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm chứng boundary thay vì chỉ test từng app độc lập." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): các tùy chọn sharing, required versions, singleton và strict versioning của webpack.
+- [webpack — Module Federation concepts](https://webpack.js.org/concepts/module-federation/): container API, dynamic remotes, initialization và troubleshooting.
+- [Semantic Versioning 2.0.0](https://semver.org/): quy tắc versioning dựa trên public API, gồm lưu ý về version trước `1.0.0`.
+
+Compatibility window, descriptor và gate trong bài là thiết kế ứng dụng minh họa. Các tài liệu trên giải thích protocol và versioning nền tảng, không cung cấp sẵn toàn bộ policy release đó.

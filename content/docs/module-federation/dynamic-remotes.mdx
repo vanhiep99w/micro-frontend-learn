@@ -1,18 +1,600 @@
 ---
 title: "Dynamic remotes"
-description: "Nạp remote theo runtime manifest thay vì gắn cứng URL lúc build."
+description: "Chọn remote release qua runtime manifest, nối promise-based remote của webpack 5 và xử lý cache, timeout, fallback, canary, rollback an toàn."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell đã build xong, nhưng bạn muốn chuyển catalog từ release `r17` sang `r18` mà không build lại shell. Nếu URL nằm cố định trong `remotes`, bạn phải thay cấu hình rồi tạo host artifact mới. Dynamic remotes chuyển quyết định chọn địa chỉ sang runtime: shell đọc một manifest, chọn release hợp lệ rồi mới tải container.
+
+Điểm khó không phải tạo một script tag. Bạn cần biết ai được quyền chọn URL, hai request đồng thời có tải entry hai lần không, và rollback có ảnh hưởng tới tab đã mở hay không. Bài này đi từ một runtime manifest nhỏ tới loader có ranh giới rõ ràng, rồi đưa ra chính sách vận hành cho các tình huống đó.
+
+<Callout type="info" title="Phạm vi và điều kiện đọc">
+  Ví dụ dùng shell và catalog giả định, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5, remote dạng classic script container chạy trong browser. Đây không phải cấu hình Next.js của site docs này, không bao gồm SSR hay React Server Components. Bạn nên đọc [Cơ chế Module Federation](/docs/module-federation/co-che) và [Cấu hình exposes và remotes](/docs/module-federation/exposes-remotes) trước. Sơ đồ text không cần plugin render bổ sung.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Dynamic ở đâu và không dynamic ở đâu](#dynamic-ở-đâu-và-không-dynamic-ở-đâu)
+  - [URL tĩnh vẫn tải code ở runtime](#url-tĩnh-vẫn-tải-code-ở-runtime)
+  - [Khi nào nên dùng](#khi-nào-nên-dùng)
+- [Chọn một cơ chế tải remote](#chọn-một-cơ-chế-tải-remote)
+- [Thiết kế runtime manifest](#thiết-kế-runtime-manifest)
+  - [Manifest của ứng dụng](#manifest-của-ứng-dụng)
+  - [Không nhầm với manifest của enhanced runtime](#không-nhầm-với-manifest-của-enhanced-runtime)
+- [Luồng resolve và quyền sở hữu](#luồng-resolve-và-quyền-sở-hữu)
+- [Ví dụ với promise-based remote của webpack](#ví-dụ-với-promise-based-remote-của-webpack)
+  - [Remote giữ public API ổn định](#remote-giữ-public-api-ổn-định)
+  - [Đọc và kiểm tra manifest](#đọc-và-kiểm-tra-manifest)
+  - [Tải entry một lần trong mỗi document](#tải-entry-một-lần-trong-mỗi-document)
+  - [Nối loader vào cấu hình host](#nối-loader-vào-cấu-hình-host)
+  - [Đặt fallback tại boundary của tính năng](#đặt-fallback-tại-boundary-của-tính-năng)
+- [Concurrency và giới hạn của timeout](#concurrency-và-giới-hạn-của-timeout)
+- [Cache và snapshot theo phiên](#cache-và-snapshot-theo-phiên)
+  - [Tách cache manifest khỏi cache artifact](#tách-cache-manifest-khỏi-cache-artifact)
+  - [Tab cũ không tự đổi release](#tab-cũ-không-tự-đổi-release)
+- [Canary và rollback](#canary-và-rollback)
+  - [Chọn cohort trước khi tải container](#chọn-cohort-trước-khi-tải-container)
+  - [Publish artifact trước manifest](#publish-artifact-trước-manifest)
+  - [Rollback bằng con trỏ release](#rollback-bằng-con-trỏ-release)
+- [Bảo mật và compatibility](#bảo-mật-và-compatibility)
+- [Chẩn đoán theo phase](#chẩn-đoán-theo-phase)
+- [Bài tập kiểm chứng](#bài-tập-kiểm-chứng)
+- [Checklist trước production](#checklist-trước-production)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Dynamic ở đâu và không dynamic ở đâu
 
-Bài này sẽ giúp bạn: nạp remote theo runtime manifest thay vì gắn cứng URL lúc build.
+### URL tĩnh vẫn tải code ở runtime
 
-[Xem các bài trong nhóm Module Federation](/docs/module-federation).
+Cấu hình sau chốt địa chỉ lúc build host, nhưng browser vẫn tải catalog khi cần module:
+
+```js title="Remote có địa chỉ được chốt trong host artifact"
+remotes: {
+  catalog: 'catalog_app@https://assets.example.com/catalog/r17/remoteEntry.js',
+}
+```
+
+Dynamic remote không biến build-time loading thành runtime loading; federation đã có runtime loading. Nó thay **cách resolve địa chỉ hoặc đăng ký remote** trước bước tải container.
+
+Có thể hình dung manifest như bảng chỉ dẫn tới một kho hàng: đổi bảng giúp người đến sau đi sang kho mới, nhưng không chuyển những món hàng đã mang về. Tương tự, đổi URL không thay các module đã evaluate trong tab hiện tại.
+
+Trong ví dụ promise-based bên dưới, alias `catalog` và request `catalog/ProductPage` vẫn nằm trong dependency graph của host. Chỉ release URL được chọn muộn. Bạn không thể thêm alias `checkout` vào manifest rồi mong webpack tự hiểu `import('checkout/Page')` trong một host chưa được build cho alias đó. Nếu cần một danh sách plugin thực sự mở ở runtime, hãy dùng loader theo container API hoặc runtime API phù hợp.
+
+### Khi nào nên dùng
+
+Mình chọn dynamic remotes khi cùng một host artifact cần chạy ở nhiều môi trường, hoặc khi cần promote, canary và rollback remote mà không tạo host build mới. Cái giá là thêm một điểm phụ thuộc vào lúc resolve, một schema cấu hình cần quản lý và một policy chọn release cần kiểm thử.
+
+Nếu hệ thống chỉ có một remote, host và remote luôn phát hành cùng nhau, URL tĩnh theo release thường dễ vận hành hơn. Cũng không cần dynamic loader chỉ để lazy-load UI: một federated `import()` với URL tĩnh đã làm được việc đó.
+
+## Chọn một cơ chế tải remote
+
+| Cơ chế | Cách dùng | Mặc định chọn khi nào |
+| --- | --- | --- |
+| URL tĩnh trong `remotes` | Import qua alias đã khai báo | Release được chốt cùng host; ít policy runtime |
+| Promise-based remote của webpack gốc | Promise resolve object có `get` và `init`; host vẫn dùng import tĩnh | Cần đổi location của các alias đã biết mà giữ webpack quản lý sharing và module resolution |
+| Container API thủ công | Tự load entry, init share scope, gọi `get` và factory | Cần học cơ chế hoặc một integration rất đặc thù; chấp nhận tự quản lý toàn bộ loader |
+| Enhanced runtime | Dùng `registerRemotes`, `loadRemote` hoặc instance từ `createInstance` | Dự án đã dùng hệ sinh thái enhanced hoặc cần registry runtime mở và runtime plugins |
+
+Bài này chọn promise-based remote. Loader chỉ chịu trách nhiệm đọc manifest và cung cấp container; webpack tiếp tục gọi `init`, `get` và factory. Đây là cách tránh vừa dùng `import('catalog/ProductPage')` vừa tự init cùng container ở một loader khác.
+
+Với `@module-federation/enhanced/runtime`, API cấp module hoạt động trên instance runtime. Khi dùng build plugin tương ứng, bạn có thể dùng default instance; nếu không dùng build plugin, tạo instance bằng `createInstance` và gọi API trên instance đó. Một remote mới đăng ký qua runtime API không tự trở thành bare import mà webpack gốc đã compile.
+
+<Callout type="warn" title="Không ghép cú pháp giữa các integration">
+  Chuỗi `promise ...` trong bài thuộc `ModuleFederationPlugin` tích hợp của webpack. `registerRemotes` và `loadRemote` thuộc runtime package của hệ sinh thái enhanced. API runtime của plugin Vite khác lại có quy tắc riêng. Ghi rõ package, version và remote format trước khi chuyển ví dụ sang stack khác.
+</Callout>
+
+## Thiết kế runtime manifest
+
+### Manifest của ứng dụng
+
+Shell đọc endpoint same-origin `/runtime/remotes.json`. Đây là schema do ứng dụng tự thiết kế; webpack không tự fetch hay hiểu nó.
+
+```json title="Response của /runtime/remotes.json"
+{
+  "schemaVersion": 1,
+  "revision": "demo-config-18",
+  "remotes": {
+    "catalog": {
+      "enabled": true,
+      "scope": "catalog_app",
+      "entry": "https://assets.example.com/catalog/r18/remoteEntry.js",
+      "release": "r18",
+      "contractVersion": 1
+    }
+  }
+}
+```
+
+| Field | Ý nghĩa |
+| --- | --- |
+| `schemaVersion` | Phiên bản schema manifest mà host hiểu |
+| `revision` | Định danh snapshot cấu hình để nối log với lần promote |
+| `enabled` | Cho phép các lượt resolve mới tải remote; không unload remote đã chạy |
+| `scope` | Global container do entry công bố, ở đây là `catalog_app` |
+| `entry` | URL tuyệt đối của entry, trỏ tới release immutable |
+| `release` | Định danh remote artifact graph, ở đây là `r18` |
+| `contractVersion` | Major contract của public API mà host chấp nhận; không phải version React |
+
+Để đổi từ `r18` về `r17`, bạn đổi `entry`, `release` và `revision`. Không đổi `scope` hay contract chỉ vì release mới hơn. Host bên dưới chỉ chấp nhận `contractVersion: 1`; policy này minh bạch hơn việc thử tải mọi version rồi hy vọng exports vẫn dùng được.
+
+Trong production, endpoint có thể được phục vụ bởi deployment config hoặc backend chọn cohort. Manifest không chứa secrets: người dùng có thể xem nó, cũng như toàn bộ JavaScript remote.
+
+### Không nhầm với manifest của enhanced runtime
+
+`mf-manifest.json` do hệ sinh thái Module Federation enhanced sinh ra là một loại artifact khác. Nó mô tả metadata mà enhanced runtime dùng để resolve remote entry và assets, trong đó có thông tin về exposes và shared dependencies. Schema không phải object `{ remotes: ... }` ở trên.
+
+Bạn có thể có cả hai lớp: manifest của ứng dụng chọn release, rồi trỏ tới `mf-manifest.json` của release đó cho enhanced runtime consume. Nhưng với webpack gốc trong bài, loader phải trỏ tới JavaScript entry. Đưa một URL JSON vào `scope@url` kiểu script remote không làm webpack tự chuyển sang enhanced runtime; browser chỉ nhận JSON ở chỗ cần JavaScript.
+
+## Luồng resolve và quyền sở hữu
+
+```text
+Shell import ──► Manifest snapshot ──► Entry URL đã validate
+                                            │
+                                            ▼
+                                      Script container
+                                            │
+                                            ▼
+                              Webpack init → get → factory
+```
+
+| Giai đoạn | Chủ thể | Trách nhiệm |
+| --- | --- | --- |
+| Chọn release | Config service và deployment policy | Trả một release tương thích cho cohort/môi trường |
+| Validate và pin | Loader của host | Kiểm tra schema, URL, scope; giữ snapshot trong document |
+| Load entry | Loader và browser | Dedupe request, timeout, xác nhận container API |
+| Resolve module | Webpack runtime | Khởi tạo sharing, lấy factory, tải chunk và evaluate module |
+| Integrate UI | Shell | Kiểm tra public API, mount, cleanup và fallback |
+
+Trình tự này cũng đặt ranh giới trust: manifest là input cấu hình, chưa phải giấy phép chạy code. Host chỉ cho phép những location nằm trong policy của nó. Kiểm tra contract ở manifest giúp chặn một lựa chọn không phù hợp trước khi chạy script, nhưng vẫn cần test artifact và kiểm tra exports sau import.
+
+## Ví dụ với promise-based remote của webpack
+
+Các snippet dành cho hai app webpack đã có HTML, entry, build và static hosting; không phải một scaffold đầy đủ. Các URL `example.com` là địa chỉ minh họa, cần thay bằng CDN của bạn và cập nhật allowlist tương ứng. Ví dụ dùng DOM thuần để tập trung vào loader, không cấu hình shared React.
+
+### Remote giữ public API ổn định
+
+Remote công bố script container `catalog_app`. Nó expose một named export `mount(root, options)` trả cleanup function, cùng kiểu lifecycle API đã dùng ở bài cơ chế.
+
+```js title="catalog/webpack.config.cjs — phần cấu hình liên quan"
+const { ModuleFederationPlugin } = require('webpack').container;
+
+module.exports = {
+  output: {
+    uniqueName: 'shop_catalog',
+    publicPath: 'auto',
+    chunkFilename: '[name].[contenthash].js',
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'catalog_app',
+      library: { type: 'var', name: 'catalog_app' },
+      filename: 'remoteEntry.js',
+      exposes: {
+        './ProductPage': './src/product-page.js',
+      },
+    }),
+  ],
+};
+```
+
+```js title="catalog/src/product-page.js"
+export function mount(root, { onSelect }) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Xem sản phẩm minh họa';
+  const select = () => onSelect('demo-product');
+  button.addEventListener('click', select);
+  root.append(button);
+
+  return () => {
+    button.removeEventListener('click', select);
+    button.remove();
+  };
+}
+```
+
+Publish toàn bộ output vào prefix `/catalog/r18/`, không chỉ `remoteEntry.js`. Với script entry, `publicPath: 'auto'` giúp runtime suy ra địa chỉ tải chunk từ location của script. Vẫn phải kiểm tra qua production hosting thực tế: redirect, proxy hoặc cách tách runtime có thể khiến assumptions về location không còn đúng.
+
+### Đọc và kiểm tra manifest
+
+Loader giữ một Promise manifest cho toàn bộ document. Hai import xảy ra đồng thời dùng cùng response, không thể nhận hai release khác nhau do manifest vừa được promote giữa hai request.
+
+```js title="shell/src/runtime-remotes.js — phần 1"
+const CONFIG_URL = '/runtime/remotes.json';
+const ASSET_ORIGIN = 'https://assets.example.com';
+const CONFIG_TIMEOUT_MS = 5000; // Giá trị minh họa; điều chỉnh theo SLO.
+
+let manifestPromise;
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateManifest(value) {
+  if (
+    !isRecord(value) || value.schemaVersion !== 1 ||
+    typeof value.revision !== 'string' || !value.revision ||
+    !isRecord(value.remotes)
+  ) {
+    throw new Error('[manifest] Unsupported schema');
+  }
+
+  const spec = value.remotes.catalog;
+  if (
+    !isRecord(spec) || typeof spec.enabled !== 'boolean' ||
+    spec.scope !== 'catalog_app' || spec.contractVersion !== 1 ||
+    typeof spec.release !== 'string' || !/^r[1-9]\d*$/.test(spec.release) ||
+    typeof spec.entry !== 'string'
+  ) {
+    throw new Error('[manifest] Invalid catalog descriptor');
+  }
+
+  const url = new URL(spec.entry);
+  const expectedPath = `/catalog/${spec.release}/remoteEntry.js`;
+  if (
+    url.origin !== ASSET_ORIGIN || url.protocol !== 'https:' ||
+    url.username || url.password || url.search || url.hash ||
+    url.pathname !== expectedPath
+  ) {
+    throw new Error('[manifest] Entry URL is outside host policy');
+  }
+
+  // Chỉ giữ các field đã được host kiểm tra, không truyền raw JSON tiếp.
+  return Object.freeze({
+    revision: value.revision,
+    catalog: Object.freeze({
+      enabled: spec.enabled,
+      scope: spec.scope,
+      entry: url.href,
+      release: spec.release,
+      contractVersion: spec.contractVersion,
+    }),
+  });
+}
+
+async function fetchManifest() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONFIG_TIMEOUT_MS);
+  try {
+    const response = await fetch(CONFIG_URL, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      redirect: 'error',
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`[manifest] HTTP ${response.status}`);
+    }
+    return validateManifest(await response.json());
+  } catch (cause) {
+    throw new Error('[manifest] Cannot resolve runtime configuration', { cause });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function getRemoteManifest() {
+  manifestPromise ??= fetchManifest();
+  return manifestPromise;
+}
+```
+
+Mình dùng exact origin và exact release path thay vì `entry.startsWith('https://assets.example.com')`: kiểm tra chuỗi prefix có thể chấp nhận hostname khác như `assets.example.com.attacker.invalid`. Code cũng không cho URL có credentials hoặc query tùy ý. Đây là policy minh họa cho một remote, không phải schema tổng quát cho mọi deployment.
+
+`enabled: false` vẫn là descriptor hợp lệ, nhưng bước tải sẽ từ chối. Khi manifest lỗi, Promise reject được giữ lại; ví dụ không âm thầm dùng URL “latest” hay manifest trong local storage. Nếu cần last-known-good, hãy thiết kế riêng TTL, compatibility, allowlist và telemetry cho fallback đó.
+
+### Tải entry một lần trong mỗi document
+
+Thêm phần sau vào cùng module. Một Promise entry được giữ theo `scope` và URL. Loader không nhận container global có sẵn từ nguồn không rõ, không đổi URL cho scope đã được chọn, và không gọi `init` thủ công.
+
+```js title="shell/src/runtime-remotes.js — phần 2"
+const ENTRY_TIMEOUT_MS = 8000; // Chỉ timeout entry, không phải toàn bộ import.
+const entriesByScope = new Map();
+
+function insertEntry(spec) {
+  return new Promise((resolve, reject) => {
+    if (globalThis[spec.scope] !== undefined) {
+      reject(new Error(`[entry] Unmanaged container: ${spec.scope}`));
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = spec.entry;
+    script.async = true;
+    script.dataset.remoteRelease = spec.release;
+    let settled = false;
+    let timer;
+
+    const finish = (error, container) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      script.onload = null;
+      script.onerror = null;
+      if (error) {
+        script.remove();
+        reject(error);
+      } else {
+        resolve(container);
+      }
+    };
+
+    script.onload = () => {
+      const container = globalThis[spec.scope];
+      if (
+        !container || typeof container.get !== 'function' ||
+        typeof container.init !== 'function'
+      ) {
+        finish(new Error(`[entry] Missing container API: ${spec.scope}`));
+        return;
+      }
+      finish(null, container);
+    };
+    script.onerror = () => {
+      finish(new Error(`[entry] Failed to load ${spec.entry}`));
+    };
+    timer = setTimeout(() => {
+      finish(new Error(`[entry] Timed out: ${spec.entry}`));
+    }, ENTRY_TIMEOUT_MS);
+    document.head.append(script);
+  });
+}
+
+export async function resolveRemoteContainer(alias) {
+  if (alias !== 'catalog') {
+    throw new Error(`[resolve] Unknown remote alias: ${alias}`);
+  }
+  const snapshot = await getRemoteManifest();
+  const spec = snapshot.catalog;
+  if (!spec.enabled) {
+    throw new Error('[resolve] Catalog is disabled');
+  }
+
+  const existing = entriesByScope.get(spec.scope);
+  if (existing) {
+    if (existing.entry !== spec.entry) {
+      throw new Error('[resolve] Refusing to switch release in this document');
+    }
+    return existing.promise;
+  }
+
+  const promise = insertEntry(spec);
+  entriesByScope.set(spec.scope, { entry: spec.entry, promise });
+  return promise;
+}
+```
+
+Promise được đưa vào cache khi entry còn đang tải. Đây mới là dedupe concurrency; chỉ cache container sau `onload` sẽ để hai caller cùng chèn script trước khi lần tải đầu hoàn tất.
+
+Đoạn này có chủ ý **giữ cả Promise đã reject**. Tải lại entry có thể thực thi lại code hoặc gặp một container đã xuất hiện sau timeout. Ví dụ chọn fail-closed cho remote trong document hiện tại, thay vì giả vờ rằng xóa script tag đã reset toàn bộ runtime. Những hệ thống cần retry entry phải có policy chặt hơn và kiểm thử các race đó.
+
+### Nối loader vào cấu hình host
+
+Host khai báo alias đã biết, nhưng thay `scope@url` bằng một promise external. Kết quả phải có API `get` và `init`; loader ở trên resolve trực tiếp container thật.
+
+```js title="shell/webpack.config.cjs — phần cấu hình liên quan"
+const { ModuleFederationPlugin } = require('webpack').container;
+
+module.exports = {
+  output: {
+    uniqueName: 'shop_shell',
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shell',
+      remotes: {
+        catalog: "promise globalThis.__shopResolveRemote__('catalog')",
+      },
+    }),
+  ],
+};
+```
+
+Promise external là một expression trong generated code, không phải closure giữ lexical scope của `webpack.config.cjs`. Vì vậy nó không thể gọi một biến chỉ tồn tại trong file cấu hình build. Ở đây entry host cài resolver lên một global có tên riêng trước khi bootstrap tải feature.
+
+```js title="shell/src/index.js — entry host"
+import { resolveRemoteContainer } from './runtime-remotes.js';
+
+globalThis.__shopResolveRemote__ = resolveRemoteContainer;
+
+import('./bootstrap.js').catch((error) => {
+  console.error('[shell] Bootstrap failed', error);
+});
+```
+
+Không đặt static import tới module remote trong `index.js`: import đó có thể được xử lý trước khi assignment cài resolver chạy. Async boundary bảo đảm bước cài resolver hoàn tất trước khi bootstrap tiêu thụ remote, đồng thời phù hợp với quy trình sharing của webpack.
+
+Webpack sẽ gọi `container.init` bằng share scope của nó. Loader không gọi thêm `__webpack_init_sharing__`, không tạo scope object mới và không bọc `init` bằng `catch` rỗng. Nếu init lỗi, import cần reject để boundary xử lý; nuốt lỗi có thể khiến bạn tiếp tục dùng một container ở trạng thái không hợp lệ.
+
+### Đặt fallback tại boundary của tính năng
+
+HTML host cần một vùng `#catalog-root`. Shell tải module rồi gọi lifecycle API; manifest hoặc remote lỗi không được làm biến mất toàn bộ navigation của shell.
+
+```js title="shell/src/bootstrap.js"
+import { getRemoteManifest } from './runtime-remotes.js';
+
+const root = document.getElementById('catalog-root');
+if (!root) throw new Error('Missing #catalog-root');
+
+async function showCatalog() {
+  root.textContent = 'Đang tải catalog…';
+  try {
+    const module = await import('catalog/ProductPage');
+    if (typeof module.mount !== 'function') {
+      throw new Error('[contract] ProductPage must export mount');
+    }
+
+    root.replaceChildren();
+    const unmount = module.mount(root, {
+      onSelect: (id) => console.log('[shell] Selected', id),
+    });
+    if (typeof unmount !== 'function') {
+      throw new Error('[contract] mount must return a cleanup function');
+    }
+    window.addEventListener('pagehide', () => unmount(), { once: true });
+  } catch (error) {
+    const snapshot = await getRemoteManifest().catch(() => null);
+    console.error('[catalog] Feature unavailable', {
+      revision: snapshot?.revision,
+      release: snapshot?.catalog.release,
+      entry: snapshot?.catalog.entry,
+      request: 'catalog/ProductPage',
+      error,
+    });
+    root.textContent = 'Catalog tạm thời không khả dụng. Bạn vẫn có thể dùng shell.';
+  }
+}
+
+void showCatalog();
+```
+
+Kết quả thành công là button của remote xuất hiện trong vùng catalog và callback chạy khi click. Khi entry lỗi, bạn thấy fallback trong vùng đó, còn các phần UI khác do shell quản lý vẫn hoạt động.
+
+`pagehide` chỉ minh họa cleanup cho trang đơn giản. Với router SPA, route owner phải gọi `unmount` khi rời route, đồng thời kiểm tra route còn active sau `await import()` để không mount kết quả tải muộn vào màn hình đã đổi. Với React, cần cả Suspense/loading state và error boundary thích hợp; Suspense một mình không xử lý Promise reject hay render exception.
+
+Nếu contract sai sau khi remote đã tạo side effects, thay DOM bằng fallback không tự cleanup timers hoặc subscriptions của remote. Contract mount cần quy định cleanup khi lỗi và tránh side effects ở top level; loader không giải quyết lifecycle thay bạn.
+
+## Concurrency và giới hạn của timeout
+
+Có ba trạng thái khác nhau cần phân biệt: manifest đang tải, entry đang tải và module đang resolve. Ví dụ dedupe hai trạng thái đầu; module resolution và module cache thuộc webpack runtime. Các request `catalog/ProductPage` và một expose khác của catalog cùng dùng một entry, nhưng có thể tải các chunk khác nhau.
+
+Timeout `fetch` có thể gọi `AbortController` để hủy quá trình chờ response/body. Timeout script chỉ ngừng chờ ở loader và dọn handlers; remove script tag **không phải cam kết hủy thực thi** nếu browser đã tải hoặc bắt đầu thực thi code. Timeout cũng không thể ngắt một đoạn JavaScript đồng bộ đang chiếm main thread.
+
+Vì vậy, đừng dùng `Promise.race` như cơ chế rollback runtime. Khi entry timeout, ví dụ giữ trạng thái lỗi và không thử `r17` trong cùng scope của tab đó. Muốn thử một release khác, ưu tiên một document mới với manifest mới. Nếu fallback chỉ là UI local thì không cần đụng container.
+
+Hai timeout trong ví dụ cũng chưa giới hạn toàn bộ `import()`: init, chunk loading và evaluation có đường lỗi riêng. Chunk loader của webpack có cấu hình timeout riêng; nếu thêm deadline cho UX ở boundary, cần bỏ qua kết quả đến muộn và nhớ rằng code vẫn có thể tiếp tục tải. Retry chỉ nên dành cho lỗi transient có policy rõ ràng, không retry vô hạn với sai schema, sai public key hay contract mismatch.
+
+## Cache và snapshot theo phiên
+
+### Tách cache manifest khỏi cache artifact
+
+| Tài nguyên | Policy khởi đầu đề xuất | Vì sao |
+| --- | --- | --- |
+| `/runtime/remotes.json` | Response `Cache-Control: no-store` cho ví dụ này | Config thay đổi được; response theo user/cohort không được rơi vào shared cache sai |
+| Entry nằm dưới `/catalog/r18/` | `Cache-Control: public, max-age=31536000, immutable` nếu URL thực sự immutable | Entry của release cũ phải tiếp tục chỉ tới graph cũ |
+| Chunk, CSS và assets của release | URL theo hash hoặc release immutable, cache dài hạn | Không ghép entry cũ với implementation mới |
+| HTML và host entry | Theo policy deployment của host | Phải bảo đảm document lấy đúng host runtime và loader |
+
+Đây là policy minh họa, không bắt buộc manifest luôn `no-store`. Một manifest chung có thể dùng revalidation hoặc TTL ngắn nếu bạn chấp nhận độ trễ promote tương ứng. Manifest cá nhân hóa cần phân tách cache key đúng cách; không chỉ thêm `Vary` rồi mặc định mọi CDN đều xử lý như bạn muốn.
+
+`fetch(..., { cache: 'no-store' })` không thay thế cấu hình CDN, response headers hay service worker. Kiểm tra tất cả các tầng có thể phục vụ response cũ. Trong document, `manifestPromise` vẫn giữ snapshot một lần: không dùng HTTP cache và không refetch trong tab là hai quyết định độc lập.
+
+Đừng overwrite `/catalog/r18/remoteEntry.js` bằng một build khác. Nếu URL được coi là immutable, một lần build mới cần một release ID mới. Khi chunks có hash, cũng phải giữ lại các file hash cũ mà entry và tab đang mở còn tham chiếu.
+
+### Tab cũ không tự đổi release
+
+Tab đã chọn `r18` sẽ tiếp tục dùng container và module cache của `r18`, kể cả server đổi manifest sang `r17`. Refresh manifest, sửa global hay xóa script tag không thu hồi những reference đã được UI giữ, cũng không thay provider shared đã được consume.
+
+Trong bài, “snapshot theo phiên” là **theo vòng đời document**, không tự động theo login session. Reload tạo document mới và đọc manifest lại; nếu muốn cohort ổn định qua reload, server cần một assignment ổn định riêng.
+
+Nếu cần thông báo release mới, bạn có thể poll metadata và mời người dùng reload tại thời điểm an toàn. Đừng đổi container của một tính năng đang giữ state chỉ để áp dụng promote ngay lập tức. `enabled: false` ở server cũng không trở thành kill switch tức thời cho tab đã pin snapshot; các thao tác nhạy cảm vẫn phải được backend kiểm soát.
+
+## Canary và rollback
+
+### Chọn cohort trước khi tải container
+
+Giả sử rollout minh họa chọn một nhóm người dùng vào `r18`, phần còn lại ở `r17`. Server chọn cohort từ định danh ổn định hoặc rollout token, rồi trả manifest chỉ chứa release được chọn. Không gọi `Math.random()` ở mỗi lần import: cùng người dùng có thể nhận hai release trong một phiên.
+
+Một assignment cần được giữ đủ ổn định để bạn so sánh lỗi và trải nghiệm giữa các nhóm. Nếu người dùng đổi account hoặc tenant mà selection cần đổi, document mới thường là ranh giới an toàn hơn việc tráo scope giữa chừng. Không ghi user ID thô vào URL CDN hoặc telemetry nếu không cần thiết.
+
+Mặc định mình không tải cả `r17` lẫn `r18` vào cùng document để chọn một cái sau. Hai script cùng công bố `catalog_app` sẽ tranh global; ngay cả khi dùng scope riêng, shared singleton và side effects vẫn không được cô lập. Muốn so sánh đồng thời hai phiên bản cần thiết kế namespace, runtime identity, sharing và isolation riêng, không chỉ thay tên file entry.
+
+### Publish artifact trước manifest
+
+Thứ tự deploy quyết định có khoảng thời gian manifest trỏ tới code chưa tồn tại hay không:
+
+1. Build release mới và publish toàn bộ entry, chunks, CSS, assets dưới prefix immutable.
+2. Kiểm tra artifact qua chính CDN/origin mà browser sẽ dùng, gồm MIME type và URL chunk.
+3. Chạy smoke test host hiện tại với release mới, contract tests và shared compatibility tests nếu có framework dùng chung.
+4. Publish snapshot manifest đã validate bằng một cập nhật atomic; không sửa từng field của một response đang phục vụ.
+5. Mở canary, theo dõi lỗi theo release/cohort, rồi mới promote rộng hơn.
+
+Atomic ở đây nghĩa client nhận một snapshot hoàn chỉnh, không phải `entry` của `r18` đi cùng `release` của `r17`. Nếu nhiều CDN edge cập nhật lệch thời điểm, các client có thể nhận snapshot cũ hoặc mới; mỗi snapshot vẫn phải tự nhất quán và trỏ tới artifact đã sẵn sàng.
+
+### Rollback bằng con trỏ release
+
+Rollback thay manifest về một release tương thích đã tồn tại, chẳng hạn `r17`. Các document resolve sau đó sẽ tải `r17`; tab đã dùng `r18` không được unload tự động. UI fallback, thông báo reload hoặc kiểm soát backend có thể cần thiết tùy loại lỗi.
+
+Giữ artifact cũ trong một cửa sổ retention được xác định từ tuổi thọ tab, thời gian rollout và policy rollback. Một tab cũ có thể tải chunk lazy lần đầu rất lâu sau khi entry đã tải; xóa release cũ quá sớm sẽ gây `ChunkLoadError` dù manifest mới hoàn toàn đúng.
+
+Enhanced runtime có tùy chọn `registerRemotes(..., { force: true })` để thay đăng ký và xóa cache module do runtime quản lý. Đây không phải thao tác hoàn tác side effects, reference đang dùng hay cây UI đã mount. Đừng coi nó là bảo đảm hot rollback an toàn trong tab.
+
+## Bảo mật và compatibility
+
+Remote JavaScript chạy với quyền của document host, không nằm trong sandbox chỉ vì file đến từ CDN khác. Allowlist URL giảm input không mong muốn, nhưng nếu remote hoặc CDN được phép đã bị xâm nhập thì code vẫn có thể tiếp cận DOM và các API mà trang truy cập được. Nếu cần trust boundary thực sự giữa các bên, cân nhắc iframe với sandbox và giao tiếp được giới hạn.
+
+Các lớp bảo vệ có nhiệm vụ khác nhau:
+
+- **Manifest policy:** validate schema, scope, release và exact origin/path; không lấy URL tùy ý từ query string của người dùng.
+- **Artifact hosting:** kiểm soát quyền publish, không redirect entry sang origin ngoài policy, không overwrite release immutable. Kiểm tra URL trước khi chèn script không xác minh điểm đến cuối của redirect.
+- **CSP:** cho phép đúng `script-src` cho entry và chunks, `connect-src` cho manifest/API, cùng style/font/image sources nếu remote dùng. Loader mẫu giả định CSP cho phép CDN đã chọn; môi trường nonce/Trusted Types cần tích hợp thêm.
+- **CORS:** cần cho fetch cross-origin, ESM và một số cơ chế integrity. Classic script cross-origin không đòi CORS giống `fetch`, nên thêm CORS header không sửa được mọi lỗi script hoặc CSP.
+- **Integrity:** nếu dùng SRI, digest phải đến từ nguồn tin cậy và khớp artifact immutable; entry có integrity không tự bảo vệ mọi chunk tải sau. Thiết kế coverage cho toàn graph, không chỉ script đầu tiên.
+
+`contractVersion: 1` trong manifest là một lời khai của producer, chưa chứng minh module tuân thủ contract. Kiểm tra `typeof mount` chỉ bắt lỗi hình dạng đơn giản; pipeline vẫn phải test input, output, cleanup và hành vi. Xem [Types và contracts](/docs/module-federation/types-contracts) để thiết kế public API thay vì ép type bằng assertion rồi coi đó là validation.
+
+Nếu đổi ví dụ DOM thuần sang component React, release selection phải đi cùng shared policy của host và remote. Một remote mới được chọn ở runtime không tự nâng React đang được consume trong tab. Kiểm thử tương thích framework và public contract là hai việc khác nhau; xem [Shared dependencies](/docs/module-federation/shared-dependencies) và [Version compatibility](/docs/module-federation/version-compatibility).
+
+## Chẩn đoán theo phase
+
+| Phase hoặc dấu hiệu | Kiểm tra trước | Không nên làm |
+| --- | --- | --- |
+| Manifest timeout, JSON parse fail | Endpoint, response body, auth redirect, service worker, `cause` của lỗi | Âm thầm rơi về `latest` |
+| Manifest bị reject bởi policy | Schema version, contract major, origin và release path | Nới allowlist để nhận URL bất kỳ |
+| Entry `onerror` hoặc timeout | Network, CSP, MIME type, URL và redirect | Chèn lại script vô hạn |
+| Entry `200` nhưng thiếu container | Response có thật là JS không, format script/ESM, `scope` có khớp `name` không | Mặc định `200` nghĩa remote usable |
+| Init lỗi different share scope | Có loader hoặc host runtime khác cùng init container không | Bỏ qua mọi lỗi `init` |
+| `get` lỗi public key | Key `./ProductPage`, release có giữ API host đang gọi không | Đổi URL ngẫu nhiên để thử |
+| `ChunkLoadError` | Chunk URL, `publicPath`, artifact retention và cache | Chỉ kiểm tra entry |
+| Import xong nhưng mount lỗi | Exports, lifecycle contract, lỗi implementation, shared framework nếu có | Gọi đây là lỗi CDN |
+
+Log tối thiểu cần alias, scope, manifest revision, release, resolved entry, public request, phase, thời lượng và error cause. Nếu có canary, thêm cohort label không chứa định danh nhạy cảm. Tách mốc “entry loaded”, “module resolved” và “UI usable”: một entry nhanh không chứng minh trang đã render thành công.
+
+Các prefix lỗi trong loader giúp phân biệt manifest, resolve và entry. Lỗi sau đó cần dựa vào runtime error và instrumentation của integration; đừng tuyên bố đo được thời gian `init` hay `get` riêng nếu chỉ bọc timer quanh toàn bộ import.
+
+## Bài tập kiểm chứng
+
+Dùng production build của hai app, mở DevTools Network và thử các ca sau:
+
+1. **Đổi release không rebuild shell:** giữ nguyên host artifact, chuyển manifest từ `r17` sang `r18`, mở document mới. Entry URL phải đổi nhưng bundle host không đổi.
+2. **Hai caller đồng thời:** gọi `resolveRemoteContainer('catalog')` hai lần qua `Promise.all`. Trong một document mới phải có một request manifest và một script entry do loader chèn, không phải hai entry thực thi.
+3. **Manifest không hợp lệ:** đổi `schemaVersion`, contract major hoặc origin. Loader phải reject trước khi chèn remote script; shell hiển thị fallback.
+4. **Entry không tồn tại hoặc bị chặn:** dùng URL hợp lệ theo policy nhưng artifact chưa publish, hoặc chặn entry trong DevTools. Boundary phải nhận lỗi, navigation local vẫn hoạt động, không tạo retry loop.
+5. **Entry tốt nhưng chunk hỏng:** chặn chunk của `ProductPage`. Import phải fail dù entry đã tải; log và Network phải chỉ ra phase khác với manifest lỗi.
+6. **Rollback khi tab đang mở:** tab A pin `r18`, đổi manifest về `r17`, mở tab B. Tab B dùng `r17`; tab A vẫn giữ `r18`. Reload tab A mới chọn lại.
+7. **Retention:** mở tab với release cũ, chưa mở một route lazy, rồi promote release mới. Mở route lazy trong tab cũ phải còn tải được chunk cũ.
+
+Dùng profile mới hoặc tắt service worker/cache phù hợp khi kiểm tra request lần đầu. Browser cache có thể làm số byte tải khác nhau; mục tiêu dedupe là một entry insertion/execution cho remote trong document, không phải ép CDN nhận đúng một request trên mọi lần thử.
+
+## Checklist trước production
+
+- [ ] Đã chọn một loader owner cho mỗi container; không trộn đường manual init và import do runtime quản lý.
+- [ ] Manifest có schema version, revision, release và compatibility policy rõ ràng.
+- [ ] URL/scope được validate trước khi script chạy; quyền publish manifest và artifact được giới hạn.
+- [ ] Chọn cohort ổn định trước khi load, pin snapshot cho vòng đời document.
+- [ ] Promise manifest và entry được dedupe; lỗi timeout không gây reload script hoặc retry storm.
+- [ ] Timeout UX, timeout entry và timeout chunk được phân biệt; kết quả muộn không mount sai route.
+- [ ] Fallback giữ shell usable; lifecycle cleanup và lỗi sau mount được test riêng.
+- [ ] Entry, chunks và assets thuộc release immutable; cache/service worker không ghép graph khác version.
+- [ ] Publish artifact trước manifest; đã test rollback với cả tab mới và tab cũ.
+- [ ] Retention đủ cho các document còn được hỗ trợ; telemetry phân biệt release/cohort và phase.
+
+Trước khi mở canary, hãy chạy ca rollback với hai tab và ca entry thành công nhưng chunk bị chặn. Hai ca đó xác nhận policy của bạn xử lý được cả document đang sống lẫn lỗi sâu hơn bước tải entry.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cơ chế Module Federation" href="/docs/module-federation/co-che" description="Container, share scope, factory và cache sau khi đã chọn được remote." />
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Giữ policy framework và shared modules tương thích với release được chọn." />
+  <Card title="Types và contracts" href="/docs/module-federation/types-contracts" description="Ổn định public API và lifecycle giữa host và remote." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Test tổ hợp version, thay đổi contract và rollback." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/): dynamic containers, promise-based remotes, async boundary và dynamic public path.
+- [webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): cấu hình `remotes`, `exposes`, `library` và container.
+- [Module Federation — Runtime API](https://module-federation.io/guide/runtime/runtime-api): `createInstance`, `registerRemotes`, `loadRemote` và cảnh báo `force` của enhanced runtime.
+- [Module Federation — manifest](https://module-federation.io/configure/manifest.html): artifact manifest sinh bởi integration enhanced, khác manifest ứng dụng trong bài.
+- [MDN — Subresource Integrity](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity): integrity cho resource và yêu cầu CORS khi tải cross-origin.
+- [MDN — Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP): chính sách cho phép resource/script và giới hạn thực thi trong document.

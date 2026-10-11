@@ -3,21 +3,232 @@ title: "Bắt đầu"
 description: "Chuẩn bị môi trường và dựng ví dụ host/remote nhỏ nhất."
 ---
 
-Đây là trang khung cho nhóm **Bắt đầu**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Bạn đã hiểu vì sao một phần frontend có thể cần phát hành riêng, nhưng khi mở terminal thì bắt đầu từ đâu? Nếu dựng ngay cả shell, catalog và cart với routing, shared state và pipeline, bạn sẽ khó biết lỗi đầu tiên đến từ môi trường, cấu hình tải module hay chính nghiệp vụ.
+
+Nhóm **Bắt đầu** đi theo một lát cắt nhỏ hơn: chuẩn bị máy, thống nhất bài toán shop, tạo workspace, rồi để shell tải một module catalog và render nó. Mình ưu tiên nhìn rõ đường đi từ build đến browser trước khi thêm luồng giỏ hàng.
+
+<Callout type="info" title="Site tài liệu và workspace thực hành là hai project khác nhau">
+  Repository hiện tại là site Next.js + Fumadocs, không chứa ứng dụng shop chạy sẵn. Bài **Cấu trúc workspace** hướng dẫn bạn tạo `shop-workspace` riêng, đặt bên cạnh repo tài liệu. Chạy `npm run dev` tại gốc repo tài liệu chỉ mở site docs, không chạy host/remote.
+
+  Các bài **Chuẩn bị môi trường**, **Bài toán shop mẫu** và **Cấu trúc workspace** đã có nội dung chi tiết. Hai bài **Host và remote đầu tiên**, **Chạy và kiểm tra local** hiện còn là trang khung; các mốc tích hợp dưới đây mô tả mục tiêu học, không khẳng định đã có lab hoàn chỉnh.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Mục tiêu của nhóm bài](#mục-tiêu-của-nhóm-bài)
+- [Kiến thức và công cụ cần chuẩn bị](#kiến-thức-và-công-cụ-cần-chuẩn-bị)
+- [Mô hình shop và lát cắt đầu tiên](#mô-hình-shop-và-lát-cắt-đầu-tiên)
+  - [Shell và host khác nhau thế nào](#shell-và-host-khác-nhau-thế-nào)
+  - [Browser tải code từ đâu](#browser-tải-code-từ-đâu)
+- [Thứ tự đọc và thực hành](#thứ-tự-đọc-và-thực-hành)
+- [Quy ước local cần giữ nhất quán](#quy-ước-local-cần-giữ-nhất-quán)
+- [Kiểm chứng từng mốc](#kiểm-chứng-từng-mốc)
+  - [Mốc workspace standalone](#mốc-workspace-standalone)
+  - [Mốc host tải remote](#mốc-host-tải-remote)
+- [Những việc chưa cần làm](#những-việc-chưa-cần-làm)
+- [Khi bị kẹt thì kiểm tra ở đâu](#khi-bị-kẹt-thì-kiểm-tra-ở-đâu)
+- [Checklist trước khi đi tiếp](#checklist-trước-khi-đi-tiếp)
+- [Bước tiếp theo](#bước-tiếp-theo)
 
-## Phạm vi dự kiến
+## Mục tiêu của nhóm bài
 
-Chuẩn bị môi trường và dựng ví dụ host/remote nhỏ nhất.
+Kết quả đầu tiên không phải một shop đầy đủ tính năng. Đó là một shell render được UI do catalog cung cấp qua một ranh giới tích hợp rõ ràng, và bạn chỉ ra được request nào đã tải code ấy.
 
-## Các bài trong nhóm
+Sau khi hoàn thành các bài trong nhóm, bạn nên làm được những việc sau:
 
-- [Chuẩn bị môi trường](/docs/bat-dau/moi-truong) — Chuẩn bị Node.js, package manager, trình duyệt và công cụ debug cho các bài thực hành.
-- [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop) — Đặt yêu cầu cho ứng dụng shop với shell, catalog và cart xuyên suốt lộ trình.
-- [Cấu trúc workspace](/docs/bat-dau/workspace) — Sắp xếp apps, packages, scripts và port cho workspace thực hành.
-- [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien) — Dựng ví dụ React và Module Federation tối thiểu trước khi thêm tính năng.
-- [Chạy và kiểm tra local](/docs/bat-dau/chay-local) — Chạy host/remote, kiểm tra luồng tải module và nhận biết kết quả đúng.
+- Chọn đúng Node.js, package manager và dùng DevTools để kiểm tra request, status và lỗi JavaScript.
+- Giải thích trách nhiệm của shell, catalog và cart trong shop mẫu, không bắt đầu từ việc chia mỗi component thành một remote.
+- Chạy và build từng app trong workspace mà không import source nội bộ của app khác.
+- Phân biệt app chạy standalone với app đã expose module để host consume.
+- Kiểm tra bằng cả UI và Network rằng shell đang tải catalog từ build của remote.
+
+Có một giới hạn cần giữ rõ: **host tải remote thành công ở local chưa chứng minh deploy độc lập ở production**. Bạn còn cần artifact được publish đúng, cơ chế chọn phiên bản, contract tương thích và đường khôi phục khi bản mới có lỗi. Nhóm này chỉ giúp bạn hiểu và kiểm chứng cơ chế tích hợp đầu tiên.
+
+## Kiến thức và công cụ cần chuẩn bị
+
+Nếu chưa phân biệt được micro-frontend với việc tách component, hãy đọc [Nền tảng](/docs/nen-tang) trước. Nếu đã hiểu bài toán nhưng chưa quen bundler, bạn vẫn có thể bắt đầu; chỉ cần biết build tạo ra JavaScript/CSS để browser tải và chạy.
+
+| Kiến thức | Bạn sẽ dùng ở đâu |
+| --- | --- |
+| `import`, `export` và `import()` | Hiểu public module và thao tác tải bất đồng bộ có thể thất bại |
+| Component, props và lifecycle cơ bản của React | Render UI catalog trong shell ở bước Federation |
+| Script trong `package.json` và working directory | Chạy đúng app, cài dependency vào đúng workspace |
+| URL, port, origin và HTTP status | Phân biệt sai địa chỉ remote với lỗi module hoặc lỗi render |
+| Console và Network trong DevTools | Tìm bằng chứng thay vì chỉ đổi cấu hình cho tới khi hết lỗi |
+
+Toolchain của nhóm đã được chọn trong các bài chi tiết: **Node.js 22, npm workspaces và webpack 5**. Bài workspace bắt đầu bằng JavaScript thuần để kiểm tra ba app standalone; React và Module Federation được thêm ở mốc tiếp theo. Giữ lựa chọn này khi học lần đầu để không phải debug cả khác biệt giữa các bundler.
+
+Bạn có thể kiểm tra terminal trước khi tạo workspace:
+
+```bash
+node --version
+npm --version
+git --version
+```
+
+Với quy ước Node của lab, kết quả đầu tiên cần thuộc major `22`, dạng `v22.x.y`; số patch phụ thuộc bản bạn cài. Đây là kiểm tra toolchain, không phải bước khởi động shop. Nếu terminal chưa tìm được lệnh hoặc đang chọn Node khác, làm theo [Chuẩn bị môi trường](/docs/bat-dau/moi-truong) trước.
+
+Chưa cần Docker, Kubernetes, backend hay tài khoản cloud. Dữ liệu shop ban đầu là mock; các công cụ đó không giúp bạn phân biệt một request tải module bị `404` với một component render lỗi.
+
+## Mô hình shop và lát cắt đầu tiên
+
+Shop mẫu có ba phạm vi trách nhiệm, nhưng không cần tích hợp cả ba cùng lúc:
+
+| Phần | Trách nhiệm | Có mặt trong mốc tích hợp đầu không |
+| --- | --- | --- |
+| Shell | Khung giao diện, navigation và vùng ghép nội dung | Có, đóng vai trò host |
+| Catalog | Hiển thị, tìm và lọc sản phẩm | Có, bắt đầu bằng một module UI nhỏ |
+| Cart | Quản lý thao tác giỏ và cung cấp trạng thái cho consumer | Chưa ghép; app standalone được chuẩn bị trong workspace |
+
+Ở bước đầu, một vùng catalog hiển thị được trong shell là đủ. Bạn chưa cần nút “Thêm vào giỏ” hoạt động hoặc badge đồng bộ. Các yêu cầu ấy vẫn thuộc [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop), nhưng được triển khai sau khi đường tải module đã rõ.
+
+### Shell và host khác nhau thế nào
+
+**Shell** là vai trò trong kiến trúc trải nghiệm: giữ layout, navigation và ghép các phần. **Host** là vai trò trong tích hợp Federation: consume module từ build khác. Trong ví dụ này, app shell làm cả hai việc; hai thuật ngữ không phải lúc nào cũng đồng nghĩa.
+
+**Remote** là build cung cấp module công khai cho consumer. App catalog có trang standalone không có nghĩa nó đã là remote dùng được: vẫn cần khai báo module expose và cấu hình để host tải đúng container entry.
+
+Mình giữ shell mỏng ở bước này. Nếu shell import store nội bộ của catalog hoặc tự giữ toàn bộ logic sản phẩm, bạn có thể render được UI nhưng chưa có một boundary đáng duy trì.
+
+### Browser tải code từ đâu
+
+Đường tải dự kiến của ví dụ webpack Federation tối thiểu là:
+
+```text
+Browser
+  ├── localhost:3000 → HTML và JavaScript của shell
+  └── localhost:3001 → container entry và các chunk của catalog
+
+Shell consume module công khai → render Catalog UI trong trang shell
+```
+
+Browser tải code remote và chạy nó trong trang shell; Node.js chủ yếu chạy tooling và dev server trong ví dụ này. Đây không phải việc server shell gọi trang HTML của catalog rồi nhúng nguyên trang ấy.
+
+Với cấu hình webpack Federation thường dùng trong lab, container entry được đặt tên `remoteEntry.js`. Entry cho runtime biết cách lấy module được expose; code triển khai module có thể nằm ở các chunk khác. Vì vậy, một request entry thành công chưa đủ chứng minh module đã tải và render được.
+
+Hai app vẫn có thể dùng chung DOM, CSS và JavaScript runtime của trang host. Remote không tự tạo isolation như iframe, cũng không tự trở thành security boundary. Bạn sẽ học cách xử lý ảnh hưởng chéo ở các nhóm sau.
+
+## Thứ tự đọc và thực hành
+
+Đi theo thứ tự này để mỗi bài loại bớt một nhóm nguyên nhân gây lỗi trước khi thêm bước mới:
+
+| Thứ tự | Bài | Kết quả cần giữ lại |
+| --- | --- | --- |
+| 1 | [Chuẩn bị môi trường](/docs/bat-dau/moi-truong) | Toolchain dùng được; biết kiểm tra server từ terminal và browser |
+| 2 | [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop) | Ranh giới trách nhiệm, quy tắc giỏ hàng và tiêu chí nghiệm thu đã rõ |
+| 3 | [Cấu trúc workspace](/docs/bat-dau/workspace) | Ba app standalone, script và artifact riêng trong `shop-workspace` |
+| 4 | [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien) | Mục tiêu: thêm React và Federation để shell consume một module catalog |
+| 5 | [Chạy và kiểm tra local](/docs/bat-dau/chay-local) | Mục tiêu: kiểm tra UI, request tải module và phân biệt các loại lỗi |
+
+Hai mốc cuối cần hướng dẫn chi tiết bổ sung ở trang tương ứng. Bạn vẫn có thể hoàn thành phần chuẩn bị và workspace hiện có mà không tự suy đoán cấu hình Federation từ trang tổng quan này.
+
+Đừng bỏ bài toán shop chỉ vì chưa làm cart ở mốc đầu. Nó giúp bạn biết phần nào phải giữ public contract và phần nào là implementation nội bộ. Nhưng cũng đừng biến toàn bộ tiêu chí nghiệm thu của shop thành điều kiện cho lần tải remote đầu tiên; hai mốc có phạm vi khác nhau.
+
+## Quy ước local cần giữ nhất quán
+
+Các đường dẫn và port dưới đây khớp bài workspace. Chúng là quy ước của lab, không phải yêu cầu bắt buộc của micro-frontend:
+
+| App trong `shop-workspace` | Package npm | URL local |
+| --- | --- | --- |
+| `apps/shell` | `@shop/shell` | `http://localhost:3000` |
+| `apps/catalog` | `@shop/catalog` | `http://localhost:3001` |
+| `apps/cart` | `@shop/cart` | `http://localhost:3002` |
+
+Tên package dùng để chọn workspace bằng npm; nó không tự quyết định alias Federation, tên container hay URL entry. Khi thêm tích hợp, các tên ấy cần được khai báo và đối chiếu riêng.
+
+<Callout type="warn" title="Đừng nhầm site docs với shell">
+  Site Next.js hiện tại cũng mặc định dùng port `3000`. Trước khi chạy shell, dừng server docs hoặc chuyển docs sang port khác. Kiểm tra cả thư mục terminal lẫn nội dung trang; mở được `localhost:3000` chưa chứng minh bạn đang xem shop.
+</Callout>
+
+Giữ hostname `localhost` nhất quán, thay vì trộn với `127.0.0.1`. Khác port là khác origin; điều đó ảnh hưởng request và cấu hình trình duyệt, nhưng không có nghĩa mọi cách tải remote đều cần cùng một cấu hình CORS. Hãy kiểm tra loại request thực tế trước khi sửa header.
+
+## Kiểm chứng từng mốc
+
+### Mốc workspace standalone
+
+Sau khi đã tạo đủ file và cài tooling theo bài workspace, mở ba terminal tại root **`shop-workspace`** và chạy lần lượt:
+
+```bash title="Terminal 1"
+npm run dev:shell
+```
+
+```bash title="Terminal 2"
+npm run dev:catalog
+```
+
+```bash title="Terminal 3"
+npm run dev:cart
+```
+
+Mỗi URL phải hiển thị đúng heading: `Shop shell`, `Shop catalog`, `Shop cart`. Sau đó, `npm run build` tại root workspace phải tạo output riêng trong `apps/*/dist`. Đừng tìm output trên disk chỉ vì dev server mở được; dev server có thể phục vụ asset từ memory.
+
+Đây là thành công của **workspace**, chưa phải Federation. Cấu hình ở mốc này chưa tạo `remoteEntry.js`, nên việc URL đó trả `404` không phải lỗi cần sửa bằng CORS hay cache.
+
+### Mốc host tải remote
+
+Khi đã thêm cấu hình Federation ở bài tích hợp, kiểm tra cả kết quả hiển thị lẫn nguồn code:
+
+1. Mở shell và xác nhận vùng catalog xuất hiện bên trong trang shell, không chỉ trên trang standalone của catalog.
+2. Trong Network, đối chiếu URL container entry với server catalog; kiểm tra response là JavaScript đúng, không phải HTML fallback dù status là `200`.
+3. Kiểm tra các chunk được tải tiếp và Console để xác nhận không còn lỗi tải module hoặc render.
+4. Review import của shell: module catalog đi qua public request Federation, không qua đường dẫn `../../catalog/src/...` hay package đóng implementation catalog vào build shell.
+5. Dừng server catalog rồi reload shell để quan sát lần tải mới thất bại ở đâu. Nếu code đã được tải vào tab, dừng server không tự xóa module đang có trong memory.
+
+Ở mốc này, thử dừng remote nhằm hiểu loại lỗi tải, chưa phải kiểm thử resilience hoàn chỉnh. Loading, fallback, Error Boundary và retry cần được thiết kế cụ thể; không suy ra shell đã chịu lỗi tốt chỉ vì các phần được build riêng.
+
+## Những việc chưa cần làm
+
+Mình chưa thêm nhiều framework, global event bus hay shared store ở bước đầu. Mỗi thứ tạo thêm một đường phụ thuộc cần hiểu, trong khi câu hỏi đang cần trả lời chỉ là “shell có tải đúng module catalog không?”.
+
+| Việc để sau | Vì sao chưa cần | Nhóm đọc tiếp |
+| --- | --- | --- |
+| Ghép cart và đồng bộ badge | Cần command, snapshot và owner của state rõ ràng | [Giao tiếp và trạng thái](/docs/giao-tiep-va-trang-thai) |
+| Tạo mọi shared package | Chưa có đủ consumer và public API để biết cần chia sẻ gì | [Contracts giữa các frontend](/docs/giao-tiep-va-trang-thai/contracts) |
+| Thêm nhiều framework | Làm tăng bài toán lifecycle, dependency và tooling | [UI và framework](/docs/ui-va-framework) |
+| Cấu hình CDN, version và rollback | Cần artifact và đường tích hợp đã kiểm chứng trước | [Triển khai](/docs/trien-khai) |
+| SSR hoặc federation trong Next.js | Là mô hình tích hợp khác với lab React client-side này | [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr) |
+
+Next.js của site tài liệu không phải lý do để chọn Next.js cho lab. Ngược lại, webpack trong lab cũng không phải lựa chọn bắt buộc cho mọi hệ thống. Giữ một stack nhất quán ở đây để học cơ chế; so sánh cách tích hợp khi bạn đã biết những gì cần kiểm chứng.
+
+## Khi bị kẹt thì kiểm tra ở đâu
+
+Trước khi đổi config, hãy ghi lại URL đang mở, lệnh đã chạy, request thất bại đầu tiên và lỗi Console liên quan. Bốn thông tin ấy thường giúp khoanh vùng tốt hơn một ảnh trang trắng.
+
+| Dấu hiệu | Kiểm tra đầu tiên |
+| --- | --- |
+| `Missing script: dev:shell` | Bạn đang ở `shop-workspace` đã tạo theo bài workspace, hay ở repo docs? |
+| `EADDRINUSE` | Port có đang bị site docs hoặc process khác chiếm không? |
+| Catalog standalone cũng không mở | Server catalog đã chạy và compile thành công chưa? |
+| Entry trả `404` | Đã tới mốc Federation chưa; URL, port và tên file có khớp cấu hình không? |
+| Entry trả `200` nhưng vẫn lỗi | Response có đúng JavaScript không; chunk tiếp theo có tải được không? |
+| Module tải được nhưng UI không render | Public module key, kiểu export/import và lỗi React có khớp nhau không? |
+| UI hiện được nhưng không thấy request remote | Có đang bundle source catalog vào shell, hoặc code đã tải/cache từ trước không? |
+
+Không mặc định coi mọi lỗi cross-origin là CORS. Sai port, server chưa chạy, HTML fallback và chunk tải sai base URL có biểu hiện khác nhau; Network sẽ cho bạn biết nên kiểm tra hướng nào trước. Khi cần đi sâu, dùng [Debug checklist](/docs/troubleshooting/debug-checklist) và [Remote không tải được](/docs/troubleshooting/remote-khong-tai).
+
+## Checklist trước khi đi tiếp
+
+Bạn có thể dùng checklist này để tự đánh giá sau khi hoàn thành cả phần chuẩn bị lẫn phần tích hợp:
+
+- [ ] Phân biệt được repo docs và `shop-workspace`, biết mỗi lệnh phải chạy ở đâu.
+- [ ] Toolchain nhất quán giữa các terminal; biết app nào dùng port nào.
+- [ ] Shell, catalog và cart chạy standalone, build ra artifact riêng.
+- [ ] Giải thích được tại sao standalone chưa đồng nghĩa với remote đã expose module.
+- [ ] Shell render catalog qua public module, không import implementation nội bộ.
+- [ ] Chỉ ra được request entry và chunk của catalog trong browser.
+- [ ] Phân biệt lỗi server, tải module và render; hiểu vì sao dừng remote không xóa code đã tải.
+- [ ] Không xem kết quả local là bằng chứng đủ cho isolation hay independent deployment ở production.
+
+## Bước tiếp theo
+
+Nếu mới bắt đầu, mở **Chuẩn bị môi trường** rồi làm tiếp theo bảng lộ trình. Nếu đã hoàn thành workspace standalone, mốc tiếp theo là tích hợp một module catalog; chưa cần mở rộng cart để làm ví dụ đầu tiên trông giống shop hoàn chỉnh.
+
+Khi đã kiểm chứng được đường tải module, đọc nhóm **Kiến trúc và ranh giới** để đánh giá cách chia domain, rồi nhóm **Module Federation** để hiểu sâu `exposes`, `remotes` và dependency sharing.
+
+<Cards>
+  <Card title="Chuẩn bị môi trường" href="/docs/bat-dau/moi-truong" description="Kiểm tra Node.js, npm, server local và DevTools trước khi tích hợp." />
+  <Card title="Bài toán shop mẫu" href="/docs/bat-dau/bai-toan-shop" description="Chốt trách nhiệm của shell, catalog và cart cùng tiêu chí nghiệm thu." />
+  <Card title="Cấu trúc workspace" href="/docs/bat-dau/workspace" description="Tạo project thực hành riêng với app, script và artifact rõ ràng." />
+  <Card title="Kiến trúc và ranh giới" href="/docs/kien-truc" description="Chọn domain boundary và cách ghép frontend phù hợp." />
+  <Card title="Module Federation" href="/docs/module-federation" description="Hiểu cơ chế cung cấp, tải module và chia sẻ dependency giữa các build." />
+</Cards>

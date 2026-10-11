@@ -3,16 +3,294 @@ title: "Bài toán shop mẫu"
 description: "Đặt yêu cầu cho ứng dụng shop với shell, catalog và cart xuyên suốt lộ trình."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn phụ trách một shop: catalog cần đổi cách hiển thị sản phẩm, còn cart cần sửa quy tắc cập nhật số lượng. Nếu mỗi thay đổi đều buộc cả frontend build và deploy cùng nhau, bạn sẽ muốn biết liệu tách các phần này có giúp team làm việc độc lập hơn không — và phải trả thêm chi phí gì.
+
+Shop mẫu trong lộ trình dùng đúng tình huống đó. Mình giữ nghiệp vụ nhỏ để bạn tập trung vào ranh giới giữa các frontend: ai sở hữu dữ liệu, các phần giao tiếp thế nào, và người dùng thấy gì khi một phần không tải được.
+
+<Callout type="info" title="Đây là đề bài, chưa phải ứng dụng chạy được">
+  Repository hiện là site tài liệu. Các tên module, route và dữ liệu bên dưới là quy ước đề xuất cho shop thực hành, không phải API hoặc mã ứng dụng đã có. Bài này chốt yêu cầu; cấu trúc workspace và cấu hình host/remote thuộc các bài tiếp theo.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Shop mẫu giúp bạn kiểm chứng điều gì](#shop-mẫu-giúp-bạn-kiểm-chứng-điều-gì)
+- [Phạm vi phiên bản đầu](#phạm-vi-phiên-bản-đầu)
+  - [Những tính năng cần có](#những-tính-năng-cần-có)
+  - [Những tính năng chưa làm](#những-tính-năng-chưa-làm)
+- [Ranh giới shell catalog và cart](#ranh-giới-shell-catalog-và-cart)
+  - [Shell ghép ứng dụng](#shell-ghép-ứng-dụng)
+  - [Catalog sở hữu trải nghiệm chọn sản phẩm](#catalog-sở-hữu-trải-nghiệm-chọn-sản-phẩm)
+  - [Cart sở hữu nghiệp vụ giỏ hàng](#cart-sở-hữu-nghiệp-vụ-giỏ-hàng)
+- [Dữ liệu và quy tắc giỏ hàng](#dữ-liệu-và-quy-tắc-giỏ-hàng)
+  - [Bộ dữ liệu minh họa](#bộ-dữ-liệu-minh-họa)
+  - [Quy tắc cần thống nhất](#quy-tắc-cần-thống-nhất)
+- [Luồng thêm sản phẩm vào giỏ](#luồng-thêm-sản-phẩm-vào-giỏ)
+- [Route và vòng đời state](#route-và-vòng-đời-state)
+- [Yêu cầu khi tải chậm hoặc gặp lỗi](#yêu-cầu-khi-tải-chậm-hoặc-gặp-lỗi)
+- [Tiêu chí nghiệm thu](#tiêu-chí-nghiệm-thu)
+- [Các mốc thực hành](#các-mốc-thực-hành)
+- [Chuẩn bị trước khi viết code](#chuẩn-bị-trước-khi-viết-code)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Shop mẫu giúp bạn kiểm chứng điều gì
 
-Bài này sẽ giúp bạn: đặt yêu cầu cho ứng dụng shop với shell, catalog và cart xuyên suốt lộ trình.
+Một demo chỉ render component từ remote có thể chứng minh rằng cấu hình tải module hoạt động. Nó chưa chứng minh rằng các phần có ranh giới tốt: catalog vẫn có thể import reducer nội bộ của cart, hoặc shell phải sửa mỗi lần cart đổi implementation.
 
-[Xem các bài trong nhóm Bắt đầu](/docs/bat-dau).
+Shop này đặt thêm ba câu hỏi:
+
+| Câu hỏi | Bằng chứng cần tìm trong bài thực hành |
+| --- | --- |
+| Có tách được trách nhiệm không? | Catalog yêu cầu thêm sản phẩm mà không biết cart dùng thư viện store nào |
+| Có giữ được trải nghiệm thống nhất không? | Badge ở shell và số lượng trong cart khớp nhau, kể cả khi chuyển trang |
+| Có vận hành từng phần độc lập được không? | Ở lab runtime composition, release catalog tương thích không buộc rebuild shell; lỗi catalog có fallback riêng |
+
+Trong nhóm Bắt đầu, ví dụ dự kiến dùng React và Module Federation để dựng host/remote tối thiểu. Tuy vậy, đề bài không phụ thuộc vào công cụ đó. Bạn có thể dùng cùng yêu cầu để so sánh build-time composition, runtime composition hoặc một frontend thống nhất.
+
+<Callout type="warn" title="Shop nhỏ không tự tạo ra nhu cầu micro-frontend">
+  Với một team nhỏ và một lịch release chung, mình sẽ bắt đầu bằng frontend có module rõ ràng. Shop ở đây được tách để học các trade-off, không phải để kết luận rằng mọi ứng dụng bán hàng đều cần micro-frontend. Deploy độc lập cũng không tự xuất hiện chỉ vì bạn tạo nhiều bundle.
+</Callout>
+
+## Phạm vi phiên bản đầu
+
+### Những tính năng cần có
+
+Người dùng là khách chưa đăng nhập. Luồng chính là xem sản phẩm, thêm vào giỏ, kiểm tra giỏ và thay đổi số lượng.
+
+| Khu vực | Yêu cầu tối thiểu |
+| --- | --- |
+| Shell | Header, liên kết Catalog và Giỏ hàng, badge tổng số lượng, vùng render nội dung và trạng thái tải/lỗi |
+| Catalog | Danh sách sản phẩm có tên, giá, nút thêm vào giỏ; trạng thái pending và thông báo kết quả thao tác |
+| Cart | Danh sách dòng sản phẩm, số lượng từng dòng, tăng/giảm số lượng, xóa dòng, tổng tiền hàng và trạng thái giỏ rỗng |
+| Điều hướng | Chuyển giữa `/catalog` và `/cart` mà không reload toàn bộ trang trong luồng thao tác thông thường |
+| Dữ liệu | Bộ sản phẩm cố định, giỏ hàng ban đầu rỗng; các ca kiểm tra dùng cùng một bộ dữ liệu |
+
+Bạn nên hoàn thành luồng này trước khi thêm tìm kiếm hoặc bộ lọc. Vì luồng nhỏ đã đi qua cả ba phần, nó đủ để phát hiện lỗi giao tiếp và vòng đời state mà không cần thêm nghiệp vụ.
+
+### Những tính năng chưa làm
+
+Phiên bản đầu **không xử lý giao dịch mua hàng thật**. Các phần sau nằm ngoài phạm vi:
+
+- Login, phân quyền, giỏ theo user và đồng bộ giữa nhiều thiết bị.
+- Checkout, thanh toán, tạo đơn hàng và quản lý tồn kho.
+- Khuyến mãi, thuế, phí vận chuyển và nhiều loại tiền tệ.
+- SSR, SEO cho từng sản phẩm và hỗ trợ nhiều framework trong cùng shop.
+- Đồng bộ nhiều tab và persistence qua reload.
+
+Auth, deploy độc lập và giả lập remote lỗi sẽ được thêm ở các lab tương ứng. Tách chúng thành mốc riêng giúp bạn biết một lỗi đến từ boundary ban đầu hay từ tính năng vừa thêm.
+
+## Ranh giới shell catalog và cart
+
+Đây là ba phần của **frontend**, không phải yêu cầu tạo ba backend service. Bạn có thể dùng cùng mock data hoặc cùng backend khi thực hành; frontend boundary và backend boundary là hai quyết định khác nhau.
+
+```text
+Shell: header, navigation, vùng nội dung, fallback
+  ├── Catalog UI: xem sản phẩm, gửi yêu cầu thêm giỏ
+  └── Cart UI: xem giỏ, đổi số lượng, xóa dòng
+```
+
+Sơ đồ thể hiện nơi ghép giao diện. Quyền sở hữu nghiệp vụ được phân công riêng ở dưới; một phần được render bên trong shell không có nghĩa shell sở hữu state của phần đó.
+
+### Shell ghép ứng dụng
+
+Shell chịu trách nhiệm khung trang, điều hướng cấp ứng dụng và chọn phần cần render. Với ví dụ Module Federation, shell thường là **host** — ứng dụng tải module do remote cung cấp. Catalog và cart có thể là các remote; đó là cách tích hợp dự kiến, không phải định nghĩa của ba domain.
+
+Shell có thể khởi tạo hoặc kết nối cart controller để header và catalog cùng dùng một instance. Nhưng shell không tự viết quy tắc cộng số lượng hay tính tổng tiền: wiring thuộc composition layer, còn implementation và contract giỏ hàng thuộc cart.
+
+Header đọc summary của cart để render badge. Nó không giữ một bộ đếm riêng rồi tự cộng mỗi khi người dùng bấm thêm.
+
+### Catalog sở hữu trải nghiệm chọn sản phẩm
+
+Catalog quản lý dữ liệu sản phẩm dùng để hiển thị và local UI state như trạng thái nút đang chờ. Khi người dùng chọn sản phẩm, catalog gửi yêu cầu có định danh sản phẩm và số lượng cho cart.
+
+Catalog không import reducer, selector nội bộ hoặc mutable store của cart. Nếu cart đổi từ Context sang một thư viện store khác mà contract vẫn giữ nguyên, catalog không cần thay đổi theo.
+
+Đối với repo một người làm, bạn vẫn giữ ranh giới này như thể catalog và cart có hai owner khác nhau. Nếu không, việc tách remote dễ chỉ còn là chia thư mục và build config.
+
+### Cart sở hữu nghiệp vụ giỏ hàng
+
+Cart quyết định cách gộp dòng, validate số lượng, tính summary và công bố trạng thái hiện tại. Cart UI là một consumer của nghiệp vụ đó, giống như badge trong shell là consumer chỉ đọc.
+
+Mình dùng tên **cart controller** cho module điều phối state và các thao tác giỏ hàng. Controller không cần nằm trong lifecycle của trang `/cart`: catalog phải thêm được sản phẩm ngay cả khi người dùng chưa từng mở trang giỏ.
+
+| Dữ liệu hoặc trách nhiệm | Owner ở frontend | Bên sử dụng |
+| --- | --- | --- |
+| Route cấp ứng dụng và vùng fallback | Shell | Catalog UI, Cart UI |
+| Danh sách sản phẩm, pending của nút thêm | Catalog | Catalog UI |
+| Các dòng giỏ, quantity và tổng tiền | Cart controller | Cart UI |
+| Summary tổng số lượng | Cart controller | Header của shell |
+| Kết nối các contract và lifecycle cấp ứng dụng | Shell | Các phần được ghép |
+
+Khi bổ sung backend, backend là nguồn chuẩn cho giá, giỏ hàng đã xác nhận và các kiểm tra nghiệp vụ. Cart controller vẫn điều phối ở frontend, nhưng không thay backend quyết định giao dịch hợp lệ.
+
+## Dữ liệu và quy tắc giỏ hàng
+
+### Bộ dữ liệu minh họa
+
+Các sản phẩm và giá sau chỉ dùng cho lab, không phải dữ liệu kinh doanh thật. Mỗi sản phẩm chỉ có một SKU; `sku` là định danh cố định cho mặt hàng có thể thêm vào giỏ.
+
+| SKU | Tên sản phẩm | Đơn giá VND |
+| --- | --- | ---: |
+| `ao-thun-den` | Áo thun đen | 150000 |
+| `tui-vai` | Túi vải | 80000 |
+| `binh-nuoc` | Bình nước | 120000 |
+
+Trong mock, lưu giá bằng số nguyên VND và format khi render, chẳng hạn `150000` được hiển thị thành `150.000 ₫`. Không dùng chuỗi giá đã format để tính toán.
+
+Giỏ hàng tối thiểu lưu `sku` và `quantity` cho mỗi dòng. Cart data layer cần tra được tên và đơn giá từ nguồn mock thông qua một interface dữ liệu rõ ràng, không lấy từ component hoặc store nội bộ của catalog. Bộ fixture có thể dùng chung trong lab; điều đó không có nghĩa hai remote được chia sẻ tùy ý implementation của nhau.
+
+### Quy tắc cần thống nhất
+
+| Quy tắc | Kết quả mong đợi |
+| --- | --- |
+| Giỏ mới | Không có dòng nào, badge bằng `0`, tổng tiền hàng bằng `0` |
+| Thêm SKU chưa có | Tạo một dòng với quantity được yêu cầu |
+| Thêm SKU đã có | Tăng quantity của dòng hiện có, không tạo dòng trùng |
+| Quantity hợp lệ | Số nguyên dương; mock từ chối số lẻ, số âm, `0` và SKU không tồn tại |
+| Giảm quantity | Khi quantity lớn hơn `1`, giảm một đơn vị; tại `1`, nút giảm bị vô hiệu hóa |
+| Xóa sản phẩm | Dùng thao tác xóa riêng để bỏ cả dòng |
+| Badge | Tổng quantity của tất cả các dòng, không phải số SKU khác nhau |
+| Tổng tiền hàng | Tổng của `đơn giá × quantity`; chưa gồm thuế, khuyến mãi hay vận chuyển |
+| Thao tác thất bại | Không báo thành công và không thay đổi giỏ đã xác nhận |
+
+Ví dụ, thêm áo hai lần rồi thêm một túi vải tạo **hai dòng, ba đơn vị sản phẩm**. Badge phải là `3`, còn tổng tiền hàng là `150000 × 2 + 80000 = 380000` VND. Ví dụ này giúp phát hiện ngay lỗi đếm số dòng thay cho số lượng.
+
+Mặc định phiên bản đầu cập nhật giỏ sau khi thao tác được xác nhận, chưa dùng optimistic update. Cách này dễ quan sát và kiểm thử hơn; nếu thêm optimistic update sau đó, cart owner phải điều phối cả cập nhật tạm thời lẫn rollback.
+
+<Callout type="warn" title="Tổng tiền trong mock chỉ phục vụ hiển thị">
+  Dữ liệu ở browser có thể bị sửa. Khi làm checkout thật, backend phải kiểm tra lại giá, tồn kho và quyền truy cập; không nhận tổng tiền do frontend gửi rồi coi đó là giá trị đáng tin cậy.
+</Callout>
+
+## Luồng thêm sản phẩm vào giỏ
+
+Luồng quan trọng nhất bắt đầu ở catalog nhưng kết quả xuất hiện ở cả cart và shell:
+
+```text
+Catalog UI ── addItem({ sku, quantity }) ──► Cart controller
+                                                   │
+                                       xác nhận và cập nhật state
+                                                   │
+                                                   ▼
+                                            Snapshot giỏ hàng
+                                              │          │
+                                              ▼          ▼
+                                           Cart UI   Shell badge
+```
+
+Đây là mô hình giao tiếp, không phải đường tải bundle. Các bước mong đợi là:
+
+1. Người dùng bấm “Thêm vào giỏ”. Catalog đặt nút vào trạng thái pending để ngăn bấm lặp trong lúc thao tác đó đang chờ.
+2. Catalog gọi command `addItem` với `sku` và `quantity: 1`. Cart controller kiểm tra input và gọi data adapter của giỏ.
+3. Mock adapter xác nhận thành công. Cart controller cập nhật state và công bố snapshot hoặc thông báo thay đổi.
+4. Header đọc summary mới; Cart UI đọc giỏ mới nếu đang được render. Catalog kết thúc pending và báo kết quả.
+5. Nếu thao tác bị từ chối, catalog kết thúc pending và hiện lỗi. Giỏ đã xác nhận và badge giữ nguyên.
+
+Command là **yêu cầu thay đổi**, còn thông báo thay đổi là **kết quả đã xảy ra**. Phát một event “thêm sản phẩm” rồi để header và cart tự cộng độc lập sẽ tạo nhiều writer; chỉ cần một bên bỏ lỡ event là giao diện lệch nhau.
+
+Ở mức đề bài, contract cần có ba khả năng:
+
+| Khả năng | Yêu cầu về ý nghĩa |
+| --- | --- |
+| Gửi command thêm giỏ | Trả kết quả thành công hoặc thất bại; thành công nghĩa là state của owner đã cập nhật |
+| Đọc trạng thái hiện tại | Consumer mount muộn vẫn biết giỏ và summary hiện có |
+| Theo dõi thay đổi | Consumer được thông báo và có cách unsubscribe khi unmount |
+
+Chưa cần chọn event bus, global store hay tên package tại đây. Với phiên bản đầu cùng runtime, mình ưu tiên command qua function contract và snapshot chỉ đọc. Các bài [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) và [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) sẽ đi sâu vào thiết kế interface.
+
+## Route và vòng đời state
+
+Chốt route sớm giúp bạn kiểm tra được navigation, thay vì để mỗi remote tự chiếm toàn bộ router.
+
+| Route của shop | Nội dung | Trách nhiệm |
+| --- | --- | --- |
+| `/` | Chuyển đến `/catalog` | Shell |
+| `/catalog` | Danh sách sản phẩm | Shell chọn route, Catalog render nội dung |
+| `/cart` | Giỏ hàng | Shell chọn route, Cart render nội dung |
+| Route không hỗ trợ | Trang không tìm thấy trong khung shop | Shell |
+
+Các route này thuộc ứng dụng shop dự kiến, không phải route `/docs/...` của site tài liệu hiện tại. Khi mở trực tiếp `/cart` hoặc reload route đó, hosting của shop cần phục vụ đúng entry ứng dụng; cấu hình cụ thể thuộc bài routing và triển khai.
+
+Với lab đầu, cart controller sống trong phạm vi một lần khởi động shop trên một tab. Điều hướng giữa catalog và cart không được tạo lại giỏ. Subscription của UI được cleanup khi unmount, nhưng không vì thế mà controller mất dữ liệu.
+
+**Reload toàn bộ trang sẽ reset giỏ của mock in-memory.** Đây là giới hạn có chủ ý, khác với mất giỏ khi navigation. Persistence, nhiều tab và session người dùng cần chính sách riêng; không thêm `localStorage` chỉ để che một lỗi lifecycle.
+
+Một ca kiểm tra bắt buộc là thêm sản phẩm trước khi mở `/cart` lần đầu, sau đó vào giỏ. Nếu chỉ tạo controller khi Cart UI mount, ca này sẽ lộ lỗi ngay.
+
+## Yêu cầu khi tải chậm hoặc gặp lỗi
+
+Shop ghép nhiều phần phải phân biệt lỗi tải module, lỗi render UI và lỗi thao tác dữ liệu. Chúng có thể xuất hiện ở cùng một màn hình nhưng cần phản hồi khác nhau.
+
+| Tình huống giả lập | Người dùng cần thấy | Phần còn lại cần giữ được |
+| --- | --- | --- |
+| Catalog hoặc Cart UI đang tải | Loading trong vùng nội dung, không để trang trắng | Header và navigation vẫn hoạt động |
+| Không tải được module catalog | Fallback nói rõ catalog chưa tải được, có cách thử lại | Shell còn hoạt động; có thể mở cart nếu phần đó sẵn sàng |
+| Cart UI render lỗi sau khi controller đã sẵn sàng | Fallback của vùng cart | Shell không crash; state giỏ đã xác nhận không bị xóa chỉ vì UI lỗi |
+| Cart capability chưa sẵn sàng | Badge hiển thị chưa tải được; nút thêm không báo thành công giả | Catalog vẫn có thể hiển thị sản phẩm |
+| Mock mutation trả lỗi xác định | Thông báo tại thao tác, cho phép thử lại khi lỗi được xử lý | Quantity, badge và tổng tiền đã xác nhận giữ nguyên |
+
+Mình ưu tiên fallback cục bộ thay vì thay cả trang bằng màn hình lỗi. Tuy nhiên, điều này cần thiết kế composition phù hợp: nếu shell bắt buộc tải mọi remote trước khi render header, lỗi một remote vẫn có thể chặn toàn ứng dụng.
+
+<Callout type="warn" title="Chưa biết không phải là rỗng">
+  Badge `0` chỉ đúng khi owner xác nhận giỏ rỗng. Nếu cart chưa tải được, hãy hiện trạng thái không khả dụng thay vì `0`. Khi giả lập timeout ở lab sau, cũng đừng kết luận mutation chưa xảy ra: request có thể đã được xử lý nhưng response bị mất.
+</Callout>
+
+Ở lab lỗi, bạn cần quan sát cả trạng thái UI lẫn log để phân biệt lỗi tải module với lỗi dữ liệu. Các cơ chế Error Boundary, retry tải remote và rollback sẽ được triển khai ở bài riêng; đề bài này chỉ xác định hành vi cần đạt.
+
+## Tiêu chí nghiệm thu
+
+Dùng cùng bộ fixture ở trên để kiểm tra. Với mỗi ca độc lập, reset mock về giỏ rỗng; riêng ca navigation thì giữ runtime hiện tại.
+
+| Ca kiểm tra | Thao tác | Kết quả cần đạt |
+| --- | --- | --- |
+| Khởi động | Mở catalog | Có ba sản phẩm; khi cart sẵn sàng, badge là `0` |
+| Thêm trước khi mở cart | Thêm một áo rồi mới vào `/cart` | Một dòng áo quantity `1`, badge `1`, tổng tiền `150000` |
+| Gộp cùng SKU | Thêm áo hai lần | Một dòng áo quantity `2`, badge `2`, tổng tiền `300000` |
+| Đếm tổng quantity | Thêm áo hai lần và túi một lần | Hai dòng, badge `3`, tổng tiền `380000` |
+| Đổi quantity | Từ ca trên, giảm áo xuống `1` | Badge `2`, tổng tiền `230000`; nút giảm áo bị vô hiệu hóa |
+| Xóa dòng | Xóa túi khỏi ca trên | Chỉ còn áo quantity `1`, badge `1`, tổng tiền `150000` |
+| Giỏ rỗng | Xóa dòng cuối | Hiện empty state, badge `0`, tổng tiền `0` |
+| Giữ state qua navigation | Thêm sản phẩm, chuyển route rồi dùng Back/Forward | Nội dung route đúng; giỏ và badge không reset |
+| Không nhân đôi subscription | Vào/ra cart nhiều lần rồi thêm một sản phẩm | Một thao tác chỉ tăng quantity một lần, không có listener dư sau unmount |
+| Reload theo giới hạn mock | Reload khi giỏ có sản phẩm | Mock in-memory khởi tạo lại giỏ rỗng đúng phạm vi đã công bố |
+| Lỗi command xác định | Cho mock từ chối thêm sản phẩm | Hiện lỗi, hết pending, không tăng badge hay quantity |
+| Remote không tải | Chặn tải catalog ở lab lỗi | Có fallback; shell và phần độc lập còn dùng được |
+
+Ngoài kết quả trên màn hình, review code cần xác nhận catalog không import store nội bộ của cart và shell không tự tính một summary giỏ riêng. UI đúng trong happy path chưa đủ chứng minh boundary đúng.
+
+Ở lab deploy độc lập, thêm một tiêu chí nữa: thay cách trình bày catalog nhưng giữ contract, release catalog mới và xác nhận shell đang chạy dùng được bản mới **mà không rebuild shell**. Tiêu chí này dành cho cấu hình runtime composition; không áp đặt lên mọi cách tích hợp trong lộ trình.
+
+## Các mốc thực hành
+
+Bạn không cần giải quyết hết yêu cầu vận hành ngay ở ví dụ host/remote đầu tiên. Mình chia shop thành các mốc để mỗi bước có một kết quả kiểm chứng được:
+
+| Mốc | Việc cần làm | Dấu hiệu hoàn thành |
+| --- | --- | --- |
+| Host/remote tối thiểu | Shell tải và render một module catalog | Thấy UI từ remote, kiểm tra được request tải module |
+| Shop có nghiệp vụ | Ghép catalog, cart controller và Cart UI qua contract | Các ca giỏ hàng và navigation ở trên đều đúng |
+| Routing và auth | Bổ sung route/session theo phạm vi lab, quyết định reset hoặc chuyển scope giỏ | Không đưa giỏ của session cũ sang session mới ngoài chính sách đã định |
+| Deploy độc lập | Release catalog tương thích, giữ shell đang chạy | Không rebuild shell, luồng thêm giỏ vẫn hoạt động |
+| Giả lập lỗi | Làm remote hoặc request thất bại có kiểm soát | Fallback đúng phạm vi, không báo thành công giả hoặc làm mất state đã xác nhận |
+
+Đừng bắt đầu bằng ba ứng dụng đầy đủ rồi mới nghĩ cách nối chúng. Hãy dựng một lát cắt nhỏ: catalog có một sản phẩm, command thêm giỏ, header đọc summary và cart đọc snapshot. Khi lát cắt đó đúng, mở rộng dữ liệu và thao tác sẽ ít bất ngờ hơn.
+
+## Chuẩn bị trước khi viết code
+
+Trước khi sang bài workspace, bạn nên có một ghi chú thiết kế trả lời được các câu sau:
+
+- [ ] Shell quản lý những route nào, catalog và cart render ở đâu?
+- [ ] Cart controller được tạo khi nào, ai kết nối consumer với cùng instance đó?
+- [ ] Catalog gửi command thế nào và nhận lỗi bằng cách nào?
+- [ ] Header mount muộn đọc summary hiện tại từ đâu?
+- [ ] Mock data adapter cung cấp dữ liệu gì; state reset trong những tình huống nào?
+- [ ] Khi remote không tải được, vùng UI nào có fallback và phần nào còn dùng được?
+- [ ] Những ca nghiệm thu nào thuộc mốc đầu, những ca nào để dành cho lab sau?
+
+Nếu bạn chưa trả lời được ai có quyền thay đổi giỏ, hãy sửa boundary trước khi chọn thư viện state. Bước tiếp theo là tổ chức workspace để từng phần có thể chạy và kiểm tra riêng, trong khi contract vẫn đủ nhỏ để ghép lại.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cấu trúc workspace" href="/docs/bat-dau/workspace" description="Sắp xếp apps, packages và scripts cho shop thực hành." />
+  <Card title="Host và remote đầu tiên" href="/docs/bat-dau/host-remote-dau-tien" description="Dựng lát cắt tải module nhỏ nhất trước khi thêm nghiệp vụ." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Tách owner của giỏ hàng khỏi nơi render UI và badge." />
+  <Card title="Lab shell, catalog và cart" href="/docs/thuc-hanh/shop-shell-catalog-cart" description="Áp dụng đề bài để ghép ba phần và kiểm tra contract." />
+</Cards>

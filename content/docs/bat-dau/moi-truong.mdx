@@ -3,16 +3,356 @@ title: "Chuẩn bị môi trường"
 description: "Chuẩn bị Node.js, package manager, trình duyệt và công cụ debug cho các bài thực hành."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Bạn mở shell được nhưng catalog không hiện: lỗi nằm ở code, remote chưa chạy, hay browser đang tải nhầm port? Khi học micro-frontend, bạn thường chạy nhiều dev server cùng lúc, nên một môi trường chưa thống nhất dễ làm bạn mất thời gian trước cả khi viết dòng tích hợp đầu tiên.
+
+Bài này giúp bạn chuẩn bị toolchain và kiểm tra đường đi **terminal → HTTP server → browser**. Mình chọn Node.js 22 và npm làm mặc định để khớp repository hiện tại; cấu trúc workspace và cấu hình Module Federation thuộc các bài sau.
+
+<Callout type="info" title="Phân biệt site docs và ứng dụng thực hành">
+  Repository này hiện chứa site Next.js + Fumadocs, chưa có source shop với shell, catalog và cart. Chạy `npm run dev` ở gốc repo chỉ mở site tài liệu, không khởi động host/remote. Bài này không yêu cầu cài plugin Federation hay tạo ứng dụng shop.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Bạn cần chuẩn bị những gì](#bạn-cần-chuẩn-bị-những-gì)
+- [Cài và chọn đúng Node.js](#cài-và-chọn-đúng-nodejs)
+  - [Linux và macOS](#linux-và-macos)
+  - [Windows](#windows)
+  - [Kiểm tra trong từng terminal](#kiểm-tra-trong-từng-terminal)
+- [Thống nhất package manager](#thống-nhất-package-manager)
+  - [Dùng npm cho repository hiện tại](#dùng-npm-cho-repository-hiện-tại)
+  - [Kiểm tra kết nối registry](#kiểm-tra-kết-nối-registry)
+- [Chuẩn bị editor và browser](#chuẩn-bị-editor-và-browser)
+  - [Editor và Git](#editor-và-git)
+  - [Các panel DevTools cần dùng](#các-panel-devtools-cần-dùng)
+- [Hiểu port và origin trước khi chạy nhiều app](#hiểu-port-và-origin-trước-khi-chạy-nhiều-app)
+- [Kiểm tra môi trường bằng HTTP server nhỏ](#kiểm-tra-môi-trường-bằng-http-server-nhỏ)
+  - [Khởi động server](#khởi-động-server)
+  - [Kiểm tra từ browser và terminal](#kiểm-tra-từ-browser-và-terminal)
+  - [Thử hai server cùng lúc](#thử-hai-server-cùng-lúc)
+- [Chạy site tài liệu nếu cần](#chạy-site-tài-liệu-nếu-cần)
+- [Xử lý lỗi môi trường thường gặp](#xử-lý-lỗi-môi-trường-thường-gặp)
+- [Checklist trước bài tiếp theo](#checklist-trước-bài-tiếp-theo)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bạn cần chuẩn bị những gì
 
-Bài này sẽ giúp bạn: chuẩn bị Node.js, package manager, trình duyệt và công cụ debug cho các bài thực hành.
+Bạn chưa cần Docker, Kubernetes, backend hay tài khoản cloud để bắt đầu. Trước hết, cần chạy được JavaScript tooling và nhìn được request mà browser gửi; đó là hai nơi bạn sẽ kiểm tra thường xuyên nhất.
 
-[Xem các bài trong nhóm Bắt đầu](/docs/bat-dau).
+| Công cụ | Lựa chọn mặc định | Dùng để làm gì |
+| --- | --- | --- |
+| Node.js | Major 22, bản patch phù hợp trong major này | Chạy package manager, bundler và dev server |
+| Package manager | npm đi kèm bản Node đã chọn | Cài dependencies và chạy scripts |
+| Git | Bản còn được hỗ trợ trên hệ điều hành của bạn | Kiểm tra thay đổi source và lockfile |
+| Terminal | bash/zsh trên Linux, macOS hoặc WSL; PowerShell nếu dùng Windows native | Chạy nhiều process và đọc log riêng từng app |
+| Editor | VS Code hoặc editor có hỗ trợ TypeScript | Đọc lỗi type, imports và cấu hình |
+| Browser | Chrome hoặc Edge bản stable đang được cập nhật | Dùng DevTools để xem network, runtime và storage |
+
+Firefox cũng dùng được. Mình chọn browser Chromium cho hướng dẫn này để tên panel và thao tác dễ đối chiếu; đây không phải yêu cầu của kiến trúc micro-frontend.
+
+Nếu chưa quen ES modules, React hoặc TypeScript, bạn có thể đọc [Kiến thức cần có](/docs/nen-tang/kien-thuc-can-co) song song. Không cần nắm toàn bộ Module Federation để hoàn thành bước chuẩn bị này.
+
+## Cài và chọn đúng Node.js
+
+Repository có `.nvmrc` với giá trị `22`, còn `package.json` khai báo `engines.node` là `>=22`. Hai thứ này không làm cùng một việc: `engines` mô tả yêu cầu của package, còn `.nvmrc` là chỉ dẫn cho công cụ quản lý version. Mở một terminal mới không tự đảm bảo Node đã chuyển sang 22.
+
+Mình khuyên dùng Node 22 khi theo bài này thay vì tự chọn major mới nhất. Nếu workspace thực hành sau này khai báo version khác, hãy theo cấu hình của workspace đó và kiểm tra yêu cầu của bundler/plugin trước khi đổi.
+
+<Callout type="warn" title="Major giống nhau chưa có nghĩa môi trường giống hệt">
+  `.nvmrc` chứa `22` không pin một bản patch cụ thể, cũng không cố định version npm. Khi cần tái lập chính xác giữa máy cá nhân và CI, team nên ghi nhận hoặc pin cả version Node và package manager. Với bài này, hãy kiểm tra version thực tế thay vì suy ra từ tên file.
+</Callout>
+
+### Linux và macOS
+
+Nếu đã có [nvm](https://github.com/nvm-sh/nvm#installing-and-updating), vào thư mục gốc repository rồi chạy:
+
+```bash
+nvm install
+nvm use
+node --version
+npm --version
+```
+
+Không truyền version cho `nvm install` và `nvm use` để nvm đọc `.nvmrc`. Nếu chưa có nvm, cài theo hướng dẫn chính thức, mở lại terminal rồi chạy các lệnh trên. nvm là shell function; dùng `command -v nvm` để kiểm tra nó đã được load, thay vì chỉ tìm một executable bằng `which`.
+
+Kết quả cần đạt: `node --version` bắt đầu bằng `v22.` và `npm --version` in ra một số version. Số patch Node và version npm cụ thể có thể khác giữa các lần cài.
+
+Nếu đã dùng một version manager khác, bạn không cần cài thêm nvm chỉ để theo bài. Điều quan trọng là terminal trong editor và terminal ngoài editor cùng dùng version đã chọn.
+
+### Windows
+
+Chọn một trong hai cách, đừng trộn toolchain trong cùng workspace:
+
+| Cách chạy | Khi nên chọn | Cách chuẩn bị |
+| --- | --- | --- |
+| WSL 2 | Bạn muốn dùng bash và thao tác gần Linux/CI | Cài Git, Node và nvm **bên trong WSL**, rồi dùng các lệnh ở phần Linux |
+| Windows native | Bạn muốn giữ PowerShell và tooling Windows | Cài Node 22 từ nguồn chính thức hoặc dùng một Windows version manager hỗ trợ Node 22 |
+
+Mình ưu tiên WSL nếu bạn mới bắt đầu và muốn copy các lệnh bash trong series. Đặt source trong filesystem Linux của WSL, chẳng hạn `~/projects/`, để giảm vấn đề file watching và I/O qua filesystem Windows. Với VS Code, mở folder qua chế độ WSL để terminal và extensions chạy đúng môi trường.
+
+nvm của `nvm-sh` không chạy trực tiếp trong PowerShell. Nếu dùng **nvm-windows**, đó là dự án riêng: chọn bản Node 22 cụ thể theo hướng dẫn của nó, không giả định các lệnh không có tham số sẽ đọc `.nvmrc` giống nvm trên Linux.
+
+<Callout type="warn" title="Không dùng chung node_modules giữa Windows và WSL">
+  Dependencies có thể chứa binary hoặc optional package theo hệ điều hành. Hãy cài và chạy trong cùng một môi trường; nếu chuyển môi trường, dừng các process rồi cài lại dependencies ở nơi sẽ chạy ứng dụng. Không copy `node_modules` từ Windows vào WSL hoặc ngược lại.
+</Callout>
+
+### Kiểm tra trong từng terminal
+
+Chạy các lệnh sau trong cả terminal ngoài editor lẫn terminal tích hợp:
+
+```bash
+node --version
+npm --version
+git --version
+node -p "process.execPath"
+node -p "process.platform + ' ' + process.arch"
+```
+
+`process.execPath` cho biết binary Node thật sự đang được dùng. Nếu hai terminal trả về hai đường dẫn khác nhau, hãy kiểm tra PATH và cấu hình shell trước khi cài dependencies. Sau khi đổi Node, terminal mới có thể cần chạy lại `nvm use`.
+
+Với WSL, `process.platform` nên là `linux`; với Windows native, giá trị là `win32`. Đây là cách nhanh để phát hiện bạn đang mở nhầm terminal.
+
+## Thống nhất package manager
+
+### Dùng npm cho repository hiện tại
+
+npm là lựa chọn mặc định vì README hiện tại dùng npm và Node thường được phân phối kèm npm. Bạn không cần cài global webpack, Vite, Next.js hay TypeScript: scripts trong project dùng binary từ dependencies của project để tránh lệch version giữa các máy.
+
+Cách cài phụ thuộc vào trạng thái lockfile:
+
+| Trạng thái project | Lệnh phù hợp | Lý do |
+| --- | --- | --- |
+| Chưa có `package-lock.json`, cài lần đầu | `npm install` | Resolve dependencies và tạo lockfile |
+| Đã có lockfile khớp `package.json`, muốn cài lại đúng dependency graph | `npm ci` | Cài theo lockfile và không cập nhật nó |
+| Chủ động thêm hoặc cập nhật dependency | `npm install` hoặc lệnh thêm package cụ thể | Thay đổi manifest/lockfile là một phần công việc |
+
+`npm ci` xóa `node_modules` hiện có trước khi cài, và báo lỗi nếu manifest không khớp lockfile. Dừng dev server trước khi dùng lệnh này. Nếu lệnh báo lệch lockfile, hãy xem diff và xác định thay đổi nào có chủ đích; đừng xóa lockfile để né lỗi.
+
+Nếu chưa có lockfile, lần cài đầu vẫn phụ thuộc vào version mà registry resolve tại thời điểm đó. Sau khi cài và kiểm tra thành công, lưu lockfile vào Git để các máy khác có điểm bắt đầu giống bạn.
+
+<Callout type="warn" title="Một workspace, một package manager">
+  Đừng luân phiên npm, pnpm, Yarn và Bun trong cùng workspace chỉ vì một lệnh cài thất bại. Các manager có cách resolve và bố trí dependencies khác nhau. Nếu project đã có `packageManager` và lockfile của manager khác, hãy theo cấu hình đó; nếu muốn chuyển, chuyển có chủ đích và review thay đổi. Với repo hiện tại, cứ dùng npm.
+</Callout>
+
+### Kiểm tra kết nối registry
+
+Trước khi cài một cây dependencies lớn, kiểm tra registry mà npm đang dùng:
+
+```bash
+npm config get registry
+npm ping
+```
+
+Registry công khai mặc định là `https://registry.npmjs.org/`, nhưng máy trong công ty có thể dùng registry nội bộ. `npm ping` thành công cho biết npm liên lạc được với registry đã cấu hình; nó **không** chứng minh mọi package hoặc tarball đều tải được, hay bạn có quyền truy cập private package.
+
+Nếu gặp lỗi proxy, certificate hoặc timeout, sửa kết nối theo chính sách mạng của bạn. Đừng đặt `strict-ssl=false` hoặc tắt xác minh TLS để làm lệnh cài chạy qua. Với CA nội bộ, dùng cấu hình certificate được team cung cấp.
+
+## Chuẩn bị editor và browser
+
+### Editor và Git
+
+Mở đúng folder gốc có `package.json` trong editor. Nếu dùng VS Code, chọn TypeScript version của workspace khi project đã cài TypeScript; như vậy lỗi type trong editor sẽ gần với kết quả typecheck của project hơn.
+
+Có thể cài ESLint hoặc formatter extension nếu project có cấu hình tương ứng. Extension không thay thế scripts kiểm tra, và repo hiện tại không khai báo script lint — đừng xem việc không có gạch đỏ trong editor là bằng chứng build sẽ thành công.
+
+Trước và sau khi chạy lệnh cài, dùng:
+
+```bash
+git status --short
+```
+
+Bạn nên nhìn thấy những thay đổi giải thích được, ví dụ lockfile mới sau lần cài đầu. Không commit `node_modules`, cache build hay file sinh tự động của tooling. Riêng site docs này, `.source/` được sinh bởi Fumadocs; không cần viết tay hoặc commit nó.
+
+### Các panel DevTools cần dùng
+
+Mở DevTools bằng menu browser hoặc `F12` trên hệ thống có hỗ trợ phím này. Chuẩn bị các panel sau:
+
+| Panel | Bạn sẽ tìm gì khi debug micro-frontend |
+| --- | --- |
+| Console | Exception runtime, lỗi import, thông báo CORS hoặc CSP |
+| Network | URL thật của remote entry/chunks, status, response và request initiator |
+| Sources | Breakpoint và source map để truy ngược lỗi về source |
+| Application | localStorage, cookies, cache và service worker trên các origin liên quan |
+
+Trong **Network**, bật **Preserve log** nếu muốn giữ request qua navigation/reload. Bật **Disable cache** khi cần kiểm tra lượt tải mới; tùy chọn này có tác dụng khi DevTools đang mở. Chọn **No throttling** và bỏ chế độ offline cho lần kiểm tra đầu tiên.
+
+Để nhìn remote assets sau này, dùng **All** hoặc bộ lọc **JS**, không chỉ **Fetch/XHR**. Một remote entry được tải bằng script tag có thể không xuất hiện trong bộ lọc Fetch/XHR.
+
+Một response `200` chưa đủ: mở **Response** để xác nhận server trả JavaScript chứ không phải HTML fallback. Request của browser mới là bằng chứng ứng dụng đang tải từ đâu, không phải URL bạn nghĩ mình đã cấu hình.
+
+React Developer Tools hữu ích khi các bài thực hành React đã chạy. Đây là công cụ bổ sung; bạn vẫn cần Console và Network để tìm lỗi remote chưa tải được.
+
+## Hiểu port và origin trước khi chạy nhiều app
+
+Origin được xác định bởi **scheme, hostname và port**. Đổi một trong ba phần là đổi origin, dù tất cả server đều chạy trên cùng máy.
+
+| URL | Quan hệ với `http://localhost:4300` |
+| --- | --- |
+| `http://localhost:4300/shop` | Cùng origin; path không làm đổi origin |
+| `http://localhost:4301` | Khác origin vì khác port |
+| `http://127.0.0.1:4300` | Khác origin vì khác hostname |
+| `https://localhost:4300` | Khác origin vì khác scheme |
+
+Như hai cửa hàng ở hai địa chỉ, các app có thể gần nhau nhưng browser vẫn phân biệt nơi lấy tài nguyên. Phép so sánh chỉ giúp nhớ địa chỉ: quy tắc cụ thể vẫn do browser áp dụng theo loại request và security policy, không phải cứ khác origin là mọi request đều bị cấm.
+
+Khác origin có thể ảnh hưởng tới CORS, storage và cách gửi credentials. Riêng cookies không tách đơn giản theo port như origin; còn bị chi phối bởi domain, path, `Secure` và `SameSite`. Khi mới chạy local, giữ hostname và scheme nhất quán sẽ dễ kiểm tra hơn.
+
+<Callout type="warn" title="Không sửa CORS bằng cách tắt bảo mật browser">
+  Mở URL remote trực tiếp được không có nghĩa host có quyền dùng mọi tài nguyên của remote. `fetch`, ESM và script cổ điển có quy tắc tải khác nhau. Khi tích hợp, kiểm tra Console, request headers và cấu hình server cho loại request thực tế; đừng khởi động browser với chế độ vô hiệu hóa web security.
+</Callout>
+
+Port của các app nên được thống nhất trong workspace, thay vì để server tự đổi port khi bị chiếm. Nếu host vẫn trỏ đến port cũ, remote có thể chạy bình thường ở một địa chỉ mà host không hề tải.
+
+Trong repo hiện tại, site docs mặc định dùng port `3000` nếu còn trống. Các port `4300` và `4301` bên dưới chỉ dành cho phép thử của bài này, không phải cấu hình đã có cho shell/catalog/cart.
+
+## Kiểm tra môi trường bằng HTTP server nhỏ
+
+Phép thử này dùng module có sẵn của Node, không tạo file và không cài package. Nó giúp tách lỗi môi trường khỏi lỗi bundler hoặc Federation.
+
+### Khởi động server
+
+Ở một terminal đã chọn Node 22, chạy:
+
+```bash
+node -e "const http = require('node:http'); http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('environment-ok'); }).listen(4300, '127.0.0.1', () => console.log('Ready: http://127.0.0.1:4300'));"
+```
+
+Lệnh dùng được trong bash/zsh và PowerShell. Kết quả mong đợi:
+
+```text
+Ready: http://127.0.0.1:4300
+```
+
+Terminal tiếp tục bận vì server vẫn chạy; đó là trạng thái đúng. Server bind vào loopback `127.0.0.1`, không mở ra toàn bộ mạng LAN. Nếu không xuất hiện dòng `Ready`, đọc lỗi terminal trước khi thử trên browser.
+
+### Kiểm tra từ browser và terminal
+
+Mở `http://127.0.0.1:4300` trên browser. Bạn nên thấy nội dung:
+
+```text
+environment-ok
+```
+
+Mở Network trước rồi reload trang. Request document cần có status `200`, body `environment-ok` và `Content-Type` là `text/plain; charset=utf-8`. Console không nên có lỗi tải document; extension của browser có thể phát log riêng, nên hãy xem URL và nguồn của thông báo.
+
+Ở **terminal thứ hai**, chạy:
+
+```bash
+node -e "fetch('http://127.0.0.1:4300').then(async (res) => { console.log('status:', res.status); console.log('body:', await res.text()); }).catch((error) => { console.error(error); process.exitCode = 1; });"
+```
+
+Kết quả mong đợi:
+
+```text
+status: 200
+body: environment-ok
+```
+
+Nếu terminal nhận được response nhưng browser không mở được trang, kiểm tra proxy, extension và việc browser có đang dùng đúng địa chỉ không. Với WSL hoặc container, `127.0.0.1` thuộc môi trường chạy process; phép thử từ terminal xác nhận server bên trong môi trường đó, còn truy cập từ browser bên ngoài phụ thuộc vào forwarding/network của môi trường.
+
+### Thử hai server cùng lúc
+
+Giữ server đầu chạy. Ở terminal thứ hai, khởi động một server khác:
+
+```bash
+node -e "const http = require('node:http'); http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('second-server-ok'); }).listen(4301, '127.0.0.1', () => console.log('Ready: http://127.0.0.1:4301'));"
+```
+
+Mở cả hai URL và kiểm tra mỗi trang trả đúng nội dung riêng. Bạn vừa xác nhận máy có thể chạy hai process trên hai port và quan sát chúng từ browser:
+
+```text
+Browser ──► 127.0.0.1:4300 ──► environment-ok
+        └─► 127.0.0.1:4301 ──► second-server-ok
+```
+
+Đây chưa phải host/remote: không server nào tải module từ server còn lại, và chưa có phép kiểm tra CORS hay shared dependencies. Bước này chỉ xác nhận phần môi trường nền tảng.
+
+Nhấn `Ctrl+C` trong **từng terminal server** để dừng cả hai process và trả lại port trước khi chuyển bài.
+
+## Chạy site tài liệu nếu cần
+
+Bạn có thể bỏ qua phần này nếu đang đọc site đã deploy. Nếu muốn xem docs ngay trên máy, vào gốc repository và cài dependencies bằng lệnh phù hợp với trạng thái lockfile ở phần trên, sau đó chạy:
+
+```bash
+npm run check:docs
+npm run dev
+```
+
+Lệnh cài thông thường sẽ chạy `postinstall` để sinh metadata Fumadocs. Đừng tắt lifecycle scripts nếu chưa hiểu tác động tới bước sinh này.
+
+Mở `http://localhost:3000/docs` nếu terminal báo port `3000`; nếu server chọn port khác, dùng địa chỉ thực tế trong log. Trang này có đường dẫn `/docs/bat-dau/moi-truong`.
+
+Để kiểm tra source và bản build, dừng dev server nếu không còn cần rồi chạy lần lượt:
+
+```bash
+npm run typecheck
+npm run build
+npm run check:export
+```
+
+`check:docs` chỉ kiểm tra cấu trúc tài liệu, không thay thế MDX compilation hoặc build. Site dùng static export: bản build nằm trong `out/`, không chạy bằng `next start`. Chi tiết preview và deploy nằm trong README của repo, không cần hoàn thành để chuyển sang bài toán shop.
+
+## Xử lý lỗi môi trường thường gặp
+
+Đọc lỗi đầu tiên và xác định nó xuất hiện ở terminal cài đặt, terminal server hay browser. Ba nơi đó kiểm tra ba đoạn khác nhau của đường đi; sửa dependencies sẽ không giải quyết được một URL đang trỏ nhầm port.
+
+| Triệu chứng | Kiểm tra trước | Hướng xử lý |
+| --- | --- | --- |
+| `node` hoặc `npm` không được tìm thấy | PATH, terminal hiện tại và `command -v nvm` nếu dùng nvm | Mở lại terminal, load version manager và chọn Node 22 |
+| Editor dùng Node khác terminal ngoài | `node -p "process.execPath"` ở cả hai nơi | Kiểm tra shell tích hợp, khởi động lại terminal/editor nếu cần |
+| `EBADENGINE` hoặc cảnh báo engine | Version Node thực tế và `engines` của package bị báo lỗi | Chọn version đáp ứng cả project lẫn tooling; không dùng `--force` để che cảnh báo |
+| `npm ci` báo không có hoặc không khớp lockfile | `package.json`, lockfile và Git diff | Cài lần đầu bằng `npm install` nếu chưa có lockfile; nếu lệch, đồng bộ thay đổi có chủ đích |
+| `EACCES` khi cài package | Quyền sở hữu folder và vị trí Node/npm | Dùng workspace thuộc user của bạn, sửa quyền theo môi trường; không dùng `sudo npm install` làm mặc định |
+| Registry timeout, `EAI_AGAIN` hoặc lỗi certificate | `npm config get registry`, DNS, proxy và CA | Sửa mạng/certificate theo chính sách; giữ xác minh TLS bật |
+| `EADDRINUSE` | Port bị chiếm và các terminal còn chạy | Dừng process bạn nhận diện được, hoặc chọn port thử khác rồi cập nhật URL tương ứng |
+| Browser báo connection refused hoặc Node `fetch` thất bại | Dòng `Ready`, process server, hostname và port | Chạy server trước, sửa URL; với WSL/container kiểm tra forwarding |
+| Server chạy ở port khác dự kiến | Log startup và cấu hình port | Dọn port hoặc cập nhật các địa chỉ liên quan; không chỉ sửa URL mở trên browser |
+| Sửa source nhưng không thấy thay đổi | Network cache, file watching và service worker | Reload với Disable cache khi debug; kiểm tra đúng folder/process, chỉ xóa storage của origin thử nghiệm nếu cần |
+
+Nếu cần tìm process đang giữ port `4300`, dùng công cụ phù hợp với hệ điều hành:
+
+```bash title="Linux"
+ss -ltnp 'sport = :4300'
+```
+
+```bash title="macOS"
+lsof -nP -iTCP:4300 -sTCP:LISTEN
+```
+
+```powershell title="Windows PowerShell"
+Get-NetTCPConnection -LocalPort 4300 -State Listen |
+  Select-Object LocalAddress, LocalPort, OwningProcess
+```
+
+Một số môi trường không cài sẵn các công cụ này, và thông tin process có thể bị giới hạn bởi quyền. Ưu tiên quay lại terminal đã khởi động server và nhấn `Ctrl+C`. Đừng kill hàng loạt process Node vì có thể làm dừng project khác hoặc tooling của editor.
+
+## Checklist trước bài tiếp theo
+
+Bạn sẵn sàng bắt đầu dựng ví dụ khi kiểm tra được những điểm sau:
+
+- [ ] Terminal ngoài editor và terminal tích hợp cùng dùng Node 22; biết binary Node nằm ở đâu.
+- [ ] `npm --version` và `git --version` chạy được; đã chọn npm cho repo hiện tại.
+- [ ] Truy cập được registry cần dùng, hoặc đã biết giới hạn mạng cần giải quyết trước khi cài package.
+- [ ] Biết khi nào dùng `npm install`, khi nào dùng `npm ci`, và không trộn lockfile của nhiều manager.
+- [ ] Mở được Console, Network, Sources và Application trong browser.
+- [ ] Hai HTTP server thử nghiệm trả đúng nội dung; đã dừng cả hai bằng `Ctrl+C`.
+- [ ] Phân biệt được site docs với shop thực hành; không kỳ vọng `npm run dev` của repo hiện tại chạy shell/catalog/cart.
+
+Nếu một mục chưa đạt, hãy sửa ngay ở phép thử nhỏ. Khi thêm bundler và Federation, lỗi sẽ có nhiều lớp hơn và khó xác định nguyên nhân hơn.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Bài toán shop mẫu" href="/docs/bat-dau/bai-toan-shop" description="Xác định vai trò shell, catalog và cart trước khi tổ chức source." />
+  <Card title="Cấu trúc workspace" href="/docs/bat-dau/workspace" description="Thống nhất apps, packages, scripts và port cho phần thực hành." />
+  <Card title="Chạy và kiểm tra local" href="/docs/bat-dau/chay-local" description="Kiểm tra luồng tải module khi đã có host và remote thật." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Node.js Downloads](https://nodejs.org/en/download) — chọn bản Node theo yêu cầu project, không nhất thiết là major mới nhất.
+- [nvm: cài đặt và sử dụng .nvmrc](https://github.com/nvm-sh/nvm) — version manager cho shell POSIX, bao gồm WSL.
+- [nvm-windows](https://github.com/coreybutler/nvm-windows) — dự án riêng cho Windows native.
+- [npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci) — điều kiện lockfile và hành vi cài sạch.
+- [Chrome DevTools Network reference](https://developer.chrome.com/docs/devtools/network/reference) — request filters, cache, headers và response.
+- [MDN: Same-origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy) — cách browser xác định origin và giới hạn truy cập chéo origin.

@@ -3,16 +3,358 @@ title: "Chạy và kiểm tra local"
 description: "Chạy host/remote, kiểm tra luồng tải module và nhận biết kết quả đúng."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Shell mở được ở port `3000`, catalog mở được ở port `3001`, nhưng như vậy đã chứng minh host tải được remote chưa? Chưa: đó có thể chỉ là hai trang standalone. Bạn cần thấy browser tải container entry và module của catalog **khi đang ở trang shell**, rồi xác nhận UI đó thay đổi theo code remote.
+
+Bài này hướng dẫn chạy từng process, kiểm tra luồng tải bằng Network và thử ngắt remote có kiểm soát. Mình dùng npm workspaces và webpack 5, theo cấu trúc của bài [Cấu trúc workspace](/docs/bat-dau/workspace); chưa cần cart hay backend để kiểm tra lát cắt đầu tiên.
+
+<Callout type="info" title="Đọc đúng phạm vi trước khi chạy lệnh">
+  Repository `micro-frontend-learn` hiện là site Next.js + Fumadocs, không chứa ứng dụng shop chạy được. Các lệnh `dev:shell` và `dev:catalog` bên dưới dành cho thư mục thực hành `shop-workspace` đã được bạn tạo riêng.
+
+  Cấu hình ở cuối bài workspace chỉ tạo trang standalone, chưa tạo `remoteEntry.js`. Bài [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien) hiện còn là placeholder; nếu bạn chưa thêm React và Module Federation vào workspace, hãy hoàn thành phần đó trước. Trang này kiểm tra một tích hợp đã có, không thay thế hướng dẫn dựng host/remote.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Kết quả cần chứng minh](#kết-quả-cần-chứng-minh)
+- [Kiểm tra trước khi khởi động](#kiểm-tra-trước-khi-khởi-động)
+  - [Đúng thư mục và dependencies](#đúng-thư-mục-và-dependencies)
+  - [Đúng cấu hình tích hợp](#đúng-cấu-hình-tích-hợp)
+  - [Đúng port và hostname](#đúng-port-và-hostname)
+- [Chạy remote rồi chạy host](#chạy-remote-rồi-chạy-host)
+  - [Khởi động catalog](#khởi-động-catalog)
+  - [Kiểm tra container entry qua HTTP](#kiểm-tra-container-entry-qua-http)
+  - [Khởi động shell](#khởi-động-shell)
+- [Theo dõi một lượt tải mới](#theo-dõi-một-lượt-tải-mới)
+  - [Chuẩn bị DevTools](#chuẩn-bị-devtools)
+  - [Đọc đường đi của module](#đọc-đường-đi-của-module)
+  - [Nhận biết kết quả đúng](#nhận-biết-kết-quả-đúng)
+- [Kiểm tra thay đổi chỉ ở remote](#kiểm-tra-thay-đổi-chỉ-ở-remote)
+- [Thử khi remote không khả dụng](#thử-khi-remote-không-khả-dụng)
+  - [Ngắt remote trước một lượt tải mới](#ngắt-remote-trước-một-lượt-tải-mới)
+  - [Khôi phục và chạy lại](#khôi-phục-và-chạy-lại)
+- [Khoanh vùng lỗi thường gặp](#khoanh-vùng-lỗi-thường-gặp)
+- [Phân biệt chạy dev và kiểm tra build](#phân-biệt-chạy-dev-và-kiểm-tra-build)
+- [Checklist hoàn thành và dừng server](#checklist-hoàn-thành-và-dừng-server)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Kết quả cần chứng minh
 
-Bài này sẽ giúp bạn: chạy host/remote, kiểm tra luồng tải module và nhận biết kết quả đúng.
+Ở mốc này, shell là host, catalog là remote. Bạn chỉ cần một public module catalog render được bên trong shell; chưa cần hoàn thành luồng thêm giỏ của [bài toán shop](/docs/bat-dau/bai-toan-shop).
 
-[Xem các bài trong nhóm Bắt đầu](/docs/bat-dau).
+| Phép kiểm tra | Điều nó chứng minh | Điều nó chưa chứng minh |
+| --- | --- | --- |
+| Trang catalog standalone mở được | Entry standalone và code dùng ở trang đó chạy được | Shell đã consume public module của catalog |
+| `remoteEntry.js` trả JavaScript | Server đang phục vụ container entry tại URL đã kiểm tra | Container khởi tạo được, module tồn tại hoặc React render thành công |
+| Shell hiển thị UI catalog, có request remote tương ứng | Đường tải và render module hoạt động trong lần chạy này | Contracts tương thích với mọi phiên bản, hoặc fallback đã đúng |
+| Chỉ đổi remote, reload shell thấy nội dung mới | Tích hợp local nhận code từ remote thay vì cần sửa source shell | Pipeline production cho phép deploy độc lập an toàn |
+| Tắt remote trước lượt tải mới | Bạn quan sát được hành vi khi remote không khả dụng | Mọi dạng timeout, lỗi render và lỗi dữ liệu đã được xử lý |
+
+Mình kiểm tra theo thứ tự này vì mỗi phép thử loại bớt một nhóm nguyên nhân. Nếu container entry còn trả `404`, chưa cần tìm lỗi React hooks.
+
+## Kiểm tra trước khi khởi động
+
+### Đúng thư mục và dependencies
+
+Mở terminal tại root **`shop-workspace`**, nơi có `package.json` khai báo `workspaces`, rồi chạy:
+
+```bash
+node --version
+npm --version
+node -p "require('./package.json').name"
+npm pkg get name scripts --workspace=@shop/shell --workspace=@shop/catalog
+```
+
+Tên package root theo bài workspace là `shop-workspace`; hai workspace cần có tên `@shop/shell` và `@shop/catalog`, mỗi app có script `dev` và `build`. Nếu thấy `micro-frontend-learn`, bạn đang ở repo tài liệu.
+
+Dùng Node 22 như bài [Chuẩn bị môi trường](/docs/bat-dau/moi-truong). Trên checkout mới có lockfile khớp manifest, cài dependencies từ root bằng:
+
+```bash
+npm ci
+```
+
+Không cần cài lại mỗi lần mở server. Nếu chưa có lockfile thì dùng `npm install` cho lần cài đầu; nếu đã có nhưng không khớp, review thay đổi manifest/lockfile thay vì xóa lockfile để né lỗi. Dừng các server trước khi chạy `npm ci` vì lệnh này thay thế `node_modules`.
+
+### Đúng cấu hình tích hợp
+
+Để có URL cụ thể khi kiểm tra, bài này dùng **quy ước tích hợp mẫu** sau. Các tên Federation này không tự được tạo bởi npm workspaces; nếu ví dụ của bạn dùng tên khác, đối chiếu theo cấu hình thật.
+
+| Phần cấu hình | Giá trị mẫu | Nơi đối chiếu |
+| --- | --- | --- |
+| Tên container catalog | `catalog` | `name` của `ModuleFederationPlugin` phía remote |
+| File container entry | `remoteEntry.js` | `filename` của plugin phía remote |
+| Public module key | `./CatalogPage` | `exposes` phía remote |
+| Alias mà shell consume | `catalog` | Key trong `remotes` phía host |
+| URL host dùng | `http://localhost:3001/remoteEntry.js` | Giá trị trong `remotes` phía host |
+| Module request | `catalog/CatalogPage` | Import phía host |
+
+Các đoạn dưới đây chỉ là **phần cấu hình cần đối chiếu**, không phải file webpack hoàn chỉnh để ghi đè config đang có:
+
+```js title="Phía catalog — các option của ModuleFederationPlugin"
+{
+  name: 'catalog',
+  filename: 'remoteEntry.js',
+  exposes: {
+    './CatalogPage': './src/CatalogPage.jsx',
+  },
+}
+```
+
+```js title="Phía shell — option remotes của ModuleFederationPlugin"
+{
+  remotes: {
+    catalog: 'catalog@http://localhost:3001/remoteEntry.js',
+  },
+}
+```
+
+Host consume module bằng request `catalog/CatalogPage`, thường qua `import('catalog/CatalogPage')` hoặc cơ chế lazy loading tương ứng. Nếu dùng `React.lazy`, hãy kiểm tra module có `default export` phù hợp hoặc host có bước chuyển đổi export; entry tải được không sửa được lỗi sai hình dạng module.
+
+Đường dẫn `./src/CatalogPage.jsx` ở trên là ví dụ. File thật phải tồn tại và loader phải xử lý được JSX. Giữ cấu hình React sharing và async bootstrap của ví dụ đã dựng; không dùng hai đoạn option này như một cấu hình tích hợp đầy đủ.
+
+<Callout type="warn" title="Standalone chưa phải remote">
+  Nếu bạn mới hoàn thành bài workspace, catalog có thể báo compile thành công nhưng URL `/remoteEntry.js` vẫn trả `404`. Đó là phần tích hợp chưa được thêm, không phải lỗi cần chữa bằng CORS, copy file thủ công hoặc đổi port.
+</Callout>
+
+### Đúng port và hostname
+
+| Process | URL trong lab | Có cần cho lát cắt đầu tiên không? |
+| --- | --- | --- |
+| Shell | `http://localhost:3000` | Có |
+| Catalog | `http://localhost:3001` | Có |
+| Cart | `http://localhost:3002` | Chỉ khi shell đã consume module hoặc capability của cart |
+
+Site docs cũng mặc định dùng port `3000`. Dừng server docs trước khi chạy shell, hoặc chạy docs ở port khác từ repo tài liệu:
+
+```bash title="Chỉ chạy tại root micro-frontend-learn, nếu cần đọc docs song song"
+npm run dev -- --port 3100
+```
+
+Giữ `localhost` nhất quán trong URL browser, `devServer.host` và URL remote. Không tự đổi sang `127.0.0.1` ở một nơi rồi cho rằng mọi cấu hình vẫn tương đương: hostname là một phần của origin, và server có thể bind vào địa chỉ khác.
+
+Nếu đang dùng WSL hoặc container, URL remote phải truy cập được **từ browser**, không chỉ từ terminal bên trong môi trường đó. Dùng đúng cơ chế forwarding của môi trường trước khi mở thêm interface ra mạng LAN.
+
+## Chạy remote rồi chạy host
+
+Dùng hai terminal, cả hai đều ở root `shop-workspace`. Mình khởi động remote trước để lần tải đầu của host không thất bại vì catalog còn đang compile; đây là thứ tự thao tác tiện cho lab, không phải một cơ chế orchestration bắt buộc của Federation.
+
+### Khởi động catalog
+
+```bash title="Terminal 1 — giữ process này chạy"
+npm run dev:catalog
+```
+
+Lệnh root gọi `npm run dev --workspace=@shop/catalog`. Nếu root chưa có alias nhưng app đã có script `dev`, bạn có thể dùng lệnh workspace đó trực tiếp.
+
+Chờ webpack báo compile thành công và kiểm tra log server dùng port `3001`. Khi có compile error, sửa lỗi đầu tiên trước; một process còn sống không đảm bảo nó đang phục vụ bản code mới hợp lệ.
+
+Mở `http://localhost:3001` nếu remote có trang standalone. Trang này giúp kiểm tra UI riêng, nhưng host không tải trang HTML đó để nhúng vào shell: host sẽ dùng container entry.
+
+### Kiểm tra container entry qua HTTP
+
+Từ **terminal thứ hai**, chạy phép thử dùng `fetch` có sẵn của Node:
+
+```bash
+node -e "fetch('http://localhost:3001/remoteEntry.js').then(async (res) => { console.log('status:', res.status); console.log('content-type:', res.headers.get('content-type')); console.log('body-start:', (await res.text()).slice(0, 160)); if (!res.ok) process.exitCode = 1; }).catch((error) => { console.error(error); process.exitCode = 1; });"
+```
+
+Bạn cần thấy status `200`, `Content-Type` phù hợp với JavaScript và phần đầu body là code, không phải `<!DOCTYPE html>` hoặc markup của trang lỗi. MIME JavaScript và nội dung cụ thể có thể khác theo version tooling; không đối chiếu từng ký tự của output.
+
+Phép thử này chỉ đọc response, **không thực thi JavaScript và không khởi tạo container**. Node cũng không áp dụng CORS như browser, nên HTTP thành công ở đây chưa chứng minh host có thể tải mọi tài nguyên của remote.
+
+Nếu status `200` nhưng body là HTML, kiểm tra URL và fallback của server. Có server trả `index.html` cho path không tồn tại; `200` trong trường hợp đó vẫn là tải nhầm tài nguyên.
+
+### Khởi động shell
+
+```bash title="Terminal 2 — giữ process này chạy"
+npm run dev:shell
+```
+
+Chờ compile thành công, rồi mở `http://localhost:3000`. Nếu shell đã consume cart, mở terminal thứ ba tại root và chạy `npm run dev:cart`; đừng để một dependency cart đang tắt làm nhiễu phép kiểm tra catalog.
+
+<Callout type="warn" title="Không nối các dev server bằng lệnh chạy tuần tự">
+  `npm run dev:catalog && npm run dev:shell` không chạy hai server cùng lúc: server đầu giữ process nên lệnh thứ hai chưa được gọi. Tương tự, `npm run dev --workspaces` không phải công cụ chạy server song song. Dùng từng terminal riêng ở bước này.
+</Callout>
+
+## Theo dõi một lượt tải mới
+
+### Chuẩn bị DevTools
+
+Trên **tab shell**, mở DevTools trước khi reload:
+
+1. Chọn **Network**, dùng bộ lọc **All** hoặc **JS**, không chỉ Fetch/XHR.
+2. Bật **Disable cache** khi DevTools đang mở; chọn **No throttling**, bỏ chế độ offline.
+3. Xóa log cũ để dễ đọc lượt tải mới. Chỉ bật **Preserve log** khi cần giữ request qua navigation.
+4. Mở **Console** để xem exception hoặc lỗi security đi kèm.
+5. Reload shell; nếu catalog tải theo route hoặc thao tác, đi tới đúng vùng kích hoạt import đó.
+
+Nếu lab có service worker, HTTP cache bị tắt chưa đủ: kiểm tra service worker và Cache Storage trong Application, hoặc dùng profile sạch để có baseline. Không xóa toàn bộ storage mọi origin như một bước debug mặc định.
+
+### Đọc đường đi của module
+
+Đây là sơ đồ tối giản cho webpack Federation dùng script container, không phải thứ tự cứng của mọi request:
+
+```text
+Browser ở trang shell
+  ├─► localhost:3000  → HTML và JavaScript của host
+  └─► localhost:3001  → remoteEntry.js
+                        └─► chunks cần cho module catalog
+                             └─► UI catalog render trong shell
+```
+
+Host tải container entry, khởi tạo sharing, lấy public module và thực thi module để render. Một số chunk có thể được tải song song hoặc dùng lại; số request còn phụ thuộc code splitting và cách cấu hình shared dependencies.
+
+Tìm `remoteEntry.js`, rồi mở chi tiết request:
+
+| Trường cần xem | Câu hỏi cần trả lời |
+| --- | --- |
+| Request URL | Có thật sự trỏ đến `localhost:3001/remoteEntry.js` không? |
+| Status | Response thành công, tải từ cache hay thất bại? |
+| Headers và Response | Server trả JavaScript hay HTML fallback? |
+| Initiator | Request được khởi tạo từ runtime nào trên trang shell? |
+| Các request JavaScript tiếp theo | Chunk của catalog có trỏ đúng base URL không? |
+| Console | Sau khi tải entry, có lỗi container, shared module, export hoặc render không? |
+
+Với cấu hình trực tiếp của lab, chunk riêng của catalog nên được lấy từ server catalog. Nếu entry tải từ `3001` nhưng chunk riêng lại gọi `3000` rồi `404`, kiểm tra `output.publicPath` phía remote. `publicPath: 'auto'` cho phép webpack suy ra base URL từ môi trường tải script; nó không thay thế URL container mà host khai báo.
+
+Shared dependencies có thể được cung cấp bởi host hoặc remote, nên **không yêu cầu mọi file liên quan đến React đều đến từ port `3001`**. Nếu dùng proxy để phục vụ remote qua origin host, URL hiển thị cũng có thể khác; hãy đối chiếu với kiến trúc thật thay vì áp cứng bảng port.
+
+### Nhận biết kết quả đúng
+
+Một lượt kiểm tra thành công cần cả UI và bằng chứng tải module:
+
+- Khung shell và UI catalog cùng xuất hiện trên tab `localhost:3000`.
+- Trong Network của tab đó, có request tới container entry đúng URL khi module được tải.
+- Các chunk cần thiết tải được; response JavaScript không bị thay bằng HTML.
+- Console không có lỗi tích hợp chưa xử lý như `ScriptExternalLoadError`, `ChunkLoadError` hoặc lỗi render React.
+- Source shell không import implementation qua đường dẫn như `../../catalog/src/...` để vô tình bundle catalog vào host.
+
+Nếu không có request entry, kiểm tra bạn đã kích hoạt lazy import chưa, có đang quan sát nhầm tab catalog không, hoặc module có được tải từ lượt trước không. Không kết luận “Network thiếu request nên Federation hỏng” trước khi xác nhận điều kiện tải.
+
+## Kiểm tra thay đổi chỉ ở remote
+
+Bạn đã thấy module tải được. Bây giờ cần loại trừ trường hợp shell đang render một bản catalog hard-code hoặc bundle sẵn.
+
+1. Trong module catalog được expose, đổi một đoạn text dễ nhận ra, chẳng hạn thêm `Catalog local v2` vào heading.
+2. Chờ **terminal catalog** báo compile thành công. Giữ nguyên source và cấu hình shell.
+3. Reload tab shell với DevTools mở và Disable cache bật; kích hoạt lại route hoặc thao tác tải catalog nếu cần.
+4. Xác nhận heading mới xuất hiện và request vẫn đi tới remote đúng URL.
+5. Hoàn tác text thử nghiệm và chờ remote compile lại trước các phép thử tiếp theo.
+
+Mình dùng reload làm baseline vì đây là phép thử remote loading, không phải bài kiểm tra HMR. Không giả định sửa remote sẽ luôn hot-update vào host hoặc giữ nguyên state React: điều đó phụ thuộc cấu hình HMR, React Refresh và integration.
+
+Nếu sửa `webpack.config.cjs`, dừng rồi khởi động lại dev server của app bị sửa. Nếu sửa URL trong `remotes` của shell, host cũng cần nhận cấu hình mới; reload browser không tự cập nhật một config chưa được webpack đọc lại.
+
+Phép thử này cho thấy shell nhận code remote trong local mà bạn không cần sửa source shell. Nó chưa phải kiểm chứng deploy độc lập: bước đó cần artifact, hosting, cache policy và consumer đã phát hành.
+
+## Thử khi remote không khả dụng
+
+### Ngắt remote trước một lượt tải mới
+
+Lưu source trước khi thử. Giữ shell chạy, rồi nhấn `Ctrl+C` ở terminal catalog để dừng remote.
+
+Nếu catalog vẫn còn trên màn hình, đó chưa phải bằng chứng host tự phục hồi. Module đã tải và thực thi có thể còn trong memory; server tắt không tự gỡ component khỏi trang.
+
+Để tạo ca kiểm tra rõ ràng:
+
+1. Xác nhận catalog đã dừng và không còn process khác phục vụ port `3001`.
+2. Giữ Disable cache bật, reload shell để có runtime mới.
+3. Nếu catalog lazy-load, kích hoạt đúng route hoặc thao tác tải module.
+4. Ghi lại request entry/chunk thất bại, lỗi Console và trạng thái UI.
+
+Disable cache không xóa module đã thực thi khỏi runtime hiện tại; **reload** là bước quan trọng trong phép thử này. Nếu vẫn không có request thất bại, kiểm tra service worker, cache, URL remote thực tế hoặc việc import chưa được kích hoạt.
+
+| Mức triển khai hiện tại | Kết quả có thể quan sát | Cách đánh giá |
+| --- | --- | --- |
+| Ví dụ tối thiểu chưa xử lý lỗi | Import reject, overlay dev, vùng trống hoặc cả trang không render | Đã tái hiện lỗi tải; chưa đạt yêu cầu phục hồi của shop |
+| Host có loading và fallback cục bộ đúng phạm vi | Catalog báo không tải được; shell và phần độc lập vẫn dùng được | Đạt hành vi mong đợi cho ca lỗi tải này |
+| Host phải tải mọi remote trước khi render shell | Một remote lỗi chặn cả khung ứng dụng | Cần xem lại vị trí bootstrap/composition nếu muốn cô lập lỗi |
+
+<Callout type="warn" title="Loading không thay thế error handling">
+  `Suspense` xử lý trạng thái chờ của lazy component, không thay cho Error Boundary khi import reject hoặc render throw. Error Boundary cũng không tự xử lý mọi lỗi callback bất đồng bộ hay thao tác dữ liệu. Đánh giá đúng phạm vi fallback mà host đã triển khai, không chỉ kiểm tra có chữ “Loading”.
+</Callout>
+
+Không cần tắt bảo mật browser hay sửa CORS để mô phỏng ca này. Một remote đã tắt phải tạo lỗi kết nối hoặc tải tài nguyên; đó là đầu vào mong đợi của bài kiểm tra.
+
+### Khôi phục và chạy lại
+
+Ở terminal catalog, chạy lại:
+
+```bash
+npm run dev:catalog
+```
+
+Chờ compile thành công, kiểm tra entry trả JavaScript rồi reload shell và tải lại catalog. UI cần trở về trạng thái hoạt động bình thường.
+
+Nếu host đã có nút retry, hãy kiểm tra riêng cơ chế đó. Bấm lại nút không đảm bảo thực hiện một import mới: loader có thể giữ Promise đã reject, và `React.lazy` giữ kết quả của loader cho lazy component đó. Bài này dùng full reload để tạo lượt chạy mới, không tuyên bố retry trong cùng runtime đã được giải quyết.
+
+## Khoanh vùng lỗi thường gặp
+
+Đọc từ lớp ngoài vào trong: process → HTTP entry → chunks → container/module → render. Ghi URL request thất bại đầu tiên và lỗi Console liên quan; đừng cài lại toàn bộ dependencies khi vấn đề chỉ là host trỏ nhầm port.
+
+| Dấu hiệu | Kiểm tra trước | Hướng xử lý |
+| --- | --- | --- |
+| `Missing script: dev:shell` hoặc npm không tìm workspace | Tên package root, scripts và `workspaces` | Vào đúng `shop-workspace`; kiểm tra alias root và script app |
+| `EADDRINUSE` | Process đang dùng port; site docs có còn chạy không | Dừng process đã nhận diện, giữ bảng port và URL remote nhất quán |
+| Entry `404` nhưng catalog standalone mở được | Plugin đã có `filename` và `exposes` chưa; URL có đúng path không | Hoàn thành Federation config, không copy file giả vào server |
+| Entry `200` nhưng Response là HTML | URL, history fallback hoặc proxy | Sửa route phục vụ asset; không coi status `200` là đủ |
+| `ScriptExternalLoadError` | URL entry, status/body và tên container trước dấu `@` | Xác nhận tải được script và container xuất hiện đúng tên |
+| Entry tải được nhưng `ChunkLoadError` | URL của chunk lỗi, `publicPath`, stale entry/chunk | Sửa base URL hoặc artifact/cache không khớp; xem request cụ thể |
+| `Module "./CatalogPage" does not exist in container` | Key `exposes` và module request của host | Khớp key, chữ hoa/thường và alias; không nhầm với tên npm package |
+| `Shared module is not available for eager consumption` | Entry có dùng shared dependency trước async boundary không | Kiểm tra bootstrap như `import('./bootstrap')`; không bật `eager` hàng loạt để che lỗi |
+| `Invalid hook call` | Quy tắc hooks, version và cách resolve/share React của host/remote | Khoanh vùng React runtime; không kết luận mọi lỗi hooks đều do duplicate React |
+| Console báo CORS hoặc CSP | Loại request, headers và policy bị báo chặn | Cấu hình policy cho tài nguyên thật; không tắt web security hoặc mở wildcard bừa bãi |
+| Remote đã sửa nhưng UI cũ | Compile log, đúng module expose, URL và cache/runtime | Chờ compile thành công rồi reload; kiểm tra service worker nếu có |
+| Navigation được nhưng reload deep link `404` | Server host có phục vụ entry ứng dụng cho route đó không | Xử lý SPA fallback của host; không sửa `exposes` để chữa routing |
+
+CORS và CSP là hai lớp khác nhau. Lab dùng script container cổ điển không có cùng quy tắc tải như ESM, `fetch` manifest hay API; hãy dùng thông báo browser để xác định lớp đang chặn thay vì mặc định mọi lỗi cross-origin là CORS.
+
+## Phân biệt chạy dev và kiểm tra build
+
+`webpack-dev-server` thường phục vụ assets từ memory. Việc mở được shell/catalog không chứng minh `dist` trên disk đã được sinh hoặc artifact production sẽ chạy đúng.
+
+Từ root `shop-workspace`, bạn có thể kiểm tra build riêng:
+
+```bash
+npm run build --workspace=@shop/catalog
+npm run build --workspace=@shop/shell
+```
+
+Kiểm tra catalog có container entry theo `filename` đã cấu hình và các chunks được build vào `apps/catalog/dist`; shell có HTML và assets riêng trong `apps/shell/dist`. Tên chunk có thể chứa hash, nên không dùng tên file dev để suy ra tên file production.
+
+Build thành công chỉ kiểm tra bước tạo artifact. Muốn smoke test bản build, phục vụ **đúng thư mục output của từng app** bằng static server, giữ URL/port khớp với `remotes` của host và kiểm tra lại Network. Dừng dev server ở các port ấy trước để tránh nhìn nhầm output trong memory.
+
+Đừng chỉ mở `dist/index.html` bằng `file://`, hoặc tiếp tục để remote dev chạy rồi gọi đó là kiểm thử toàn bộ production artifacts. Host có URL remote khai báo tĩnh vẫn tải URL đã được đóng vào build; build host không tự dò nơi bạn đang phục vụ catalog.
+
+## Checklist hoàn thành và dừng server
+
+- [ ] Các lệnh chạy ở `shop-workspace`, không phải repo tài liệu.
+- [ ] Shell và catalog compile thành công trên port đã quy ước.
+- [ ] Container entry trả JavaScript, không phải HTML fallback.
+- [ ] Tab shell tải đúng entry và các chunk cần thiết khi consume module.
+- [ ] UI catalog xuất hiện trong shell, không có lỗi tích hợp chưa xử lý.
+- [ ] Chỉ sửa module remote rồi reload shell đã thấy thay đổi.
+- [ ] Tắt remote trước một lượt tải mới đã tạo lỗi quan sát được.
+- [ ] Đã ghi nhận fallback còn thiếu nếu ví dụ chưa xử lý lỗi, không nhầm nó với trạng thái hoàn thành shop.
+- [ ] Khởi động lại remote và reload shell đã khôi phục UI.
+
+Nhấn `Ctrl+C` trong **từng terminal server** khi kết thúc; dừng shell không tự dừng catalog hoặc cart. Nếu đổi cấu hình để thử nghiệm, hoàn tác thay đổi rồi kiểm tra `git diff` trong workspace thực hành trước khi commit.
+
+Khi báo lỗi cho người khác, gửi một bộ bằng chứng nhỏ: app và commit đang chạy, version Node, thao tác tái hiện, URL/status/body của request lỗi, lỗi Console và log compile liên quan. Không gửi token, cookie hoặc dữ liệu nhạy cảm từ Network.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cơ chế Module Federation" href="/docs/module-federation/co-che" description="Hiểu container, quá trình lấy module và shared dependencies." />
+  <Card title="Exposes và remotes" href="/docs/module-federation/exposes-remotes" description="Đối chiếu alias, container name và public module key." />
+  <Card title="Remote không tải được" href="/docs/troubleshooting/remote-khong-tai" description="Đi sâu vào lỗi entry, chunk và cấu hình URL." />
+  <Card title="Lab shell, catalog và cart" href="/docs/thuc-hanh/shop-shell-catalog-cart" description="Mở rộng lát cắt đã kiểm tra sang luồng giỏ hàng." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack Module Federation](https://webpack.js.org/concepts/module-federation/) — remote loading, async boundary và lỗi tích hợp thường gặp.
+- [ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/) — cấu hình `name`, `filename`, `exposes`, `remotes` và `shared`.
+- [webpack output](https://webpack.js.org/configuration/output/#outputpublicpath) — base URL tải asset qua `publicPath`.
+- [webpack dev server](https://webpack.js.org/configuration/dev-server/) — phục vụ assets, HMR và cấu hình server.
+- [React lazy](https://react.dev/reference/react/lazy) — loading, cache của loader và việc chuyển lỗi tới Error Boundary.

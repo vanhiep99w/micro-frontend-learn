@@ -1,18 +1,669 @@
 ---
 title: "Host và remote đầu tiên"
-description: "Dựng ví dụ React và Module Federation tối thiểu trước khi thêm tính năng."
+description: "Thêm React và Module Federation vào workspace: shell tải CatalogPage từ catalog, chạy standalone và kiểm chứng tải module ở runtime."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+import { File, Folder, Files } from 'fumadocs-ui/components/files';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Bạn đã mở được shell và catalog ở hai port riêng. Bước tiếp theo là để shell hiển thị UI của catalog mà không import source catalog vào build của mình. Khi làm được điều đó, bạn mới có một đường tải remote để quan sát, thay vì chỉ có hai frontend đặt cạnh nhau.
+
+Bài này dựng lát cắt nhỏ nhất: **shell tải một React component do catalog expose qua Module Federation của webpack 5**. Catalog vẫn chạy standalone để bạn kiểm tra UI mà không phụ thuộc shell.
+
+<Callout type="info" title="Tiếp nối workspace thực hành">
+  Bạn cần hoàn thành [Cấu trúc workspace](/docs/bat-dau/workspace): Node.js 22, npm workspaces, webpack 5 và các script `dev:shell`, `dev:catalog`, `dev:cart`, `build`.
+
+  Tất cả đường dẫn bên dưới thuộc thư mục `shop-workspace` đã tạo ở bài đó, **không phải repo Next.js + Fumadocs đang chứa tài liệu này**. Các lệnh npm chạy từ root `shop-workspace`. Chỉ sửa shell và catalog; cart giữ nguyên, chưa kết nối vào shell.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Kết quả cần đạt](#kết-quả-cần-đạt)
+- [Đường tải module và các tên cần phân biệt](#đường-tải-module-và-các-tên-cần-phân-biệt)
+- [Cài React và JSX tooling](#cài-react-và-jsx-tooling)
+- [Tạo remote catalog](#tạo-remote-catalog)
+  - [Viết component công khai](#viết-component-công-khai)
+  - [Tạo entry standalone với async boundary](#tạo-entry-standalone-với-async-boundary)
+  - [Cấu hình webpack cho catalog](#cấu-hình-webpack-cho-catalog)
+- [Tạo host shell](#tạo-host-shell)
+  - [Khai báo URL remote và shared dependencies](#khai-báo-url-remote-và-shared-dependencies)
+  - [Tạo entry React cho shell](#tạo-entry-react-cho-shell)
+  - [Render remote với loading và fallback](#render-remote-với-loading-và-fallback)
+- [Vì sao cần các cấu hình này](#vì-sao-cần-các-cấu-hình-này)
+  - [Async boundary không phải eager loading](#async-boundary-không-phải-eager-loading)
+  - [Shared React không phải shared state](#shared-react-không-phải-shared-state)
+  - [Asset của remote phải tải từ remote](#asset-của-remote-phải-tải-từ-remote)
+- [Chạy và kiểm chứng](#chạy-và-kiểm-chứng)
+  - [Mở hai dev server](#mở-hai-dev-server)
+  - [Quan sát Network](#quan-sát-network)
+  - [Đổi catalog mà không rebuild shell](#đổi-catalog-mà-không-rebuild-shell)
+  - [Build từng app độc lập](#build-từng-app-độc-lập)
+- [Những lỗi thường gặp](#những-lỗi-thường-gặp)
+- [Checklist hoàn thành](#checklist-hoàn-thành)
+- [Bước tiếp theo](#bước-tiếp-theo)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Kết quả cần đạt
 
-Bài này sẽ giúp bạn: dựng ví dụ React và Module Federation tối thiểu trước khi thêm tính năng.
+Sau bài này, hai trang có vai trò khác nhau:
 
-[Xem các bài trong nhóm Bắt đầu](/docs/bat-dau).
+| URL | Nội dung | Ý nghĩa |
+| --- | --- | --- |
+| `http://localhost:3000` | Header `Shop shell`, bên dưới là `Catalog` với ba sản phẩm | Shell consume component từ một build khác |
+| `http://localhost:3001` | Heading `Catalog standalone`, bên dưới là cùng component catalog | Remote tự kiểm tra UI mà không cần host |
+
+Bài chưa thêm routing, nút thêm giỏ, cart controller, API, auth hay CSS tooling. Vì mục tiêu là kiểm chứng đường tải module, mình dùng JavaScript và JSX trước; public types và kiểm tra tương thích sẽ được bàn ở các bài Module Federation.
+
+Phần code mới trong hai app có cấu trúc như sau. Giữ `package.json` và scripts từ bài workspace; lệnh cài đặt sẽ bổ sung dependency vào đúng manifest.
+
+<Files>
+  <Folder name="shop-workspace" defaultOpen>
+    <Folder name="apps" defaultOpen>
+      <Folder name="shell" defaultOpen>
+        <Folder name="src" defaultOpen>
+          <File name="index.js" />
+          <File name="bootstrap.jsx" />
+          <File name="App.jsx" />
+        </Folder>
+        <File name="package.json" />
+        <File name="webpack.config.cjs" />
+      </Folder>
+      <Folder name="catalog" defaultOpen>
+        <Folder name="src" defaultOpen>
+          <File name="index.js" />
+          <File name="bootstrap.jsx" />
+          <File name="CatalogPage.jsx" />
+        </Folder>
+        <File name="package.json" />
+        <File name="webpack.config.cjs" />
+      </Folder>
+      <Folder name="cart (giữ nguyên)" />
+    </Folder>
+    <File name="package.json" />
+    <File name="package-lock.json" />
+  </Folder>
+</Files>
+
+## Đường tải module và các tên cần phân biệt
+
+Host là bên consume module; remote là bên expose module. Trong ví dụ này, shell chỉ consume, catalog chỉ expose. Một build có thể làm cả hai, nhưng chưa cần dùng khả năng đó ở bước đầu.
+
+```text
+Browser mở shell :3000
+  │
+  └─ Shell render CatalogPage bằng React.lazy
+       │
+       ├─ tải :3001/remoteEntry.js
+       ├─ webpack khởi tạo share scope và lấy module ./CatalogPage
+       └─ tải chunk cần thiết từ :3001 → render trong React tree của shell
+```
+
+Đây không phải iframe. Browser không mở trang HTML của catalog rồi nhúng vào shell; nó tải JavaScript của remote và chạy component trong cùng trang, cùng React tree. Vì vậy, remote cũng dùng chung môi trường DOM và quyền thực thi JavaScript của trang host, không có isolation như một iframe khác origin.
+
+Trước khi viết config, chốt các tên sau:
+
+| Giá trị | Nằm ở đâu | Công dụng |
+| --- | --- | --- |
+| `@shop/catalog` | `apps/catalog/package.json` | Tên package để npm chọn workspace |
+| `shop_catalog` | `name` của plugin phía catalog | Tên container, cũng là global trong kiểu remote `script` của bài này |
+| `catalog` | Key trong `remotes` của shell | Alias dùng trong request import của host |
+| `./CatalogPage` | Key trong `exposes` của catalog | Public module key mà container cung cấp |
+| `catalog/CatalogPage` | Code của shell | Request ghép alias với public module |
+| `remoteEntry.js` | `filename` của plugin phía catalog | Container entry để webpack truy cập module đã expose |
+| `_shop_shell`, `_shop_catalog` | `output.uniqueName` của mỗi build | Phân biệt webpack runtime và chunk loading của từng build |
+
+Hai tên `catalog` và `shop_catalog` cố ý khác nhau. Trong chuỗi `shop_catalog@http://localhost:3001/remoteEntry.js`, phần trước `@` phải khớp container phía remote; key `catalog` là tên host tự chọn để import.
+
+`remoteEntry.js` là điểm vào container, không nhất thiết chứa toàn bộ implementation của catalog. Sau khi tải entry, webpack còn có thể tải các chunk chứa component và dependency. Đừng chỉ kiểm tra entry trả HTTP `200` rồi kết luận remote đã dùng được.
+
+## Cài React và JSX tooling
+
+Dừng dev server shell/catalog nếu đang chạy, rồi cài từ root `shop-workspace`:
+
+```bash
+npm install --save-exact react@19 react-dom@19 --workspace=@shop/shell --workspace=@shop/catalog
+npm install --save-dev --save-exact @babel/core@7 @babel/preset-react@7 babel-loader@9 --workspace=@shop/shell --workspace=@shop/catalog
+```
+
+Lệnh đầu chọn major React 19 và ghi version chính xác được resolve vào manifest của hai app. Giữ React và React DOM cùng version trong lab; nếu workspace đã có React, kiểm tra lại thay vì để hai app dùng version khác nhau ngoài ý muốn.
+
+```bash
+npm ls react react-dom --workspace=@shop/shell --workspace=@shop/catalog
+```
+
+Lệnh thứ hai bổ sung JSX transform. `ModuleFederationPlugin` đã có trong webpack 5, nên không cài thêm package Federation. `@babel/preset-react` xử lý JSX; bài không cần `@babel/preset-env` vì chỉ nhắm đến browser hiện đại dùng cho lab.
+
+Các config bên dưới khai báo Babel options trực tiếp trong loader, không cần `.babelrc`. Mình đặt `runtime: 'classic'` rõ ràng: JSX được chuyển thành `React.createElement`, nên mỗi file có JSX đều import `React`. Cách này giữ ví dụ focused vào các request React đã khai báo shared, chưa phát sinh `react/jsx-runtime` từ automatic runtime.
+
+<Callout type="warn" title="Không sao chép config shared mà bỏ qua JSX runtime">
+  Nếu chuyển sang `runtime: 'automatic'`, kiểm tra thêm các request `react/jsx-runtime` và `react/jsx-dev-runtime` theo chế độ transform thực tế. Cấu hình `shared.react` không tự bao phủ mọi subpath của package React.
+</Callout>
+
+Commit manifest và `package-lock.json` sau khi kiểm tra. Trên máy khác, dùng `npm ci` từ root với lockfile đó để cài lại đúng bộ dependency.
+
+## Tạo remote catalog
+
+<Steps>
+<Step>
+
+### Viết component công khai
+
+Tạo file dưới đây. Dữ liệu dùng đúng ba sản phẩm minh họa trong [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop), nhưng chưa có thao tác giỏ hàng.
+
+```jsx title="shop-workspace/apps/catalog/src/CatalogPage.jsx"
+import React from 'react';
+
+const products = [
+  { sku: 'ao-thun-den', name: 'Áo thun đen', price: 150000 },
+  { sku: 'tui-vai', name: 'Túi vải', price: 80000 },
+  { sku: 'binh-nuoc', name: 'Bình nước', price: 120000 },
+];
+
+const priceFormatter = new Intl.NumberFormat('vi-VN', {
+  style: 'currency',
+  currency: 'VND',
+});
+
+export default function CatalogPage() {
+  return (
+    <section aria-labelledby="catalog-title">
+      <h2 id="catalog-title">Catalog</h2>
+      <p>Component này đến từ remote catalog.</p>
+      <ul>
+        {products.map((product) => (
+          <li key={product.sku}>
+            {product.name} — {priceFormatter.format(product.price)}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+Public contract ở bước này rất nhỏ: module `./CatalogPage` có **default export là một React component không yêu cầu props**. Host không biết vị trí file thật hay cách catalog tổ chức dữ liệu bên trong.
+
+Không gọi `createRoot` trong module được expose. Host đã có React root và sẽ render component đó. Việc mount DOM để chạy standalone nằm trong entry riêng ở bước kế tiếp.
+
+</Step>
+<Step>
+
+### Tạo entry standalone với async boundary
+
+**Thay toàn bộ** `apps/catalog/src/index.js` từ bài workspace bằng:
+
+```js title="shop-workspace/apps/catalog/src/index.js"
+import('./bootstrap').catch((error) => {
+  console.error('Không khởi động được catalog standalone.', error);
+  document.body.textContent = 'Catalog standalone không khởi động được.';
+});
+```
+
+Tạo `bootstrap.jsx`:
+
+```jsx title="shop-workspace/apps/catalog/src/bootstrap.jsx"
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import CatalogPage from './CatalogPage';
+
+const container = document.createElement('div');
+container.id = 'root';
+document.body.appendChild(container);
+
+createRoot(container).render(
+  <main>
+    <h1>Catalog standalone</h1>
+    <CatalogPage />
+  </main>,
+);
+```
+
+`index.js` không import React đồng bộ. `import('./bootstrap')` tạo một async boundary để webpack chuẩn bị shared dependencies trước khi chạy code dùng React.
+
+Standalone import component local là đúng: entry này thuộc chính build catalog. Shell sẽ dùng request remote, không copy cách import local ấy sang host.
+
+</Step>
+<Step>
+
+### Cấu hình webpack cho catalog
+
+**Thay toàn bộ** `apps/catalog/webpack.config.cjs` bằng cấu hình sau. Giữ scripts npm và port `3001` đã khai báo ở bài workspace.
+
+```js title="shop-workspace/apps/catalog/webpack.config.cjs"
+const path = require('node:path');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+const { ModuleFederationPlugin } = require('webpack').container;
+const { dependencies } = require('./package.json');
+
+module.exports = {
+  context: __dirname,
+  entry: './src/index.js',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: '[name].[contenthash].js',
+    chunkFilename: '[name].[contenthash].js',
+    publicPath: 'auto',
+    uniqueName: '_shop_catalog',
+    clean: true,
+  },
+  resolve: {
+    extensions: ['.jsx', '.js', '.json'],
+  },
+  module: {
+    rules: [
+      {
+        test: /\.jsx?$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader',
+          options: {
+            presets: [
+              ['@babel/preset-react', { runtime: 'classic' }],
+            ],
+          },
+        },
+      },
+    ],
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shop_catalog',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './CatalogPage': './src/CatalogPage.jsx',
+      },
+      shared: {
+        react: {
+          singleton: true,
+          requiredVersion: dependencies.react,
+          strictVersion: true,
+        },
+        'react-dom': {
+          singleton: true,
+          requiredVersion: dependencies['react-dom'],
+          strictVersion: true,
+        },
+        'react-dom/client': {
+          singleton: true,
+          packageName: 'react-dom',
+          requiredVersion: dependencies['react-dom'],
+          strictVersion: true,
+        },
+      },
+    }),
+    new HtmlWebpackPlugin({
+      title: 'Shop catalog standalone',
+    }),
+  ],
+  devServer: {
+    host: 'localhost',
+    static: false,
+  },
+};
+```
+
+Ở đây, `exposes` là public boundary: bạn có thể chuyển file component vào thư mục khác và chỉ sửa value trong config. Nếu key `./CatalogPage` và default export vẫn tương thích, host không cần biết đường dẫn mới.
+
+Remote có cả entry standalone và container entry. Khi shell tải container, nó không chạy `bootstrap.jsx` của standalone và không tạo thêm DOM root cho catalog.
+
+</Step>
+</Steps>
+
+## Tạo host shell
+
+<Steps>
+<Step>
+
+### Khai báo URL remote và shared dependencies
+
+**Thay toàn bộ** `apps/shell/webpack.config.cjs` bằng:
+
+```js title="shop-workspace/apps/shell/webpack.config.cjs"
+const path = require('node:path');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+const { ModuleFederationPlugin } = require('webpack').container;
+const { dependencies } = require('./package.json');
+
+module.exports = {
+  context: __dirname,
+  entry: './src/index.js',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: '[name].[contenthash].js',
+    chunkFilename: '[name].[contenthash].js',
+    publicPath: 'auto',
+    uniqueName: '_shop_shell',
+    clean: true,
+  },
+  resolve: {
+    extensions: ['.jsx', '.js', '.json'],
+  },
+  module: {
+    rules: [
+      {
+        test: /\.jsx?$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader',
+          options: {
+            presets: [
+              ['@babel/preset-react', { runtime: 'classic' }],
+            ],
+          },
+        },
+      },
+    ],
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shop_shell',
+      remotes: {
+        catalog: 'shop_catalog@http://localhost:3001/remoteEntry.js',
+      },
+      shared: {
+        react: {
+          singleton: true,
+          requiredVersion: dependencies.react,
+          strictVersion: true,
+        },
+        'react-dom': {
+          singleton: true,
+          requiredVersion: dependencies['react-dom'],
+          strictVersion: true,
+        },
+        'react-dom/client': {
+          singleton: true,
+          packageName: 'react-dom',
+          requiredVersion: dependencies['react-dom'],
+          strictVersion: true,
+        },
+      },
+    }),
+    new HtmlWebpackPlugin({
+      title: 'Shop shell',
+    }),
+  ],
+  devServer: {
+    host: 'localhost',
+    static: false,
+  },
+};
+```
+
+Không thêm `@shop/catalog` vào dependencies của shell. Webpack nhận diện request bắt đầu bằng alias `catalog` trong `remotes` và sinh runtime loader, thay vì tìm một npm package hoặc đọc source catalog.
+
+Cũng không thêm script tag `remoteEntry.js` bằng tay vào HTML. Với remote khai báo tĩnh như trên, webpack tự tải script khi cần module.
+
+<Callout type="info" title="Tĩnh ở config, runtime ở cách tải">
+  URL catalog đã nằm trong config lúc build shell, nhưng implementation của `CatalogPage` vẫn được tải ở runtime. Đổi URL này cần rebuild shell với cấu hình mới; cập nhật catalog tương thích tại cùng URL thì không cần rebuild shell. Chọn URL sau khi shell đã build là chủ đề [Dynamic remotes](/docs/module-federation/dynamic-remotes).
+</Callout>
+
+</Step>
+<Step>
+
+### Tạo entry React cho shell
+
+**Thay toàn bộ** `apps/shell/src/index.js` bằng:
+
+```js title="shop-workspace/apps/shell/src/index.js"
+import('./bootstrap').catch((error) => {
+  console.error('Không khởi động được shell.', error);
+  document.body.textContent = 'Shell không khởi động được. Kiểm tra Console.';
+});
+```
+
+Tạo file bootstrap:
+
+```jsx title="shop-workspace/apps/shell/src/bootstrap.jsx"
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+
+const container = document.createElement('div');
+container.id = 'root';
+document.body.appendChild(container);
+
+createRoot(container).render(<App />);
+```
+
+`HtmlWebpackPlugin` đang sinh HTML mặc định, chưa có sẵn `<div id="root">`. Vì vậy bootstrap tạo container trước khi gọi `createRoot`. Nếu bạn dùng HTML template riêng, chỉ giữ một container và một lần mount, không vừa tạo vừa mount lại root có sẵn.
+
+</Step>
+<Step>
+
+### Render remote với loading và fallback
+
+Tạo `App.jsx`:
+
+```jsx title="shop-workspace/apps/shell/src/App.jsx"
+import React, { Component, lazy, Suspense } from 'react';
+
+const CatalogPage = lazy(() => import('catalog/CatalogPage'));
+
+class CatalogBoundary extends Component {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Catalog không tải hoặc render được.', error, info);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <section role="alert">
+          <h2>Catalog chưa khả dụng</h2>
+          <p>Kiểm tra remote ở port 3001, rồi tải lại trang.</p>
+          <button type="button" onClick={() => window.location.reload()}>
+            Tải lại trang
+          </button>
+        </section>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+export default function App() {
+  return (
+    <>
+      <header>
+        <h1>Shop shell</h1>
+        <p>Header này thuộc host; danh sách sản phẩm thuộc remote.</p>
+      </header>
+      <main>
+        <CatalogBoundary>
+          <Suspense fallback={<p role="status">Đang tải catalog…</p>}>
+            <CatalogPage />
+          </Suspense>
+        </CatalogBoundary>
+      </main>
+    </>
+  );
+}
+```
+
+`React.lazy` yêu cầu Promise resolve thành module có `default` là component. Đó là lý do catalog export default, thay vì để host đoán shape của module. Nếu chuyển sang named export sau này, phải sửa adapter hoặc giữ một default export tương thích.
+
+`Suspense` hiển thị trạng thái chờ khi module chưa sẵn sàng. Nó **không xử lý lỗi tải**; khi Promise của lazy bị reject, Error Boundary chuyển vùng catalog sang fallback. Boundary cũng bắt lỗi render trong cây con, nhưng không bắt mọi lỗi của event handler hoặc tác vụ async tùy ý.
+
+Mình để header ngoài boundary để lỗi catalog không thay toàn bộ shell bằng màn hình lỗi. Nút fallback ở đây reload cả trang, không phải cơ chế retry remote tại chỗ. Reload tạo một runtime mới; reset boundary đơn thuần không làm `React.lazy` quên Promise đã reject.
+
+</Step>
+</Steps>
+
+## Vì sao cần các cấu hình này
+
+### Async boundary không phải eager loading
+
+Có hai điểm async trong ví dụ, với hai mục đích khác nhau:
+
+| Điểm async | Mục đích |
+| --- | --- |
+| `import('./bootstrap')` trong entry của mỗi app | Cho webpack chuẩn bị shared dependencies trước khi evaluate code khởi động React |
+| `lazy(() => import('catalog/CatalogPage'))` trong shell | Tải public module khi UI cần render và phối hợp với `Suspense` |
+
+Nếu đưa `import React` và `createRoot` trở lại `index.js`, bạn có thể gặp `Shared module is not available for eager consumption`. Giữ entry nhỏ và bootstrap async là lựa chọn mặc định ở bài này.
+
+Không bật `eager: true` cho mọi dependency để làm lỗi biến mất. `eager` có thể đưa provided/fallback modules vào initial chunk, thay đổi đường tải và tăng lượng code tải ban đầu. Nó cần một quyết định về bootstrap và hiệu năng, không phải nút sửa lỗi chung.
+
+### Shared React không phải shared state
+
+Vì host render component của remote trong cùng React tree, các build phải thống nhất runtime React. `singleton: true` yêu cầu dùng một version cho shared key trong share scope tương ứng. `requiredVersion` lấy từ dependency của mỗi app; `strictVersion: true` giúp lab báo lỗi thay vì im lặng tiếp tục khi version được chọn không đáp ứng yêu cầu.
+
+Lab ghi dependency bằng `--save-exact`, nên yêu cầu ở đây chặt: hai app phải dùng cùng version. Đó là cách dễ kiểm soát ở bước đầu, không phải chính sách nâng cấp mặc định cho mọi hệ thống production.
+
+`react-dom/client` được khai báo riêng vì bootstrap import đúng subpath đó. `packageName: 'react-dom'` chỉ rõ package dùng để xác định version. Chia sẻ root key `react-dom` không tự chia sẻ toàn bộ subpath của React DOM.
+
+<Callout type="warn" title="Singleton có phạm vi, không phải cam kết toàn trang">
+  Cấu hình này không ngăn mọi bản React khác xuất hiện nếu một build không tham gia sharing, dùng share scope khác hoặc bundle một đường import khác. npm hoist dependency cũng không thay cho runtime sharing của webpack. Khi gặp lỗi Hooks, cần kiểm tra cả config lẫn module thực tế đã tải.
+</Callout>
+
+Sharing thư viện không tạo cart store chung, không đồng bộ state và không cho phép catalog truy cập implementation của cart. Những ranh giới nghiệp vụ đó vẫn cần contract riêng.
+
+### Asset của remote phải tải từ remote
+
+`publicPath: 'auto'` cho webpack suy ra base URL để tải chunk. Khi container catalog được tải từ `http://localhost:3001/remoteEntry.js`, runtime của catalog phải tải chunk của nó từ server catalog, không từ port `3000` của shell.
+
+`output.uniqueName` khác nhau để hai runtime không dùng nhầm cơ chế đăng ký chunk của nhau. Giá trị này khác với `name` của container: cả hai cần riêng biệt giữa các build cùng chạy trên trang, nhưng giải quyết hai lớp naming khác nhau.
+
+Bài dùng classic script remote, không phải ESM remote, manifest hay API request. Không cần mở CORS đại trà chỉ vì hai app khác port. Khi đổi kiểu tải hoặc thêm API, hãy xét CORS theo request thực tế; CSP cũng có thể chặn script remote nếu policy không cho phép origin của catalog.
+
+## Chạy và kiểm chứng
+
+### Mở hai dev server
+
+Dùng hai terminal, đều ở root `shop-workspace`. Khởi động lại server sau khi đổi webpack config:
+
+```bash title="Terminal 1 — catalog"
+npm run dev:catalog
+```
+
+```bash title="Terminal 2 — shell"
+npm run dev:shell
+```
+
+Chờ cả hai build thành công rồi mở catalog standalone trước, sau đó mở shell. Không cần chạy cart cho bài này.
+
+- Trang `http://localhost:3001` phải có `Catalog standalone`, ba sản phẩm và giá VND.
+- Trang `http://localhost:3000` phải có `Shop shell`, `Catalog` và cùng ba sản phẩm; **không có heading `Catalog standalone`**.
+- Console không có lỗi tải module, shared version mismatch hoặc React Hooks.
+
+<Callout type="warn" title="Nếu port 3000 đang bị chiếm">
+  Site docs Next.js cũng có thể chạy ở `3000`. Dừng server đó hoặc chuyển site docs sang port khác trước khi chạy shell. Nếu đổi port catalog, sửa cả script chạy catalog và URL trong `remotes` của shell.
+</Callout>
+
+### Quan sát Network
+
+Mở DevTools ở trang shell, chọn **Network**, bật **Disable cache** khi DevTools đang mở, rồi reload. Kiểm tra:
+
+1. Document và bundle khởi động của shell đến từ `localhost:3000`.
+2. Có request `http://localhost:3001/remoteEntry.js` thành công.
+3. Có các JavaScript chunk của catalog tải từ `localhost:3001`.
+4. Trang shell vẫn ở origin `localhost:3000`, không có document navigation sang `localhost:3001`.
+
+Tên chunk và số lượng request thay đổi theo mode và tối ưu của webpack; không đối chiếu bằng một filename hash cố định. Mở response của `remoteEntry.js` để chắc đó là JavaScript, không phải HTML fallback có status `200`.
+
+Trạng thái loading có thể thoáng qua quá nhanh trên local. Bạn có thể bật Network throttling để quan sát, nhưng không cần thêm delay giả vào component.
+
+Muốn kiểm tra fallback, dừng server catalog rồi reload shell với cache tắt. Header shell phải còn, vùng catalog chuyển sang `Catalog chưa khả dụng` sau khi việc tải thất bại. Chạy lại catalog rồi bấm `Tải lại trang` để khôi phục. **Dừng remote sau khi UI đã tải không làm component biến mất**: code đã có trong runtime của trang.
+
+### Đổi catalog mà không rebuild shell
+
+Giữ shell server đang chạy. Trong `apps/catalog/src/CatalogPage.jsx`, đổi câu:
+
+```jsx
+<p>Component này đến từ remote catalog.</p>
+```
+
+thành:
+
+```jsx
+<p>Catalog đã được cập nhật từ remote.</p>
+```
+
+Chờ catalog compile lại, rồi reload trang shell với cache tắt. Bạn phải thấy câu mới mà không sửa code/config hay chủ động rebuild shell. Không kỳ vọng HMR của catalog tự cập nhật trang host; reload là phép kiểm tra rõ ràng cho bước đầu.
+
+Thử nghiệm này minh họa việc thay implementation ở cùng URL và giữ public contract. Nó chưa kiểm chứng pipeline deploy, CDN cache hoặc khả năng tương thích với mọi consumer đang chạy. Những phần đó thuộc lab [Deploy độc lập](/docs/thuc-hanh/deploy-doc-lap).
+
+### Build từng app độc lập
+
+Từ root, chạy riêng hai app:
+
+```bash
+npm run build --workspace=@shop/catalog
+npm run build --workspace=@shop/shell
+```
+
+Kết quả cần có:
+
+| Artifact | Công dụng |
+| --- | --- |
+| `apps/catalog/dist/index.html` | Trang standalone của catalog |
+| `apps/catalog/dist/remoteEntry.js` | Entry container mà host consume |
+| Các file JavaScript còn lại trong `apps/catalog/dist` | Chunk chứa component/dependency và code standalone |
+| `apps/shell/dist/index.html` và các bundle đi kèm | Artifact của host |
+
+Shell không cần server catalog đang chạy để compile config remote tĩnh này. Bạn có thể dừng catalog rồi chạy lại build shell để kiểm chứng: webpack ghi tham chiếu remote vào artifact, không tải source catalog qua HTTP để đóng vào bundle shell.
+
+Root `npm run build` vẫn build cả ba app theo bài workspace; cart chưa có Federation cũng không sao. Dev server phục vụ output trong memory, còn lệnh build ghi vào `dist` trên disk.
+
+<Callout type="warn" title="Build production chưa phải cấu hình deploy">
+  Dù build bằng mode production, URL remote của lab vẫn là `http://localhost:3001/remoteEntry.js`. Không đem cấu hình này lên site HTTPS thật: `localhost` khi đó là máy của người dùng, và HTTP remote có thể bị chặn bởi mixed-content policy. Khi kiểm tra artifact local, phục vụ cả thư mục `dist` qua HTTP ở port tương ứng; không mở `index.html` bằng `file://` và không chỉ copy riêng `remoteEntry.js`.
+</Callout>
+
+## Những lỗi thường gặp
+
+Đi từ lỗi compile đến request entry, request chunk, rồi mới tới runtime React. Thứ tự đó giúp bạn tránh sửa `shared` trong khi server remote chưa chạy.
+
+| Triệu chứng | Kiểm tra trước | Cách xử lý trong lab |
+| --- | --- | --- |
+| `Module parse failed` tại JSX | Loader có match `.jsx`, preset đã cài đúng workspace chưa? | Dùng rule và Babel options trong config; restart dev server |
+| `Can't resolve './bootstrap'` | File `bootstrap.jsx` và `resolve.extensions` | Tạo file đúng đường dẫn, thêm `.jsx` vào extensions |
+| `Can't resolve 'catalog/CatalogPage'` khi build | Plugin phía shell và alias `remotes.catalog` | Thêm đúng `ModuleFederationPlugin`, dùng cùng alias trong import |
+| `ScriptExternalLoadError` hoặc `ERR_CONNECTION_REFUSED` | Catalog ở port `3001`, URL entry và Console | Chạy remote; kiểm tra response entry là JavaScript; kiểm tra CSP nếu có |
+| `Module "./CatalogPage" does not exist in container` | Key `exposes`, chữ hoa/thường và entry vừa tải | Giữ `./CatalogPage`, restart catalog và reload host không dùng cache |
+| Entry thành công nhưng chunk `404` | URL request chunk, `publicPath` và server đang phục vụ artifact nào | Giữ `publicPath: 'auto'`; phục vụ toàn bộ output, kiểm tra hash/chunk khớp entry |
+| `Shared module is not available for eager consumption` | React có bị import trực tiếp ở `index.js` không? | Chuyển code React vào bootstrap và giữ dynamic import ở entry |
+| `Unsatisfied version` cho React/React DOM | Version ở hai manifest, lockfile và server cũ | Đồng bộ dependency, cài lại đúng cách, restart cả hai server; không tắt strict check để che lệch version |
+| `Invalid hook call` | Bản React thực tế, shared keys, scope và code dùng Hooks | Kiểm tra runtime sharing và quy tắc Hooks; không kết luận ngay là lỗi component remote |
+| Lazy component không render được | Module có default export là React component không? | Giữ contract default export hoặc viết adapter rõ ràng ở host |
+| Fallback vẫn còn sau khi remote đã chạy lại | Lazy import từng reject trong runtime hiện tại | Reload trang; lab chưa có retry loader tại chỗ |
+
+Nếu entry trả HTML, đừng sửa CORS trước. Trước hết kiểm tra URL có trỏ nhầm server, file có thực sự được emit và dev server đã nhận config mới chưa. Các bước debug sâu hơn nằm ở [Remote không tải](/docs/troubleshooting/remote-khong-tai) và [Duplicate React](/docs/troubleshooting/duplicate-react).
+
+## Checklist hoàn thành
+
+- [ ] Shell và catalog vẫn là hai workspace package, hai build riêng.
+- [ ] Catalog standalone render được mà không cần shell chạy.
+- [ ] Shell dùng `import('catalog/CatalogPage')`, không import filesystem source của catalog.
+- [ ] Module catalog expose default React component; DOM mount chỉ nằm trong bootstrap standalone.
+- [ ] Network ở shell có entry và chunk catalog từ port `3001`.
+- [ ] Shared version khớp, Console không có lỗi runtime React.
+- [ ] Dừng catalog rồi reload shell cho thấy fallback cục bộ, header vẫn còn.
+- [ ] Đổi nội dung catalog, compile catalog rồi reload shell thấy bản mới mà không rebuild host.
+- [ ] Build shell vẫn thành công khi catalog server đã dừng.
+- [ ] `dist` của catalog có `remoteEntry.js` và các chunk đi kèm.
+
+## Bước tiếp theo
+
+Giữ ví dụ này làm baseline chạy được trước khi nối cart. Khi thêm routing hoặc contract giỏ hàng, bạn sẽ có một mốc để phân biệt lỗi tải module với lỗi giao tiếp nghiệp vụ.
+
+<Cards>
+  <Card title="Chạy và kiểm tra local" href="/docs/bat-dau/chay-local" description="Tiếp tục kiểm tra host/remote và luồng tải trên browser." />
+  <Card title="Exposes và remotes" href="/docs/module-federation/exposes-remotes" description="Đi sâu vào public module boundary và cách host tham chiếu container." />
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Hiểu share scope, singleton và yêu cầu version giữa các build." />
+  <Card title="Lab shell, catalog và cart" href="/docs/thuc-hanh/shop-shell-catalog-cart" description="Mở rộng lát cắt đầu tiên thành shop có nghiệp vụ qua contract." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/) — cơ chế container, async boundary và các lỗi tích hợp thường gặp.
+- [webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/) — cú pháp `exposes`, `remotes`, `shared` và các sharing hints.
+- [webpack — publicPath](https://webpack.js.org/guides/public-path/) — cách xác định URL tải asset, gồm chế độ `auto`.
+- [React — lazy](https://react.dev/reference/react/lazy) — yêu cầu default export, caching của lazy loader và lỗi tải module.
+- [React — Suspense](https://react.dev/reference/react/Suspense) — fallback trong lúc component chờ tài nguyên.

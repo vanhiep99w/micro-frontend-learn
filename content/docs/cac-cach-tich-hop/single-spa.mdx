@@ -1,18 +1,622 @@
 ---
 title: "single-spa và lifecycle"
-description: "Tổ chức bootstrap, mount, unmount và route activation với single-spa."
+description: "Điều phối ứng dụng theo route với single-spa: root config, bootstrap, mount, unmount, cleanup và một lab catalog/cart chạy local."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog đang dùng React, còn trang cart cũ chưa chuyển framework. Bạn muốn người dùng đi từ `/catalog` sang `/cart` trong cùng một trang, nhưng không muốn shell phải biết cách render và dọn dẹp từng framework. single-spa giải quyết phần điều phối đó: chọn ứng dụng theo URL rồi gọi lifecycle mà ứng dụng cung cấp.
+
+Điểm dễ nhầm là coi single-spa như một công cụ tải remote hoặc một lớp isolation. Nó không tự tạo deploy độc lập, không tự chia sẻ React, và không ngăn CSS của catalog ảnh hưởng cart. Bài này tách rõ những trách nhiệm đó, rồi dùng một lab nhỏ để bạn quan sát lifecycle thay vì chỉ nhớ tên API.
+
+<Callout type="info" title="Phạm vi và điều kiện đọc">
+  Bài dùng API single-spa 6.x cho ứng dụng client-side. Lab dùng JavaScript thuần và Vite trong một project riêng, không phải mã chạy bên trong site Next.js này. Bạn cần biết ES modules, Promise và History API. Ví dụ React ở cuối minh họa adapter, không bao gồm SSR hay React Server Components. Các sơ đồ text không cần plugin bổ sung.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [single-spa điều phối điều gì](#single-spa-điều-phối-điều-gì)
+  - [Root config và ứng dụng](#root-config-và-ứng-dụng)
+  - [Không thay thế Module Federation hay import maps](#không-thay-thế-module-federation-hay-import-maps)
+- [Khi nào nên chọn single-spa](#khi-nào-nên-chọn-single-spa)
+- [Lifecycle từ tải code đến dọn giao diện](#lifecycle-từ-tải-code-đến-dọn-giao-diện)
+  - [Load và bootstrap](#load-và-bootstrap)
+  - [Mount và unmount](#mount-và-unmount)
+  - [Unmount không phải unload](#unmount-không-phải-unload)
+- [Route activation và quyền sở hữu URL](#route-activation-và-quyền-sở-hữu-url)
+  - [Viết activeWhen không có side effect](#viết-activewhen-không-có-side-effect)
+  - [Điều hướng bên trong ứng dụng](#điều-hướng-bên-trong-ứng-dụng)
+- [Lab catalog và cart chạy local](#lab-catalog-và-cart-chạy-local)
+  - [Chuẩn bị project riêng](#chuẩn-bị-project-riêng)
+  - [Tạo HTML và root config](#tạo-html-và-root-config)
+  - [Giữ cart controller ngoài lifecycle giao diện](#giữ-cart-controller-ngoài-lifecycle-giao-diện)
+  - [Viết lifecycle của catalog](#viết-lifecycle-của-catalog)
+  - [Viết lifecycle của cart](#viết-lifecycle-của-cart)
+  - [Chạy và quan sát](#chạy-và-quan-sát)
+- [Tích hợp React bằng adapter](#tích-hợp-react-bằng-adapter)
+- [Cleanup và ranh giới state](#cleanup-và-ranh-giới-state)
+- [Loading lỗi và phục hồi](#loading-lỗi-và-phục-hồi)
+  - [Phân biệt lỗi tải với lỗi lifecycle](#phân-biệt-lỗi-tải-với-lỗi-lifecycle)
+  - [Fallback retry và timeout](#fallback-retry-và-timeout)
+- [Từ lab tới deploy độc lập](#từ-lab-tới-deploy-độc-lập)
+- [Checklist kiểm chứng](#checklist-kiểm-chứng)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## single-spa điều phối điều gì
 
-Bài này sẽ giúp bạn: tổ chức bootstrap, mount, unmount và route activation với single-spa.
+single-spa là orchestrator cho nhiều ứng dụng frontend trong một document. Mỗi ứng dụng công bố cách khởi tạo, render và dọn UI; root config đăng ký khi nào nó cần xuất hiện. Bạn có thể xem single-spa như người điều phối sân khấu: nó báo ứng dụng nào vào hoặc rời sân khấu, nhưng ứng dụng vẫn tự chịu trách nhiệm cho những thứ mình mang theo.
 
-[Xem các bài trong nhóm Các cách tích hợp khác](/docs/cac-cach-tich-hop).
+Giới hạn của cách hình dung này là các ứng dụng không có phòng riêng. Chúng dùng chung `window`, document và JavaScript realm; một ứng dụng vẫn có thể sửa DOM hoặc global của ứng dụng khác nếu code cho phép.
+
+### Root config và ứng dụng
+
+**Root config** gồm HTML gốc và JavaScript đăng ký ứng dụng. Nó thường sống cùng composition layer của shell, nhưng không đồng nghĩa với một component React khổng lồ chứa mọi trang.
+
+```text
+HTML gốc + root config
+  ├── single-spa: kiểm tra URL, gọi lifecycle
+  ├── /catalog → catalog → vùng DOM của catalog
+  └── /cart    → cart    → vùng DOM của cart
+```
+
+| Thành phần | Trách nhiệm |
+| --- | --- |
+| Root config | Đăng ký tên, loader, `activeWhen`, contract qua `customProps` và gọi `start()` |
+| single-spa | Theo dõi điều hướng, quản lý status và gọi lifecycle |
+| Ứng dụng catalog/cart | Sở hữu UI, router nội bộ và cleanup trong vùng DOM được giao |
+| Loader hoặc bundler | Resolve module, tải entry cùng dependency và chunk |
+| Shell UI | Header, navigation, loading/fallback và trải nghiệm cấp trang |
+
+Có thể đăng ký một ứng dụng navigation luôn active và một ứng dụng nội dung theo route. Khi nhiều ứng dụng cùng active, hãy cấp vùng DOM riêng cho từng phần. Đừng để hai framework cùng quản lý một subtree.
+
+### Không thay thế Module Federation hay import maps
+
+Ba cơ chế này trả lời ba câu hỏi khác nhau:
+
+| Cơ chế | Câu hỏi chính |
+| --- | --- |
+| single-spa | Ứng dụng nào cần hoạt động, và khi nào gọi `mount` hoặc `unmount`? |
+| Import maps | Specifier như `@shop/catalog` trỏ tới module URL nào? |
+| Module Federation | Làm sao tải module từ container khác và xử lý shared dependency theo cấu hình federation? |
+
+Bạn có thể dùng một federated module làm nguồn cung cấp lifecycle cho single-spa. Bạn cũng có thể dùng native ESM hoặc SystemJS để tải ứng dụng. Điều kiện ở ranh giới là loader phải resolve một object có các lifecycle hợp lệ.
+
+Mình chọn **một đường resolve rõ ràng cho mỗi entry**, thay vì vừa import bằng SystemJS vừa tự tải cùng entry qua federation. Hai loader khác nhau không mặc nhiên dùng chung module registry hoặc cache.
+
+<Callout type="warn" title="Chạy cùng trang không có nghĩa dùng chung dependency">
+  single-spa không tự deduplicate React, không thương lượng version và không cô lập CSS. Những việc đó thuộc cấu hình build/loading và quy ước tích hợp. Nó cũng không phải security boundary cho code không đáng tin cậy; nếu cần isolation kiểu đó, hãy đánh giá iframe.
+</Callout>
+
+## Khi nào nên chọn single-spa
+
+Mình ưu tiên single-spa khi boundary chính là **một nhóm route**, đặc biệt khi cần chuyển dần từ SPA cũ sang ứng dụng mới hoặc duy trì nhiều framework trong một giai đoạn migration. Vì mỗi ứng dụng tự render và dọn UI, shell không phải trực tiếp gọi API riêng của React, Vue hay Angular.
+
+Nếu mọi phần đều dùng React, chỉ cần ghép vài component trong cùng trang và có cùng lịch release, mình sẽ bắt đầu bằng React composition thông thường. Thêm orchestrator khi chưa có nhu cầu lifecycle cấp ứng dụng khiến router, error boundary và ownership khó theo dõi hơn.
+
+single-spa phân biệt ba loại module:
+
+| Loại | Ai quyết định vòng đời? | Ví dụ |
+| --- | --- | --- |
+| Application | single-spa dựa trên `activeWhen` | Catalog ở `/catalog`, cart ở `/cart` |
+| Parcel | Consumer gọi mount/unmount; không tự active theo route | Widget đa framework nhúng trong một trang |
+| Utility module | Consumer import và dùng API; không có lifecycle UI bắt buộc | Auth client, cart controller, design tokens |
+
+Mặc định hãy chia theo route và dùng application. Parcel hữu ích cho một widget cần chạy trong nhiều framework, nhưng không nên biến mọi nút và modal thành parcel. Nếu cùng framework, component thường có cách truyền props, context và cleanup tự nhiên hơn. Parcel được mount qua `props.mountParcel` của application có quan hệ parent để single-spa dọn khi parent unmount; dùng `mountRootParcel` thì consumer phải chủ động quản lý việc unmount.
+
+## Lifecycle từ tải code đến dọn giao diện
+
+Entry của một application cần export `bootstrap`, `mount` và `unmount`. Mỗi lifecycle phải trả về Promise; khai báo `async` là cách đơn giản. Bạn cũng có thể export một mảng lifecycle functions, single-spa sẽ chạy chúng lần lượt và chờ từng Promise.
+
+| Phase | Vai trò | Tần suất thông thường |
+| --- | --- | --- |
+| Load | Loader tải và evaluate module | Khi ứng dụng active lần đầu; có thể tải lại sau lỗi hoặc unload |
+| `bootstrap` | Khởi tạo trước lần mount đầu | Một lần trong mỗi chu kỳ load/bootstrap |
+| `mount` | Render UI và mở tài nguyên gắn với UI | Mỗi lần ứng dụng chuyển từ inactive sang active |
+| `unmount` | Dọn UI và tài nguyên của lần mount | Mỗi lần ứng dụng đang mounted trở thành inactive |
+| `unload` | Hook tùy chọn để dọn trước khi trở về trạng thái chưa load | Khi gọi `unloadApplication()` |
+
+### Load và bootstrap
+
+**Load không phải một lifecycle export tên `load`.** Nó là quá trình gọi loading function, chẳng hạn `() => import('./catalog.single-spa.js')`. Code ở top level của module chạy trong phase này, nên tránh tự mount UI, mở timer hoặc đăng ký global listener ngay khi import.
+
+`bootstrap` thích hợp cho khởi tạo một lần trước UI, nhưng đừng nhét mọi request vào đó. Dữ liệu theo route hoặc theo user có thể đã đổi khi bạn quay lại ứng dụng; fetch chỉ trong bootstrap dễ khiến lần mount sau dùng dữ liệu cũ.
+
+`registerApplication()` cho single-spa biết ứng dụng tồn tại. `start()` cho phép tiến tới bootstrap và mount. Trước `start()`, code của ứng dụng active có thể đã được tải; việc trì hoãn start không phải cách ngăn evaluate code không đáng tin cậy.
+
+### Mount và unmount
+
+`mount` là nơi tạo UI, listener và subscription phục vụ UI hiện tại. Promise của mount phải resolve khi công việc khởi tạo mà lifecycle cam kết đã hoàn tất. Nếu bạn gọi một hàm render bất đồng bộ mà không return hoặc await công việc cần chờ, single-spa có thể coi ứng dụng đã mounted quá sớm.
+
+`unmount` phải làm ứng dụng không còn hoạt động UI: tháo framework root, bỏ listener, unsubscribe và hủy request mà UI không còn cần. Chỉ xóa DOM chưa đủ, vì timer hoặc subscription còn sống vẫn giữ closure và có thể chạy khi trang đã rời đi.
+
+Một chuyến đi bình thường có dạng:
+
+```text
+/catalog lần đầu: load catalog → bootstrap catalog → mount catalog
+/cart:           unmount catalog → load/bootstrap/mount cart
+/catalog trở lại: unmount cart → mount catalog
+```
+
+Đây là thứ tự quan sát đơn giản, không phải cam kết rằng mọi việc đều tuần tự: tải code và bootstrap ứng dụng sắp vào có thể diễn ra trong lúc ứng dụng cũ đang unmount. single-spa chờ các ứng dụng cần rời đi unmount trước khi mount các ứng dụng mới. Đừng dùng thứ tự bootstrap của hai ứng dụng như một API giao tiếp.
+
+### Unmount không phải unload
+
+Khi rời `/catalog`, module catalog thường vẫn nằm trong memory/module cache. Local React state có thể bị hủy khi root unmount, nhưng biến ở module scope không tự reset.
+
+`unloadApplication('@shop/catalog', { waitForUnmount: true })` yêu cầu unload sau khi ứng dụng tự unmount. Khi unload hoàn tất, status trở về `NOT_LOADED`; lần active sau sẽ đi qua load/bootstrap lại. API này **không đảm bảo xóa module khỏi cache của native ESM, SystemJS hoặc federation**, cũng không tự tải release mới từ CDN.
+
+Vì vậy, đừng dùng unload như nút rollback phổ quát. Việc thay code trong một tab đang chạy cần policy riêng cho loader và state; reload document thường là boundary dễ hiểu hơn.
+
+## Route activation và quyền sở hữu URL
+
+### Viết activeWhen không có side effect
+
+`activeWhen` có thể là path string, activity function hoặc mảng các điều kiện. Mảng hoạt động theo OR. Activity function nhận `Location` và trả về giá trị cho biết ứng dụng nên active hay không.
+
+```js title="Điều kiện có ranh giới path rõ ràng"
+const activeAt = (prefix) => (location) =>
+  location.pathname === prefix ||
+  location.pathname.startsWith(`${prefix}/`);
+```
+
+Với `activeAt('/cart')`, `/cart` và `/cart/checkout` active, nhưng `/cartoon` không active. Đây là lỗi thường gặp khi dùng `pathname.startsWith('/cart')` trực tiếp. Chuỗi `activeWhen: '/cart'` cũng là cách khai báo path prefix mà single-spa hỗ trợ; function hữu ích khi bạn cần diễn đạt policy riêng.
+
+Hãy giữ function thuần: không fetch, redirect, sửa store hoặc mount DOM bên trong. single-spa gọi activity functions khi xử lý điều hướng, không chỉ đúng một lần khi người dùng click link.
+
+Nếu catalog và cart vô tình cùng active tại một URL, single-spa có thể mount cả hai. Nó không tự áp dụng quy tắc “route đầu tiên thắng” như một số router. Test ma trận route là cách phát hiện overlap trước khi CSS hoặc DOM lỗi.
+
+### Điều hướng bên trong ứng dụng
+
+Root config chọn **ứng dụng**, còn router nội bộ chọn **trang bên trong ứng dụng**. Ví dụ:
+
+| URL | Ứng dụng active | Ai xử lý chi tiết? |
+| --- | --- | --- |
+| `/catalog` | Catalog | Router catalog render danh sách |
+| `/catalog/products/ao-thun-den` | Catalog | Router catalog render sản phẩm |
+| `/cart` | Cart | Router cart render giỏ |
+| `/cart/checkout` | Cart | Router cart render bước checkout, nếu đã hỗ trợ |
+
+Từ `/catalog` sang một route con, catalog vẫn mounted. single-spa **không gọi lại mount chỉ vì URL đổi**; router catalog phải nhận và xử lý thay đổi đó. `customProps` cũng không phải một kênh reactive tự cập nhật UI mỗi lần URL hoặc auth đổi.
+
+single-spa theo dõi History API và các sự kiện điều hướng như `popstate`/`hashchange`. Bạn có thể dùng router của framework hoặc `navigateToUrl('/cart')` cho điều hướng cấp shell; tránh giả lập thêm `popstate` nếu integration đã xử lý nó.
+
+Để router ứng dụng hiểu route con, cấu hình base path/basename tương ứng, chẳng hạn `/catalog`. Ở server, deep link như `/catalog/products/ao-thun-den` phải trả HTML gốc, còn request asset phải trả asset thật hoặc lỗi 404 — đừng rewrite file `.js` bị thiếu thành HTML.
+
+## Lab catalog và cart chạy local
+
+Lab này giữ đúng một SKU để tập trung vào lifecycle: catalog thêm áo vào giỏ; cart hiển thị quantity; header đọc summary. Nó không triển khai đầy đủ đề bài shop, chưa có backend, persistence, auth hay router trang sản phẩm.
+
+Mình dùng DOM thuần trước vì bạn nhìn được cleanup trực tiếp. Khi chuyển sang framework, adapter sẽ đảm nhận phần render/unrender nhưng không thay bạn sở hữu timer, request hoặc state nghiệp vụ.
+
+### Chuẩn bị project riêng
+
+Chạy trong một thư mục thực hành **ngoài repository docs**:
+
+```bash
+mkdir single-spa-shop
+cd single-spa-shop
+npm init -y
+npm install single-spa@6
+npm install --save-dev vite
+mkdir src
+```
+
+Dùng Node đáp ứng yêu cầu của version Vite bạn cài và commit lockfile trong project thực hành. Tạo sáu file được chỉ rõ bên dưới: `index.html` cùng năm file trong `src/`.
+
+<Callout type="info" title="Đây là một build, không phải hai remote deploy độc lập">
+  Vite resolve các local dynamic import trong lab. Catalog và cart có lifecycle riêng nhưng vẫn thuộc cùng project/build graph. Cách đổi sang entry từ CDN nằm ở phần deploy; đừng lấy việc mount độc lập làm bằng chứng rằng release đã độc lập.
+</Callout>
+
+### Tạo HTML và root config
+
+```html title="index.html"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>single-spa shop lab</title>
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Điều hướng shop">
+        <a href="/catalog">Catalog</a>
+        <a href="/cart">Giỏ hàng</a>
+      </nav>
+      <p>Tổng số lượng: <span id="cart-count">0</span></p>
+    </header>
+    <main>
+      <div id="catalog-root"></div>
+      <div id="cart-root"></div>
+    </main>
+    <script type="module" src="/src/root-config.js"></script>
+  </body>
+</html>
+```
+
+```js title="src/root-config.js"
+import {
+  registerApplication,
+  start,
+  navigateToUrl,
+  addErrorHandler,
+  getAppStatus,
+} from 'single-spa';
+import { cart } from './cart-controller.js';
+
+const activeAt = (prefix) => (location) =>
+  location.pathname === prefix ||
+  location.pathname.startsWith(`${prefix}/`);
+
+addErrorHandler((error) => {
+  console.error('single-spa error', {
+    app: error.appOrParcelName,
+    status: getAppStatus(error.appOrParcelName),
+    error,
+  });
+});
+
+registerApplication({
+  name: '@shop/catalog',
+  app: () => import('./catalog.single-spa.js'),
+  activeWhen: activeAt('/catalog'),
+  customProps: {
+    domElement: document.getElementById('catalog-root'),
+    cart,
+  },
+});
+
+registerApplication({
+  name: '@shop/cart',
+  app: () => import('./cart.single-spa.js'),
+  activeWhen: activeAt('/cart'),
+  customProps: {
+    domElement: document.getElementById('cart-root'),
+    cart,
+  },
+});
+
+// Header và listener shell sống tới khi document đóng.
+cart.subscribe((summary) => {
+  document.getElementById('cart-count').textContent =
+    String(summary.totalQuantity);
+});
+
+for (const link of document.querySelectorAll('nav a')) {
+  link.addEventListener('click', (event) => {
+    // Giữ hành vi mở tab mới của Ctrl/Cmd/Shift-click.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey ||
+        event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigateToUrl(link.href);
+  });
+}
+
+if (window.location.pathname === '/') {
+  navigateToUrl('/catalog');
+}
+
+start();
+```
+
+`customProps` được đưa trực tiếp vào object `props` của lifecycle: ứng dụng đọc `props.cart` và `props.domElement`, không đọc `props.customProps.cart`. Các props có sẵn như `name`, `singleSpa` và `mountParcel` do single-spa cung cấp; tránh dùng tên đó cho contract riêng.
+
+Ở lab, root config truyền một instance cart cho cả hai application. Trong production, đây nên là public contract thuộc cart domain, không phải cách mở quyền truy cập vào reducer hoặc mutable store nội bộ.
+
+### Giữ cart controller ngoài lifecycle giao diện
+
+```js title="src/cart-controller.js"
+let totalQuantity = 0;
+const listeners = new Set();
+
+const getSummary = () => Object.freeze({ totalQuantity });
+
+export const cart = Object.freeze({
+  getSummary,
+
+  addItem({ sku, quantity }) {
+    if (sku !== 'ao-thun-den' ||
+        !Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error('SKU hoặc quantity không hợp lệ');
+    }
+    totalQuantity += quantity;
+    for (const listener of listeners) listener(getSummary());
+  },
+
+  subscribe(listener) {
+    listeners.add(listener);
+    listener(getSummary());
+    return () => listeners.delete(listener);
+  },
+});
+```
+
+Đây là controller in-memory tối thiểu, chỉ dùng cho một SKU và các consumer đồng bộ của lab. Production cần contract thao tác, xử lý lỗi và nguồn dữ liệu phù hợp; backend vẫn là nguồn chuẩn cho giỏ đã xác nhận.
+
+Controller không nằm trong `bootstrap` của cart UI, vì catalog phải thêm được sản phẩm **trước khi người dùng mở `/cart`**. Subscription UI cần được tháo lúc unmount, nhưng state giỏ không nên bị xóa chỉ vì người dùng quay lại catalog. Reload document sẽ reset controller này về `0`.
+
+### Viết lifecycle của catalog
+
+```js title="src/catalog.single-spa.js"
+let dispose;
+
+export async function bootstrap({ name }) {
+  console.log(name, 'bootstrap');
+}
+
+export async function mount({ name, domElement, cart }) {
+  if (dispose) throw new Error('Catalog đã mounted');
+  console.log(name, 'mount');
+
+  const events = new AbortController();
+  const page = document.createElement('section');
+  page.innerHTML = `
+    <h1>Catalog</h1>
+    <p>Áo thun đen — SKU ao-thun-den</p>
+    <button type="button">Thêm một áo vào giỏ</button>
+    <p role="status"></p>
+  `;
+
+  const button = page.querySelector('button');
+  const status = page.querySelector('[role="status"]');
+  button.addEventListener('click', () => {
+    cart.addItem({ sku: 'ao-thun-den', quantity: 1 });
+    status.textContent = 'Đã thêm một áo vào giỏ';
+  }, { signal: events.signal });
+
+  try {
+    domElement.replaceChildren(page);
+  } catch (error) {
+    events.abort();
+    throw error;
+  }
+
+  dispose = () => {
+    events.abort();
+    page.remove();
+  };
+}
+
+export async function unmount({ name }) {
+  console.log(name, 'unmount');
+  dispose?.();
+  dispose = undefined;
+}
+```
+
+HTML trong ví dụ là literal cố định. Không nội suy tên sản phẩm hay dữ liệu user chưa sanitize vào `innerHTML`; dùng `textContent` hoặc cơ chế escaping của framework cho dữ liệu động.
+
+`AbortController` ở đây dọn listener, không phải request mạng. Khi app rời route, listener bị tháo trước khi DOM được bỏ; lần mount sau tạo page và controller mới.
+
+### Viết lifecycle của cart
+
+```js title="src/cart.single-spa.js"
+let dispose;
+
+export async function bootstrap({ name }) {
+  console.log(name, 'bootstrap');
+}
+
+export async function mount({ name, domElement, cart }) {
+  if (dispose) throw new Error('Cart đã mounted');
+  console.log(name, 'mount');
+
+  const page = document.createElement('section');
+  page.innerHTML = '<h1>Giỏ hàng</h1><p></p>';
+  const quantity = page.querySelector('p');
+  const unsubscribe = cart.subscribe((summary) => {
+    quantity.textContent = `Số áo trong giỏ: ${summary.totalQuantity}`;
+  });
+
+  try {
+    domElement.replaceChildren(page);
+  } catch (error) {
+    unsubscribe();
+    throw error;
+  }
+
+  dispose = () => {
+    unsubscribe();
+    page.remove();
+  };
+}
+
+export async function unmount({ name }) {
+  console.log(name, 'unmount');
+  dispose?.();
+  dispose = undefined;
+}
+```
+
+Nếu bỏ `unsubscribe()`, controller vẫn giữ callback có closure trỏ tới page cũ. UI nhìn như đã biến mất nhưng tài nguyên chưa được dọn. Chính những lỗi này khiến lifecycle trở thành một phần của contract tích hợp, không chỉ là ba tên export.
+
+### Chạy và quan sát
+
+```bash
+npx vite --host 127.0.0.1
+```
+
+Mở địa chỉ Vite in ra, thường là `http://127.0.0.1:5173`. Theo dõi Console và Network:
+
+1. Vào `/catalog`: thấy log bootstrap và mount của catalog; cart UI chưa cần load.
+2. Thêm áo hai lần: header hiển thị `2` dù chưa mở cart.
+3. Sang `/cart`: catalog unmount, cart bootstrap rồi mount, số áo là `2`.
+4. Quay lại catalog: chỉ mount catalog, không bootstrap lại trong chu kỳ bình thường.
+5. Dùng Back/Forward: ứng dụng đổi theo URL mà không tải lại document.
+6. Reload: quantity về `0` vì lab chưa có persistence.
+
+Để nhìn riêng **load**, tạm thêm `console.log('catalog module evaluated')` ở top level entry catalog. Trong một phiên không HMR hoặc reload, log đó chạy khi module được evaluate, không chạy mỗi lần mount.
+
+Lab chỉ hiển thị một trang cho mọi route con trong từng prefix. Truy cập `/catalog/products/ao-thun-den` vẫn mount catalog nhưng chưa render trang sản phẩm; đây là phần router nội bộ cần bổ sung. Truy cập route lạ như `/unknown` sẽ không mount ứng dụng nào; production phải có trang 404 hoặc policy redirect rõ ràng.
+
+## Tích hợp React bằng adapter
+
+Với React, hãy dùng `single-spa-react` để tạo lifecycle thay vì tự giữ React root trong shell. Ví dụ dưới đây là **entry thay thế cho một ứng dụng React**, cần project có React, ReactDOM, `single-spa-react` và cấu hình compile JSX. Nó không phải file bổ sung bắt buộc của lab DOM thuần.
+
+```jsx title="Entry React với createRoot"
+import React from 'react';
+import * as ReactDOMClient from 'react-dom/client';
+import singleSpaReact from 'single-spa-react';
+
+function Catalog({ cart }) {
+  return (
+    <section>
+      <h1>Catalog</h1>
+      <button onClick={() => cart.addItem({
+        sku: 'ao-thun-den', quantity: 1,
+      })}>
+        Thêm một áo vào giỏ
+      </button>
+    </section>
+  );
+}
+
+const lifecycles = singleSpaReact({
+  React,
+  ReactDOMClient,
+  renderType: 'createRoot',
+  rootComponent: Catalog,
+  domElementGetter: (props) => props.domElement,
+  errorBoundary() {
+    return <p role="alert">Catalog gặp lỗi. Bạn có thể về trang khác.</p>;
+  },
+});
+
+export const { bootstrap, mount, unmount } = lifecycles;
+```
+
+Đây là cách dùng React 18+ với adapter hỗ trợ `ReactDOMClient`; hãy kiểm tra compatibility của version adapter/framework thực tế và chốt bằng lockfile. `renderType: 'createRoot'` được ghi tường minh để không phụ thuộc vào default của adapter version.
+
+Adapter render vào `domElement` được root config cấp và unmount React root khi ứng dụng inactive. Nó không tự dọn listener hoặc subscription mà bạn tạo bên ngoài React, cũng không tự hợp nhất các bản React được bundle riêng. Hai application có hai React root riêng thì không tự dùng chung React Context; nếu cần state chung, truyền một public service hoặc utility module có contract rõ ràng.
+
+Error boundary xử lý nhóm lỗi mà React boundary bắt được trong cây render; nó không thay thế xử lý lỗi tải entry, lỗi event handler hay lỗi Promise ngoài React. Với Vue hoặc Angular, nguyên tắc tương tự: adapter chuyển lifecycle single-spa sang API của framework, còn contract DOM, routing và cleanup vẫn phải được thiết kế.
+
+## Cleanup và ranh giới state
+
+Một quy tắc dễ dùng là: **thứ được mở để phục vụ một lần mount phải có đường đóng trong lần unmount đó**. Các tài nguyên sống lâu hơn UI cần owner khác, không nên “sống nhờ” vào module đã tình cờ được load.
+
+| Tài nguyên | Owner phù hợp | Khi nào dọn? |
+| --- | --- | --- |
+| React/Vue root và DOM của trang | Application UI | Unmount |
+| Timer, observer, global listener của UI | Application UI | Unmount; dọn cả khi mount thất bại giữa chừng |
+| Fetch chỉ phục vụ trang đang mở | Data layer của UI | Abort khi không còn cần; chặn response cũ cập nhật UI |
+| Subscription vào cart/auth | Consumer UI | Unsubscribe khi unmount |
+| Cart controller dùng bởi header và catalog | Cart domain, được composition layer kết nối | Khi kết thúc session hoặc policy reset yêu cầu |
+| Auth/session client | Owner của session | Khi logout, đổi user hoặc kết thúc document theo policy |
+| CSS global và side effect top level | Team sở hữu build/module | Có policy riêng; unmount framework không tự xóa CSS |
+
+Bạn cũng cần đường cleanup nếu mount thất bại sau khi đã mở tài nguyên. Đừng giả định single-spa sẽ gọi unmount thành công cho mọi partial mount. Lab đã dọn listener/subscription nếu bước gắn DOM thất bại; code production cần bao phủ cả những bước bất đồng bộ và tài nguyên khác.
+
+Đối với fetch, dùng `AbortController` và kiểm tra request còn thuộc lần mount hiện tại trước khi cập nhật UI. Abort không phải bằng chứng backend đã hủy thao tác ghi; một đơn hàng có thể đã tạo dù UI rời trang. Đừng gắn tính đúng đắn của nghiệp vụ với việc component còn mounted.
+
+Về CSS, mặc định dùng scope bằng CSS Modules hoặc namespace theo app, giữ reset và design tokens ở shell/design system. Nếu stylesheet được bundler chèn ở load time, unmount UI thường không gỡ nó. Lifecycle không phải CSS isolation.
+
+## Loading lỗi và phục hồi
+
+### Phân biệt lỗi tải với lỗi lifecycle
+
+single-spa có status riêng cho từng ứng dụng. Dùng `getAppStatus(name)` cùng error handler để xác định phase, thay vì coi mọi lỗi là “remote không tải được”.
+
+| Status hoặc dấu hiệu | Ý nghĩa cần kiểm tra |
+| --- | --- |
+| `NOT_LOADED` | Ứng dụng chưa cần tải, hoặc đã unload; không nhất thiết là lỗi |
+| `LOADING_SOURCE_CODE` | Loading function chưa resolve |
+| `NOT_MOUNTED` | Đã bootstrap nhưng UI chưa mounted, thường vì route inactive |
+| `MOUNTED` | Lifecycle mount đã hoàn tất; không đảm bảo mọi request nghiệp vụ thành công |
+| `LOAD_ERROR` | Loading function reject: network, evaluate module hoặc lỗi loader |
+| `SKIP_BECAUSE_BROKEN` | Ứng dụng không thể tiếp tục bình thường sau lỗi nghiêm trọng như lifecycle reject |
+
+Đây không phải danh sách đầy đủ mọi status chuyển tiếp. Lỗi `bootstrap`, `mount` hoặc `unmount` có thể khiến ứng dụng bị đánh dấu broken; nó khác với lỗi tải có khả năng retry. `addErrorHandler()` quan sát lỗi lifecycle/activity của single-spa, không bắt mọi lỗi JavaScript bên trong ứng dụng.
+
+Error handler của lab chỉ ghi log. Trong production, ghi thêm route, release, phase và correlation ID phù hợp; không log token, props nhạy cảm hoặc dữ liệu cá nhân chỉ để debug.
+
+### Fallback retry và timeout
+
+Shell cần một vùng fallback độc lập với DOM do app đang lỗi quản lý. Nếu shell chèn fallback vào cùng subtree trong lúc React hoặc một Promise mount muộn vẫn đang thao tác, UI có thể bị ghi đè. Hãy xác định owner và thời điểm được quyền thay đổi DOM trước khi thêm nút retry.
+
+| Tình huống | Cách xử lý mặc định |
+| --- | --- |
+| Entry tải chậm | Shell báo đang tải, giữ navigation hoạt động và tránh spinner vô hạn |
+| `LOAD_ERROR` | Kiểm tra asset/CORS/loader, hiện lỗi có đường rời trang; retry hữu hạn khi loader cho phép |
+| Lỗi render React | Boundary của app hiển thị fallback; telemetry vẫn ghi lỗi |
+| Mount/unmount bị broken | Dừng retry mù; điều tra partial cleanup, cung cấp đường reload hoặc quay lại phần còn hoạt động |
+| Backend của cart lỗi | Cart UI xử lý theo contract nghiệp vụ, không coi là lỗi loader |
+
+Với `LOAD_ERROR`, single-spa hỗ trợ thử tải lại khi người dùng rời route rồi quay lại. Nhưng loader cũng có cache riêng. SystemJS có thể cần xóa record lỗi bằng `System.delete(System.resolve(name))` theo hướng dẫn API chính thức, và điều đó chỉ đúng khi tên đăng ký cũng là specifier mà SystemJS resolve được. Không áp dụng đoạn này cho native ESM hoặc federation.
+
+Native ESM không cung cấp API xóa module registry tương đương. Tùy nguyên nhân lỗi và loader, retry cùng URL có thể không evaluate lại; đừng hứa rằng `triggerAppChange()` luôn tải lại code. Khi chưa có policy phục hồi an toàn cho tab hiện tại, một reload có kiểm soát dễ dự đoán hơn việc đổi URL tùy ý.
+
+Application có thể export timeout theo phase:
+
+```js title="Ví dụ timeout cho mount, số liệu chỉ minh họa"
+export const timeouts = {
+  mount: {
+    millis: 8000,
+    warningMillis: 2000,
+    dieOnTimeout: true,
+  },
+};
+```
+
+Chọn budget từ đo đạc thực tế. `dieOnTimeout: true` cho phép single-spa coi lifecycle vượt hạn là lỗi; nó **không hủy Promise, request hoặc code đang chạy**. Mount đến muộn vẫn có thể tạo side effect. Loading entry cũng là phase khác với mount; loader và shell cần policy timeout/loading riêng, không chỉ object trên.
+
+## Từ lab tới deploy độc lập
+
+Local dynamic import trong lab chứng minh contract lifecycle. Để catalog phát hành mà không rebuild root config, bạn cần một lớp resolve entry ở runtime và một quy trình publish artifact riêng.
+
+```text
+Runtime mapping: @shop/catalog → URL của release catalog
+                                 │
+                                 ▼
+Loader → module có bootstrap/mount/unmount → single-spa
+```
+
+Ví dụ khi đã cấu hình SystemJS cùng import map và bundle đúng format:
+
+```js title="Chỉ thay đường load khi hạ tầng SystemJS đã sẵn sàng"
+app: () => System.import('@shop/catalog')
+```
+
+`System` ở đây do script SystemJS cung cấp, không phải API của single-spa và không có sẵn trong lab. Native `import()` cần native ESM; `System.import()` thường dùng output `System.register`. Native import map và SystemJS import map cũng không phải cùng một registry. Không đổi hàm import mà bỏ qua format build.
+
+Trước khi gọi là deploy độc lập, kiểm chứng các điều kiện sau:
+
+- Entry export đúng lifecycle, chunk resolve từ đúng release base URL, trả JavaScript với MIME type phù hợp và CORS nếu cross-origin.
+- Publish artifact immutable trước, rồi mới cập nhật mapping; giữ release cũ để rollback và phục vụ tab đang mở.
+- Snapshot release cho phiên/document nếu cần tránh trộn dependency hoặc chunk giữa hai release.
+- Chỉ dùng URL từ cấu hình đáng tin cậy, có policy CSP và quyền cập nhật mapping; remote chạy cùng quyền JavaScript với shell.
+- Contract `customProps`, utility modules và shared framework có compatibility policy. Đổi version React hoặc cart API có thể buộc phối hợp release dù entry deploy riêng.
+
+Trong một tab, cập nhật mapping không tự thay module đã evaluate. Với rollback, mình mặc định đổi con trỏ release cho phiên mới và cung cấp reload cho tab cũ khi cần; không coi `unloadApplication()` là thao tác xóa cache toàn bộ loader.
+
+## Checklist kiểm chứng
+
+Hãy dùng lab hoặc một integration test để chứng minh các hành vi sau, không chỉ kiểm tra rằng trang đầu render được:
+
+- [ ] `/catalog`, `/catalog/…`, `/cart` và `/cart/…` chọn đúng app; `/cartoon` không chọn cart; route lạ có policy rõ ràng.
+- [ ] Bootstrap không chạy lại khi chỉ rời route rồi quay lại; mount/unmount chạy đúng theo activation.
+- [ ] Điều hướng route con không cần remount ứng dụng; router nội bộ cập nhật được UI.
+- [ ] Chuyển qua lại nhiều lần không tăng listener/subscription và không nhân đôi request ngoài dự kiến.
+- [ ] Thêm giỏ trước khi mở cart vẫn cập nhật header; unmount cart UI không xóa giỏ.
+- [ ] Mount thất bại giữa chừng không để lại DOM, listener hoặc request cập nhật UI cũ.
+- [ ] Chặn entry và tạo lỗi lifecycle cho ra log/status khác nhau, có fallback và đường thoát.
+- [ ] Deep link, reload, Back/Forward và mở link trong tab mới hoạt động.
+- [ ] Ở lab deploy riêng, lỗi chunk, release rollback, dependency mismatch và tab cũ đã được thử thực tế.
+
+Bài tập tiếp theo đáng làm nhất là thêm router sản phẩm trong catalog và một request giả lập chậm, rồi rời route trước khi request hoàn tất. Nếu response không sửa DOM cũ và cart state vẫn đúng sau khi quay lại, bạn đã kiểm chứng được hai boundary quan trọng: lifecycle UI và state nghiệp vụ.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="ES modules và import maps" href="/docs/cac-cach-tich-hop/import-maps" description="Tách việc resolve module URL khỏi việc điều phối lifecycle." />
+  <Card title="Routing xuyên ứng dụng" href="/docs/giao-tiep-va-trang-thai/routing" description="Thống nhất route ownership, deep link và navigation." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Giữ dữ liệu nghiệp vụ đúng owner khi UI mount và unmount." />
+  <Card title="So sánh các cách tích hợp" href="/docs/cac-cach-tich-hop/so-sanh" description="Chọn orchestrator, federation hay isolation theo bài toán." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Configuring single-spa](https://single-spa.js.org/docs/configuration/) — root config, registration và activity functions.
+- [Building single-spa applications](https://single-spa.js.org/docs/building-applications/) — lifecycle, props, cleanup và timeout.
+- [Applications API](https://single-spa.js.org/docs/api/) — status, error handlers, navigation và unload.
+- [single-spa-react](https://single-spa.js.org/docs/ecosystem-react/) — adapter, DOM target, ReactDOMClient và error boundary.
+- [Recommended setup](https://single-spa.js.org/docs/recommended-setup/) — applications, parcels, utility modules và loading/deployment.
