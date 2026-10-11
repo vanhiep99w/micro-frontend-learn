@@ -9,6 +9,9 @@ import {
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/mdx-components';
 
+// Unknown doc slugs must return 404; there is no runtime server on Pages.
+export const dynamicParams = false;
+
 type PageProps = {
   params: Promise<{ slug?: string[] }>;
 };

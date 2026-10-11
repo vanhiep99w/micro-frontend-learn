@@ -16,8 +16,10 @@ npm run dev
 
 Mở http://localhost:3000/docs. Đường dẫn `/` chuyển đến `/docs`.
 
-Sandbox của bước khởi tạo không có mạng cho bash. Dependencies chưa được cài;
-dev server, TypeScript và production build **chưa được chạy**.
+Sandbox của bước khởi tạo không có mạng cho bash nên không chạy cài dependencies
+hoặc build tại đây. Log Cloudflare bạn cung cấp xác nhận phiên bản scaffold ban đầu
+đã compile, kiểm tra TypeScript và prerender thành công; cấu hình static export
+mới cần được kiểm tra lại bằng các lệnh bên dưới hoặc lần deploy tiếp theo.
 `npm install` chạy `postinstall` để sinh `.source/`; không viết tay hoặc commit thư mục đó.
 
 Kiểm tra sau khi cài:
@@ -26,10 +28,42 @@ Kiểm tra sau khi cài:
 npm run check:docs
 npm run typecheck
 npm run build
-npm start
+npm run check:export
 ```
 
+Build xuất các assets vào `out/`. Để preview bản build trên máy có mạng,
+chạy `npx serve out` và mở địa chỉ mà lệnh in ra. Không dùng `next start` với static export.
+
 Commit `package-lock.json` sau khi cài và kiểm tra thành công để cố định dependency graph.
+
+## Deploy lên Cloudflare Pages
+
+Trong **Workers & Pages → project → Settings → Build**, đặt:
+
+| Cấu hình | Giá trị |
+| --- | --- |
+| Framework preset | Next.js (Static HTML Export) |
+| Build command | `npm run build && npm run check:export` |
+| Build output directory | `out` |
+| Root directory | Gốc repo (để trống nếu dashboard đã mặc định) |
+| Production branch | `main` |
+| Node.js | 22+ |
+
+Lưu settings rồi deploy commit mới. `dist/` chỉ chứa ZIP đóng gói mã nguồn,
+không phải assets để publish. `.next/` cũng không phải output cho static Pages.
+
+`next.config.mjs` bật `output: 'export'`. `/api/search.json` được sinh tại build time;
+search dialog tải index đó và tìm kiếm trên trình duyệt, không cần Pages Functions.
+`dynamicParams = false` khiến slug không có trong tài liệu trả về 404.
+
+Các cảnh báo CSS `::highlight(fd-search)` trong log không làm build thất bại.
+Không đổi thành `:highlight`: `::highlight()` là pseudo-element của CSS Custom Highlight API.
+Lỗi deploy ban đầu là **output directory `dist` không tồn tại**.
+
+Nếu thêm tính năng cần SSR, cookies, Server Actions hoặc API runtime về sau,
+phải đổi mô hình hosting; không chỉ đổi output directory sang `.next`.
+
+Tham khảo [Cloudflare Pages: Next.js static export](https://developers.cloudflare.com/pages/framework-guides/nextjs/deploy-a-static-nextjs-site/).
 
 ## Lộ trình
 
@@ -70,7 +104,8 @@ Bạn có thể yêu cầu: **“Dùng fumadocs-technical-writer viết chi ti�
 - `source.config.ts`: collection Fumadocs MDX.
 - `lib/source.ts`: content loader; dùng entry `@/.source/server`.
 - `app/docs/[[...slug]]/page.tsx`: render MDX, TOC, metadata và static params.
-- `app/api/search/route.ts`: tìm kiếm tài liệu cho dialog mặc định.
+- `app/api/search.json/route.ts`: xuất JSON search index tĩnh cho dialog.
+- `scripts/check-export.mjs`: kiểm tra assets, trang HTML và JSON search sau build.
 - `scripts/check-docs.mjs`: kiểm tra JSON, metadata, frontmatter và liên kết nội bộ bằng Node, không cần dependencies.
 
 ## Phiên bản và template
@@ -86,6 +121,8 @@ Các điểm đã cập nhật so với reference template cũ:
 - Entry sinh tự động nằm ở `.source/server.ts`, không còn `.source/index.ts`.
 - `source.getPageTree()` cung cấp page tree.
 - `DocsPage.className` điều chỉnh article; không dùng prop `article` chưa được xác nhận.
+- Search dùng `options.type: 'static'`, API được hỗ trợ ở UI 16.17.1; khi nâng major,
+  kiểm tra lại hoặc thay bằng custom dialog dùng `useStaticSearch()` theo docs.
 
 Nguồn API:
 [Fumadocs MDX + Next.js](https://www.fumadocs.dev/docs/mdx/next),
