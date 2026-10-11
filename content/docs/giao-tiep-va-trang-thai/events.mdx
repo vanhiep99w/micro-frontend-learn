@@ -1,18 +1,655 @@
 ---
 title: "Events và message bus"
-description: "Trao đổi sự kiện với payload rõ ràng, cleanup và xử lý các event bị lặp."
+description: "Thiết kế event contract và message bus cho micro-frontend, với runtime validation, cleanup, chống event lặp và đồng bộ snapshot."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn có một shop: catalog hiển thị sản phẩm, cart quản lý giỏ hàng, còn shell hiển thị badge số lượng. Sau khi thêm sản phẩm thành công, làm sao badge cập nhật mà catalog không phải import component hay store nội bộ của cart?
+
+Events giải quyết phần thông báo: bên sở hữu dữ liệu phát một sự kiện về điều đã xảy ra, các bên quan tâm tự phản ứng. Nhưng nếu biến mọi tương tác thành event, bạn sẽ đổi coupling qua import thành coupling khó nhìn thấy qua tên sự kiện. Bài này giúp bạn đặt ranh giới đó, rồi xây một bus nhỏ có contract và lifecycle rõ ràng.
+
+<Callout type="info" title="Phạm vi ví dụ">
+  Ví dụ dùng TypeScript và React cho các micro-frontend chạy trong cùng trang, cùng JavaScript realm. Bus chạy trong memory, không lưu lịch sử và không tự retry. Các đường dẫn trong code là gợi ý cho ứng dụng shop, không phải file triển khai có sẵn trong repository docs này.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Khi nào nên dùng events](#khi-nào-nên-dùng-events)
+  - [Phân biệt event và command](#phân-biệt-event-và-command)
+  - [Bus giảm coupling nào](#bus-giảm-coupling-nào)
+- [Luồng giao tiếp trong shop](#luồng-giao-tiếp-trong-shop)
+- [Thiết kế event contract](#thiết-kế-event-contract)
+  - [Tên event và envelope](#tên-event-và-envelope)
+  - [Payload và version](#payload-và-version)
+- [Chọn transport](#chọn-transport)
+- [Xây bus có runtime validation](#xây-bus-có-runtime-validation)
+  - [Kiểu dữ liệu và validator](#kiểu-dữ-liệu-và-validator)
+  - [Publish và subscribe](#publish-và-subscribe)
+  - [Shell sở hữu bus instance](#shell-sở-hữu-bus-instance)
+- [Publish sau khi mutation thành công](#publish-sau-khi-mutation-thành-công)
+- [Subscribe và cleanup trong React](#subscribe-và-cleanup-trong-react)
+  - [Kết hợp snapshot với event](#kết-hợp-snapshot-với-event)
+  - [Những lỗi lifecycle dễ gặp](#những-lỗi-lifecycle-dễ-gặp)
+- [Event lặp và thứ tự dữ liệu](#event-lặp-và-thứ-tự-dữ-liệu)
+  - [Deduplication theo eventId](#deduplication-theo-eventid)
+  - [Revision và idempotency](#revision-và-idempotency)
+- [Failure modes và cách debug](#failure-modes-và-cách-debug)
+- [Kiểm thử contract và lifecycle](#kiểm-thử-contract-và-lifecycle)
+- [Checklist trước khi đưa vào production](#checklist-trước-khi-đưa-vào-production)
+- [Đọc tiếp và nguồn tham khảo](#đọc-tiếp-và-nguồn-tham-khảo)
 
-## Phạm vi dự kiến
+## Khi nào nên dùng events
 
-Bài này sẽ giúp bạn: trao đổi sự kiện với payload rõ ràng, cleanup và xử lý các event bị lặp.
+Mình chọn events khi một thay đổi đã xảy ra và có thể có nhiều bên quan tâm: cart cập nhật, shell đổi badge, analytics ghi nhận một tương tác. Publisher không cần biết có bao nhiêu subscriber, cũng không cần chờ chúng trả lời để xác nhận mutation.
 
-[Xem các bài trong nhóm Giao tiếp và trạng thái](/docs/giao-tiep-va-trang-thai).
+Ngược lại, nếu một component cần kết quả cụ thể từ một component khác, callback hoặc API có kiểu dữ liệu thường dễ hiểu hơn. Bus không nên thay thế props giữa cha và con, router cho navigation, hay query cache cho server state.
+
+### Phân biệt event và command
+
+| Loại | Ý nghĩa | Ví dụ | Kết quả mong đợi |
+| --- | --- | --- | --- |
+| Command | Yêu cầu một owner làm việc | `cart.addItem({ productId, quantity })` | Có thành công, lỗi hoặc kết quả trả về |
+| Event | Thông báo việc đã xảy ra | `shop.cart.updated.v1` | Subscriber phản ứng độc lập |
+| Query | Đọc trạng thái hiện tại | `cart.getSnapshot(cartId)` | Trả snapshot từ owner |
+
+`cart.add-item` phát lên bus thực chất là command, dù bạn gọi nó là event. Nếu cart chưa mount thì ai xử lý? Nếu hai instance cart cùng subscribe thì có thêm hai lần không? Những câu hỏi này là dấu hiệu bạn cần một API có owner rõ ràng.
+
+Trong shop, shell có thể inject một capability `addItem` do cart domain cung cấp cho catalog. Catalog gọi capability này và nhận kết quả; cart domain phát `shop.cart.updated.v1` sau khi backend xác nhận. Shell nghe event để cập nhật badge mà không can thiệp vào mutation.
+
+<Callout type="warn" title="Event ở frontend không phải bằng chứng giao dịch">
+  Đừng coi việc nhận event là bằng chứng thanh toán thành công hay quyền truy cập hợp lệ. Backend vẫn phải xác thực, authorize và bảo vệ tính đúng đắn của giao dịch. Bus trong browser chỉ hỗ trợ phối hợp UI.
+</Callout>
+
+### Bus giảm coupling nào
+
+Bus giống một bảng thông báo: bên phát ghi thông tin, bên quan tâm đọc và xử lý. Khác bảng thông báo ngoài đời, bus trong memory ở bài này không giữ lại thông báo cho người đến sau.
+
+Nó loại bỏ nhu cầu publisher import implementation của subscriber. Nhưng publisher và subscriber vẫn phụ thuộc vào tên event, schema, ý nghĩa dữ liệu và quy tắc delivery. Đó là **contract coupling**, không phải hết coupling.
+
+Vì vậy, đừng dùng một event chung như `state.changed` rồi nhét mọi store vào payload. Cách đó khiến mỗi remote phải hiểu cấu trúc nội bộ của tất cả remote khác, trong khi TypeScript khó chỉ ra dependency nghiệp vụ.
+
+## Luồng giao tiếp trong shop
+
+```text
+Catalog -- command addItem --> Cart domain -- mutation --> Backend
+                                  ^                         |
+                                  |------ snapshot ---------|
+                                  |
+                                  +-- cart.updated --> Bus --> Shell badge
+```
+
+Cart domain là code sở hữu nghiệp vụ và API giỏ hàng, không nhất thiết là component màn hình cart. Nó có thể hoạt động ngay cả khi route giỏ hàng chưa mount.
+
+Luồng này có ba ranh giới quan trọng:
+
+1. Catalog gửi yêu cầu và chờ kết quả từ cart domain, không chờ badge.
+2. Cart domain chỉ phát event về snapshot đã được backend xác nhận.
+3. Shell dùng event để cập nhật một projection nhỏ của dữ liệu, ở đây là số lượng trên badge.
+
+Backend là nguồn dữ liệu chuẩn; cart domain sở hữu cách frontend truy cập và diễn giải dữ liệu đó. Nếu shell mount muộn, nó đọc snapshot hiện tại từ cart domain thay vì mong bus phát lại toàn bộ lịch sử.
+
+## Thiết kế event contract
+
+### Tên event và envelope
+
+Tên `shop.cart.updated.v1` thể hiện namespace, domain, điều đã xảy ra và major version. Đừng đặt theo component như `CartButtonClicked`: component có thể đổi, còn contract nghiệp vụ cần sống qua nhiều lần deploy.
+
+Một event mẫu:
+
+```json
+{
+  "type": "shop.cart.updated.v1",
+  "eventId": "5794f96d-3b92-40c2-ad70-3b9c2b45bfb8",
+  "source": "cart",
+  "occurredAt": "2026-03-01T08:00:00.000Z",
+  "correlationId": "e36d5061-9a68-4b9a-b1e9-f247d34fb9ad",
+  "payload": {
+    "cartId": "cart-demo",
+    "revision": 42,
+    "itemCount": 3
+  }
+}
+```
+
+Các giá trị trên chỉ minh họa contract, không phải log thực tế.
+
+| Field | Quy ước | Mục đích |
+| --- | --- | --- |
+| `type` | Literal có namespace và major version | Routing và kiểm tra compatibility |
+| `eventId` | ID duy nhất cho một event logic | Nhận diện bản phát lại hoặc relay trùng |
+| `source` | Owner phát event | Debug; không phải danh tính được xác thực |
+| `occurredAt` | Thời điểm tạo event theo đồng hồ publisher | Quan sát, không dùng để quyết định bản nào mới hơn |
+| `correlationId` | ID liên kết một thao tác và các event của nó | Theo dõi luồng từ command đến cập nhật UI |
+| `payload` | Dữ liệu tối thiểu cho consumer | Không lộ cấu trúc store nội bộ |
+
+`eventId` và `correlationId` khác nhau. Một lần thêm sản phẩm có thể tạo nhiều event với cùng `correlationId`, nhưng mỗi event có `eventId` riêng. Khi relay cùng một event, giữ nguyên `eventId`; không tạo ID mới ở mỗi chặng.
+
+### Payload và version
+
+Ở bài này, `itemCount` là tổng số đơn vị sản phẩm, không phải số dòng hàng khác nhau. `revision` là số nguyên tăng theo mỗi thay đổi giỏ hàng do backend xác nhận, trong phạm vi một `cartId`. Đây là yêu cầu của API mẫu, không phải trường mặc định mà mọi backend đều có.
+
+Mình chọn payload snapshot nhỏ cho badge vì consumer có thể gán thẳng `itemCount`. Một delta như `{ addedQuantity: 1 }` buộc consumer phải có trạng thái ban đầu đúng, không mất event và không áp dụng event hai lần.
+
+Không gửi toàn bộ giỏ hàng nếu consumer chỉ cần biết dữ liệu đã thay đổi. Với màn hình cart đầy đủ, event có thể là tín hiệu invalidate query theo `cartId`, rồi refetch qua API mà cart domain công bố.
+
+Để các remote deploy độc lập:
+
+- Thêm field optional thường có thể giữ `v1` nếu consumer cũ bỏ qua field chưa biết.
+- Xóa field, đổi type hoặc đổi nghĩa `itemCount` cần một contract mới như `v2`.
+- Trong giai đoạn chuyển tiếp, nếu phát cả `v1` và `v2`, tránh để cùng một consumer áp dụng cả hai như hai thay đổi khác nhau.
+- Contract cần ghi rõ phạm vi revision, owner và cách khôi phục khi bỏ lỡ event, không chỉ khai báo TypeScript.
+
+<Callout type="warn" title="Không gửi object nội bộ hoặc bí mật">
+  Payload nên dùng dữ liệu plain, tương thích JSON. Không gửi function, React element, store instance, access token hay thông tin nhạy cảm không cần thiết. Với `CustomEvent`, object trong `detail` không tự được clone; subscriber sửa object có thể ảnh hưởng subscriber khác.
+</Callout>
+
+## Chọn transport
+
+| Nhu cầu | Lựa chọn mặc định | Điều phải tự thiết kế |
+| --- | --- | --- |
+| Remote cùng trang, cùng realm | Bus inject từ shell, dùng `EventTarget` hoặc thư viện nhỏ | Schema, cleanup, lỗi listener, khôi phục snapshot |
+| Component DOM hoặc Web Component thông báo cho container | `CustomEvent` trên element | `bubbles`, `composed`, contract trong `detail` |
+| Shell giao tiếp với iframe hoặc popup | `window.postMessage` | Origin/source validation, handshake, schema và lifecycle |
+| Nhiều tab hoặc worker cùng origin và storage partition | `BroadcastChannel` | Protocol, scope theo session, cleanup và chống relay vòng |
+| Dữ liệu phải bền vững qua reload hoặc nhiều thiết bị | Backend API và cơ chế server phù hợp | Persistence, authorization, retry và ordering phía server |
+
+URL tải remote khác origin không tự tạo ra realm riêng. Một remote được load vào cùng trang vẫn có thể dùng bus shell inject; iframe thì có `window` riêng và cần một bridge.
+
+Bus dưới đây dispatch trực tiếp trên một `EventTarget` riêng, không dựa vào DOM bubbling. Với Web Component, event muốn đi qua Shadow DOM thường cần `composed: true`; nếu muốn nổi lên ancestor còn cần `bubbles: true`. Chỉ bật các cờ này khi contract thực sự yêu cầu.
+
+Với `postMessage`, chỉ định `targetOrigin` chính xác, kiểm tra `event.origin` và `event.source` ở bên nhận, rồi validate `event.data`. Trường `source: "cart"` trong payload không thay thế những kiểm tra đó. Với `BroadcastChannel`, đóng channel khi kết thúc lifecycle; cùng origin chưa đủ nếu hai context bị tách storage partition.
+
+## Xây bus có runtime validation
+
+Ví dụ chỉ có một event để bạn thấy trọn đường đi. Khi thêm nhiều loại event, tách registry/schema theo domain hoặc dùng schema library; đừng duy trì hàng loạt cast `as` ở consumer.
+
+### Kiểu dữ liệu và validator
+
+TypeScript chỉ kiểm tra lúc build. Một remote cũ, một bridge nhận dữ liệu ngoài hoặc JavaScript thuần vẫn có thể gửi payload sai, nên cần validate ở runtime.
+
+```ts title="contracts/cart-events.ts"
+export const CART_UPDATED = 'shop.cart.updated.v1' as const;
+
+export type CartSnapshot = Readonly<{
+  cartId: string;
+  revision: number;
+  itemCount: number;
+}>;
+
+export type CartUpdated = Readonly<{
+  type: typeof CART_UPDATED;
+  eventId: string;
+  source: 'cart';
+  occurredAt: string;
+  correlationId: string;
+  payload: CartSnapshot;
+}>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= 200;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+export function isCartUpdated(value: unknown): value is CartUpdated {
+  if (!isRecord(value) || !isRecord(value.payload)) return false;
+
+  const payload = value.payload;
+  return value.type === CART_UPDATED
+    && value.source === 'cart'
+    && isId(value.eventId)
+    && isId(value.correlationId)
+    && typeof value.occurredAt === 'string'
+    && Number.isFinite(Date.parse(value.occurredAt))
+    && isId(payload.cartId)
+    && isCount(payload.revision)
+    && isCount(payload.itemCount);
+}
+```
+
+Giới hạn độ dài ID là lựa chọn minh họa; thống nhất giới hạn thật với API của bạn. Validator này chấp nhận field mới chưa biết để hỗ trợ additive changes. Nó kiểm tra chuỗi thời gian parse được; nếu contract bắt buộc ISO UTC chuẩn, dùng validator chặt hơn cho định dạng đó.
+
+`Readonly` không bảo vệ dữ liệu ở runtime. Vì payload ở đây chỉ chứa primitive, bus có thể copy và freeze cả envelope lẫn payload. Nếu sau này thêm object lồng sâu, cần chiến lược immutability tương ứng.
+
+### Publish và subscribe
+
+```ts title="platform/cart-event-bus.ts"
+import {
+  CART_UPDATED,
+  isCartUpdated,
+  type CartUpdated,
+} from '../contracts/cart-events';
+
+type Handler = (event: CartUpdated) => void | Promise<void>;
+type BusIssue = Readonly<{
+  kind: 'invalid-event' | 'handler-error';
+  eventType: typeof CART_UPDATED;
+  eventId?: string;
+}>;
+
+export interface CartEventBus {
+  publish(event: CartUpdated): void;
+  subscribe(handler: Handler): () => void;
+}
+
+export function createCartEventBus(
+  onIssue: (issue: BusIssue) => void,
+): CartEventBus {
+  const target = new EventTarget();
+
+  function report(issue: BusIssue): void {
+    try {
+      onIssue(issue);
+    } catch {
+      // Telemetry hỏng không được làm hỏng đường xử lý UI.
+      console.error('Event bus telemetry failed');
+    }
+  }
+
+  return {
+    publish(event) {
+      if (!isCartUpdated(event)) {
+        report({ kind: 'invalid-event', eventType: CART_UPDATED });
+        throw new TypeError('Invalid cart.updated event');
+      }
+
+      // Copy các field được công bố, không chuyển object nội bộ.
+      const detail: CartUpdated = Object.freeze({
+        type: CART_UPDATED,
+        eventId: event.eventId,
+        source: 'cart',
+        occurredAt: event.occurredAt,
+        correlationId: event.correlationId,
+        payload: Object.freeze({
+          cartId: event.payload.cartId,
+          revision: event.payload.revision,
+          itemCount: event.payload.itemCount,
+        }),
+      });
+
+      target.dispatchEvent(new CustomEvent(CART_UPDATED, { detail }));
+    },
+
+    subscribe(handler) {
+      const listener: EventListener = (rawEvent) => {
+        const detail: unknown = (rawEvent as CustomEvent<unknown>).detail;
+        if (!isCartUpdated(detail)) {
+          report({ kind: 'invalid-event', eventType: CART_UPDATED });
+          return;
+        }
+
+        const failed = () => report({
+          kind: 'handler-error',
+          eventType: CART_UPDATED,
+          eventId: detail.eventId,
+        });
+
+        try {
+          // Bắt cả throw đồng bộ và rejection từ async handler.
+          void Promise.resolve(handler(detail)).catch(failed);
+        } catch {
+          failed();
+        }
+      };
+
+      target.addEventListener(CART_UPDATED, listener);
+      return () => target.removeEventListener(CART_UPDATED, listener);
+    },
+  };
+}
+```
+
+Ở bus này, `publish` trả `void`, không trả ACK. Nếu không có subscriber, event biến mất. Một async handler thất bại được report nhưng không khiến mutation đã thành công trở thành thất bại.
+
+`dispatchEvent` chạy phần đồng bộ của listener ngay trong lúc gọi `publish`. Tuy nhiên, nó không đợi Promise do handler trả về; handler nặng vẫn có thể block main thread trước lần `await` đầu tiên. Đừng hiểu pub/sub là tự động chuyển việc sang background.
+
+<Callout type="info" title="Policy của ví dụ">
+  Event sai contract bị từ chối ở publisher và bị bỏ qua ở receiver. Lỗi handler được cô lập và report, không tự retry. Các bus khác có thể dùng policy khác, nhưng phải ghi rõ để consumer không suy đoán về delivery hay error propagation.
+</Callout>
+
+### Shell sở hữu bus instance
+
+```ts title="shell/bootstrap.ts"
+import { createCartEventBus } from '../platform/cart-event-bus';
+
+// Chạy một lần khi bootstrap ứng dụng trong browser.
+const bus = createCartEventBus((issue) => {
+  console.warn('[cart-event-bus]', issue);
+});
+
+// Truyền đúng object `bus` này vào cart domain và shell badge
+// qua mount context, dependency injection hoặc props.
+```
+
+Không để mỗi remote tự gọi `createCartEventBus()`. Publisher và subscriber sẽ đứng ở hai bus khác nhau, dù import cùng một file và dùng cùng một tên event.
+
+Mình ưu tiên dependency injection thay vì một singleton export từ package chung. Package có thể bị bundle thành nhiều bản; Module Federation `shared` cũng không tự bảo đảm mọi cấu hình load đều dùng đúng một instance. Inject object từ shell làm ownership hiện rõ trong mount contract.
+
+Trong Next.js/SSR, không tạo một bus chứa dữ liệu người dùng dùng chung ở cấp module trên server. Khởi tạo bus cho ứng dụng browser trong client bootstrap/provider với identity ổn định; server xử lý dữ liệu theo request, không dùng bus UI để truyền state giữa người dùng. Khi logout hoặc đổi tenant, clear projection/cache liên quan và kết thúc lifecycle của subscription cũ.
+
+## Publish sau khi mutation thành công
+
+Giả sử `CartApi.addItem` đã validate response và trả snapshot có revision do backend cấp. Interface dưới đây là port mẫu; ứng dụng của bạn cần implementation gọi API thật.
+
+```ts title="cart/add-item.ts"
+import { CART_UPDATED, type CartSnapshot } from '../contracts/cart-events';
+import type { CartEventBus } from '../platform/cart-event-bus';
+
+type AddItemInput = {
+  cartId: string;
+  productId: string;
+  quantity: number;
+};
+
+interface CartApi {
+  addItem(
+    input: AddItemInput,
+    options: { idempotencyKey: string },
+  ): Promise<CartSnapshot>;
+}
+
+export async function addItem(
+  api: CartApi,
+  bus: CartEventBus,
+  input: AddItemInput,
+  operationId: string,
+): Promise<CartSnapshot> {
+  const snapshot = await api.addItem(input, {
+    idempotencyKey: operationId,
+  });
+
+  try {
+    bus.publish({
+      type: CART_UPDATED,
+      eventId: crypto.randomUUID(),
+      source: 'cart',
+      occurredAt: new Date().toISOString(),
+      correlationId: operationId,
+      payload: snapshot,
+    });
+  } catch {
+    // API đã commit: không báo mutation thất bại chỉ vì notification lỗi.
+    // Production cần report metadata lỗi qua telemetry của cart domain.
+    console.error('Cart committed, but notification failed', { operationId });
+  }
+
+  return snapshot;
+}
+```
+
+Caller tạo `operationId` cho một thao tác logic và giữ nguyên nó khi retry thao tác đó. Backend phải thực sự hỗ trợ semantics của idempotency key; gửi header hoặc option này không tự làm request trở nên idempotent.
+
+Vì mutation đã commit trước `publish`, lỗi notification không nên khiến UI yêu cầu người dùng thêm lại sản phẩm. Nếu network timeout trước khi biết backend đã commit hay chưa, đó là bài toán command retry/reconciliation, không phải bài toán dedupe event.
+
+Nếu muốn optimistic UI, giữ optimistic state riêng trong owner và xác định cách rollback. Đừng phát event mang nghĩa “đã xác nhận” cho dữ liệu chưa được backend chấp nhận.
+
+## Subscribe và cleanup trong React
+
+### Kết hợp snapshot với event
+
+Subscriber đến sau không nhận được event cũ. Badge cần query snapshot ban đầu, còn event giúp nó cập nhật khi đang mount.
+
+Ví dụ dưới đây subscribe **trước khi** fetch snapshot, rồi dùng revision để merge cả hai nguồn. Nhờ vậy, event mới về trong lúc fetch không bị một response snapshot cũ ghi đè.
+
+```tsx title="shell/CartBadge.tsx"
+import { useEffect, useState } from 'react';
+import type { CartSnapshot } from '../contracts/cart-events';
+import type { CartEventBus } from '../platform/cart-event-bus';
+
+interface CartReader {
+  // Implementation phải validate snapshot từ API trước khi return.
+  getSnapshot(
+    cartId: string,
+    options: { signal: AbortSignal },
+  ): Promise<CartSnapshot>;
+}
+
+type BadgeView = {
+  cartId: string;
+  itemCount: number | null;
+  error: string | null;
+};
+
+export function CartBadge({ bus, reader, cartId }: {
+  bus: CartEventBus;
+  reader: CartReader;
+  cartId: string;
+}) {
+  const [view, setView] = useState<BadgeView>({
+    cartId,
+    itemCount: null,
+    error: null,
+  });
+
+  useEffect(() => {
+    let active = true;
+    let lastRevision = -1;
+    const controller = new AbortController();
+    setView({ cartId, itemCount: null, error: null });
+
+    function apply(snapshot: CartSnapshot): void {
+      if (!active || snapshot.cartId !== cartId) return;
+      if (snapshot.revision <= lastRevision) return;
+      lastRevision = snapshot.revision;
+      setView({ cartId, itemCount: snapshot.itemCount, error: null });
+    }
+
+    const unsubscribe = bus.subscribe((event) => apply(event.payload));
+
+    void reader.getSnapshot(cartId, { signal: controller.signal })
+      .then(apply)
+      .catch(() => {
+        if (active && !controller.signal.aborted && lastRevision === -1) {
+          setView({ cartId, itemCount: null, error: 'Không tải được giỏ hàng' });
+        }
+      });
+
+    return () => {
+      active = false;
+      unsubscribe();
+      controller.abort();
+    };
+  }, [bus, reader, cartId]);
+
+  // Không hiển thị số lượng của cart cũ trong render đổi cartId.
+  const current = view.cartId === cartId ? view : null;
+  if (current?.error) return <span role="status">{current.error}</span>;
+
+  return (
+    <span aria-live="polite" aria-atomic="true">
+      Giỏ hàng: {current?.itemCount ?? '…'}
+    </span>
+  );
+}
+```
+
+`bus` và `reader` cần identity ổn định từ shell, không được tạo lại ở mỗi render. Khi `cartId` đổi, effect cũ cleanup, fetch cũ bị abort, guard `active` chặn response đến muộn, và revision được reset cho cart mới.
+
+Code này giải quyết race lúc mount, không giải quyết mọi khoảng trống delivery. Nếu mutation xảy ra ở tab khác, trên thiết bị khác hoặc notification bị lỗi, bạn vẫn cần policy refetch khi focus/reconnect, query invalidation hoặc server push. Bus trong trang không có khả năng tự phát hiện mọi dữ liệu đã thay đổi.
+
+### Những lỗi lifecycle dễ gặp
+
+- Subscribe trong render tạo thêm listener mỗi lần render. Đặt subscription trong effect hoặc lifecycle mount của framework.
+- Không return cleanup khiến listener sống tiếp sau unmount, có thể giữ closure và gọi API nhiều lần.
+- Gọi `removeEventListener` bằng function mới không gỡ listener cũ. Bus trả hàm `unsubscribe` giữ đúng reference.
+- Closure đọc state cũ dễ khiến handler dùng giá trị trước đó. Dùng functional update, ref hoặc dependency đúng theo nhu cầu; ví dụ badge gán snapshot nên không cần đọc state trong handler.
+- Unsubscribe không hủy Promise đã chạy. Async handler riêng cần `AbortController` hoặc guard tương tự `active` nếu có thể hoàn tất sau unmount.
+
+React Strict Mode có thể chạy thêm một chu kỳ setup → cleanup → setup cho effect trong development. Đừng tắt Strict Mode để che event lặp; kiểm tra rằng sau mỗi cleanup chỉ còn subscription của lifecycle hiện tại. Trong Vue/Angular hoặc mount API của remote, nguyên tắc vẫn là mỗi subscribe phải có một đường unsubscribe.
+
+## Event lặp và thứ tự dữ liệu
+
+### Deduplication theo eventId
+
+Bus mẫu không tự retry. Event vẫn có thể bị xử lý lặp do subscriber đăng ký hai lần, bridge relay vòng, publisher phát lại, hoặc hai transport cùng đưa một event vào receiver.
+
+Dedupe theo `eventId` chỉ nhận ra cùng một event logic. Hai event tạo riêng với hai ID khác nhau nhưng cùng revision cần được xử lý bằng quy tắc dữ liệu, không phải cache ID.
+
+Một cache nhỏ cho consumer có thể trông như sau:
+
+```ts title="platform/recent-event-ids.ts"
+export function createRecentEventIds(ttlMs = 60_000, maxEntries = 1_000) {
+  const seen = new Map<string, number>();
+
+  return {
+    has(eventId: string): boolean {
+      const now = Date.now();
+      for (const [id, expiresAt] of seen) {
+        if (expiresAt <= now) seen.delete(id);
+      }
+      return seen.has(eventId);
+    },
+
+    remember(eventId: string): void {
+      // Đưa ID đã cập nhật về cuối để eviction bỏ entry cũ nhất.
+      seen.delete(eventId);
+      seen.set(eventId, Date.now() + ttlMs);
+      while (seen.size > maxEntries) {
+        const oldest = seen.keys().next().value;
+        if (oldest === undefined) break;
+        seen.delete(oldest);
+      }
+    },
+
+    clear(): void {
+      seen.clear();
+    },
+  };
+}
+```
+
+TTL và kích thước trên chỉ là giá trị minh họa. Cache nên thuộc consumer hoặc lifecycle session cụ thể, không là một `Set` tăng mãi ở singleton. Consumer A xử lý xong không có nghĩa consumer B cũng đã xử lý, nên không dùng chung cache dedupe để loại event cho tất cả listener.
+
+Với handler đồng bộ, kiểm tra `has`, áp dụng dữ liệu thành công rồi `remember`. Với handler async, còn phải theo dõi ID đang xử lý để hai bản trùng không chạy song song; khi thất bại, giải phóng trạng thái in-flight theo policy retry. Nếu handler làm side effect bên ngoài, backend vẫn phải bảo vệ idempotency vì cache browser có thể mất hoặc hết TTL.
+
+### Revision và idempotency
+
+Badge trong ví dụ không cần cache ID: nó chỉ nhận snapshot có revision cao hơn rồi **gán** số lượng. Cùng revision đến hai lần không làm tăng số lượng hai lần.
+
+| Dữ liệu đến | Trạng thái trước đó | Kết quả |
+| --- | --- | --- |
+| `revision = 42`, `itemCount = 3` | Revision 41 | Gán số lượng 3 |
+| Cùng event revision 42 phát lại | Revision 42 | Bỏ qua |
+| Event mới ID khác nhưng revision 42 | Revision 42 | Bỏ qua |
+| Snapshot fetch chậm trả revision 41 | Revision 42 | Bỏ qua |
+| Event revision 45 đến sau một khoảng mất event | Revision 42 | Gán snapshot mới; delta consumer cần reconcile |
+
+Revision chỉ so sánh được trong phạm vi owner định nghĩa, ở đây là một `cartId`. Nếu backend reset revision trên cùng ID, hoặc không cấp một version có thứ tự so sánh được, thuật toán trên không còn đúng. Khi đó dùng snapshot API/cache của owner và quy tắc reconciliation rõ ràng; đừng tự tạo revision bằng counter riêng ở từng remote.
+
+`occurredAt` không thay thế revision vì đồng hồ có thể lệch và response có thể đến đảo thứ tự. `eventId` cũng chỉ là identity, không phải sequence number.
+
+<Callout type="warn" title="Không có exactly-once chỉ nhờ eventId">
+  Dedupe trong memory chỉ hạn chế xử lý lặp trong một phạm vi và khoảng thời gian. Nó không làm bus trở thành durable queue, không khôi phục event đã mất và không bảo đảm side effect chỉ xảy ra một lần. Thiết kế consumer idempotent và lấy lại snapshot khi cần.
+</Callout>
+
+Khi bridge giữa bus local và `BroadcastChannel` hoặc iframe, quy định chiều relay, giữ nguyên `eventId` và chặn việc phát ngược message vừa nhận. Nếu cần metadata hop/bridge, công bố nó trong contract bridge thay vì để từng remote tự thêm field tùy ý.
+
+## Failure modes và cách debug
+
+| Triệu chứng | Nguyên nhân thường gặp | Kiểm tra đầu tiên |
+| --- | --- | --- |
+| Publisher có log nhưng badge không đổi | Hai bus instance, khác event type hoặc subscriber chưa mount | So sánh instance được inject và lifecycle mount |
+| Một click làm handler chạy nhiều lần | Thiếu cleanup, nhiều publisher hoặc relay vòng | Đếm subscription, kiểm tra `eventId` và chiều bridge |
+| Badge quay về số lượng cũ | Snapshot chậm ghi đè event mới | Log revision và `cartId`, kiểm tra merge rule |
+| Sau deploy một remote ngừng cập nhật | Contract không tương thích | Version đang phát, validator failure và artifact version |
+| Mutation thành công nhưng UI báo lỗi thêm hàng | Trộn lỗi notification với lỗi command | Tách thời điểm API commit và `publish` |
+| UI chậm khi publish | Handler chạy đồng bộ quá nặng | Profile main thread; bỏ công việc nặng khỏi listener |
+| Lỗi chỉ xuất hiện sau đổi tài khoản | Projection/subscription cũ vẫn sống | Session scope, cleanup và cart ownership |
+
+Khi debug, đi theo đường dữ liệu thay vì chỉ thêm log ở đầu và cuối:
+
+1. Xác nhận mutation đã trả snapshot hợp lệ từ backend.
+2. Xác nhận cart domain tạo đúng event type, `cartId` và revision.
+3. Xác nhận publisher và subscriber nhận cùng bus instance.
+4. Xác nhận listener đang active và validator chấp nhận payload.
+5. Xác nhận revision gate không loại event vì dữ liệu đã mới hơn.
+6. Nếu đi qua bridge, kiểm tra origin/source, readiness và chống echo.
+
+Telemetry nên ghi event type, `eventId`, `correlationId`, revision, consumer và version remote khi cần. Chỉ log `cartId` nếu policy dữ liệu cho phép; tránh dump toàn bộ payload. Field `source` giúp lần theo code owner nhưng không chứng minh script gửi event là đáng tin.
+
+Trong cùng realm, code đã load có thể tiếp cận nhiều API của trang. Bus riêng và freeze payload giúp giảm sai sót, không tạo security sandbox cho remote không đáng tin.
+
+## Kiểm thử contract và lifecycle
+
+Trước hết, kiểm thử bus bằng test runner chạy trong browser hoặc môi trường hỗ trợ `EventTarget`/`CustomEvent` tương thích. Những assertion cốt lõi không phụ thuộc vào framework:
+
+```ts title="cart-event-bus.spec.ts — ý tưởng assertion"
+const issues: string[] = [];
+const bus = createCartEventBus((issue) => issues.push(issue.kind));
+let received = 0;
+
+const unsubscribe = bus.subscribe(() => {
+  received += 1;
+});
+
+const event: CartUpdated = {
+  type: CART_UPDATED,
+  eventId: 'event-test-1',
+  source: 'cart',
+  occurredAt: '2026-03-01T08:00:00.000Z',
+  correlationId: 'operation-test-1',
+  payload: { cartId: 'cart-test', revision: 1, itemCount: 2 },
+};
+
+bus.publish(event);
+// expect(received).toBe(1);
+unsubscribe();
+unsubscribe(); // Cleanup gọi lại vẫn an toàn.
+bus.publish(event);
+// expect(received).toBe(1);
+```
+
+Đoạn này minh họa assertion; import các type/factory từ ví dụ trước và dùng API `expect` của test runner bạn chọn. Nó cũng cho thấy bus không dedupe: nếu chưa unsubscribe, publish hai lần sẽ gọi listener hai lần.
+
+Bộ test nên bao phủ các tình huống sau:
+
+| Nhóm | Tình huống | Điều cần chứng minh |
+| --- | --- | --- |
+| Contract | Thiếu `cartId`, count âm, revision không hợp lệ | Validator từ chối; không cập nhật UI |
+| Compatibility | Event v1 có field optional mới | Consumer v1 vẫn xử lý được |
+| Error isolation | Một handler throw hoặc reject, handler khác vẫn khỏe | Có report lỗi, subscriber khác vẫn nhận event |
+| Lifecycle | Mount → unmount → mount, kể cả Strict Mode | Không tích lũy listener hoặc request cũ |
+| Late subscriber | Publish trước khi badge mount | Badge lấy đúng dữ liệu qua snapshot API |
+| Race | Event revision 42 về trước response revision 41 | UI giữ revision 42 |
+| Duplicate | Cùng revision đến nhiều lần | Projection không tăng số lượng sai |
+| Session | Đổi cart rồi response cart cũ mới về | Không hiển thị dữ liệu cart cũ |
+| Bridge | Sai origin/source, chưa ready hoặc message bị echo | Từ chối message sai; không tạo vòng relay |
+
+Contract tests giữa producer và consumer nên dùng fixture có version trong CI. TypeScript build riêng từng remote không đủ để chứng minh remote đang deploy có thể đọc event của nhau. Với event v2, kiểm thử cả giai đoạn consumer cũ và mới cùng tồn tại.
+
+## Checklist trước khi đưa vào production
+
+- [ ] Mỗi event nói về điều đã xảy ra; command có owner và kết quả rõ ràng.
+- [ ] Event type, payload semantics và version được công bố trong contract.
+- [ ] Validator kiểm tra dữ liệu runtime; payload không chứa store, function hay bí mật.
+- [ ] Shell inject cùng bus instance với lifecycle và session scope rõ ràng.
+- [ ] Subscribe có cleanup; async work có abort hoặc guard sau unmount.
+- [ ] Subscriber đến muộn có snapshot API để bootstrap.
+- [ ] Snapshot và event có merge rule; không dùng timestamp để suy đoán thứ tự.
+- [ ] Consumer idempotent; dedupe cache có scope và giới hạn nếu cần.
+- [ ] Lỗi notification không biến mutation đã commit thành lỗi command.
+- [ ] Delivery, retry, bridge và telemetry policy được ghi rõ, có test tương ứng.
+
+Nếu chưa biết bắt đầu từ đâu, chọn một projection nhỏ như badge giỏ hàng: một event versioned, một owner, một snapshot API và một subscription có cleanup. Chỉ mở rộng bus khi có thêm consumer thực sự cần contract đó.
+
+## Đọc tiếp và nguồn tham khảo
+
+<Cards>
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Quy tắc schema và compatibility khi các remote deploy độc lập." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Phân định owner của dữ liệu và các projection dùng chung." />
+  <Card title="Data fetching và cache" href="/docs/giao-tiep-va-trang-thai/data-fetching" description="Kết hợp event với query invalidation và server state." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm tra producer và consumer qua các version contract." />
+</Cards>
+
+- [MDN: EventTarget.dispatchEvent](https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/dispatchEvent) — dispatch đồng bộ và hành vi lỗi của listener.
+- [MDN: Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage) — structured clone, target origin và kiểm tra nguồn message.
+- [MDN: Broadcast Channel API](https://developer.mozilla.org/en-US/docs/Web/API/Broadcast_Channel_API) — giao tiếp cross-context, protocol và đóng channel.

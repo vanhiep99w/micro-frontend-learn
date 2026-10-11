@@ -1,18 +1,230 @@
 ---
 title: "Micro-frontend là gì?"
-description: "Phân biệt micro-frontend với chia component và hiểu mục tiêu deploy độc lập."
+description: "Hiểu micro-frontend qua ví dụ shell–catalog–cart, phân biệt với chia component và làm rõ mục tiêu deploy độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn đang làm một shop online. Team catalog muốn đưa bộ lọc sản phẩm mới lên production, nhưng phải chờ team cart sửa xong lỗi giỏ hàng vì cả hai dùng chung một bản build và một đợt release. Code đã chia thành nhiều component; nhịp phát hành vẫn bị buộc vào nhau.
+
+Micro-frontend nhắm đến bài toán đó: chia frontend theo những phần nghiệp vụ có thể phát triển và phát hành tương đối độc lập, rồi ghép chúng thành một sản phẩm thống nhất. Nó không phải cách gọi mới cho việc tách một component lớn thành nhiều component nhỏ.
+
+<Callout type="info" title="Phạm vi bài này">
+  Bạn chỉ cần biết component, build và deploy ở mức cơ bản. Bài này giải thích mô hình và các đánh đổi; chưa hướng dẫn cấu hình Module Federation hay xây pipeline.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Micro-frontend là một ranh giới phát hành](#micro-frontend-là-một-ranh-giới-phát-hành)
+- [Ví dụ shop với shell, catalog và cart](#ví-dụ-shop-với-shell-catalog-và-cart)
+  - [Ai chịu trách nhiệm cho phần nào](#ai-chịu-trách-nhiệm-cho-phần-nào)
+  - [Người dùng vẫn đi qua một luồng mua hàng](#người-dùng-vẫn-đi-qua-một-luồng-mua-hàng)
+- [Khác gì với chia component và package](#khác-gì-với-chia-component-và-package)
+- [Deploy độc lập thực sự có nghĩa gì](#deploy-độc-lập-thực-sự-có-nghĩa-gì)
+  - [Một lần release catalog](#một-lần-release-catalog)
+  - [Độc lập không có nghĩa là không phụ thuộc](#độc-lập-không-có-nghĩa-là-không-phụ-thuộc)
+- [Các phần frontend được ghép ở đâu](#các-phần-frontend-được-ghép-ở-đâu)
+- [Lợi ích và chi phí đi kèm](#lợi-ích-và-chi-phí-đi-kèm)
+- [Những điều micro-frontend không đảm bảo](#những-điều-micro-frontend-không-đảm-bảo)
+- [Khi nào nên bắt đầu bằng mô hình đơn giản hơn](#khi-nào-nên-bắt-đầu-bằng-mô-hình-đơn-giản-hơn)
+- [Tự kiểm tra cách hiểu](#tự-kiểm-tra-cách-hiểu)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Micro-frontend là một ranh giới phát hành
 
-Bài này sẽ giúp bạn: phân biệt micro-frontend với chia component và hiểu mục tiêu deploy độc lập.
+**Micro-frontend là một kiểu kiến trúc trong đó các phần frontend có khả năng phát hành độc lập được ghép thành một ứng dụng hoặc trải nghiệm lớn hơn.** Mỗi phần thường gắn với một phạm vi nghiệp vụ và có team chịu trách nhiệm từ phát triển, kiểm thử đến vận hành.
 
-[Xem các bài trong nhóm Nền tảng](/docs/nen-tang).
+Định nghĩa này có ba ý cần giữ cùng nhau:
+
+- **Ranh giới nghiệp vụ:** catalog quản lý trải nghiệm tìm và xem sản phẩm; cart quản lý trải nghiệm giỏ hàng. Ranh giới không chỉ là “đây là phần HTML, kia là phần CSS”.
+- **Khả năng phát hành độc lập:** thay đổi bên trong catalog có thể tới production mà không bắt buộc build và deploy lại cart.
+- **Composition:** các phần vẫn được ghép lại bằng routing, layout hoặc cơ chế tích hợp để người dùng sử dụng một sản phẩm có trải nghiệm nhất quán.
+
+Bạn có thể hình dung một trung tâm thương mại: các cửa hàng quản lý hoạt động riêng, nhưng cùng dùng lối đi và tuân thủ quy định chung. Trong frontend, “quy định chung” là các thỏa thuận về URL, giao tiếp, thiết kế và phiên đăng nhập. Phép so sánh dừng ở đó: các micro-frontend chạy chung trang còn có thể ảnh hưởng nhau qua JavaScript, CSS và tài nguyên của trình duyệt.
+
+Từ *micro* không đặt ra số dòng code, số component hay kích thước bundle cụ thể. Một trang nghiệp vụ đủ lớn vẫn có thể là một micro-frontend; một nút bấm rất nhỏ chưa chắc nên trở thành một đơn vị deploy riêng. Đơn vị chia nên đủ trọn vẹn để team hoàn thành phần lớn thay đổi mà không phải liên tục sửa phần của team khác.
+
+## Ví dụ shop với shell, catalog và cart
+
+Trong ví dụ xuyên suốt lộ trình này, bạn có một shop gồm ba phần:
+
+```text
+                  Shop trong trình duyệt
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │      Shell      │
+                  │ Layout và route │
+                  └────────┬────────┘
+                           │
+                  Chọn phần theo URL
+                           │
+                ┌──────────┴──────────┐
+                ▼                     ▼
+       ┌─────────────────┐   ┌─────────────────┐
+       │     Catalog     │   │      Cart       │
+       │    /products    │   │      /cart      │
+       └─────────────────┘   └─────────────────┘
+```
+
+Sơ đồ này minh họa composition theo route: shell hiển thị catalog hoặc cart tùy URL, không bắt buộc tải và render cả hai cùng lúc. Một thiết kế khác có thể ghép catalog và mini-cart trên cùng trang; đó vẫn là micro-frontend nếu giữ được các ranh giới cần thiết.
+
+### Ai chịu trách nhiệm cho phần nào
+
+| Phần | Trách nhiệm trong ví dụ | Không nên ôm vào |
+| --- | --- | --- |
+| Shell | Khung trang, navigation, chọn ứng dụng theo route, phối hợp ngữ cảnh đăng nhập và fallback khi tải ứng dụng lỗi | Logic lọc sản phẩm hoặc tính toán giỏ hàng |
+| Catalog | Danh sách, tìm kiếm, bộ lọc và chi tiết sản phẩm; điều phối hành động thêm sản phẩm vào giỏ qua contract đã thống nhất | Đọc trực tiếp store nội bộ hoặc import component nội bộ của cart |
+| Cart | Giao diện giỏ hàng, cập nhật số lượng, gọi API để lấy trạng thái giỏ và hiển thị tổng tiền | Điều khiển cấu trúc trang danh sách sản phẩm |
+
+*Shell* là ứng dụng vỏ bao quanh và phối hợp các phần bên trong. Trong một số công cụ, ứng dụng tải phần khác được gọi là *host*, còn phần được tải được gọi là *remote*. Đây là tên vai trò trong cơ chế tích hợp, không phải bằng chứng rằng kiến trúc đã có deploy độc lập.
+
+Mỗi phần còn chứa nhiều component bình thường: catalog có `ProductCard`, `FilterPanel`, `ProductList`; cart có `CartItem` và `CartSummary`. Component là công cụ tổ chức code **bên trong** ranh giới đó, không bị micro-frontend thay thế.
+
+### Người dùng vẫn đi qua một luồng mua hàng
+
+Giả sử bạn mở `/products`, chọn sản phẩm và bấm “Thêm vào giỏ”. Catalog thực hiện hành động qua API hoặc một contract giao tiếp đã thống nhất; cart hoặc mini-cart lấy lại trạng thái giỏ khi cần. Sau đó bạn mở `/cart` để chỉnh số lượng.
+
+Trong cách thiết kế này, catalog không cần biết cart dùng Redux, Zustand hay state nội bộ. Nó chỉ cần biết phần giao tiếp công khai: hành động nào được hỗ trợ, dữ liệu đầu vào là gì và kết quả được thông báo ra sao. State giỏ hàng có thể nằm ở backend; việc ghép UI không bắt buộc biến mọi dữ liệu thành một global store dùng chung.
+
+Cả luồng vẫn cần cùng quy ước về URL, trạng thái đăng nhập và giao diện. Người dùng không nên phải biết nút mình vừa bấm thuộc team nào. Tự chủ của team có ích khi nó giúp giao sản phẩm tốt hơn, chứ không phải khi mỗi màn hình hoạt động theo một quy tắc khác nhau.
+
+## Khác gì với chia component và package
+
+Hãy xét cùng một bộ lọc sản phẩm trong ba cách tổ chức:
+
+| Cách tổ chức | Điều gì được tách | Muốn đưa bộ lọc mới lên shop |
+| --- | --- | --- |
+| Component trong một app | Code và trách nhiệm của component | Build và deploy ứng dụng chứa component |
+| Package như `@shop/catalog`, được import khi build shell | Code, version package và có thể cả ownership | Publish package, cập nhật dependency rồi build và deploy shell |
+| Catalog có artifact deploy riêng, được ghép khi chạy hoặc ở server | Code, ownership và đơn vị phát hành | Deploy catalog và cập nhật cách hệ thống chọn version của nó, nếu contract vẫn tương thích |
+
+Tách package rất có ích cho tái sử dụng và quản lý code. Nhưng **publish package không đồng nghĩa với deploy tính năng tới người dùng**. Nếu shell còn phải build lại để nhận package mới, chu kỳ phát hành của catalog vẫn phụ thuộc shell.
+
+Tương tự, code splitting hay `lazy()` giúp trình duyệt tải code khi cần. Nếu các chunk vẫn sinh ra từ cùng một build và được deploy cùng nhau, đó chưa phải deploy độc lập.
+
+Một *modular frontend* là một ứng dụng có các module và ranh giới nội bộ rõ ràng nhưng thường vẫn phát hành như một đơn vị. Nó không phải kiến trúc “kém trưởng thành”: khi team chưa cần các nhịp release riêng, giữ một đơn vị deploy thường làm tích hợp và debug dễ hơn.
+
+<Callout type="warn" title="Nhiều repo chưa đủ">
+  Tách catalog và cart sang hai repo nhưng luôn phải ghép code, build và release cùng nhau chỉ chuyển nơi đặt code. Ngược lại, một monorepo vẫn có thể chứa nhiều micro-frontend với artifact và pipeline phát hành riêng.
+</Callout>
+
+## Deploy độc lập thực sự có nghĩa gì
+
+Phép thử dễ hiểu nhất là: **catalog sửa một chi tiết bên trong, giữ nguyên contract công khai; cart và shell có phải phát hành lại không?** Nếu mọi lần sửa đều kéo theo release toàn bộ, mục tiêu deploy độc lập chưa đạt, dù bạn đã dùng công cụ nào.
+
+“Độc lập” ở đây là giảm phối hợp bắt buộc cho các thay đổi tương thích. Nó không có nghĩa từng phần được thay đổi tùy ý mà không quan tâm sản phẩm chung.
+
+### Một lần release catalog
+
+Giả sử catalog thêm tùy chọn sắp xếp sản phẩm, không đổi route hay contract với shell. Hệ thống dùng runtime composition và một cấu hình để chọn artifact đang hoạt động. Luồng phát hành có thể như sau:
+
+```text
+Catalog: sửa code → build và test → deploy artifact → chọn version mới
+Cart:    không đổi code, không build lại, giữ artifact đang dùng
+Shell:   không đổi code, không build lại, đọc cấu hình tích hợp
+```
+
+Một cấu hình **minh họa**, không phải API của một framework cụ thể:
+
+```json
+{
+  "catalog": "/assets/catalog/1.5.0/entry.js",
+  "cart": "/assets/cart/2.3.0/entry.js"
+}
+```
+
+Khi catalog lên version `1.6.0`, hệ thống chỉ đổi tham chiếu catalog sang artifact mới. Các số version ở đây là ví dụ; chúng không bắt buộc bằng nhau, vì catalog và cart có vòng đời khác nhau.
+
+Cơ chế chọn version có thể nằm trong runtime config, manifest, import map hoặc cấu hình server. Điều quan trọng là **không cần sửa source rồi build lại shell chỉ để thay version catalog**. Việc publish một artifact và việc đưa người dùng sang artifact đó cũng có thể là hai bước riêng, phục vụ rollout có kiểm soát.
+
+Nếu version mới lỗi, bạn có thể chọn lại artifact catalog trước đó mà không rollback cart, với điều kiện artifact cũ còn được giữ và API vẫn hỗ trợ nó. Người dùng đã mở trang có thể tiếp tục chạy code cũ cho đến khi reload hoặc điều hướng theo cơ chế tải của hệ thống. Vì vậy cache và khả năng nhiều version cùng tồn tại là phần của thiết kế release, không phải chi tiết để tính sau.
+
+### Độc lập không có nghĩa là không phụ thuộc
+
+Shell vẫn phải hiểu cách tải catalog. Catalog vẫn phải gọi API đúng. Cart vẫn phải hiểu những thông tin mà luồng thêm sản phẩm vào giỏ truyền sang. Các thỏa thuận đó được gọi là *contract*: giao diện công khai giữa các phần, thay vì chi tiết triển khai bên trong.
+
+Ví dụ, nếu catalog đang truyền `productId` nhưng cart mới bắt buộc nhận `sku`, deploy riêng có thể làm hỏng luồng mua hàng. Cách xử lý không phải bỏ mọi contract để “tự chủ hơn”, mà là giữ tương thích trong giai đoạn chuyển đổi hoặc version hóa contract khi cần.
+
+Mục tiêu hợp lý là phần lớn thay đổi nội bộ không cần release đồng bộ. Những thay đổi vượt qua ranh giới vẫn cần kế hoạch. Contract tests, kiểm thử tích hợp với version đang chạy và một số E2E cho luồng mua hàng giúp phát hiện lỗi trước khi rollout; deploy độc lập không cho phép bỏ kiểm thử toàn hệ thống.
+
+## Các phần frontend được ghép ở đâu
+
+*Composition* là bước đưa các phần riêng vào sản phẩm chung. Vị trí ghép ảnh hưởng trực tiếp đến việc phát hành:
+
+| Cách ghép | Cách hoạt động | Liên hệ với deploy độc lập |
+| --- | --- | --- |
+| Build-time composition | Shell import các package rồi bundler tạo bản build chung | Phát hành thay đổi thường cần build và deploy lại ứng dụng tích hợp |
+| Runtime composition | Trình duyệt tải phần frontend qua một entry hoặc địa chỉ riêng khi chạy | Có thể chọn artifact mới mà không rebuild shell nếu cấu hình và contract cho phép |
+| Server-side composition | Server hoặc edge ghép HTML hay fragment từ các phần riêng trước khi trả trang | Có thể phát hành fragment riêng nếu lớp ghép và các contract không buộc release đồng bộ |
+
+Một số tài liệu dùng từ micro-frontend theo nghĩa rộng, bao gồm cả các module nghiệp vụ ghép lúc build. Trong lộ trình này, mình dùng **khả năng phát hành độc lập** làm tiêu chí chính để phân biệt với modular frontend. Build-time composition vẫn đáng học, nhưng cần nhìn rõ giới hạn của nó đối với mục tiêu đó.
+
+Module Federation là một cơ chế chia sẻ và tải module giữa các ứng dụng; single-spa hỗ trợ điều phối vòng đời ứng dụng; iframe cung cấp một browsing context riêng; Web Components cung cấp giao diện custom element để tích hợp. Các công cụ này giải quyết những phần khác nhau của bài toán, và có thể kết hợp với nhau. Không công cụ nào tự quyết định ranh giới nghiệp vụ, ownership hay chiến lược release cho bạn.
+
+Bài này chưa cần bạn chọn công cụ. Trước hết, hãy trả lời “phần nào cần phát hành độc lập, do ai chịu trách nhiệm?”; sau đó mới chọn cách ghép phù hợp.
+
+## Lợi ích và chi phí đi kèm
+
+Micro-frontend có thể giúp các team bớt chờ nhau, nhưng đổi lại hệ thống phải xử lý những điều trước đây được một bản build chung giải quyết hộ.
+
+| Lợi ích mong muốn | Vì sao có thể đạt được | Chi phí cần chấp nhận |
+| --- | --- | --- |
+| Team release theo nhịp riêng | Mỗi phần có artifact và đường phát hành riêng | Nhiều pipeline, quản lý version, rollout và rollback |
+| Phạm vi thay đổi dễ kiểm soát hơn | Thay đổi nội bộ không buộc build lại phần khác | Contract và kiểm thử tích hợp phải rõ |
+| Migration từng phần | Thay catalog mà chưa cần viết lại cart | Có giai đoạn chạy song song công nghệ và dependency cũ, mới |
+| Ownership rõ hơn | Team chịu trách nhiệm cho một phạm vi nghiệp vụ | Cần người phụ trách các vấn đề xuyên suốt như UX, auth và observability |
+
+Đừng chỉ đo thành công bằng số lượng app đã tách. Nếu một tính năng vẫn cần sửa catalog, cart và shell cùng lúc, rồi ba team phải chờ nhau deploy, bạn đã thêm chi phí phân tán mà chưa giảm được phụ thuộc.
+
+Hiệu năng cũng cần đo ở cấp sản phẩm. Hai app có bundle riêng có thể tải trùng framework; tải entry rồi mới phát hiện dependency có thể tạo thêm chuỗi request. Chia sẻ dependency có thể giảm tải trùng, nhưng lại thêm ràng buộc version. Không có lý do mặc định để kết luận micro-frontend sẽ nhanh hơn một app được tối ưu tốt.
+
+## Những điều micro-frontend không đảm bảo
+
+Có vài suy luận rất dễ mắc khi mới học mô hình này:
+
+- **Không bắt buộc dùng nhiều framework.** Catalog và cart cùng dùng React vẫn có thể là micro-frontend. Khác framework là một khả năng phục vụ migration, không phải mục tiêu tự thân.
+- **Không bắt buộc backend là microservices.** Các phần frontend có thể gọi chung một backend. Ranh giới backend và frontend cần hợp lý với nghiệp vụ, nhưng không nhất thiết ánh xạ một-một.
+- **Không đảm bảo cách ly lỗi.** Nếu cùng chạy trong một JavaScript context, một remote có thể làm nghẽn main thread, sửa global hoặc gây xung đột CSS. Error boundary và fallback hữu ích cho một số lỗi, nhưng không giải quyết mọi kiểu lỗi.
+- **Không tạo security boundary chỉ nhờ tách bundle.** Code bên thứ ba chạy cùng trang có thể có quyền truy cập rất rộng. Các cơ chế như iframe khác origin, sandbox và CSP cần được thiết kế theo threat model, không được suy ra từ tên “micro-frontend”.
+- **Không thay backend authorization.** Shell có thể điều phối đăng nhập hoặc ẩn màn hình, nhưng backend vẫn phải kiểm tra quyền cho từng request.
+- **Không có nghĩa mỗi component đều nên deploy riêng.** `Button`, `Input` hay typography thường hợp với design system dùng chung hơn là một remote độc lập.
+
+<Callout type="warn" title="Chia bundle không chia được mọi phụ thuộc">
+  Một global store chứa state của mọi domain, các import chéo vào code nội bộ và CSS global có thể buộc các app phụ thuộc nhau dù chúng deploy riêng. Ranh giới kỹ thuật chỉ có ích khi cách viết code và contract cũng tôn trọng ranh giới đó.
+</Callout>
+
+## Khi nào nên bắt đầu bằng mô hình đơn giản hơn
+
+Mặc định, mình sẽ bắt đầu bằng một frontend có module nghiệp vụ rõ ràng nếu chỉ có một team hoặc chưa có nhu cầu release riêng. Vì lúc đó, một build và một pipeline giúp bạn sửa, test và theo dõi lỗi với ít cơ chế hơn. Tách module tốt vẫn chuẩn bị cho việc tách đơn vị deploy sau này.
+
+Micro-frontend đáng cân nhắc khi nhiều team thật sự bị chặn bởi chu kỳ release chung, có các domain tương đối tách biệt, hoặc cần migration một phần ứng dụng mà không thay toàn bộ. “Ứng dụng có nhiều component” hay “backend đã dùng microservices” không đủ để kết luận nên chọn nó.
+
+Nếu mục đích chỉ là học, shop shell–catalog–cart là một phạm vi phù hợp để thử. Nhưng hãy giữ hai mục tiêu khác nhau: một demo giúp hiểu cơ chế tải remote; một kiến trúc production còn cần chứng minh lợi ích về phát hành, khả năng vận hành và trải nghiệm người dùng.
+
+## Tự kiểm tra cách hiểu
+
+Thử trả lời bốn tình huống trước khi đọc phần giải thích:
+
+| Tình huống | Cách hiểu |
+| --- | --- |
+| `ProductList` và `CartPage` tách file, cùng một app và pipeline | Chia component hoặc module; chưa có ranh giới deploy riêng |
+| Catalog ở repo riêng, publish npm package; shell phải rebuild để cập nhật | Tách code và version package; release tới người dùng vẫn phụ thuộc shell |
+| Catalog và cart cùng monorepo, artifact riêng; catalog đổi version mà không rebuild shell hay cart | Có dấu hiệu đạt deploy độc lập; vẫn cần kiểm tra contract và ownership |
+| Shell tải hai remote bằng Module Federation, nhưng mỗi release bắt buộc cả ba app lên cùng version | Có cơ chế runtime integration, nhưng mục tiêu phát hành độc lập chưa đạt |
+
+Với một hệ thống cụ thể, bạn có thể đi thêm một bước: vẽ ranh giới catalog và cart, ghi team sở hữu từng phần, contract giữa chúng và các bước cần làm để release riêng catalog. Nếu chưa chỉ ra được ai phải build hoặc deploy gì, bạn chưa có đủ thông tin để đánh giá khả năng độc lập.
+
+## Đọc tiếp
+
+Các trang dưới đây đi sâu vào quyết định áp dụng và thuật ngữ; nếu còn là trang khung, chúng cho biết phần tiếp theo của lộ trình.
+
+<Cards>
+  <Card title="Khi nào nên và không nên dùng?" href="/docs/nen-tang/khi-nao-nen-dung" description="Đánh giá nhu cầu thực tế trước khi thêm chi phí kiến trúc." />
+  <Card title="Thuật ngữ cốt lõi" href="/docs/nen-tang/thuat-ngu" description="Phân biệt host, remote, shell, composition và isolation." />
+  <Card title="Bài toán shop mẫu" href="/docs/bat-dau/bai-toan-shop" description="Đặt yêu cầu cho shell, catalog và cart trong phần thực hành." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, trên martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): định nghĩa kiến trúc, independent deployment và đánh đổi của các cách tích hợp.
+- [Micro Frontends — Michael Geers](https://micro-frontends.org/): tổ chức theo domain, team ownership và các nguyên tắc tích hợp frontend.

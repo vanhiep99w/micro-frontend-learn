@@ -1,18 +1,469 @@
 ---
 title: "Kiến thức cần có"
-description: "Ôn JavaScript modules, TypeScript, bundlers, HTTP và kiến thức frontend cần thiết."
+description: "Ôn JavaScript modules, async, TypeScript, bundlers, HTTP, routing và lifecycle để học và debug micro-frontend."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop vẫn hiện header, nhưng vùng catalog trắng sau một lần deploy. Bạn cần biết lỗi nằm ở đâu: tải JavaScript thất bại, module không export đúng thứ shell cần, hay component đã render rồi bị CSS che mất? Nếu chưa phân biệt được các lớp này, cấu hình thêm Module Federation thường chỉ làm việc debug khó hơn.
+
+Bạn không cần học hết mọi framework trước khi bắt đầu. Mình khuyên bạn nắm chắc đường đi từ source code đến giao diện trong trình duyệt, rồi mới thêm cơ chế tải và ghép các ứng dụng độc lập. Bài này giúp bạn xác định phần nào cần ôn ngay và phần nào có thể học sau.
+
+<Callout type="info" title="Phạm vi và cách đọc">
+  Ví dụ tiếp tục dùng shop gồm shell, catalog và cart. Các đoạn code là ví dụ học tập, không phải ứng dụng có sẵn trong repository docs này. Bạn nên biết HTML, CSS, JavaScript cơ bản và từng chạy một frontend app; chưa cần biết Module Federation, single-spa hay Kubernetes.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Cần học đến mức nào](#cần-học-đến-mức-nào)
+- [JavaScript modules và async](#javascript-modules-và-async)
+  - [Static import và dynamic import](#static-import-và-dynamic-import)
+  - [Module scope không phải cách ly ứng dụng](#module-scope-không-phải-cách-ly-ứng-dụng)
+  - [Promise và các trạng thái tải](#promise-và-các-trạng-thái-tải)
+- [TypeScript và contract tại runtime](#typescript-và-contract-tại-runtime)
+  - [Kiểu dữ liệu mô tả thỏa thuận](#kiểu-dữ-liệu-mô-tả-thỏa-thuận)
+  - [Dữ liệu bên ngoài cần được kiểm tra](#dữ-liệu-bên-ngoài-cần-được-kiểm-tra)
+- [Bundler và đường đi của một bản build](#bundler-và-đường-đi-của-một-bản-build)
+  - [Source module khác artifact](#source-module-khác-artifact)
+  - [Code splitting khác deploy độc lập](#code-splitting-khác-deploy-độc-lập)
+- [HTTP và trình duyệt](#http-và-trình-duyệt)
+  - [Origin và CORS](#origin-và-cors)
+  - [Status code và Content Type](#status-code-và-content-type)
+  - [Cache và version của asset](#cache-và-version-của-asset)
+- [Routing và quyền sở hữu URL](#routing-và-quyền-sở-hữu-url)
+- [DOM, CSS và lifecycle](#dom-css-và-lifecycle)
+  - [CSS có thể vượt ranh giới component](#css-có-thể-vượt-ranh-giới-component)
+  - [Mount phải đi cùng cleanup](#mount-phải-đi-cùng-cleanup)
+- [Tooling và kiểm thử tối thiểu](#tooling-và-kiểm-thử-tối-thiểu)
+- [Bài tập nối các kiến thức](#bài-tập-nối-các-kiến-thức)
+- [Checklist trước khi học tích hợp](#checklist-trước-khi-học-tích-hợp)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Cần học đến mức nào
 
-Bài này sẽ giúp bạn: ôn JavaScript modules, TypeScript, bundlers, HTTP và kiến thức frontend cần thiết.
+Mục tiêu không phải trở thành chuyên gia bundler rồi mới được viết remote. Bạn cần đủ kiến thức để giải thích một hành vi, tạo một thử nghiệm nhỏ và tìm đúng lớp gây lỗi.
 
-[Xem các bài trong nhóm Nền tảng](/docs/nen-tang).
+| Nền tảng | Mức cần có để bắt đầu | Bạn sẽ dùng khi nào |
+| --- | --- | --- |
+| JavaScript modules | Viết `import`/`export`, dùng `import()`, hiểu module scope và side effect | Tải catalog và gọi giao diện công khai của nó |
+| Async | Dùng `async`/`await`, bắt lỗi Promise, phân biệt loading với error | Remote tải chậm hoặc không tải được |
+| TypeScript | Đọc và viết `type`, `interface`, dùng `unknown` và type guard | Mô tả contract và kiểm tra dữ liệu qua ranh giới |
+| Bundler | Phân biệt source, entry, chunk, build output và URL asset | Tìm nguyên nhân chunk 404 hoặc tải trùng dependency |
+| HTTP | Đọc request/response, hiểu origin, CORS và cache cơ bản | Local chạy được nhưng CDN hoặc production lỗi |
+| UI và lifecycle | Viết component, quản lý state, cleanup listener hoặc effect | Điều hướng nhiều lần gây listener lặp hoặc state cũ |
+| Routing và tooling | Hiểu URL, dùng DevTools, chạy build/test, đọc dependency version | Refresh route lỗi hoặc chỉ production mới hỏng |
+
+Bạn chỉ cần một framework quen thuộc. Nếu đang dùng React, hãy chắc về props, state, effect cleanup và root render; không cần học thêm Vue và Angular để chứng minh rằng mình hiểu micro-frontend.
+
+Các chủ đề như shared dependency negotiation, SSR nhiều ứng dụng, rollout nhiều version và observability xuyên remote có thể học sau. Nhưng đừng bỏ qua HTTP chỉ vì bạn chủ yếu viết component: runtime composition biến việc tải code thành một phụ thuộc mạng thấy rõ.
+
+## JavaScript modules và async
+
+### Static import và dynamic import
+
+Static import khai báo dependency của module:
+
+```js title="catalog.js"
+export function formatProductName(product) {
+  return `${product.name} (${product.sku})`;
+}
+```
+
+```js title="shell.js"
+import { formatProductName } from './catalog.js';
+
+console.log(formatProductName({ name: 'Áo thun', sku: 'shirt-01' }));
+```
+
+Bundler có thể phân tích dependency này trước khi ứng dụng chạy. Với native ES modules trong trình duyệt, dependency cũng được tải và xử lý trước khi phần thân của module nhập nó được thực thi. Static import không có nghĩa là bạn viết một lời gọi mạng đồng bộ.
+
+Dynamic import là một biểu thức, trả về Promise chứa module namespace — object cho phép truy cập các export:
+
+```js
+async function getProductLabel(product) {
+  const catalog = await import('./catalog.js');
+  return catalog.formatProductName(product);
+}
+```
+
+Bạn có thể chỉ gọi hàm này khi người dùng vào route cần catalog. Nhưng `import()` không tự render UI, không tự retry khi lỗi và cũng không tự tạo một micro-frontend. Nó chỉ là một cơ chế nạp module.
+
+Có một khác biệt cần nhớ giữa source code và trình duyệt:
+
+| Import | Điều gì phải giải quyết tên module |
+| --- | --- |
+| `import './catalog.js'` | Trình duyệt có thể resolve URL tương đối từ URL của module nhập nó; bundler cũng có thể xử lý khi build |
+| `import 'react'` | Bundler hoặc import map phải ánh xạ bare specifier này; trình duyệt không tự tìm trong `node_modules` |
+| `import('catalog/ProductList')` trong một cấu hình federation | Cơ chế federation được cấu hình xử lý tên remote và exposed module; đây không phải URL chuẩn mà trình duyệt tự hiểu |
+
+Đừng lấy một ví dụ federation rồi chép vào trang HTML không có runtime tương ứng. Cùng cú pháp `import()`, nhưng cơ chế resolve module có thể khác nhau.
+
+### Module scope không phải cách ly ứng dụng
+
+Biến khai báo trong ES module không tự trở thành thuộc tính của `window`. Điều đó giúp tránh đụng tên biến, nhưng không ngăn code đụng vào các tài nguyên dùng chung:
+
+```js
+// Đây vẫn là side effect lên môi trường chung của trang.
+window.shopTheme = 'dark';
+document.body.classList.add('catalog-page');
+window.addEventListener('resize', () => console.log('resize'));
+```
+
+*Side effect* là tác động ra ngoài giá trị mà một hàm hoặc module trả về: sửa DOM, đăng ký listener, khởi động timer hoặc thay đổi global. Với các remote cùng chạy trong một trang, những tác động này có thể ảnh hưởng shell và remote khác.
+
+Mặc định, mình tránh khởi động ứng dụng ngay ở top level của module. Export một hàm khởi tạo rõ ràng sẽ giúp shell chủ động quản lý lifecycle và giúp test không phải dựng cả trang chỉ để import code.
+
+<Callout type="warn" title="Module riêng không phải security boundary">
+  Tách file hoặc bundle không ngăn code chạy cùng trang đọc DOM, dùng browser API hay chiếm main thread. Isolation và quyền chạy code là quyết định kiến trúc riêng, không phải lợi ích tự động của `import`.
+</Callout>
+
+### Promise và các trạng thái tải
+
+Khi catalog là dependency cần tải lúc chạy, shell phải phân biệt ít nhất ba trạng thái: đang tải, sẵn sàng và thất bại. Chỉ viết `await import()` rồi giả định thành công sẽ bỏ mất hai trạng thái mà người dùng thực sự gặp.
+
+```js
+async function loadCatalogModule(container) {
+  container.textContent = 'Đang tải catalog…';
+
+  try {
+    const catalog = await import('./catalog.js');
+    container.textContent = '';
+    return catalog;
+  } catch (error) {
+    container.textContent = 'Không tải được catalog. Bạn có thể thử lại sau.';
+    console.error('Catalog module load failed', error);
+    return null;
+  }
+}
+```
+
+Ví dụ chỉ xử lý bước tải module; việc mount UI có thể lỗi riêng và cần được xử lý ở lớp gọi tiếp theo. Khi người dùng rời route trong lúc đang tải, kết quả cũng có thể đến muộn: shell cần kiểm tra route hoặc request hiện tại trước khi mount. Bắt lỗi Promise không giải quyết được race condition đó.
+
+Bạn cũng nên hiểu rằng công việc CPU nặng vẫn có thể chặn main thread dù đặt trong một hàm `async`. `async` giúp biểu diễn việc chờ; nó không tự chuyển tính toán sang worker.
+
+## TypeScript và contract tại runtime
+
+### Kiểu dữ liệu mô tả thỏa thuận
+
+Contract là thỏa thuận công khai giữa các phần. Catalog có thể nhận một callback thêm sản phẩm mà không cần biết cart dùng store nào:
+
+```ts
+export type AddItemInput = {
+  productId: string;
+  quantity: number;
+};
+
+export type CatalogOptions = {
+  onAddToCart: (input: AddItemInput) => Promise<void>;
+};
+
+export type CatalogModule = {
+  mount: (container: HTMLElement, options: CatalogOptions) => () => void;
+};
+```
+
+Trong contract minh họa này, `mount` trả về hàm cleanup. Callback resolve nghĩa là thao tác đã thành công theo thỏa thuận; reject nghĩa là catalog cần xử lý lỗi. Kiểu dữ liệu không tự định nghĩa “thành công” có nghĩa gì — phần đó cần được viết rõ trong contract, chẳng hạn backend đã xác nhận cập nhật giỏ.
+
+Mình khuyên bạn dùng kiểu dữ liệu tập trung vào nhu cầu của bên gọi. Tránh truyền nguyên store nội bộ của cart chỉ vì nó tiện: catalog sẽ phụ thuộc vào cấu trúc store và khó giữ tương thích khi cart thay đổi.
+
+### Dữ liệu bên ngoài cần được kiểm tra
+
+TypeScript kiểm tra code trước khi chạy; phần lớn thông tin type bị xóa khi tạo JavaScript. Một khai báo type không bảo vệ runtime trước JSON sai, event sai schema hoặc remote khác version.
+
+```ts
+const input = JSON.parse('{"productId":42,"quantity":"2"}') as AddItemInput;
+```
+
+Đoạn trên không biến `42` thành string hay `"2"` thành number. `as AddItemInput` chỉ bảo compiler tin lời bạn.
+
+Tại ranh giới nhận dữ liệu, bắt đầu với `unknown` rồi kiểm tra:
+
+```ts
+function isAddItemInput(value: unknown): value is AddItemInput {
+  if (typeof value !== 'object' || value === null) return false;
+
+  const input = value as Record<string, unknown>;
+  return (
+    typeof input.productId === 'string' &&
+    input.productId.trim().length > 0 &&
+    typeof input.quantity === 'number' &&
+    Number.isInteger(input.quantity) &&
+    input.quantity > 0
+  );
+}
+
+function parseAddItemInput(json: string): AddItemInput {
+  const value: unknown = JSON.parse(json);
+
+  if (!isAddItemInput(value)) {
+    throw new Error('Invalid add-item payload');
+  }
+
+  return value;
+}
+```
+
+`JSON.parse` có thể throw vì JSON không hợp lệ; validator có thể từ chối JSON hợp lệ nhưng sai schema. Bên gọi cần xử lý cả hai. Ví dụ kiểm tra hình dạng và một vài điều kiện cơ bản, chưa kiểm tra sản phẩm có tồn tại, tồn kho hay quyền của người dùng; backend vẫn phải kiểm tra các điều kiện nghiệp vụ đó.
+
+Khi schema lớn hơn, bạn có thể dùng thư viện validation. Điều cần học trước là sự khác nhau giữa **type checking lúc phát triển** và **validation lúc chạy**, không phải cú pháp của một thư viện cụ thể.
+
+## Bundler và đường đi của một bản build
+
+### Source module khác artifact
+
+Một đường đi đơn giản, dùng làm mô hình để debug:
+
+```text
+Source TS/JS → Build tools → Artifact JS/CSS → HTTP server/CDN → Trình duyệt
+```
+
+*Artifact* là output được đưa lên môi trường chạy. Trình duyệt tải artifact qua URL, không đọc file TypeScript trong repo của bạn và không dùng cấu hình alias của editor để tìm module.
+
+| Thuật ngữ | Hiểu ở mức cần thiết |
+| --- | --- |
+| Entry | Điểm bắt đầu của dependency graph hoặc điểm vào được công cụ build cấu hình |
+| Dependency graph | Quan hệ giữa các module mà build tool phân tích |
+| Chunk | Một phần output JavaScript; có thể là code ứng dụng, dependency hoặc phần tải muộn |
+| Code splitting | Chia output để không phải tải toàn bộ code ngay từ đầu |
+| Tree shaking | Loại export/code không được dùng khi công cụ có đủ thông tin và side effect cho phép |
+| Base URL hoặc public path | Quy tắc xác định URL của asset và chunk lúc chạy |
+| Source map | Ánh xạ code đã build về source để đọc lỗi dễ hơn |
+
+Bundler có thể xử lý module graph và tạo chunk; toolchain có thể dùng thêm các bước transpile, CSS processing và minify. Không nên giả định mọi công cụ làm những việc đó giống nhau, hoặc transpile TypeScript đồng nghĩa đã typecheck.
+
+Hãy thử một build production và quan sát output trước khi học federation. Nếu bạn chưa biết chunk được phục vụ từ đâu, một lỗi tải remote dễ bị hiểu nhầm thành lỗi React.
+
+### Code splitting khác deploy độc lập
+
+Giả sử shell dùng `import('./catalog.js')`, bundler sinh chunk riêng cho catalog. Nếu shell và chunk vẫn được tạo trong một lần build rồi phát hành cùng nhau, bạn có lazy loading, chưa có đơn vị release độc lập.
+
+Ngược lại, một remote có thể có artifact và pipeline riêng, nhưng vẫn cần contract tương thích để shell sử dụng được. Hai câu hỏi khác nhau là:
+
+- **Tải khi nào?** Code splitting và lazy loading giúp trả lời.
+- **Ai có thể build và deploy riêng?** Ranh giới artifact, contract và cơ chế composition giúp trả lời.
+
+Bạn chưa cần thuộc thuật toán bundling. Nhưng cần nhận ra lỗi entry đã tải mà chunk tải muộn 404: nguyên nhân có thể là base URL sai hoặc chunk cũ bị xóa, không phải module export sai.
+
+## HTTP và trình duyệt
+
+### Origin và CORS
+
+Origin gồm scheme, hostname và port. Vì vậy `http://localhost:3000` và `http://localhost:3001` là hai origin khác nhau; đổi đường dẫn từ `/products` sang `/cart` thì không đổi origin.
+
+CORS là cơ chế để server cho phép trình duyệt chia sẻ response với code từ origin khác. Trong micro-frontend, bạn có thể gặp nó khi tải ES modules từ CDN hoặc gọi API khác origin.
+
+Tuy nhiên, không phải mọi cách tải JavaScript đều có quy tắc giống nhau:
+
+| Cách tải | Điều cần nhớ |
+| --- | --- |
+| `fetch()` tới API khác origin | Đọc response cần server cho phép CORS; một số request cần preflight `OPTIONS` |
+| `<script type="module">` hoặc native ES module import khác origin | Module được tải theo cơ chế CORS |
+| Classic `<script src="…">` khác origin | Thường có thể tải mà không cần CORS header khi không dùng chế độ CORS; vẫn chịu CSP và các chính sách khác của trình duyệt |
+| Runtime do framework hoặc federation cung cấp | Phải xem nó tải bằng script, module hay fetch, thay vì đoán từ tên “remote” |
+
+Nếu shell ở port `3000` và API ở `4000`, response CORS có thể cho phép origin cụ thể:
+
+```http
+Access-Control-Allow-Origin: http://localhost:3000
+Vary: Origin
+```
+
+Đây chỉ là phần response minh họa, không phải cấu hình server hoàn chỉnh. Request có cookie còn cần chính sách credentials phù hợp ở client và server; không thể kết hợp credentials với `Access-Control-Allow-Origin: *`. Cookie cũng chịu quy tắc `SameSite`, `Secure` và chính sách trình duyệt.
+
+<Callout type="warn" title="Đừng chữa CORS bằng no-cors">
+  `fetch(url, { mode: 'no-cors' })` không cho bạn đọc response cross-origin như bình thường. Response opaque không giúp parse JSON của API. Hãy sửa cấu hình server hoặc dùng proxy có chủ đích; tắt bảo vệ trình duyệt cũng không phải cách sửa cho người dùng.
+</Callout>
+
+CORS không phải authorization. Backend vẫn cần kiểm tra người gọi được phép làm gì, vì client ngoài trình duyệt không chịu cơ chế này như browser.
+
+### Status code và Content Type
+
+Khi catalog không hiện, mở Network và kiểm tra URL thật, status, response headers rồi nội dung response. `200 OK` không đảm bảo bạn đã nhận đúng JavaScript.
+
+| Dấu hiệu | Giả thuyết cần kiểm tra |
+| --- | --- |
+| Entry hoặc chunk trả `404` | Sai đường dẫn, thiếu artifact hoặc tham chiếu version cũ |
+| File `.js` trả `200` nhưng body bắt đầu bằng HTML | SPA fallback hoặc trang lỗi đã trả nhầm cho request asset |
+| ES module bị từ chối vì MIME type | `Content-Type` không phải kiểu JavaScript phù hợp, hoặc URL thực tế trả HTML |
+| Console báo CORS | Origin và response CORS headers không khớp với cơ chế tải |
+| Console báo CSP | Chính sách nguồn script hoặc kết nối chưa cho phép URL đang dùng |
+
+Với native ES modules, MIME checking chặt hơn việc chỉ nhìn đuôi `.js`. Hãy đọc response, đừng dừng ở tên file.
+
+`fetch()` cũng không reject chỉ vì response là `404` hoặc `500`. Nếu dùng nó để đọc runtime config, cần tự kiểm tra `response.ok`:
+
+```js
+async function readRuntimeConfig() {
+  const response = await fetch('/runtime-config.json');
+  if (!response.ok) {
+    throw new Error(`Runtime config HTTP ${response.status}`);
+  }
+
+  const value = await response.json();
+  // Cần validation trước khi dùng các trường từ cấu hình.
+  return value;
+}
+```
+
+`response.json()` còn có thể thất bại nếu body không phải JSON hợp lệ. Các bước “request thành công”, “parse thành công” và “dữ liệu hợp lệ” là ba việc riêng.
+
+### Cache và version của asset
+
+Shell và catalog deploy riêng thì người dùng có thể nhận các version khác nhau do cache hoặc do đã mở tab từ trước. Đó là hành vi phải thiết kế, không phải tình huống hiếm có thể bỏ qua.
+
+Một quy tắc khởi đầu cho **asset công khai**:
+
+| Loại tài nguyên | Chính sách minh họa | Lý do |
+| --- | --- | --- |
+| JS/CSS có content hash và không thay nội dung tại cùng URL | `Cache-Control: max-age=31536000, immutable` | URL mới biểu diễn nội dung mới, URL cũ có thể cache lâu |
+| HTML hoặc manifest/config công khai ở URL cố định cần nhận thay đổi | `Cache-Control: no-cache` | Cho lưu nhưng phải revalidate trước khi reuse theo HTTP cache |
+
+`no-cache` không có nghĩa “không lưu”; `no-store` mới yêu cầu không lưu response. Các response cá nhân hóa hoặc chứa thông tin nhạy cảm cần chính sách riêng, không được áp dụng máy móc bảng asset công khai trên.
+
+Giả sử một tab đang dùng entry cũ, nhưng server vừa xóa chunk cũ mà entry đó còn tham chiếu. Khi người dùng mở route tải muộn, chunk sẽ 404. Vì vậy phát hành artifact mới và giữ artifact cũ đủ lâu thường phải được thiết kế cùng nhau.
+
+Mức cần đạt lúc này: bạn giải thích được vì sao reload, mở tab mới và quay lại tab cũ có thể cho kết quả khác nhau. Chiến lược cache, rollout và rollback chi tiết sẽ nằm ở phần triển khai.
+
+## Routing và quyền sở hữu URL
+
+Với shop mẫu, có thể thống nhất shell chọn domain theo URL, còn mỗi domain xử lý route bên trong:
+
+```text
+/products             → shell chọn catalog → catalog hiện danh sách
+/products/shirt-01    → shell chọn catalog → catalog hiện chi tiết
+/cart                 → shell chọn cart    → cart hiện giỏ hàng
+```
+
+Điều cần hiểu trước là ai được cập nhật URL và ai phản ứng với thay đổi đó. Nếu shell và catalog đều coi mình là router cấp cao nhất, một lần navigation có thể kích hoạt hai lần xử lý hoặc tạo vòng lặp.
+
+Bạn nên biết:
+
+- `pathname`, query string và hash biểu diễn các phần khác nhau của URL.
+- `history.pushState()` thay đổi URL nhưng không tự phát `popstate`; Back/Forward là một tình huống khác mà router cần xử lý.
+- Điều hướng trong SPA và mở trực tiếp một URL là hai luồng request khác nhau.
+- Base path cần nhất quán nếu ứng dụng chạy dưới `/shop/` thay vì `/`.
+
+Vì sao bấm vào `/products/shirt-01` thì được nhưng refresh lại 404? Điều hướng trong SPA có thể chỉ cập nhật UI và history; refresh khiến browser yêu cầu URL đó từ server. Server cần biết cách trả trang entry thích hợp cho route ứng dụng.
+
+Nhưng fallback cho route không nên nuốt request asset. Nếu `/assets/catalog/missing.js` cũng trả HTML của shell, bạn sẽ nhận lỗi MIME hoặc parse khó hiểu thay vì 404 rõ ràng.
+
+## DOM, CSS và lifecycle
+
+### CSS có thể vượt ranh giới component
+
+Catalog có thể export module rất gọn mà vẫn làm hỏng cart nếu stylesheet chứa:
+
+```css
+button {
+  border: 0;
+  background: red;
+}
+```
+
+Selector này không biết ranh giới repo hay component. Khi hai phần dùng chung document, nó có thể áp vào mọi `button` trong trang tùy cascade.
+
+Trước khi học CSS isolation, hãy chắc về cascade, inheritance, specificity và thứ tự stylesheet. Một điểm bắt đầu đơn giản là scoped class hoặc CSS Modules cho style nội bộ, cùng quy ước rõ cho reset, typography và design tokens dùng chung. CSS Modules giúp tránh đụng class name, nhưng không vô hiệu hóa selector global mà bạn vẫn đưa vào stylesheet.
+
+Shadow DOM và iframe cung cấp các kiểu ranh giới khác, có đánh đổi riêng. Bạn chưa cần chọn ngay; chỉ cần không coi “component thuộc catalog” là lý do CSS tự bị giới hạn trong catalog.
+
+### Mount phải đi cùng cleanup
+
+Remote có thể được gắn vào trang, tháo ra rồi gắn lại khi người dùng chuyển route. Xóa DOM không tự gỡ listener trên `window`, không dừng timer và không hủy subscription.
+
+Đoạn dưới minh họa một lifecycle bằng DOM thuần, không phải API của framework tích hợp nào:
+
+```js
+export function mount(container) {
+  const button = document.createElement('button');
+  button.textContent = 'Thêm sản phẩm';
+
+  const onClick = () => console.log('Add item requested');
+  const onResize = () => console.log('Catalog viewport changed');
+
+  button.addEventListener('click', onClick);
+  window.addEventListener('resize', onResize);
+  container.append(button);
+
+  let disposed = false;
+  return function unmount() {
+    if (disposed) return;
+    disposed = true;
+
+    button.removeEventListener('click', onClick);
+    window.removeEventListener('resize', onResize);
+    button.remove();
+  };
+}
+```
+
+Hàm cleanup gỡ đúng listener bằng cùng function reference và chỉ xóa phần DOM nó sở hữu. Nó cũng cho phép gọi nhiều lần mà không tiếp tục thay đổi trang. Nếu bạn viết `removeEventListener('resize', () => ...)`, đó là một function khác và listener cũ vẫn còn.
+
+Trong React, bạn cần hiểu cleanup của `useEffect` và `root.unmount()`; trong Vue hoặc Angular, cần hiểu lifecycle tương ứng. Dùng framework không bỏ trách nhiệm gỡ những tài nguyên nằm ngoài cây UI của nó.
+
+Một thử nghiệm dễ bắt lỗi: mount → unmount → mount, rồi phát đúng một tương tác. Nếu handler chạy hai lần, hãy tìm listener hoặc subscription của instance trước chưa được gỡ.
+
+## Tooling và kiểm thử tối thiểu
+
+Mình khuyên bạn thành thạo DevTools trước khi thêm một bộ observability phức tạp. Network trả lời code có tới browser không; Console trả lời code có chạy được không; Elements và Computed styles trả lời UI có tồn tại nhưng bị style sai không.
+
+| Công cụ hoặc kỹ năng | Việc bạn nên tự làm được |
+| --- | --- |
+| Network | Tìm request lỗi, xem initiator, response body, headers và nguồn cache |
+| Console và source map | Đọc stack trace và tìm code gây lỗi; phân biệt lỗi tải với lỗi thực thi |
+| Elements | Kiểm tra container, DOM của remote và CSS đang áp dụng |
+| Package manager | Hiểu direct/transitive dependency, version range và lockfile |
+| Build và typecheck | Chạy riêng khi toolchain yêu cầu; không coi dev server chạy được là đã typecheck |
+| Git và pipeline | Biết commit nào tạo artifact nào và artifact nào đang được phục vụ |
+| Test | Kiểm tra public contract, lifecycle và ít nhất một luồng người dùng xuyên shell–catalog–cart |
+
+Lockfile giúp tái tạo việc resolve dependency trong một build; nó không đảm bảo các remote đã deploy riêng có dependency tương thích với nhau. Hai bản build có thể dùng các lockfile khác nhau, hoặc tạo ra nhiều bản framework cùng chạy.
+
+Với ví dụ nhỏ, mức kiểm thử hợp lý là test validator chấp nhận/từ chối đúng dữ liệu, test cleanup không để lại handler, rồi kiểm tra luồng mở catalog và thêm sản phẩm. Các kỹ thuật contract test và E2E chi tiết có thể học ở phần kiểm thử, nhưng tư duy kiểm tra ranh giới nên có từ đầu.
+
+## Bài tập nối các kiến thức
+
+Bài tập này dùng một app đơn giản trong framework bạn quen, chưa cần federation. Bạn chỉ cần mô phỏng vùng shell và vùng catalog; các thao tác dưới đây là hướng dẫn thực hành, không yêu cầu sửa repository docs.
+
+1. **Tách catalog thành module có public API.** Export hàm `mount` trả cleanup hoặc dùng một adapter tương đương cho framework. Shell không import store hay component nội bộ ngoài API đã chọn.
+2. **Tải catalog bằng `import()` khi mở vùng sản phẩm.** Hiển thị loading và fallback. Giữ rõ đây vẫn là các chunk của một build, chưa phải deploy độc lập.
+3. **Thử lỗi tải có kiểm soát.** Build và phục vụ app như một static site trong môi trường học; dùng Network request blocking của DevTools để chặn chunk catalog trước lần tải đầu. Không sửa import sang file không tồn tại, vì bundler có thể chặn ngay lúc build.
+4. **Thử lifecycle.** Vào catalog, rời đi rồi vào lại. Resize cửa sổ hoặc bấm nút và kiểm tra một thao tác chỉ kích hoạt một handler.
+5. **Thử dữ liệu sai.** Gọi validator với `productId` là number và `quantity` là string. Xác nhận dữ liệu bị từ chối dù có thể ép kiểu bằng TypeScript.
+6. **Thử URL trực tiếp.** Mở route chi tiết ở tab mới và refresh. Kiểm tra server fallback cho route nhưng không fallback cho asset thiếu.
+7. **Quan sát một production build.** Tìm entry, chunk tải muộn và URL thực tế. Đọc `Cache-Control`; nếu server chưa cấu hình cache thì ghi nhận điều đó thay vì giả định.
+
+Sau bài tập, bạn nên trả lời được “code được tải ở bước nào?”, “ai sở hữu DOM và cleanup?” và “lỗi này xuất hiện trước hay sau khi module thực thi?”. Những câu hỏi đó vẫn hữu ích khi thay dynamic import nội bộ bằng runtime integration giữa các app độc lập.
+
+## Checklist trước khi học tích hợp
+
+Bạn đã đủ nền tảng để bắt đầu nếu phần lớn các mục dưới đây có thể chứng minh bằng một ví dụ nhỏ, không chỉ bằng việc nhận ra tên thuật ngữ:
+
+- [ ] Viết được static import, dynamic import và xử lý Promise reject.
+- [ ] Biết bare specifier cần bundler hoặc import map; tên remote cần cơ chế tích hợp tương ứng.
+- [ ] Giải thích được vì sao module scope không ngăn side effect lên DOM hoặc global.
+- [ ] Viết được một contract TypeScript nhỏ và validation cho dữ liệu `unknown`.
+- [ ] Phân biệt source, entry, chunk và artifact được deploy.
+- [ ] Không nhầm lazy loading với deploy độc lập.
+- [ ] Xác định được hai URL có cùng origin hay không và biết tìm lỗi CORS ở đâu.
+- [ ] Nhận ra response HTML trả nhầm cho URL JavaScript dù status là `200`.
+- [ ] Phân biệt `no-cache`, `no-store` và asset có URL bất biến.
+- [ ] Debug được refresh route, CSS global và listener còn sống sau unmount.
+- [ ] Chạy được build/typecheck/test cần thiết và đọc được request lỗi trong DevTools.
+
+Nếu còn thiếu một vài mục, hãy ôn đúng phần đó rồi quay lại bài tập. Bạn không cần đợi biết mọi công cụ; nhưng nếu chưa đọc được một request chunk thất bại, nên luyện phần Network trước khi thêm nhiều remote.
+
+## Đọc tiếp
+
+Các trang dưới đây là phần tiếp theo của lộ trình; trang còn là placeholder cho biết phạm vi sẽ được bổ sung sau.
+
+<Cards>
+  <Card title="Thuật ngữ cốt lõi" href="/docs/nen-tang/thuat-ngu" description="Đặt tên đúng cho host, remote, shell và composition." />
+  <Card title="Môi trường phát triển" href="/docs/bat-dau/moi-truong" description="Chuẩn bị công cụ cho các bài thực hành." />
+  <Card title="Host và remote đầu tiên" href="/docs/bat-dau/host-remote-dau-tien" description="Áp dụng nền tảng vào một cơ chế tích hợp cụ thể." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [JavaScript modules — MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules): module scope, import/export, dynamic import và module specifiers.
+- [The Basics — TypeScript Handbook](https://www.typescriptlang.org/docs/handbook/2/basic-types.html): type checking và việc xóa type annotations khi tạo JavaScript.
+- [CORS — MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS): preflight, response headers và requests có credentials.
+- [HTTP caching — MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching): revalidation, `no-cache` và tài nguyên có URL chứa hash/version.

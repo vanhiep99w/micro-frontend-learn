@@ -1,18 +1,258 @@
 ---
 title: "Khi nào nên và không nên dùng?"
-description: "So sánh monolith, modular frontend và micro-frontend theo nhu cầu thực tế."
+description: "So sánh monolith, modular frontend và micro-frontend; đánh giá nhu cầu release độc lập, chi phí vận hành và cách thử nghiệm trước khi áp dụng."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Catalog đã làm xong bộ lọc mới, nhưng chưa thể lên production vì cart đang thay luồng giỏ hàng trong cùng bản release. Nếu tình huống này lặp lại, bạn có lý do để xem xét micro-frontend. Nhưng nếu điều khiến bạn khó chịu chỉ là một file quá dài hoặc build chậm, tách thành nhiều ứng dụng có thể chưa giải quyết đúng vấn đề.
+
+**Mặc định, mình chọn một frontend có module nghiệp vụ rõ ràng.** Chỉ cân nhắc micro-frontend khi sự độc lập về phát hành hoặc migration tạo ra lợi ích cụ thể, và team có khả năng trả chi phí tích hợp, kiểm thử, vận hành đi kèm.
+
+<Callout type="info" title="Phạm vi bài này">
+  Bài này giúp bạn ra quyết định kiến trúc, không chọn giữa Module Federation, single-spa hay iframe. Ví dụ tiếp tục dùng shop với shell, catalog và cart; nếu chưa quen các tên này, bạn có thể đọc [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi) trước.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Bạn đang muốn giải quyết vấn đề nào](#bạn-đang-muốn-giải-quyết-vấn-đề-nào)
+- [So sánh ba cách tổ chức frontend](#so-sánh-ba-cách-tổ-chức-frontend)
+- [Khi nào micro-frontend đáng cân nhắc](#khi-nào-micro-frontend-đáng-cân-nhắc)
+  - [Các team thật sự cần nhịp release riêng](#các-team-thật-sự-cần-nhịp-release-riêng)
+  - [Ranh giới nghiệp vụ đủ độc lập](#ranh-giới-nghiệp-vụ-đủ-độc-lập)
+  - [Cần migration từng phần](#cần-migration-từng-phần)
+  - [Có khả năng vận hành các phần độc lập](#có-khả-năng-vận-hành-các-phần-độc-lập)
+- [Khi nào chưa nên dùng](#khi-nào-chưa-nên-dùng)
+  - [Sản phẩm nhỏ hoặc nghiệp vụ còn thay đổi liên tục](#sản-phẩm-nhỏ-hoặc-nghiệp-vụ-còn-thay-đổi-liên-tục)
+  - [Các phần phụ thuộc nhau trong hầu hết thay đổi](#các-phần-phụ-thuộc-nhau-trong-hầu-hết-thay-đổi)
+  - [Mục tiêu chính là sửa build chậm hoặc bundle lớn](#mục-tiêu-chính-là-sửa-build-chậm-hoặc-bundle-lớn)
+  - [Chỉ muốn nhiều repo hoặc nhiều framework](#chỉ-muốn-nhiều-repo-hoặc-nhiều-framework)
+- [Chi phí cần đưa vào quyết định](#chi-phí-cần-đưa-vào-quyết-định)
+- [Ba tình huống với shop mẫu](#ba-tình-huống-với-shop-mẫu)
+- [Checklist trước khi chọn kiến trúc](#checklist-trước-khi-chọn-kiến-trúc)
+- [Thử một ranh giới trước khi tách toàn bộ](#thử-một-ranh-giới-trước-khi-tách-toàn-bộ)
+  - [Ghi lại hiện trạng và mục tiêu](#ghi-lại-hiện-trạng-và-mục-tiêu)
+  - [Kiểm chứng bằng một thay đổi thật](#kiểm-chứng-bằng-một-thay-đổi-thật)
+  - [Quyết định tiếp tục hay dừng](#quyết-định-tiếp-tục-hay-dừng)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bạn đang muốn giải quyết vấn đề nào
 
-Bài này sẽ giúp bạn: so sánh monolith, modular frontend và micro-frontend theo nhu cầu thực tế.
+Trước khi hỏi “dùng micro-frontend được không?”, hãy mô tả điểm nghẽn bằng một việc đang xảy ra. “Frontend lớn quá” chưa đủ cụ thể; “catalog phải đợi cart hoàn tất kiểm thử trước mỗi release, dù thay đổi không liên quan” thì có thể kiểm chứng.
 
-[Xem các bài trong nhóm Nền tảng](/docs/nen-tang).
+| Vấn đề quan sát được | Hướng xử lý nên thử trước |
+| --- | --- |
+| Component quá dài, khó hiểu ai phụ trách logic nào | Tách component, module theo domain; làm rõ ownership và quy tắc import |
+| Nhiều người sửa chung file, review khó | Điều chỉnh ranh giới module và trách nhiệm review; kiểm tra phần dùng chung có ôm quá nhiều logic không |
+| Build hoặc CI chậm | Đo bước chậm, tối ưu cache, phạm vi test và tác vụ bị chạy lại không cần thiết |
+| Trang tải chậm, JavaScript lớn | Đo hiệu năng ở trình duyệt; code splitting, lazy loading và giảm dependency |
+| Các domain tương đối độc lập nhưng luôn phải đợi một release chung | Đánh giá ranh giới deploy riêng và cơ chế composition |
+| Cần thay một phần ứng dụng cũ mà không viết lại toàn bộ | Đánh giá migration theo route hoặc một phần nghiệp vụ có contract rõ |
+
+Các hướng này có thể kết hợp. Tuy vậy, mình sẽ sửa vấn đề ngay tại nơi nó xuất hiện trước khi thêm một lớp kiến trúc phân tán. Tách module giúp dễ hiểu code; tách đơn vị deploy giúp thay đổi cách phát hành. Hai việc liên quan nhưng không thay thế nhau.
+
+## So sánh ba cách tổ chức frontend
+
+Trong bài này, *frontend monolith* chỉ một ứng dụng được build và deploy như một đơn vị. Nó không đồng nghĩa với code rối. *Modular frontend* vẫn có thể là một monolith ở cấp deployment, nhưng tổ chức code thành các module nghiệp vụ với giao diện công khai và ownership rõ.
+
+Để so sánh, bảng dưới đây phân biệt một app có ranh giới nội bộ còn lỏng, một app được module hóa tốt và kiến trúc micro-frontend. Đây không phải ba bậc trưởng thành mà sản phẩm nào cũng phải đi qua.
+
+| Tiêu chí | Một app, ranh giới còn lỏng | Modular frontend | Micro-frontend |
+| --- | --- | --- | --- |
+| Đơn vị phát hành | Cả ứng dụng | Thường vẫn là cả ứng dụng | Các phần nghiệp vụ có artifact và đường phát hành riêng |
+| Ranh giới code | Dễ có import chéo và state dùng chung | Module có API công khai, hạn chế truy cập nội bộ | Ngoài ranh giới code còn có contract tích hợp giữa các đơn vị deploy |
+| Làm một thay đổi xuyên domain | Dễ sửa trong cùng codebase, nhưng khó giới hạn ảnh hưởng | Phối hợp qua API module; kiểm thử trong cùng bản build | Có thể cần thay đổi contract và kế hoạch tương thích nhiều version |
+| Release một thay đổi nội bộ catalog | Build và deploy app | Build và deploy app; có thể tối ưu phạm vi CI | Có thể chỉ deploy catalog nếu contract tương thích |
+| Kiểm thử và debug | Một môi trường, nhưng phụ thuộc ngầm có thể khó lần ra | Một môi trường với ranh giới dễ theo dõi hơn | Phải tái hiện cả tổ hợp version và lớp composition |
+| Chi phí vận hành | Ít đơn vị cần quản lý | Ít đơn vị deploy, thêm kỷ luật module | Nhiều artifact, pipeline, rollout, rollback và điểm tích hợp |
+| Khi hợp lý | Phạm vi nhỏ, cần triển khai ban đầu nhanh | Lựa chọn mặc định khi chưa cần release độc lập | Khi lợi ích tự chủ hoặc migration bù được chi phí phân tán |
+
+Bạn không cần chọn giữa “code nguyên khối” và “micro-frontend”. Modular frontend thường là phương án giữ được phần lớn lợi ích về tổ chức code mà chưa phải vận hành nhiều ứng dụng.
+
+Cũng đừng lấy số repo làm tiêu chí: một monorepo có thể chứa nhiều đơn vị deploy độc lập, còn nhiều repo có thể vẫn bị buộc vào một bản release chung.
+
+## Khi nào micro-frontend đáng cân nhắc
+
+### Các team thật sự cần nhịp release riêng
+
+Giả sử team catalog thường cập nhật tìm kiếm và bộ lọc, còn team cart đang làm một thay đổi dài hơi về giỏ hàng. Nếu các tính năng catalog giữ nguyên contract với cart mà vẫn phải chờ lịch release chung, ranh giới deploy riêng có thể giảm thời gian chờ đó.
+
+Nhưng hãy tìm đúng nguyên nhân. Nếu catalog đang đợi backend cung cấp API mới hoặc một đợt duyệt nghiệp vụ, tách frontend không xóa được bước chờ. Nếu tổ chức vẫn bắt mọi phần deploy cùng một ngày dù kỹ thuật cho phép deploy riêng, lợi ích cũng chưa xuất hiện.
+
+Không có một số lượng team cố định để bắt đầu dùng micro-frontend. Điều đáng hỏi là: **một thay đổi nội bộ đã sẵn sàng có thể tới người dùng mà không bắt các team khác build, test và deploy lại phần không đổi hay không?**
+
+### Ranh giới nghiệp vụ đủ độc lập
+
+Catalog và cart là ứng viên hợp lý khi mỗi bên hoàn thành được phần lớn công việc của mình mà không sửa code nội bộ bên kia. Chúng vẫn giao tiếp, nhưng qua contract nhỏ và có ý nghĩa nghiệp vụ, chẳng hạn hành động thêm sản phẩm với `productId` và `quantity`, thay vì chia sẻ toàn bộ store.
+
+Hãy xem các thay đổi gần đây. Nếu thêm một bộ lọc chỉ sửa catalog, đó là dấu hiệu tốt. Nếu mọi thay đổi catalog đều cần sửa cart và shell, có thể bạn đang đặt ranh giới sai hoặc để logic dùng chung quá rộng.
+
+Vẫn sẽ có tính năng xuyên domain, như một chương trình khuyến mãi thay đổi cả cách hiển thị sản phẩm lẫn tổng tiền giỏ hàng. Micro-frontend không loại bỏ việc phối hợp này; mục tiêu là không biến phối hợp thành điều kiện bắt buộc cho mọi thay đổi nhỏ.
+
+### Cần migration từng phần
+
+Một hệ thống cũ vẫn vận hành tốt phần giỏ hàng, nhưng catalog cần được xây lại. Bạn có thể chuyển `/products` sang ứng dụng mới, giữ `/cart` ở ứng dụng cũ và duy trì trải nghiệm chung qua routing, đăng nhập và design system.
+
+Lợi ích ở đây là không phải viết lại toàn bộ sản phẩm trước khi đưa phần mới lên production. Trong giai đoạn chuyển tiếp, hai stack công nghệ có thể cùng tồn tại; đó là chi phí có chủ đích để giảm phạm vi migration, không phải lý do để thêm framework tùy ý.
+
+Cần xác định đích đến từ đầu. Nếu sau migration bạn chỉ cần một app và một team vận hành, kiến trúc nhiều ứng dụng có thể là bước trung gian. Nếu các domain vẫn cần release riêng lâu dài, giữ micro-frontend mới có cơ sở.
+
+### Có khả năng vận hành các phần độc lập
+
+Deploy riêng chỉ hữu ích khi team biết phần mình đang chạy version nào, phát hiện được lỗi và khôi phục được trạng thái an toàn. Có một remote tải thành công trong demo chưa chứng minh được những điều này.
+
+Trước khi áp dụng, cần có người chịu trách nhiệm cho pipeline, artifact, contract và sự cố của từng phần. Các trách nhiệm xuyên suốt như auth, routing, design system, kiểm thử luồng mua hàng và cấu hình composition cũng cần owner; không nhất thiết phải lập một team platform riêng, nhưng không thể để chúng thành việc “ai rảnh thì làm”.
+
+<Callout type="warn" title="Deploy riêng nhưng luôn release cùng nhau">
+  Nếu catalog và cart luôn phải lên cùng version, hoặc shell phải rebuild trong mọi lần đổi catalog, bạn chưa đạt mục tiêu phát hành độc lập của lộ trình này. Hãy kiểm tra contract, state dùng chung và cơ chế chọn artifact trước khi tách thêm ứng dụng.
+</Callout>
+
+## Khi nào chưa nên dùng
+
+### Sản phẩm nhỏ hoặc nghiệp vụ còn thay đổi liên tục
+
+Với một team đang tìm hướng sản phẩm, ranh giới nghiệp vụ hôm nay có thể thay vào tuần sau. Một app được module hóa cho phép di chuyển code và sửa luồng xuyên module trong cùng bản build; nhiều đơn vị deploy khiến việc tương tự kéo theo contract, pipeline và kế hoạch tương thích.
+
+Mình sẽ giữ một ứng dụng, chia module theo những ranh giới đang hiểu và điều chỉnh khi nghiệp vụ rõ hơn. Một MVP không cần trả trước toàn bộ chi phí cho khả năng release độc lập chưa có nhu cầu sử dụng.
+
+Một team vẫn có thể cần micro-frontend để migration ứng dụng cũ, nên “ít người” không phải lệnh cấm. Lý do áp dụng phải đến từ bài toán thực tế, không từ quy mô dự đoán.
+
+### Các phần phụ thuộc nhau trong hầu hết thay đổi
+
+Nếu catalog đọc trực tiếp state nội bộ cart, cart import component nội bộ catalog và shell chứa logic nghiệp vụ của cả hai, thêm artifact riêng chưa làm chúng độc lập. Bạn chỉ chuyển một phần lỗi từ lúc build sang lúc chạy.
+
+Trước hết, hãy làm rõ bên nào sở hữu dữ liệu và giao diện công khai nào cần được chia sẻ. Nếu nghiệp vụ thực sự không thể tách, giữ các phần đó trong cùng một module lớn hơn hoặc cùng đơn vị deploy có thể đúng hơn việc dựng nhiều remote rồi buộc release đồng bộ.
+
+### Mục tiêu chính là sửa build chậm hoặc bundle lớn
+
+Build riêng có thể giảm phạm vi công việc trong một số thiết kế, nhưng cũng thêm bước build, publish và kiểm thử tích hợp. Muốn biết có lợi hay không, bạn phải đo pipeline hiện tại và điểm nghẽn cụ thể.
+
+Với hiệu năng người dùng, micro-frontend có thể tải trùng framework, thêm request lấy entry và tạo chuỗi tải dependency. Lazy loading theo route cũng làm được trong một app; không cần deploy riêng chỉ để tránh tải code cart trên trang catalog.
+
+Nếu mục tiêu là “nhanh hơn”, hãy nói rõ nhanh ở đâu: build, chờ release hay tải trang. Chúng là những mục tiêu khác nhau và có thể đánh đổi lẫn nhau.
+
+### Chỉ muốn nhiều repo hoặc nhiều framework
+
+Tách repo giúp quản lý quyền truy cập và quy trình làm việc, nhưng không tự tạo khả năng release độc lập. Tương tự, nhiều team vẫn có thể làm việc trên cùng framework và cùng monorepo với ownership rõ.
+
+Khác framework có thể hợp lý khi tích hợp hệ thống cũ hoặc migration từng phần. Còn nếu chỉ để mỗi team chọn stack yêu thích, sản phẩm sẽ phải trả chi phí dependency, tuyển dụng, hỗ trợ tooling và đồng bộ UX mà chưa chắc nhận được lợi ích tương ứng.
+
+Backend dùng microservices cũng không bắt frontend phải chia theo từng service. UI nên bám vào trải nghiệm nghiệp vụ mà team có thể sở hữu, không nhất thiết ánh xạ một-một với cấu trúc backend.
+
+## Chi phí cần đưa vào quyết định
+
+Khi tách catalog khỏi bản build chung, bạn mất một số đảm bảo trước đây được bundler và kiểm thử trong cùng app hỗ trợ. Các phần có thể đúng khi chạy riêng nhưng không tương thích khi ghép với version đang ở production.
+
+| Chi phí | Câu hỏi cần trả lời trước khi mở rộng |
+| --- | --- |
+| Contract và version | Catalog mới có chạy được với shell và cart hiện tại không? Tab đang mở code cũ có còn hoạt động sau rollout không? |
+| Kiểm thử tích hợp | Ai kiểm tra luồng xem sản phẩm → thêm vào giỏ → mở cart với các phần đang được ghép? |
+| Rollout và rollback | Có chọn lại artifact cũ mà không deploy phần khác không? API và dữ liệu có còn tương thích với bản cũ không? |
+| Local development | Developer có chạy một phần với bản ổn định của phần còn lại được không? Có cách tái hiện tổ hợp version lỗi không? |
+| Hiệu năng | Có tải trùng dependency hoặc thêm chuỗi request không? Hiệu năng trên thiết bị và mạng mục tiêu thay đổi thế nào? |
+| Observability | Khi luồng mua hàng lỗi, có biết lỗi thuộc catalog, cart, shell hay backend và đang chạy version nào không? |
+| UX và CSS | Ai duy trì navigation, focus, thông báo lỗi, accessibility và ngăn style một phần ảnh hưởng phần khác? |
+| Security | Code được tải đến từ đâu, có quyền gì? Backend kiểm tra quyền ra sao? Cần isolation thực sự hay chỉ tách ownership? |
+
+Đừng mặc định “catalog lỗi thì cart vẫn an toàn”. Các phần chạy cùng trang có thể dùng chung main thread, global JavaScript và CSS. Fallback giúp với một số lỗi tải hoặc render; nó không ngăn mọi tác động xuyên ứng dụng, và tách bundle không tự tạo security boundary.
+
+Chi phí cũng không chỉ nằm ở giai đoạn setup. Contract dùng lâu dài cần quản lý thay đổi; design system cần chính sách cập nhật; các pipeline cần được duy trì. Lợi ích release riêng phải đủ đáng giá để nuôi những việc này sau khi demo đã hoàn thành.
+
+## Ba tình huống với shop mẫu
+
+Các tình huống dưới đây là giả định để luyện quyết định, không phải số liệu từ một dự án thực tế.
+
+| Tình huống | Mình sẽ chọn | Vì sao |
+| --- | --- | --- |
+| Một team làm shop mới; catalog và cart đổi cùng nhau khi nghiệp vụ được chốt | Modular frontend, một đơn vị deploy | Ranh giới còn thay đổi; release riêng chưa giải quyết điểm nghẽn nào |
+| Catalog và cart có owner, nhịp release riêng; thay đổi nội bộ thường không liên quan nhưng bị lịch release chung chặn | Thử micro-frontend với một ranh giới theo route | Có lợi ích cụ thể để kiểm chứng; chưa cần tách cả ứng dụng cùng lúc |
+| Catalog cũ cần viết lại, cart tiếp tục vận hành; có thể giữ contract đăng nhập và luồng thêm vào giỏ | Cân nhắc micro-frontend phục vụ migration | Cho phép thay từng phần; cần ghi rõ sẽ giữ hay gỡ lớp composition sau migration |
+
+Với tình huống thứ hai, đừng vội tách `ProductCard`, `FilterPanel` và nút “Thêm vào giỏ” thành ba remote. Ranh giới catalog đủ trọn vẹn để team sở hữu thường dễ vận hành hơn những ranh giới nhỏ buộc nhiều phần phối hợp mỗi lần sửa giao diện.
+
+Với tình huống thứ ba, nếu chỉ cần chuyển nguyên một route sang hệ thống mới, routing ở server hoặc reverse proxy có thể đủ. Không nhất thiết phải ghép nhiều framework trong cùng trang khi yêu cầu sản phẩm không cần điều đó.
+
+## Checklist trước khi chọn kiến trúc
+
+Checklist này không phải thang điểm: đánh dấu nhiều ô không tự động có nghĩa là nên dùng. Nó giúp bạn tìm bằng chứng còn thiếu trước khi thử một ranh giới deploy.
+
+- [ ] Có ví dụ cụ thể về việc chờ release chung hoặc khó migration, không chỉ nhận xét “frontend lớn”.
+- [ ] Đã phân biệt điểm nghẽn do frontend với chờ API, duyệt nghiệp vụ hoặc quy trình release của tổ chức.
+- [ ] Đã xem xét cách đơn giản hơn: module hóa, làm rõ ownership, tối ưu CI hoặc lazy loading.
+- [ ] Chỉ ra được phạm vi nghiệp vụ mà phần lớn thay đổi không cần sửa phần khác.
+- [ ] Mỗi phần và lớp composition có owner rõ, bao gồm trách nhiệm khi lỗi ở production.
+- [ ] Contract cho routing, dữ liệu, auth và giao tiếp có kế hoạch giữ tương thích.
+- [ ] Có cách chọn artifact mới và quay về bản cũ mà không buộc rebuild các phần không đổi.
+- [ ] Có kiểm thử luồng người dùng xuyên các phần, theo dõi lỗi và nhận diện version đang chạy.
+- [ ] Có baseline và tiêu chí đánh giá cả lợi ích release lẫn hiệu năng, độ ổn định của sản phẩm.
+
+Một cách đọc nhanh kết quả:
+
+```text
+Chưa có nhu cầu release riêng hoặc migration từng phần
+    → Giữ modular frontend.
+Có nhu cầu, nhưng ranh giới hoặc ownership chưa rõ
+    → Làm rõ module, contract và trách nhiệm trước.
+Có nhu cầu, ranh giới rõ và khả năng vận hành phù hợp
+    → Thử một đơn vị deploy; đo kết quả rồi mới mở rộng.
+```
+
+Nếu đang học, bạn vẫn có thể làm demo shell–catalog–cart để hiểu cơ chế. Chỉ cần tách quyết định “thử công cụ để học” khỏi quyết định “đưa kiến trúc này vào production”.
+
+## Thử một ranh giới trước khi tách toàn bộ
+
+### Ghi lại hiện trạng và mục tiêu
+
+Chọn một phạm vi đủ trọn vẹn và có lợi ích kiểm chứng được, chẳng hạn catalog theo route `/products`. Trước khi đổi kiến trúc, ghi lại một số lần release gần đây: bước nào phải chờ, ai phải tham gia và thời gian nằm ở đâu.
+
+Đừng chỉ đo thời gian build. Nếu giả thuyết là giảm chờ team khác, cần quan sát khoảng thời gian từ khi tính năng sẵn sàng đến khi người dùng nhận được nó, cùng các lý do chờ. Đồng thời lưu baseline hiệu năng và lỗi của luồng mua hàng để tránh đánh đổi mà không biết.
+
+Một ghi chú quyết định ngắn có thể dùng mẫu sau; đây là ví dụ, không phải cấu hình của framework:
+
+```text
+Vấn đề: Catalog bị chặn bởi release cart dù contract không đổi.
+Phương án đơn giản đã xem xét: Module hóa và tối ưu phạm vi CI.
+Phạm vi thử: Catalog ở /products; cart giữ nguyên.
+Owner: Team catalog; owner shell chịu trách nhiệm composition.
+Contract cần giữ: Route, phiên đăng nhập, hành động thêm vào giỏ.
+Lợi ích cần kiểm chứng: Release nội bộ catalog không buộc cart/shell deploy.
+Ràng buộc: Luồng mua hàng đúng; hiệu năng trong ngân sách đã thống nhất.
+Cách dừng: Giữ giao diện module rõ để có thể ghép lại lúc build.
+```
+
+Ngân sách hiệu năng và mức cải thiện mong muốn phải do dự án xác định từ baseline, không lấy một ngưỡng chung áp cho mọi sản phẩm.
+
+### Kiểm chứng bằng một thay đổi thật
+
+Thử release một thay đổi nội bộ catalog, chẳng hạn thêm tùy chọn sắp xếp nhưng không đổi contract. Bài kiểm chứng không kết thúc ở việc remote tải được; bạn cần thấy điều gì xảy ra ở cả đường phát hành lẫn luồng người dùng.
+
+1. Build, test và publish artifact catalog mà không build lại cart hay shell.
+2. Đưa catalog mới vào tổ hợp đang chạy bằng cơ chế chọn version đã thiết kế; nếu mọi lần đổi version vẫn buộc rebuild shell, kiểm tra lại mục tiêu độc lập.
+3. Kiểm tra từ xem sản phẩm tới thêm vào giỏ và mở cart với các version hiện tại.
+4. Kiểm tra khi catalog không tải được và cách hệ thống báo lỗi; xác nhận người dùng không bị một màn hình trắng không có hướng xử lý.
+5. Chọn lại artifact catalog cũ, xác nhận rollback không cần deploy cart và các API vẫn hỗ trợ version cũ.
+6. Theo dõi hiệu năng, lỗi và dấu vết version; xem cả phiên đã mở trước rollout vì chúng có thể tiếp tục chạy code cũ.
+
+<Callout type="warn" title="Rollback frontend không rollback mọi thứ">
+  Chọn lại JavaScript cũ không hoàn tác thay đổi backend, dữ liệu hoặc side effect đã xảy ra. Thử nghiệm phải giữ API tương thích và có kế hoạch riêng cho những thay đổi không thể đảo ngược bằng cách đổi artifact.
+</Callout>
+
+### Quyết định tiếp tục hay dừng
+
+Tiếp tục khi thử nghiệm cho thấy thay đổi nội bộ đi tới người dùng với ít phối hợp bắt buộc hơn, team vận hành được phần đã tách và chất lượng sản phẩm vẫn đáp ứng tiêu chí đã đặt. Sau đó mới xem ranh giới tiếp theo có cùng lợi ích hay không; một pilot thành công không chứng minh mọi component nên thành remote.
+
+Dừng hoặc điều chỉnh khi bạn vẫn phải release đồng bộ, dành nhiều công sức chữa contract hơn công sức tiết kiệm được, hoặc chưa quan sát và khôi phục lỗi an toàn. Tùy nguyên nhân, hướng xử lý có thể là sửa ranh giới, giảm state dùng chung hoặc trở lại composition lúc build trong một modular frontend.
+
+Bước tiếp theo cho hệ thống của bạn là chọn một thay đổi gần đây của catalog và liệt kê tất cả phần phải sửa, build, test, deploy để đưa nó lên production. Danh sách đó sẽ cho biết bạn đang thiếu ranh giới code, ranh giới phát hành hay chỉ cần cải thiện quy trình hiện tại.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Micro-frontend là gì?" href="/docs/nen-tang/micro-frontend-la-gi" description="Ôn lại ranh giới phát hành và các cách composition." />
+  <Card title="Team ownership và Conway's Law" href="/docs/nen-tang/team-ownership" description="Đi sâu vào ranh giới team và trách nhiệm vận hành." />
+  <Card title="Kiến thức cần có" href="/docs/nen-tang/kien-thuc-can-co" description="Chuẩn bị nền tảng kỹ thuật trước khi thử các cơ chế tích hợp." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, trên martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): independent deployment, migration từng phần và chi phí về payload, kiểm thử tích hợp, vận hành.
+- [Micro Frontends — Michael Geers](https://micro-frontends.org/): tổ chức theo domain, team ownership và các nguyên tắc tích hợp frontend.
