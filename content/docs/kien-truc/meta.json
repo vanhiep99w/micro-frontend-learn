@@ -1,0 +1,12 @@
+{
+  "title": "Kiến trúc và ranh giới",
+  "pages": [
+    "index",
+    "chia-domain",
+    "application-shell",
+    "build-time-composition",
+    "runtime-composition",
+    "server-side-composition",
+    "chon-kien-truc"
+  ]
+}

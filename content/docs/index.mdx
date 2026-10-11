@@ -1,0 +1,43 @@
+---
+title: "Lộ trình học micro-frontend"
+description: "Học micro-frontend từ nền tảng, kiến trúc và tích hợp đến triển khai, production và xử lý sự cố."
+---
+
+Bạn muốn chia một frontend lớn thành các phần mà từng team có thể tự phát triển và deploy? Lộ trình này giúp bạn học cách đánh giá bài toán đó trước khi chọn công cụ.
+
+<Callout type="info" title="Trạng thái tài liệu">
+  Đây là bộ khung học bằng tiếng Việt. Các bài chi tiết hiện là placeholder, chưa có hướng dẫn hoặc mã lab hoàn chỉnh.
+</Callout>
+
+## Mục lục
+
+- [Cách sử dụng](#cách-sử-dụng)
+- [Lộ trình học](#lộ-trình-học)
+- [Bắt đầu từ đâu](#bắt-đầu-từ-đâu)
+
+## Cách sử dụng
+
+Bạn đi từ nhóm Nền tảng đến Bắt đầu, rồi học Kiến trúc trước khi vào Module Federation. Các nhóm tích hợp khác giúp bạn so sánh lựa chọn; không bắt buộc dùng tất cả công cụ trong cùng một hệ thống.
+
+Bài toán xuyên suốt là một shop mẫu gồm shell, catalog và cart. Nhóm Thực hành hiện mới mô tả phạm vi các lab, chưa chứa ứng dụng chạy được.
+
+## Lộ trình học
+
+- [**Nền tảng**](/docs/nen-tang) — Hiểu bài toán, lợi ích và chi phí trước khi chọn micro-frontend.
+- [**Bắt đầu**](/docs/bat-dau) — Chuẩn bị môi trường và dựng ví dụ host/remote nhỏ nhất.
+- [**Kiến trúc và ranh giới**](/docs/kien-truc) — Chọn cách chia domain và ghép giao diện với mức coupling phù hợp.
+- [**Module Federation**](/docs/module-federation) — Học cơ chế runtime sharing và quản lý hợp đồng giữa host và remote.
+- [**Các cách tích hợp khác**](/docs/cac-cach-tich-hop) — Khảo sát những cách ghép frontend ngoài Module Federation.
+- [**Giao tiếp và trạng thái**](/docs/giao-tiep-va-trang-thai) — Giữ quyền sở hữu dữ liệu rõ ràng và giảm coupling giữa các frontend.
+- [**UI và framework**](/docs/ui-va-framework) — Tích hợp framework và giữ trải nghiệm người dùng nhất quán.
+- [**Kiểm thử và tooling**](/docs/kiem-thu-va-tooling) — Tổ chức phát triển, kiểm thử các ranh giới và quan sát hệ thống.
+- [**Triển khai**](/docs/trien-khai) — Release độc lập và giữ khả năng kiểm soát các phiên bản đang chạy.
+- [**Production**](/docs/production) — Cân bằng tính độc lập với hiệu năng, an toàn và độ tin cậy.
+- [**Thực hành**](/docs/thuc-hanh) — Áp dụng kiến thức vào shop mẫu qua các bài lab có tiêu chí đánh giá.
+- [**Xử lý sự cố**](/docs/troubleshooting) — Khoanh vùng lỗi bằng bằng chứng trước khi thay đổi cấu hình.
+
+## Bắt đầu từ đâu
+
+Mình đề xuất viết và học bài [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi) trước, rồi đến [Khi nào nên và không nên dùng?](/docs/nen-tang/khi-nao-nen-dung).
+
+Bạn có thể yêu cầu viết chi tiết từng trang bằng skill `fumadocs-technical-writer`; giữ các đường dẫn để lộ trình và sidebar không bị lệch.

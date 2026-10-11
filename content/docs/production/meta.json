@@ -1,0 +1,11 @@
+{
+  "title": "Production",
+  "pages": [
+    "index",
+    "performance",
+    "resilience",
+    "security",
+    "dependency-governance",
+    "migration"
+  ]
+}

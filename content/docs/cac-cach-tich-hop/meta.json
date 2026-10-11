@@ -1,0 +1,11 @@
+{
+  "title": "Các cách tích hợp khác",
+  "pages": [
+    "index",
+    "single-spa",
+    "import-maps",
+    "web-components",
+    "iframe",
+    "so-sanh"
+  ]
+}

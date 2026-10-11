@@ -1,0 +1,18 @@
+{
+  "title": "Micro-frontend Learning",
+  "pages": [
+    "index",
+    "nen-tang",
+    "bat-dau",
+    "kien-truc",
+    "module-federation",
+    "cac-cach-tich-hop",
+    "giao-tiep-va-trang-thai",
+    "ui-va-framework",
+    "kiem-thu-va-tooling",
+    "trien-khai",
+    "production",
+    "thuc-hanh",
+    "troubleshooting"
+  ]
+}

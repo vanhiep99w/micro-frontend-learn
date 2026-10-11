@@ -1,0 +1,12 @@
+{
+  "title": "Giao tiếp và trạng thái",
+  "pages": [
+    "index",
+    "contracts",
+    "events",
+    "state-ownership",
+    "routing",
+    "data-fetching",
+    "authentication"
+  ]
+}

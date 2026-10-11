@@ -1,0 +1,12 @@
+{
+  "title": "Kiểm thử và tooling",
+  "pages": [
+    "index",
+    "monorepo-multi-repo",
+    "local-development",
+    "unit-component-tests",
+    "contract-tests",
+    "integration-e2e",
+    "observability"
+  ]
+}

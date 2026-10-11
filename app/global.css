@@ -1,0 +1,26 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/style.css';
+
+:root {
+  /* Fill the viewport instead of leaving large margins on wide screens. */
+  --fd-layout-width: 100%;
+  /* Fallback if percentage-based grid sizing behaves oddly: */
+  /* --fd-layout-width: 140rem; */
+}
+
+#nd-docs-layout {
+  padding-inline: 0.5rem;
+}
+
+@media (min-width: 768px) {
+  #nd-docs-layout {
+    padding-inline: 1rem;
+  }
+}
+
+/*
+ * Article gutters and max-width are overridden through DocsPage.className.
+ * That prop was checked against fumadocs-ui 16.17.1.
+ * If a later major changes it, use the documented slots.container API:
+ * https://www.fumadocs.dev/docs/ui/layouts/page#container
+ */

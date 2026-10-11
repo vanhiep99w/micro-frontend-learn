@@ -1,0 +1,12 @@
+{
+  "title": "Xử lý sự cố",
+  "pages": [
+    "index",
+    "remote-khong-tai",
+    "duplicate-react",
+    "shared-version-mismatch",
+    "routing-css",
+    "stale-cache",
+    "debug-checklist"
+  ]
+}

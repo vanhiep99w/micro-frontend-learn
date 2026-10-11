@@ -1,0 +1,12 @@
+{
+  "title": "Module Federation",
+  "pages": [
+    "index",
+    "co-che",
+    "exposes-remotes",
+    "shared-dependencies",
+    "dynamic-remotes",
+    "types-contracts",
+    "version-compatibility"
+  ]
+}

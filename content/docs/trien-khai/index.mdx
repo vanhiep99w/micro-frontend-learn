@@ -1,0 +1,24 @@
+---
+title: "Triển khai"
+description: "Release độc lập và giữ khả năng kiểm soát các phiên bản đang chạy."
+---
+
+Đây là trang khung cho nhóm **Triển khai**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+
+## Phạm vi dự kiến
+
+Release độc lập và giữ khả năng kiểm soát các phiên bản đang chạy.
+
+## Các bài trong nhóm
+
+- [CI/CD độc lập](/docs/trien-khai/ci-cd) — Thiết kế pipeline build, test và deploy riêng cho shell cùng từng remote.
+- [Hosting, CDN và assets](/docs/trien-khai/cdn-assets) — Phân phối artifacts, public paths, CORS và đường dẫn assets đúng môi trường.
+- [Runtime configuration](/docs/trien-khai/runtime-configuration) — Quản lý manifests, remote URLs và cấu hình môi trường không chứa secrets.
+- [Caching và cache invalidation](/docs/trien-khai/caching) — Tách caching của entry/manifest và assets có hash để tránh tải sai phiên bản.
+- [Rollout và rollback](/docs/trien-khai/rollout-rollback) — Release bằng canary hoặc feature flags và rollback cả mapping lẫn artifacts.
+- [Preview environments](/docs/trien-khai/preview-environments) — Ghép shell và các remote theo nhánh để review mà không ảnh hưởng production.
