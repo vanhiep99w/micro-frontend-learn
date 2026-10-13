@@ -1,18 +1,583 @@
 ---
 title: "Contract tests"
-description: "Kiểm tra tính tương thích của module exports, props và event schemas."
+description: "Kiểm thử module exports, props, lifecycle và event schemas để phát hiện breaking changes trước khi các micro-frontend deploy độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog đổi default export thành named export, hoặc cart vẫn gửi `itemCount` dạng `number` nhưng đổi nghĩa từ tổng quantity sang số dòng hàng. Test riêng của từng app có thể vẫn xanh. Shell chỉ gặp lỗi khi tải remote hoặc cập nhật badge bằng dữ liệu mới.
+
+**Contract tests kiểm tra những cam kết ở boundary mà ứng dụng khác đang dựa vào.** Mục tiêu không phải chạy lại toàn bộ user journey, mà là trả lời sớm: provider mới có còn phục vụ consumer đang chạy không, và consumer mới có dùng được provider còn trong cửa sổ hỗ trợ không?
+
+<Callout type="info" title="Phạm vi và cách dùng ví dụ">
+  Bài dùng shop gồm shell, catalog và cart, tiếp nối [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts). Các đường dẫn và lệnh thuộc workspace ứng dụng riêng, **không chạy trong repository Next.js + Fumadocs này**. Lab ban đầu expose React component `catalog/CatalogPage`; mount API, TypeScript và event schema là các boundary mở rộng cần có implementation tương ứng. Sơ đồ text không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Contract tests bảo vệ điều gì](#contract-tests-bảo-vệ-điều-gì)
+  - [Phân biệt với các lớp test khác](#phân-biệt-với-các-lớp-test-khác)
+  - [Lập danh sách boundary cần bảo vệ](#lập-danh-sách-boundary-cần-bảo-vệ)
+- [Kiểm thử từ cả hai phía](#kiểm-thử-từ-cả-hai-phía)
+  - [Consumer expectations và provider verification](#consumer-expectations-và-provider-verification)
+  - [Không cập nhật mọi fixture cùng lúc](#không-cập-nhật-mọi-fixture-cùng-lúc)
+- [Kiểm tra module exports và props](#kiểm-tra-module-exports-và-props)
+  - [Typecheck public entry](#typecheck-public-entry)
+  - [Runtime callbacks và kết quả command](#runtime-callbacks-và-kết-quả-command)
+  - [Lifecycle của mount API](#lifecycle-của-mount-api)
+- [Kiểm tra event schemas](#kiểm-tra-event-schemas)
+  - [Validator và schema v1](#validator-và-schema-v1)
+  - [Fixture hợp lệ và không hợp lệ](#fixture-hợp-lệ-và-không-hợp-lệ)
+  - [Consumer phải đọc fixture qua code thật](#consumer-phải-đọc-fixture-qua-code-thật)
+  - [Provider phải tạo event bằng code thật](#provider-phải-tạo-event-bằng-code-thật)
+- [Kiểm tra semantics ngoài schema](#kiểm-tra-semantics-ngoài-schema)
+- [Kiểm tra artifact được deploy](#kiểm-tra-artifact-được-deploy)
+- [Ma trận version và release gate](#ma-trận-version-và-release-gate)
+  - [Chọn các cặp cần hỗ trợ](#chọn-các-cặp-cần-hỗ-trợ)
+  - [Luồng CI cho một candidate](#luồng-ci-cho-một-candidate)
+  - [Bằng chứng kiểm thử phải gắn với artifact](#bằng-chứng-kiểm-thử-phải-gắn-với-artifact)
+- [Khi nào dùng Pact](#khi-nào-dùng-pact)
+- [Các lỗi khiến contract suite xanh giả](#các-lỗi-khiến-contract-suite-xanh-giả)
+- [Checklist triển khai](#checklist-triển-khai)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Contract tests bảo vệ điều gì
 
-Bài này sẽ giúp bạn: kiểm tra tính tương thích của module exports, props và event schemas.
+Contract là phần public mà hai owner đã thống nhất: module key, export, props, callback payload, result, event shape và hành vi. Contract test đưa các cam kết đó thành những kiểm tra có thể chạy lại khi một bên thay đổi.
 
-[Xem các bài trong nhóm Kiểm thử và tooling](/docs/kiem-thu-va-tooling).
+Mình bắt đầu từ **consumer thật đang cần gì**, rồi yêu cầu provider chứng minh đáp ứng được. Không khóa toàn bộ implementation của provider chỉ vì test có thể nhìn thấy nó. Catalog đổi cách fetch sản phẩm hay đổi thư viện state không nên làm contract test của shell fail nếu public boundary vẫn giữ nguyên.
+
+### Phân biệt với các lớp test khác
+
+| Lớp test | Câu hỏi chính | Ví dụ |
+| --- | --- | --- |
+| Unit | Logic nội bộ có đúng không? | Hàm tính tổng quantity trả đúng kết quả |
+| Component | UI và tương tác của một component có đúng không? | Nút bị disable khi command đang pending |
+| Contract | Boundary có tiếp tục đáp ứng cam kết của bên kia không? | Callback gửi đúng input; consumer đọc được event v1 |
+| Integration | Các phần thật có ghép và chạy được cùng nhau không? | Shell tải artifact catalog, mount và gọi callback |
+| E2E | User journey đi qua hệ thống có hoàn tất không? | Người dùng thêm hàng, mở cart và checkout |
+
+Đây là cách phân loại theo **mục đích**, không phải theo test runner. Một test React Testing Library có thể bảo vệ callback contract; một test Playwright nhỏ có thể bảo vệ exposed module của artifact. Test đó cũng có tính chất integration nếu nó ghép các runtime thật.
+
+Contract suite không thay thế E2E, security tests hay performance tests. Nó cũng không cần assert màu nút, mọi đoạn text hoặc cấu trúc DOM nếu consumer không dựa vào những thứ đó.
+
+### Lập danh sách boundary cần bảo vệ
+
+Trước khi viết test, ghi rõ cam kết và owner. Với shop, danh sách ban đầu có thể nhỏ như sau:
+
+| Boundary | Cam kết cần test | Provider và consumer |
+| --- | --- | --- |
+| `catalog/CatalogPage` | Exposed key còn tồn tại; default export render được bằng props đã công bố | Catalog → shell |
+| Catalog props | Props tối thiểu vẫn dùng được; default giữ hành vi cũ | Shell truyền input → catalog nhận |
+| Cart capability | `addItem` nhận đúng input; trả các trạng thái đã thống nhất | Cart domain → catalog |
+| Catalog mount API | Update không remount; unmount idempotent; không xóa DOM ngoài container | Catalog → shell |
+| `shop.cart.updated.v1` | Envelope hợp lệ; `itemCount` là tổng quantity đã xác nhận | Cart domain → shell badge |
+
+Trong lab [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien), `CatalogPage` chưa yêu cầu props hay phát callback. Đừng tự thêm chúng vào contract test rồi kết luận remote hiện tại bị lỗi. Khi mở rộng boundary, công bố contract trước, sau đó thêm test bảo vệ cam kết mới.
+
+## Kiểm thử từ cả hai phía
+
+Chỉ kiểm tra schema ở package dùng chung chưa chứng minh hai app giao tiếp đúng. Bạn cần test ở consumer và verification ở provider, với cùng một contract được version hóa.
+
+```text
+Consumer thật + fixture/provider giả theo contract
+                      │
+                      ▼
+        Expectations có version và owner
+                      │
+                      ▼
+Provider thật + dependency phía sau được kiểm soát
+                      │
+                      ▼
+     Kết quả verification cho cặp version
+                      │
+                      ▼
+                 Release gate
+```
+
+### Consumer expectations và provider verification
+
+Consumer test chạy decoder, adapter hoặc component **thật của consumer** với input/output được kiểm soát. Nó chứng minh consumer hiểu và dùng được điều mà contract hứa. Ví dụ: shell đọc fixture `cart.updated.v1`, lấy đúng `itemCount` và không yêu cầu một field chỉ có trong v2.
+
+Provider verification chạy public implementation **thật của provider** rồi so kết quả với expectations. Bạn có thể thay backend bằng một port giả để tạo tình huống xác định, nhưng không mock `addItem` hay hàm tạo event đang cần verify.
+
+Nếu cả hai phía chỉ import cùng một object fixture rồi assert lại object đó, test không chạm vào code ứng dụng nào. Schema đúng, production vẫn có thể gửi sai dữ liệu.
+
+### Không cập nhật mọi fixture cùng lúc
+
+Một PR đổi provider, consumer, schema và fixture trên HEAD có thể làm tất cả test pass, nhưng không nói gì về shell đang mở trong tab cũ. Vì vậy, giữ expectations của consumer còn được hỗ trợ dưới một version bất biến.
+
+Mình dùng ba nhóm dữ liệu riêng:
+
+- Fixture chuẩn của contract: happy path, boundary values và invalid input.
+- Expectations của consumer đã release: những gì consumer đó thực sự dùng, gắn với consumer build ID.
+- Output thực tế từ provider candidate: do code thật tạo trong verification, không chép tay từ fixture.
+
+Khi thay đổi breaking, tạo contract mới và migration tests. Không sửa fixture v1 để hợp thức hóa output v2. Với việc sửa một fixture sai, cần review owner và đánh giá lại các verification bị ảnh hưởng thay vì ghi đè âm thầm.
+
+## Kiểm tra module exports và props
+
+TypeScript giúp phát hiện lệch public API sớm, nhưng kiểm tra compile-time và kiểm tra runtime là hai việc khác nhau. Một file declaration nói rằng remote có default export không làm webpack tự expose module đó.
+
+### Typecheck public entry
+
+Sau khi ứng dụng đã chuyển public component sang TypeScript, có thể đặt một typecheck fixture như sau. Đây là **ví dụ contract mở rộng**, không phải props đã có trong lab JavaScript ban đầu:
+
+```tsx title="apps/catalog/contract-tests/catalog-public.typecheck.tsx"
+import React from 'react';
+import type { ComponentType } from 'react';
+import CatalogPage from '../src/CatalogPage';
+
+type ShellCatalogPropsV1 = {
+  locale: string;
+  onAddToCart: (input: { productId: string; quantity: number }) => void;
+};
+
+// Provider phải nhận được bộ props mà shell v1 biết cách truyền.
+const PublicCatalog: ComponentType<ShellCatalogPropsV1> = CatalogPage;
+
+export const shellV1Usage = (
+  <PublicCatalog
+    locale="vi-VN"
+    onAddToCart={({ productId, quantity }) => {
+      void productId;
+      void quantity;
+    }}
+  />
+);
+```
+
+Chạy fixture bằng `tsc --noEmit` trong tsconfig dành cho contract, bật `strict` và chọn JSX mode phù hợp toolchain. Dùng tsc riêng là cách đơn giản để không nhầm rằng test runner đã kiểm tra type; nhiều runner chỉ transpile TypeScript để chạy.
+
+Phép gán trên kiểm tra **khả năng dùng bởi shell v1**, không ép props của provider phải giống hệt một interface. Catalog được phép thêm prop optional có default an toàn. Thêm prop bắt buộc hoặc đổi callback input sẽ làm fixture của consumer cũ không còn typecheck.
+
+Nếu chỉ typecheck một khai báo `declare module 'catalog/CatalogPage'` tự viết trong shell, bạn đang kiểm tra lời khai của shell, chưa kiểm tra implementation catalog. Phía provider cần import public source entry thật; phía consumer có thể kiểm tra declaration được publish cùng artifact. Cả hai vẫn cần artifact smoke test ở phần sau.
+
+<Callout type="warn" title="Không để any làm mất tác dụng của typecheck">
+  Nếu public export hoặc remote declaration là `any`, phép gán có thể pass mà không kiểm tra gì hữu ích. Với source JavaScript, cần cấu hình `allowJs`/`checkJs` và JSDoc đủ rõ, hoặc chuyển public boundary sang TypeScript. Đừng cast implementation thành interface mong muốn ngay trong test.
+</Callout>
+
+### Runtime callbacks và kết quả command
+
+Typecheck không chứng minh callback được gọi đúng lúc hay với đúng dữ liệu. Với contract mở rộng ở trên, render component thật bằng props tối thiểu, kích hoạt thao tác thêm một sản phẩm cố định, rồi quan sát callback public.
+
+Chỉ assert input đã công bố, chẳng hạn `{ productId: 'ao-thun-den', quantity: 2 }`. Không assert reducer action, tên hook hay store nội bộ. Nếu có debounce, dùng clock được kiểm soát; không thêm `sleep` để chờ may rủi.
+
+Với [cart command contract](/docs/giao-tiep-va-trang-thai/contracts#thiết-kế-command-và-kết-quả), cần kiểm tra cả provider lẫn consumer:
+
+| Tình huống | Provider cần chứng minh | Consumer cần chứng minh |
+| --- | --- | --- |
+| Backend xác nhận | Trả `committed` với snapshot đúng cart | Bỏ pending và dùng snapshot đã xác nhận |
+| Hết hàng | Trả `rejected` với `OUT_OF_STOCK` | Không hiển thị thành công; có thông báo phù hợp |
+| Đã gửi request nhưng timeout, chưa biết kết quả | Trả `unknown` theo policy | Không coi là chắc chắn thất bại; đi reconcile |
+| Lỗi ngoài result đã mô hình hóa | Promise reject | Có nhánh catch an toàn và report |
+| Retry cùng ý định | Truyền lại cùng `operationId` | Không tự tạo ID mới cho retry đó |
+
+Backend idempotency cần verification riêng với backend thật hoặc integration tests phù hợp. Một mock ghi nhận `operationId` chỉ chứng minh frontend truyền ID đúng, không chứng minh server deduplicate được.
+
+### Lifecycle của mount API
+
+Nếu chọn framework-neutral mount API, dùng lại `CatalogMountContextV1` và `CatalogRemoteV1` trong bài contracts. Suite nên import hàm `mount` thật và inject cart capability tối thiểu. Đừng mock `mount` để kiểm tra handle do chính mock trả về.
+
+| Thao tác | Assertion ở boundary |
+| --- | --- |
+| Mount context v1 hợp lệ | Có handle với `updateProps` và `unmount`; instance hoạt động trong container |
+| Update locale/theme | Props mới có hiệu lực; draft tương tác không liên quan vẫn được giữ |
+| Unmount hai lần | Không throw ở lần hai; instance không hoạt động trở lại |
+| Update sau unmount | Throw theo contract mẫu, không âm thầm remount |
+| Event/callback đến sau unmount | Không cập nhật instance đã chết hoặc gọi callback của session cũ |
+| Mount thất bại giữa chừng | Không để lại UI/subscription thuộc instance lỗi |
+| Có sibling bên ngoài container | Remote không xóa hoặc sửa sibling |
+
+Đừng kết luận “cleanup đúng” chỉ từ `container.innerHTML === ''`. Một remote có thể đã xóa DOM nhưng vẫn còn listener và timer. Phát tín hiệu qua capability/subscription đã inject, chạy clock kiểm soát và kiểm tra instance cũ không phản ứng.
+
+Ngược lại, test đếm mọi `window.addEventListener` của framework rất dễ vỡ. Ưu tiên quan sát hành vi public hoặc instrument resource do remote tự sở hữu, không khóa lifecycle nội bộ của thư viện.
+
+## Kiểm tra event schemas
+
+Với wire data, mình dùng JSON Schema làm nguồn kiểm tra shape, rồi test decoder thật để bảo vệ cách consumer diễn giải dữ liệu. Ví dụ dưới dùng event v1 trong bài contracts, Draft 2020-12 và Ajv 8.
+
+### Validator và schema v1
+
+Tạo một thư mục lab riêng trong workspace ứng dụng nếu chưa có test tooling. Các lệnh dưới cài dependency **cho lab**, không thêm dependency vào site docs:
+
+```bash
+npm install --save-dev --save-exact vitest typescript ajv@8 ajv-formats@3
+```
+
+Commit manifest và lockfile; CI dùng `npm ci`. Các file ví dụ ở phần event đặt cạnh nhau trong `contract-lab/`, chạy bằng `npx vitest run contract-lab`. Test runner transpile TypeScript; typecheck vẫn là một bước riêng trong ứng dụng TypeScript.
+
+```json title="contract-lab/cart-updated.v1.schema.json"
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "eventId", "source", "occurredAt", "correlationId", "payload"],
+  "properties": {
+    "type": { "const": "shop.cart.updated.v1" },
+    "eventId": { "$ref": "#/$defs/id" },
+    "source": { "const": "cart" },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "correlationId": { "$ref": "#/$defs/id" },
+    "payload": {
+      "type": "object",
+      "required": ["cartId", "revision", "itemCount"],
+      "properties": {
+        "cartId": { "$ref": "#/$defs/id" },
+        "revision": { "$ref": "#/$defs/count" },
+        "itemCount": { "$ref": "#/$defs/count" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+  }
+}
+```
+
+Schema giữ cùng quy tắc với [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts#schema-kiểm-tra-ở-runtime). Giới hạn ID là policy minh họa; `additionalProperties: true` cho phép notification v1 có thêm field, không cho phép thiếu hoặc đổi type field cũ.
+
+```ts title="contract-lab/validate-cart-updated.ts"
+import Ajv2020 from 'ajv/dist/2020.js';
+import addFormats from 'ajv-formats';
+import schema from './cart-updated.v1.schema.json';
+
+const ajv = new Ajv2020({
+  allErrors: true,
+  strict: true,
+  validateFormats: true,
+  coerceTypes: false,
+  useDefaults: false,
+  removeAdditional: false,
+});
+addFormats(ajv);
+
+export const validateCartUpdatedV1 = ajv.compile(schema);
+```
+
+Dùng entry `ajv/dist/2020.js` để khớp draft, thêm `ajv-formats` để kiểm tra `date-time`. Không bật coercion/default ở boundary này: `"3"` không tự thành `3`, và thiếu `itemCount` không tự thành giỏ rỗng.
+
+### Fixture hợp lệ và không hợp lệ
+
+Tách fixture thành hàm tạo object mới để mỗi test không sửa dữ liệu của test khác. Timestamp, ID và revision dưới đây là dữ liệu minh họa cố định.
+
+```ts title="contract-lab/cart-updated.fixture.ts"
+export function cartUpdatedV1Fixture() {
+  return {
+    type: 'shop.cart.updated.v1',
+    eventId: 'event-demo-001',
+    source: 'cart',
+    occurredAt: '2026-03-01T08:00:00.000Z',
+    correlationId: 'operation-demo-001',
+    payload: { cartId: 'cart-demo', revision: 42, itemCount: 3 },
+  };
+}
+```
+
+```ts title="contract-lab/cart-updated.schema.test.ts"
+import { expect, test } from 'vitest';
+import { cartUpdatedV1Fixture } from './cart-updated.fixture';
+import { validateCartUpdatedV1 as validate } from './validate-cart-updated';
+
+test('v1 hợp lệ và chấp nhận field bổ sung ở notification', () => {
+  const event = cartUpdatedV1Fixture();
+  expect(validate(event)).toBe(true);
+  expect(validate({
+    ...event,
+    traceId: 'trace-demo',
+    payload: { ...event.payload, couponLabel: 'DEMO' },
+  })).toBe(true);
+});
+
+test.each([
+  ['string count', '3'],
+  ['negative count', -1],
+  ['fractional count', 1.5],
+  ['unsafe count', Number.MAX_SAFE_INTEGER + 1],
+  ['null count', null],
+])('từ chối %s', (_name, itemCount) => {
+  const event = cartUpdatedV1Fixture();
+  expect(validate({
+    ...event,
+    payload: { ...event.payload, itemCount },
+  })).toBe(false);
+});
+
+test('từ chối thiếu field, sai version và timestamp không hợp lệ', () => {
+  const event = cartUpdatedV1Fixture();
+  expect(validate({
+    ...event,
+    payload: { cartId: 'cart-demo', revision: 42 },
+  })).toBe(false);
+  expect(validate({ ...event, type: 'shop.cart.updated.v2' })).toBe(false);
+  expect(validate({ ...event, occurredAt: 'yesterday' })).toBe(false);
+  expect(validate({ ...event, eventId: '   ' })).toBe(false);
+});
+```
+
+Nhóm này bảo vệ validator/schema. Nó **chưa phải provider verification**, vì event vẫn được tạo bằng fixture chứ không phải code cart.
+
+### Consumer phải đọc fixture qua code thật
+
+Decoder nhận `unknown`, validate toàn bộ envelope rồi chỉ trả model v1 consumer cần. Mẫu nhỏ dưới đây có thể dùng làm decoder ở boundary shell; trong ứng dụng đã có decoder, import decoder đó thay vì viết bản riêng cho test.
+
+```ts title="contract-lab/decode-cart-updated.ts"
+import { validateCartUpdatedV1 } from './validate-cart-updated';
+
+type CartUpdatedV1 = {
+  payload: { cartId: string; revision: number; itemCount: number };
+};
+
+export function decodeCartUpdatedV1(raw: unknown) {
+  if (!validateCartUpdatedV1(raw)) {
+    throw new TypeError('Invalid shop.cart.updated.v1');
+  }
+
+  // Cast chỉ sau validation; schema là nguồn kiểm tra runtime.
+  const event = raw as CartUpdatedV1;
+  return Object.freeze({
+    cartId: event.payload.cartId,
+    revision: event.payload.revision,
+    itemCount: event.payload.itemCount,
+  });
+}
+```
+
+```ts title="contract-lab/shell-consumer.test.ts"
+import { expect, test } from 'vitest';
+import { cartUpdatedV1Fixture } from './cart-updated.fixture';
+import { decodeCartUpdatedV1 } from './decode-cart-updated';
+
+test('consumer v1 đọc snapshot và không phụ thuộc field mới', () => {
+  const event = cartUpdatedV1Fixture();
+  const raw = {
+    ...event,
+    payload: { ...event.payload, couponLabel: 'DEMO' },
+  };
+  const snapshot = decodeCartUpdatedV1(raw);
+  expect(snapshot).toEqual({ cartId: 'cart-demo', revision: 42, itemCount: 3 });
+  expect(Object.isFrozen(snapshot)).toBe(true);
+  expect(snapshot).not.toBe(raw.payload);
+  raw.payload.itemCount = 99;
+  expect(snapshot.itemCount).toBe(3);
+});
+
+test('consumer không biến count lỗi thành badge bằng 0', () => {
+  const event = cartUpdatedV1Fixture();
+  expect(() => decodeCartUpdatedV1({
+    ...event,
+    payload: { ...event.payload, itemCount: '3' },
+  })).toThrow(TypeError);
+});
+```
+
+Để kiểm tra shell đầy đủ hơn, đưa fixture qua subscription adapter thật rồi quan sát model badge. Đừng chỉ gọi validator nếu lỗi có thể nằm ở adapter đọc nhầm `revision` thành `itemCount`.
+
+Cast trong decoder mẫu được hỗ trợ bởi schema đã validate, không phải bằng chứng compile-time rằng type và schema luôn khớp. Khi contract lớn hơn, sinh type từ schema hoặc dùng công cụ có type inference để giảm hai nguồn cần bảo trì.
+
+### Provider phải tạo event bằng code thật
+
+Provider verification cần một test seam: inject backend port và event sink, sau đó gọi cart command thật. Đây là **harness cần nối với implementation ứng dụng**, không phải file có thể chạy ngay bằng bộ event lab phía trên:
+
+```ts title="Mẫu provider verification — các import phải trỏ tới code cart thật"
+import { expect, test } from 'vitest';
+import { createCartCommands } from '../src/create-cart-commands';
+import { validateCartUpdatedV1 as validate } from './validate-cart-updated';
+
+test('cart tạo notification v1 từ snapshot backend đã xác nhận', async () => {
+  const emitted: unknown[] = [];
+  const confirmed = { cartId: 'cart-demo', revision: 42, itemCount: 3 };
+  const commands = createCartCommands({
+    backend: {
+      addItem: async () => ({ status: 'committed' as const, snapshot: confirmed }),
+    },
+    publish: (event: unknown) => { emitted.push(event); },
+    now: () => '2026-03-01T08:00:00.000Z',
+    newEventId: () => 'event-demo-001',
+  });
+
+  const result = await commands.addItem(
+    { cartId: 'cart-demo', productId: 'ao-thun-den', quantity: 2 },
+    { operationId: 'operation-demo-001' },
+  );
+
+  expect(result).toEqual({ status: 'committed', snapshot: confirmed });
+  expect(emitted).toHaveLength(1);
+  expect(validate(emitted[0])).toBe(true);
+  expect(emitted[0]).toMatchObject({
+    type: 'shop.cart.updated.v1',
+    source: 'cart',
+    correlationId: 'operation-demo-001',
+    payload: confirmed,
+  });
+});
+```
+
+`createCartCommands` và các port ở đây là seam đề xuất, không phải API có sẵn trong repository docs. Điều chỉnh adapter test theo implementation thật, nhưng giữ nguyên điểm kiểm chứng: code cart thật nhận command, xử lý backend result và tạo event thật.
+
+Với backend trả `rejected` hoặc `unknown`, verify không phát success notification. Với backend Promise còn pending, kiểm tra chưa có event; resolve xác nhận rồi mới kiểm tra event. Cách đó bắt được lỗi publish trước commit mà test chỉ nhìn output cuối cùng sẽ bỏ qua.
+
+<Callout type="warn" title="Giữ validator của consumer cũ khi verify provider mới">
+  Provider candidate phải chạy với schema/decoder của consumer còn được hỗ trợ, không chỉ validator mới nhất đi kèm candidate. Schema mới nới type thành `string | number` có thể pass trong provider CI, trong khi shell cũ vẫn chỉ đọc `number`.
+</Callout>
+
+## Kiểm tra semantics ngoài schema
+
+Schema chứng minh `itemCount` là số nguyên không âm. Nó không biết đó là tổng quantity hay số dòng hàng. Cần một case phân biệt hai cách hiểu: giả sử backend fixture có hai dòng với quantity lần lượt `2` và `3`; snapshot/event phải có `itemCount = 5`, không phải `2`.
+
+Chạy assertion ở nơi thực sự tạo snapshot. Nếu backend là owner tính count và cart chỉ chuyển tiếp, verify semantics với backend, còn cart verification chứng minh chuyển nguyên snapshot đã xác nhận. Một backend mock trả `5` không chứng minh backend production tính đúng.
+
+Các cam kết khác cũng cần kiểm tra ngoài shape:
+
+| Cam kết | Cách kiểm chứng |
+| --- | --- |
+| Notification chỉ sau commit | Giữ backend Promise pending; kiểm tra sink rỗng trước khi resolve |
+| Revision chỉ so trong cùng cart | Consumer tests với cart khác và revision thấp hơn trong cùng cart |
+| Subscriber lỗi không làm command đã commit thất bại | Inject sink/bus theo error policy; command vẫn trả trạng thái xác nhận |
+| Snapshot không lộ mutable store | Thay đổi object input sau publish; model consumer không đổi |
+| Update theme không mất draft | Tạo draft qua UI public, update props, kiểm tra draft còn nguyên |
+
+Test chỉ những semantics đã được công bố. Bus in-memory không có replay hay ACK thì không được viết assertion đòi hỏi exactly-once delivery; nếu cần bảo đảm đó, phải thay thiết kế transport và recovery trước.
+
+## Kiểm tra artifact được deploy
+
+Import `../src/CatalogPage` trong test không đi qua `remoteEntry.js`. Vì vậy, source tests vẫn có thể pass khi webpack xóa `./CatalogPage` khỏi `exposes`, CDN thiếu chunk hoặc shared React không khởi tạo được.
+
+Thêm một browser harness nhỏ build bằng cấu hình host tương ứng với consumer được hỗ trợ. Harness dùng đúng request `import('catalog/CatalogPage')`, tải candidate qua URL artifact bất biến và render public export bằng props tối thiểu.
+
+```text
+Browser harness của shell H1
+  └─ import catalog/CatalogPage
+       ├─ tải remoteEntry.js của catalog candidate C2
+       ├─ khởi tạo share scope của H1 và lấy ./CatalogPage
+       ├─ tải chunks của C2
+       └─ render default export → gọi callback public nếu contract có
+```
+
+Các assertion quan trọng:
+
+1. Import resolve và trả đúng export mà shell thực sự dùng.
+2. Export render được với bộ props của consumer đã release; quan sát tín hiệu sẵn sàng đã thống nhất.
+3. Callback/capability hoạt động với payload đã công bố, nếu boundary có tương tác.
+4. Không có lỗi uncaught liên quan đến remote loading/render trong lượt kiểm tra.
+5. Bằng chứng ghi lại build ID của harness, remote URL và digest candidate.
+
+Đừng dùng `typeof module.default === 'function'` làm tiêu chuẩn chung cho React component: `memo` và `forwardRef` có thể tạo component dạng object. Render bằng runtime host thật đáng tin hơn một phép đoán export shape.
+
+Với webpack 5 cổ điển, remote container còn cần đúng share-scope initialization và module factory execution. Một test Node tải `remoteEntry.js` như ESM hoặc chỉ kiểm tra HTTP `200` không thay thế browser harness. Chi tiết loader nằm ở [Cơ chế Module Federation](/docs/module-federation/co-che).
+
+Mình giữ harness này nhỏ: load, render, một tương tác public và cleanup. Luồng checkout toàn bộ shop thuộc E2E; không kéo mọi backend vào artifact contract smoke test nếu boundary không cần chúng.
+
+## Ma trận version và release gate
+
+Một test “latest shell với latest catalog” chỉ bảo vệ một ô của ma trận. Deploy độc lập tạo nhiều cặp, đặc biệt khi còn tab cũ, rollout từng phần và rollback.
+
+### Chọn các cặp cần hỗ trợ
+
+Giả sử `H1` là shell đang chạy, `H2` là shell candidate, `C1` là catalog đang chạy/rollback target và `C2` là catalog candidate. Đây là build IDs minh họa, không phải contract major.
+
+| Cặp | Vì sao cần kiểm tra? |
+| --- | --- |
+| H1 + C1 | Baseline cho tổ hợp đang được hỗ trợ |
+| H1 + C2 | Catalog deploy trước shell hoặc tab shell cũ tải catalog mới |
+| H2 + C1 | Shell deploy trước catalog hoặc catalog rollback |
+| H2 + C2 | Tổ hợp mới sau khi migration hoàn tất |
+
+Không bắt mọi cặp lịch sử phải pass. Owner công bố compatibility window, các build còn trong window và rollback targets. Với nhiều remote, kiểm tra theo dependency edges thật trước, rồi thêm các tổ hợp rủi ro ở integration suite; không mặc định chạy tích Descartes của mọi version.
+
+Nếu H2 bắt buộc capability chỉ có ở C2, H2 + C1 không được ghép trực tiếp. Bạn phải có fallback/negotiation, hoặc release gate phải chặn tổ hợp đó và chấp nhận giới hạn về rollout/rollback. Không đánh dấu test skipped rồi vẫn tuyên bố hỗ trợ deploy theo mọi thứ tự.
+
+### Luồng CI cho một candidate
+
+Một pipeline catalog candidate có thể tổ chức như sau:
+
+1. **Chốt candidate:** cài theo lockfile, typecheck và chạy source contract tests.
+2. **Đọc support policy:** lấy expectations/harness của các shell còn được hỗ trợ, pin bằng version hoặc digest.
+3. **Verify provider:** chạy implementation catalog candidate với từng bộ expectations tương ứng.
+4. **Build một lần:** tạo artifact production, publish vào namespace bất biến cùng manifest/digest.
+5. **Artifact smoke:** tải đúng artifact đó trong các browser harness bắt buộc.
+6. **Gate promotion:** yêu cầu mọi cặp bắt buộc đã pass; thiếu kết quả không được coi là pass.
+7. **Promote và ghi nhận:** cập nhật pointer/config, ghi deployment và giữ artifacts cần cho rollback/tab cũ.
+
+Phía shell làm chiều còn lại: consumer candidate chạy với catalog hiện tại và rollback target. PR đổi cả hai app trong monorepo vẫn phải verify với artifacts/expectations cũ, không chỉ source mới trong cùng checkout.
+
+### Bằng chứng kiểm thử phải gắn với artifact
+
+Một record verification tối thiểu nên có:
+
+```json title="Mẫu record nội bộ — không phải manifest chuẩn của webpack"
+{
+  "consumerBuild": "shell-H1",
+  "providerBuild": "catalog-C2",
+  "providerArtifactDigest": "sha256:<digest-thuc-te>",
+  "contract": "shop.catalog.component.v1",
+  "expectationsVersion": "shell-H1-contract-suite",
+  "harnessVersion": "browser-harness-1",
+  "status": "passed"
+}
+```
+
+Trong hệ thống thật, ghi thêm thời điểm, runtime config digest, test run URL và toolchain/browser version cần tái lập. Các giá trị trên chỉ minh họa schema record, không phải kết quả test đã chạy.
+
+Nếu test xong rồi rebuild candidate để deploy, record cũ không chứng minh artifact mới đã được verify. Nếu URL `/latest/remoteEntry.js` đổi trong lúc chạy matrix, các ô có thể đã test các provider khác nhau. **Promote đúng bytes đã được test**, không chỉ cùng commit SHA.
+
+Ghi nhận deployment giúp gate biết version nào đang ở môi trường đích, nhưng không tự cho biết tất cả code còn sống trong tab cũ. Compatibility policy vẫn phải tính retention, session lifetime và cách xử lý consumer hết hỗ trợ; chi tiết nằm ở [Version compatibility](/docs/module-federation/version-compatibility).
+
+## Khi nào dùng Pact
+
+Với public JavaScript module, React props hoặc mount handle, mình bắt đầu bằng typecheck fixtures, Vitest/provider harness và browser artifact smoke. Pact không tự kiểm tra webpack exposed key, React singleton hay DOM lifecycle.
+
+Pact phù hợp hơn khi boundary là **HTTP request/response hoặc messages** và bạn cần quy trình consumer-driven contracts giữa nhiều owner. Consumer chạy API client thật với mock provider theo interaction đã khai báo, publish pact; provider replay/verify interactions với implementation thật, rồi publish verification results.
+
+Pact Broker có thể lưu quan hệ version và hỗ trợ `can-i-deploy` trước deployment; sau khi deploy cần record deployment để các lần kiểm tra sau có bối cảnh môi trường. Nó không thay thế feature tests, schema governance hay khả năng rollback của ứng dụng.
+
+Với browser event bus, có thể dùng ý tưởng consumer expectations và provider verification mà chưa cần Broker. Nếu áp dụng Pact message contracts, bạn vẫn phải tự tích hợp producer/consumer code và kiểm tra delivery/lifecycle của bus riêng. JSON message contract không chứng minh listener được cleanup hay event đã đi đúng realm.
+
+## Các lỗi khiến contract suite xanh giả
+
+| Lỗi | Vì sao bỏ lọt breaking change? | Cách sửa |
+| --- | --- | --- |
+| Mock chính public API đang verify | Test chỉ đo hành vi mock | Chạy implementation thật; mock dependency phía sau boundary |
+| Chỉ validate fixture viết tay | Provider thực tế có thể tạo output khác | Capture output từ code provider thật |
+| Consumer và provider chỉ dùng schema mới nhất | Consumer đã release có thể dùng schema cũ | Pin expectations/decoder theo consumer build |
+| Kiểm tra đúng type nhưng bỏ qua semantics | `itemCount` vẫn là number dù đổi nghĩa | Thêm case phân biệt tổng quantity với số dòng |
+| Typecheck declaration tự viết ở shell | Declaration không chứng minh remote tồn tại | Verify source public entry và artifact browser |
+| Snapshot toàn bộ DOM/event | Thay đổi bổ sung vô hại cũng làm test fail | Assert phần contract consumer thật sự dựa vào |
+| Bật coercion để mọi input pass | Che lỗi producer và default sai nghiệp vụ | Validate nghiêm field đã công bố, tolerance có chủ đích |
+| Chỉ test HEAD với HEAD | Không có consumer/provider đang chạy trong test | Thêm version matrix và rollback target |
+| Test URL mutable hoặc rebuild sau test | Không biết bytes nào đã được verify | Artifact bất biến, digest và build-once promotion |
+| Bỏ qua ô matrix thiếu kết quả | Unknown bị hiểu thành compatible | Gate chặn khi chưa có verification bắt buộc |
+
+## Checklist triển khai
+
+- [ ] Chọn một boundary có consumer và provider khác owner/release unit.
+- [ ] Ghi public API, semantics, error policy và compatibility window.
+- [ ] Có typecheck public entry, không dùng `any` hoặc cast để ép pass.
+- [ ] Consumer tests chạy decoder/adapter/component thật với fixtures có version.
+- [ ] Provider verification chạy code thật, gồm success và failure branches.
+- [ ] Runtime schema kiểm tra đúng draft, format và unknown-field policy.
+- [ ] Có case bảo vệ semantics mà type/schema không diễn đạt được.
+- [ ] Browser harness tải artifact production qua loader tương ứng consumer.
+- [ ] Verify consumer cũ/provider mới và consumer mới/provider rollback theo policy.
+- [ ] Release gate yêu cầu đủ bằng chứng và promote đúng artifact đã test.
+
+Nếu chưa có suite nào, bắt đầu với `shop.cart.updated.v1`: thêm valid/invalid fixtures, đưa chúng qua decoder shell thật, rồi capture event do cart command thật tạo. Sau đó thêm một browser smoke cho `catalog/CatalogPage`. Hai boundary nhỏ này giúp bạn bắt đầu mà không cần dựng ngay một nền tảng contract testing cho toàn bộ shop.
+
+## Tài liệu tham khảo
+
+- [Vitest — Testing Types](https://vitest.dev/guide/testing-types.html): phân biệt runtime tests với typechecking.
+- [Ajv — JSON Schema versions](https://ajv.js.org/json-schema.html): chọn validator đúng draft, gồm Draft 2020-12.
+- [Ajv — Validation options](https://ajv.js.org/options.html): format validation, coercion, defaults và additional properties.
+- [ajv-formats](https://ajv.js.org/packages/ajv-formats.html): kiểm tra các string formats như `date-time`.
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/): exposed modules, containers và shared scopes.
+- [Pact — Consumer tests](https://docs.pact.io/consumer): dùng consumer code thật và tránh over-constrain provider.
+- [Pact Broker — Overview](https://docs.pact.io/pact_broker/overview): compatibility matrix, deployment gate và recording deployments.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Thiết kế shape, semantics, capabilities và migration trước khi viết assertions." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Chọn compatibility window và xử lý version skew, rollout, rollback." />
+  <Card title="Integration và E2E tests" href="/docs/kiem-thu-va-tooling/integration-e2e" description="Bổ sung kiểm thử các phần thật ghép với nhau và user journeys xuyên frontend." />
+</Cards>

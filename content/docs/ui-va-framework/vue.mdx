@@ -1,18 +1,624 @@
 ---
 title: "Tích hợp Vue"
-description: "Thiết kế mount/unmount, props và events cho một frontend Vue."
+description: "Tích hợp Vue 3 vào micro-frontend qua mount/unmount, props và events; phân định router, state, CSS và xử lý lỗi tại boundary."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop dùng React, còn team catalog muốn dùng Vue. Bạn không thể đưa một Vue component vào React tree rồi kỳ vọng nó hoạt động như React component. Cách ghép ít phụ thuộc framework hơn là để shell cấp một DOM container, còn catalog tự tạo Vue app bên trong container đó.
+
+Điểm khó không nằm ở `createApp().mount()`. Nó nằm ở lần người dùng rời catalog rồi quay lại: app cũ đã được unmount chưa, command đang chờ có phát event muộn không, và cart có bị reset cùng UI không? Bài này thiết kế boundary để bạn trả lời được những câu hỏi đó.
+
+<Callout type="info" title="Phạm vi và điều kiện đọc">
+  Bài dùng Vue 3, Composition API, TypeScript và client-side rendering. Bạn cần biết props, emits và lifecycle cơ bản của Vue. Repository này là site tài liệu; các file code bên dưới thuộc một lab shop riêng, không phải implementation đã có trong repo. Ví dụ giả định lab đã có compiler cho `.vue` như Vite với Vue plugin; không cần cài Vue vào site docs.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn boundary tích hợp](#chọn-boundary-tích-hợp)
+- [Phân công shell và Vue app](#phân-công-shell-và-vue-app)
+- [Thiết kế contract không phụ thuộc Vue](#thiết-kế-contract-không-phụ-thuộc-vue)
+  - [Props là snapshot và services là capability](#props-là-snapshot-và-services-là-capability)
+  - [Command khác event thông báo](#command-khác-event-thông-báo)
+- [Viết adapter mount và unmount](#viết-adapter-mount-và-unmount)
+  - [Một app mới cho mỗi lần mount](#một-app-mới-cho-mỗi-lần-mount)
+  - [Cập nhật props qua reactive wrapper](#cập-nhật-props-qua-reactive-wrapper)
+- [Viết CatalogApp với props và emits](#viết-catalogapp-với-props-và-emits)
+- [Ghép vào shell và chặn mount muộn](#ghép-vào-shell-và-chặn-mount-muộn)
+- [Router chỉ có một owner cho URL](#router-chỉ-có-một-owner-cho-url)
+  - [Shell điều hướng và catalog gửi intent](#shell-điều-hướng-và-catalog-gửi-intent)
+  - [Khi catalog cần Vue Router riêng](#khi-catalog-cần-vue-router-riêng)
+- [State provide inject và Pinia](#state-provide-inject-và-pinia)
+- [CSS Teleport và accessibility](#css-teleport-và-accessibility)
+- [Tải module và chia sẻ Vue runtime](#tải-module-và-chia-sẻ-vue-runtime)
+- [Lifecycle và những việc Vue không cleanup hộ](#lifecycle-và-những-việc-vue-không-cleanup-hộ)
+- [Phân biệt lỗi tải lỗi Vue và lỗi nghiệp vụ](#phân-biệt-lỗi-tải-lỗi-vue-và-lỗi-nghiệp-vụ)
+- [Kiểm thử boundary](#kiểm-thử-boundary)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist trước khi tích hợp thật](#checklist-trước-khi-tích-hợp-thật)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn boundary tích hợp
 
-Bài này sẽ giúp bạn: thiết kế mount/unmount, props và events cho một frontend Vue.
+Nếu mọi consumer đều dùng Vue, expose một Vue component có thể là đủ. Nhưng khi shell khác framework, mình mặc định chọn **DOM container và lifecycle contract**: shell biết cách mount, update và unmount, không cần hiểu component instance của Vue.
 
-[Xem các bài trong nhóm UI và framework](/docs/ui-va-framework).
+| Boundary | Khi nên chọn | Điều phải chấp nhận |
+| --- | --- | --- |
+| Vue component | Consumer dùng Vue và muốn composition trong cùng component tree | Cần runtime Vue tương thích; public props/emits và dependencies phải rõ |
+| `mount(container, options)` | Ghép một vùng Vue vào shell bất kỳ | Phải tự định nghĩa update, cleanup, services và fallback |
+| Custom element | Muốn API dựa trên DOM cho nhiều consumer | Cần contract properties/events; cân nhắc Shadow DOM và đăng ký tag |
+| single-spa lifecycle | Đã dùng orchestrator để kích hoạt app theo route | Theo lifecycle của orchestrator; có thể dùng adapter `single-spa-vue` |
+| iframe | Cần document riêng hoặc cô lập nội dung theo chính sách sandbox | Giao tiếp qua message, thêm chi phí UX và điều hướng |
+
+Bài này chọn dòng thứ hai. Nó có thể được tải bằng build-time import, Module Federation hoặc ES modules; **boundary render và cơ chế tải module là hai quyết định khác nhau**.
+
+Đừng tách một Vue app cho từng card chỉ để gọi đó là micro-frontend. Với shop, một vùng catalog do một team sở hữu là boundary dễ quản lý hơn. Nếu chỉ có một team và một lịch release, frontend modular thường đơn giản hơn việc thêm nhiều runtime và lifecycle adapters.
+
+## Phân công shell và Vue app
+
+```text
+Shell: URL, loading/fallback, cart controller
+  │
+  ├── cấp container + props + services
+  ▼
+Vue adapter: mount / update / unmount
+  │
+  └── Vue app: CatalogApp + local UI state
+        │
+        ├── cart.addItem(...) ──► Cart controller
+        └── emits ──► Adapter ──► Shell callbacks
+```
+
+Shell sở hữu element bên ngoài và quyết định khi nào catalog xuất hiện. Vue sở hữu các node bên trong container trong thời gian app được mount. Shell không render con vào cùng container, không sửa DOM nội bộ của Vue và không xóa container trước khi gọi `unmount()`.
+
+| Trách nhiệm | Owner trong ví dụ |
+| --- | --- |
+| URL `/catalog`, `/cart`, Back/Forward | Shell |
+| Tải public module và fallback khi tải thất bại | Shell |
+| Tạo/hủy Vue app và chuyển public callbacks thành Vue listeners | Vue adapter |
+| Render sản phẩm, pending và message | CatalogApp |
+| Validate command, cập nhật giỏ và công bố snapshot | Cart controller |
+| Badge giỏ hàng | Shell đọc snapshot từ cart owner |
+
+Unmount catalog chỉ hủy **UI của catalog**. Cart controller phải sống đủ lâu để việc thêm sản phẩm trước khi mở `/cart` vẫn có hiệu lực. Chi tiết ownership này theo [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop), không phụ thuộc catalog dùng React hay Vue.
+
+## Thiết kế contract không phụ thuộc Vue
+
+### Props là snapshot và services là capability
+
+Public contract chỉ dùng TypeScript và API nền tảng web. Không đưa `Ref`, reactive proxy, Pinia store hay Vue component instance ra ngoài; nếu không, shell sẽ phụ thuộc implementation của catalog dù import boundary nhìn có vẻ sạch.
+
+```ts title="contracts/catalog.ts"
+export interface Product {
+  readonly sku: string;
+  readonly name: string;
+  readonly priceVnd: number;
+}
+
+export interface CatalogProps {
+  readonly products: readonly Product[];
+  readonly locale: 'vi-VN' | 'en-US';
+}
+
+export interface AddItemCommand {
+  readonly sku: string;
+  readonly quantity: number;
+}
+
+export interface CatalogEvent {
+  readonly type: 'shop:cart-add-succeeded';
+  readonly version: 1;
+  readonly sku: string;
+  readonly quantity: number;
+}
+
+export interface CatalogServices {
+  readonly cart: {
+    addItem(
+      command: AddItemCommand,
+      options: { signal: AbortSignal },
+    ): Promise<void>;
+  };
+  readonly navigate: (path: '/cart') => void;
+  readonly onEvent: (event: CatalogEvent) => void;
+  readonly reportError: (error: unknown, context: string) => void;
+}
+
+export interface CatalogHandle {
+  update(next: CatalogProps): void;
+  unmount(): void;
+}
+
+export interface CatalogModule {
+  readonly contractVersion: 1;
+  mount(
+    container: HTMLElement,
+    options: { props: CatalogProps; services: CatalogServices },
+  ): CatalogHandle;
+}
+```
+
+Props là dữ liệu hiển thị; services là những việc catalog được phép yêu cầu. `update()` nhận **toàn bộ snapshot mới**, không phải partial patch. Shell thay array/object khi dữ liệu đổi, không mutate snapshot đã chuyển cho catalog.
+
+`readonly` giúp kiểm tra lúc compile, không đóng băng object ở runtime. Ví dụ giả định hai phía đã kiểm tra dữ liệu tại ingress: SKU hợp lệ, giá là số nguyên VND không âm, locale nằm trong tập hỗ trợ. Một remote tải động vẫn cần kiểm tra shape/version và validate dữ liệu thực tế; type declaration không xác minh JavaScript tải từ mạng.
+
+Services giữ nguyên identity trong suốt một lần mount. Muốn đổi owner cart hoặc session, bạn cần chính sách rõ ràng: remount với services mới, hoặc thiết kế API cập nhật riêng. Đừng âm thầm thay reference rồi để command đang chờ dùng một owner khác với command tiếp theo.
+
+### Command khác event thông báo
+
+`cart.addItem()` là command có kết quả: Promise resolve nghĩa là cart owner đã xác nhận và cập nhật state. Event `shop:cart-add-succeeded` chỉ được phát sau thời điểm đó; nó phục vụ analytics hoặc thông báo, không phải yêu cầu writer thứ hai cập nhật giỏ.
+
+**Badge không tự cộng một đơn vị khi nhận event.** Nó đọc snapshot/subscription từ cart controller. Nếu UI bị unmount trước khi Promise hoàn thành, catalog có thể không phát event nữa, nhưng state của cart vẫn phải đúng.
+
+Vue component events chỉ đến listener được gắn trực tiếp trên component, không tự bubble như DOM events. Adapter bên dưới nhận `item-added` rồi gọi callback của shell. Nếu muốn dùng `CustomEvent` cho public boundary, bạn phải tự dispatch và thiết kế payload/bubbling; `defineEmits()` không làm việc đó hộ.
+
+## Viết adapter mount và unmount
+
+### Một app mới cho mỗi lần mount
+
+Mỗi lần gọi `mount()` tạo một app mới. Theo API Vue, một app instance chỉ được gọi `mount()` một lần; sau `app.unmount()`, không tái sử dụng instance đó để mount lại.
+
+Ví dụ dùng `WeakSet` để chặn mount trùng container qua cùng module. Đây là guard của adapter, không phải registry toàn trang: hai bản module độc lập vẫn có thể có hai tập riêng. Shell vẫn phải đảm bảo mỗi slot chỉ có một owner.
+
+```ts title="catalog/src/mount.ts"
+import { createApp, defineComponent, h, shallowRef } from 'vue';
+import CatalogApp from './CatalogApp.vue';
+import type {
+  CatalogHandle,
+  CatalogProps,
+  CatalogServices,
+} from '../../contracts/catalog';
+
+export const contractVersion = 1 as const;
+const occupied = new WeakSet<HTMLElement>();
+
+export function mount(
+  container: HTMLElement,
+  options: { props: CatalogProps; services: CatalogServices },
+): CatalogHandle {
+  if (occupied.has(container) || container.childNodes.length !== 0) {
+    throw new Error('Catalog requires an empty, unoccupied container');
+  }
+
+  const inputs = shallowRef(options.props);
+  const failed = shallowRef(false);
+  const services = options.services;
+  let closed = false;
+
+  const Root = defineComponent({
+    name: 'CatalogBoundary',
+    setup() {
+      return () => failed.value
+        ? h('section', { role: 'alert' }, 'Catalog gặp lỗi. Hãy mở lại trang này.')
+        : h(CatalogApp, {
+            products: inputs.value.products,
+            locale: inputs.value.locale,
+            services,
+            onItemAdded: (sku: string, quantity: number) => {
+              if (!closed) services.onEvent({
+                type: 'shop:cart-add-succeeded',
+                version: 1,
+                sku,
+                quantity,
+              });
+            },
+            onOpenCart: () => {
+              if (!closed) services.navigate('/cart');
+            },
+          });
+    },
+  });
+
+  const app = createApp(Root);
+  app.config.errorHandler = (error, _instance, info) => {
+    if (closed) return;
+    failed.value = true;
+    services.reportError(error, `catalog:vue:${info}`);
+  };
+
+  occupied.add(container);
+  try {
+    app.mount(container);
+  } catch (error) {
+    closed = true;
+    try {
+      app.unmount();
+    } finally {
+      occupied.delete(container);
+    }
+    throw error;
+  }
+
+  return {
+    update(next) {
+      if (closed) throw new Error('Cannot update an unmounted catalog');
+      inputs.value = next;
+    },
+    unmount() {
+      if (closed) return;
+      closed = true;
+      try {
+        app.unmount();
+      } finally {
+        occupied.delete(container);
+      }
+    },
+  };
+}
+```
+
+`unmount()` của handle là idempotent: shell có thể gọi cleanup hai lần mà không tạo thêm side effects. Ngược lại, `update()` sau unmount báo lỗi để lộ misuse, thay vì im lặng cập nhật state không còn consumer.
+
+Root có fallback tối thiểu khi Vue báo lỗi. Handler đổi sang cây fallback, không render lại component đã lỗi và không giả định shell framework sẽ bắt được lỗi bên trong Vue. `reportError`, `onEvent` và `navigate` phải là callbacks an toàn, không throw; ở production, adapter cho telemetry cần tự xử lý lỗi của transport.
+
+### Cập nhật props qua reactive wrapper
+
+Vì sao không chỉ gọi `createApp(CatalogApp, options.props)` rồi sửa object props? Root props truyền lúc tạo app không phải public update API cho shell. Truy cập `app._instance`, `$props` hoặc sửa field nội bộ khiến contract dựa vào implementation của Vue.
+
+Ở đây, render function đọc `inputs.value`. Thay snapshot bằng `handle.update(next)` kích hoạt Vue render lại và đưa props mới vào CatalogApp, không remount component. Vì vậy pending/message vẫn sống khi shell chỉ đổi locale hoặc dữ liệu sản phẩm.
+
+`shallowRef` cố ý không biến toàn bộ snapshot thành reactive tree. Shell là owner của snapshot và phải thay reference để báo thay đổi. Sau `update()`, DOM được Vue flush theo lịch cập nhật; trong test Vue, dùng `await nextTick()` trước khi assert DOM, không giả định DOM đổi ngay trên cùng call stack.
+
+## Viết CatalogApp với props và emits
+
+Component giữ local UI state, gọi cart capability và phát emits sau khi command thành công. Nó không import store nội bộ của cart và không điều khiển history của shell.
+
+```vue title="catalog/src/CatalogApp.vue"
+<script setup lang="ts">
+import { computed, onUnmounted, ref } from 'vue';
+import type {
+  CatalogProps,
+  CatalogServices,
+} from '../../contracts/catalog';
+
+const props = defineProps<CatalogProps & { services: CatalogServices }>();
+const emit = defineEmits<{
+  'item-added': [sku: string, quantity: number];
+  'open-cart': [];
+}>();
+
+const pendingSku = ref<string | null>(null);
+const message = ref('');
+const formatter = computed(() => new Intl.NumberFormat(props.locale, {
+  style: 'currency',
+  currency: 'VND',
+}));
+
+let disposed = false;
+let request: AbortController | null = null;
+
+onUnmounted(() => {
+  disposed = true;
+  request?.abort();
+  request = null;
+});
+
+async function add(sku: string) {
+  if (disposed || pendingSku.value !== null) return;
+  const controller = new AbortController();
+  request = controller;
+  pendingSku.value = sku;
+  message.value = '';
+
+  try {
+    await props.services.cart.addItem(
+      { sku, quantity: 1 },
+      { signal: controller.signal },
+    );
+    if (disposed || controller.signal.aborted) return;
+    message.value = 'Đã thêm vào giỏ.';
+    emit('item-added', sku, 1);
+  } catch (error) {
+    if (disposed || controller.signal.aborted) return;
+    message.value = 'Chưa thể xác nhận thêm vào giỏ. Hãy kiểm tra giỏ.';
+    props.services.reportError(error, 'catalog:cart:addItem');
+  } finally {
+    if (!disposed && request === controller) {
+      pendingSku.value = null;
+      request = null;
+    }
+  }
+}
+</script>
+
+<template>
+  <section class="shop-catalog" aria-label="Danh sách sản phẩm">
+    <h2>Catalog</h2>
+    <p v-if="products.length === 0">Chưa có sản phẩm.</p>
+    <ul>
+      <li v-for="product in products" :key="product.sku">
+        <h3>{{ product.name }}</h3>
+        <p>{{ formatter.format(product.priceVnd) }}</p>
+        <button
+          type="button"
+          :disabled="pendingSku !== null"
+          @click="add(product.sku)"
+        >
+          {{ pendingSku === product.sku ? 'Đang thêm…' : 'Thêm vào giỏ' }}
+        </button>
+      </li>
+    </ul>
+    <p role="status" aria-live="polite">{{ message }}</p>
+    <button type="button" @click="emit('open-cart')">Mở giỏ hàng</button>
+  </section>
+</template>
+
+<style scoped>
+.shop-catalog { color: var(--shop-text, #202020); }
+.shop-catalog ul { display: grid; gap: 1rem; padding: 0; list-style: none; }
+.shop-catalog button { font: inherit; }
+.shop-catalog button:focus-visible { outline: 2px solid currentColor; }
+</style>
+```
+
+Ví dụ chỉ cho phép một command pending trong catalog để luồng kiểm tra rõ ràng. Nếu cần nhiều thao tác đồng thời, dùng pending theo SKU và tập controllers, rồi thống nhất ordering/deduplication với cart owner; đừng bỏ guard mà không thêm chính sách.
+
+`disposed` chặn kết quả muộn ghi message hoặc phát emit sau unmount, kể cả service không tuân thủ abort. Template vẫn là tiếng Việt; `locale` ở đây chỉ điều khiển format giá, không phải contract dịch toàn bộ giao diện.
+
+<Callout type="warn" title="Abort không có nghĩa là rollback giỏ">
+  `AbortSignal` là yêu cầu hủy tác vụ đang chờ. Nó không đảm bảo backend chưa xử lý mutation và không hoàn tác giỏ. Cart controller phải quản lý kết quả không xác định, reconciliation và idempotency nếu cần. Nếu controller nhận command bền vững không cho UI hủy, đổi contract cho phù hợp và giữ guard bỏ qua kết quả muộn ở component.
+</Callout>
+
+## Ghép vào shell và chặn mount muộn
+
+Người dùng có thể rời `/catalog` khi module còn đang tải. `import()` thông thường không có cơ chế abort như `fetch()`; cleanup phải đánh dấu slot đã đóng để Promise resolve muộn không mount vào DOM cũ.
+
+Hàm dưới không phụ thuộc React hay Vue. Framework của shell gọi `attachCatalog()` sau khi container tồn tại và gọi `unmount()` trong lifecycle cleanup của mình. Loader được truyền vào để boundary không phụ thuộc một bundler cụ thể.
+
+```ts title="shell/src/vue-catalog-slot.ts"
+import type {
+  CatalogHandle,
+  CatalogModule,
+  CatalogProps,
+  CatalogServices,
+} from '../../contracts/catalog';
+
+export function attachCatalog(
+  container: HTMLElement,
+  initialProps: CatalogProps,
+  services: CatalogServices,
+  loadCatalog: () => Promise<CatalogModule>,
+): CatalogHandle {
+  let stopped = false;
+  let currentProps = initialProps;
+  let handle: CatalogHandle | undefined;
+
+  function show(text: string, role: 'status' | 'alert') {
+    const node = document.createElement('p');
+    node.setAttribute('role', role);
+    node.textContent = text;
+    container.replaceChildren(node);
+  }
+
+  show('Đang tải catalog…', 'status');
+
+  void Promise.resolve().then(loadCatalog).then((module) => {
+    if (stopped) return;
+    if (!module || module.contractVersion !== 1 || typeof module.mount !== 'function') {
+      throw new Error('Unsupported catalog contract');
+    }
+    container.replaceChildren();
+    handle = module.mount(container, { props: currentProps, services });
+  }).catch((error) => {
+    if (stopped) return;
+    services.reportError(error, 'shell:catalog:load-or-mount');
+    show('Catalog chưa khả dụng. Hãy mở lại trang này để thử lại.', 'alert');
+  });
+
+  return {
+    update(next) {
+      if (stopped) throw new Error('Cannot update a closed catalog slot');
+      currentProps = next;
+      handle?.update(next);
+    },
+    unmount() {
+      if (stopped) return;
+      stopped = true;
+      try {
+        handle?.unmount();
+      } finally {
+        container.replaceChildren();
+      }
+    },
+  };
+}
+```
+
+Nếu props thay đổi trong lúc tải module, slot giữ snapshot mới nhất và dùng nó khi mount. Sau khi đã mount, shell không dùng `show()` hay `replaceChildren()` để cập nhật nội dung nữa; Vue adapter mới là owner của DOM bên trong.
+
+`loadCatalog` có thể là `() => import('catalog/mount')` trong shell đã cấu hình Module Federation, hoặc loader ESM/package khác. Alias `catalog/mount` **không tự hoạt động** chỉ vì xuất hiện trong code: bạn cần cấu hình remote/expose, types và loader tương ứng. Bài này không thay cấu hình lab React đã có bằng một Federation plugin Vue bất kỳ.
+
+Ví dụ không có timeout hoặc retry loader tại chỗ. Với production, thêm trạng thái timeout và fallback có hành động phù hợp, nhưng vẫn giữ `stopped` hoặc generation token cho mỗi lần mở slot. Retry có thể bị ảnh hưởng bởi cache Promise/module của loader; mở lại slot không bảo đảm luôn tải một bundle mới.
+
+<Callout type="info" title="Shell dùng React thì gắn vào effect, không gắn vào render">
+  React chỉ render một container rỗng; effect gọi `attachCatalog()`, effect cleanup gọi handle `unmount()`. Effect riêng chuyển props mới qua `update()`. Không gọi mount trên mỗi render hoặc mỗi lần callback đổi identity. Development Strict Mode có thể chạy thêm chu kỳ setup/cleanup, nên mỗi chu kỳ cần handle riêng và phải chặn import resolve muộn như trên.
+</Callout>
+
+## Router chỉ có một owner cho URL
+
+### Shell điều hướng và catalog gửi intent
+
+Với `/catalog` và `/cart`, mình để shell sở hữu browser history. Catalog không cần Vue Router: nút mở giỏ emit `open-cart`, adapter gọi `services.navigate('/cart')`, shell điều hướng rồi cleanup slot.
+
+Cách này tránh hai routers cùng xử lý URL, navigation guards hoặc `popstate`. Nếu shell dùng React Router, callback `navigate` kết nối tới router đó; Vue không cần biết thư viện cụ thể. Path contract nên giới hạn rõ, không nhận tùy ý URL từ remote rồi điều hướng mù quáng.
+
+### Khi catalog cần Vue Router riêng
+
+Giả sử catalog có nhiều màn hình con như danh sách và chi tiết SKU. Có hai hướng, nhưng phải chốt URL owner trước:
+
+| Thiết kế | Quy tắc |
+| --- | --- |
+| Shell sở hữu mọi browser URL, catalog dùng memory history | Shell đưa local route snapshot; catalog gửi navigation intent; adapter đồng bộ vào memory router |
+| Vue app được giao trọn prefix `/catalog/*` | Có thể dùng web history với base tương ứng, nhưng shell/orchestrator không đồng thời điều khiển subtree đó |
+
+Mặc định mình chọn memory router cho vùng nhúng khi shell đã có router. `createMemoryHistory()` không sửa browser URL và không tự chạy initial navigation: sau `app.use(router)`, adapter phải push route đầu rồi chờ `router.isReady()` trước khi coi vùng đó đã sẵn sàng.
+
+Memory history không tự làm deep link, Back/Forward hay URL query hoạt động. Bạn cần protocol đồng bộ hai chiều: shell route → local route, local intent → shell navigation; so sánh route đã chuẩn hóa để tránh vòng lặp push. Ví dụ mount ở trên cố ý không thêm router vì catalog chỉ có một màn hình.
+
+Nếu chuyển mount sang async để chờ router readiness, phải đổi contract sang `Promise<CatalogHandle>` và xử lý thêm ca slot đóng **trong khi mount đang chờ**: handle resolve muộn phải được unmount ngay. Không chỉ đổi implementation rồi để shell cũ tưởng rằng nó nhận handle đồng bộ.
+
+Với web history, mở trực tiếp `/catalog/...` còn cần hosting phục vụ đúng entry và xử lý route không tồn tại. Base của router là base route, không phải URL tải JavaScript/CSS từ CDN; đừng dùng một biến để cấu hình cả hai.
+
+## State provide inject và Pinia
+
+`provide/inject` đi theo component tree hoặc app context của Vue, không đi theo vị trí DOM. Một Vue app mount vào element nằm trong shell không tự nhận providers của shell; hai lần `createApp()` có hai app contexts riêng, kể cả chúng dùng cùng Vue runtime.
+
+Nếu nhiều component trong catalog cần services, adapter có thể `app.provide()` với injection key nội bộ rồi dùng `inject()` trong catalog. Public API vẫn là `CatalogServices`; shell không import injection key để truy cập state nội bộ. Nếu shell và remote cùng render trong **một Vue tree**, việc nhận provider còn phụ thuộc đúng identity của key và contract provider — đó là boundary khác với app độc lập trong bài.
+
+Với Pinia, mình tạo `createPinia()` trong mỗi lần mount nếu đó là local UI state của catalog. Khi gọi store ngoài `setup()`, truyền đúng instance qua `useCatalogStore(pinia)` thay vì trông chờ active Pinia toàn cục; trang có nhiều Vue apps dễ làm giả định đó sai.
+
+| State | Lifetime nên chọn |
+| --- | --- |
+| Pending/message của component | Đến khi CatalogApp unmount |
+| Filter của catalog | Theo yêu cầu UX: local UI, URL hoặc owner có lifetime dài hơn |
+| Giỏ hàng đã xác nhận | Cart controller, không gắn vào catalog mount |
+| Session/auth | Owner cấp ứng dụng; catalog nhận snapshot/capability cần thiết |
+
+`app.unmount()` không phải lời hứa hủy mọi store, plugin hay subscription đặt ngoài component. Với Pinia instance riêng cho một mount, hãy xử lý subscription và cân nhắc `disposePinia()` theo version đang dùng khi hủy owner; không dispose một instance dùng chung khi chỉ đóng một vùng UI.
+
+Đừng export trực tiếp Pinia store để React shell đọc và mutate. Expose snapshot, command và subscription có unsubscribe. Chia sẻ thư viện Pinia cũng không tự tạo một state owner chung.
+
+## CSS Teleport và accessibility
+
+`<style scoped>` gắn selectors với scope attributes, không tạo Shadow DOM. CSS toàn cục từ shell vẫn có thể ảnh hưởng catalog; reset, `:global()`, inherited styles và CSS variables vẫn cần chính sách chung. Mình dùng prefix `shop-catalog`, selectors gọn và design tokens đã công bố, thay vì một stylesheet reset toàn trang trong remote.
+
+`Teleport` là một ngoại lệ cần review: modal có thể được render ngoài container mount nhưng vẫn thuộc Vue component tree. Nếu teleport vào `body`, Vue sẽ cleanup nội dung do nó quản lý khi unmount, nhưng CSS scoped không biến modal thành một vùng cách ly khỏi global styles.
+
+Shell nên cấp overlay target rõ ràng khi có modal và giữ target tồn tại cho tới khi Vue app đã unmount. Catalog không xóa toàn bộ overlay root dùng chung; nó chỉ cleanup node, listener và side effects do mình tạo.
+
+Với accessibility, thống nhất thêm:
+
+- Ai chuyển focus khi đổi route hoặc hiển thị fallback, và ai trả focus sau modal.
+- Prefix hoặc cơ chế cấp ID để nhiều Vue app không tạo ID trùng nhau.
+- Loading/message dùng live region hợp lý; không báo thành công khi command chưa được xác nhận.
+- Popup có focus trap, Escape và cleanup đúng khi route bị đóng đột ngột.
+
+JavaScript của Vue remote vẫn chạy trong cùng page và có thể truy cập DOM/storage như code của shell. Vue app boundary, scoped CSS và Shadow DOM không phải sandbox cho code không đáng tin cậy; nếu cần isolation bảo mật, đánh giá [iframe](/docs/cac-cach-tich-hop/iframe) và policy tương ứng.
+
+## Tải module và chia sẻ Vue runtime
+
+Remote entry dùng để tích hợp chỉ nên export public API như `mount` và `contractVersion`. Không để việc import module tự chạy `createApp(...).mount('#app')`. Bootstrap standalone có thể gọi cùng adapter, nhưng phải nằm ở entry khác; nếu không, shell tải module có thể vô tình tạo một app thứ hai.
+
+Khi dùng Module Federation, quyết định share Vue theo boundary chứ không sao chép cấu hình React:
+
+| Boundary | Chính sách cần đánh giá |
+| --- | --- |
+| Remote export Vue component vào Vue tree của host | Thống nhất Vue runtime tương thích; singleton thường là lựa chọn cần thiết trong share scope tương ứng |
+| Remote tự tạo app, chỉ giao tiếp qua DOM và plain contracts | Có thể dùng runtime riêng để độc lập hơn, đổi lại bundle tải thêm; cũng có thể share nếu version policy được quản trị |
+| Remote giao tiếp bằng Ref, store hoặc composables xuyên app | Đây là coupling runtime/state; nên thu hẹp lại contract thay vì chỉ thêm singleton |
+
+`singleton` không có nghĩa là mọi bản Vue trên trang đều biến mất. Build không tham gia sharing, share scope khác hoặc đường import khác vẫn có thể tải runtime riêng. Dùng version constraints của từng build và kiểm tra runtime thực tế; không tắt strict checks chỉ để che version mismatch.
+
+Các plugin Federation cho webpack, Vite và những runtime khác không có API/capabilities hoàn toàn giống nhau. Kiểm tra đúng plugin, kiểu remote và version trước khi viết config. Dù dùng công cụ nào, entry, lazy chunks và CSS của catalog phải tải từ đúng base asset URL; expose thành công mà CSS `404` vẫn là tích hợp lỗi.
+
+Ví dụ trên là CSR. Nếu cần SSR/SEO, không mount Vue vào HTML server-rendered của shell rồi gọi đó là hydration. `createSSRApp()` yêu cầu markup và state phù hợp từ pipeline Vue SSR; boundary đa framework và hydration phải được thiết kế riêng, như bài [Next.js, SSR và hydration](/docs/ui-va-framework/nextjs-ssr).
+
+## Lifecycle và những việc Vue không cleanup hộ
+
+`app.unmount()` unmount component tree và kích hoạt các unmount hooks. Vue dừng render effects, computed/watchers gắn với component lifecycle, nhưng bạn vẫn phải cleanup side effects tự tạo.
+
+| Tài nguyên | Cách cleanup |
+| --- | --- |
+| DOM listener trên `window` hoặc `document` | `removeEventListener()` hoặc listener với `AbortSignal` |
+| Timer, observer, socket | `clearInterval()`, `disconnect()`, đóng connection theo owner |
+| Subscription tới cart/event bus | Gọi unsubscribe trong unmount hook hoặc adapter cleanup |
+| Request do UI sở hữu | Abort khi phù hợp và luôn guard kết quả muộn |
+| Watcher/effect tạo ngoài component hoặc tạo async không gắn owner | Giữ stop handle/effect scope và dừng rõ ràng |
+| DOM node tự thêm ngoài Vue tree | Xóa đúng node do app tạo, không clear vùng dùng chung |
+
+Chỉ `container.remove()` hay `container.innerHTML = ''` không thay thế `app.unmount()`. DOM có thể biến mất trong khi timers, listeners và subscriptions còn sống.
+
+Nếu dùng `KeepAlive`, deactivation không phải unmount. `onUnmounted()` chưa chạy khi component chỉ bị cache; tác vụ chỉ nên chạy lúc màn hình active cần xử lý `onActivated()`/`onDeactivated()`. Tương tự, ẩn container bằng CSS không tự hủy Vue app.
+
+## Phân biệt lỗi tải lỗi Vue và lỗi nghiệp vụ
+
+Một React Error Boundary bọc container không tự bắt lỗi của Vue app độc lập: React không quản lý cây component bên trong. Ngược lại, `app.config.errorHandler` không bắt một Promise loader bị reject trước khi Vue app tồn tại.
+
+| Loại lỗi | Nơi xử lý trong ví dụ | Hành vi mong đợi |
+| --- | --- | --- |
+| Loader/entry/chunk thất bại | `.catch()` trong slot của shell | Fallback cục bộ; header và navigation vẫn dùng được |
+| Sai contract version hoặc thiếu `mount` | Kiểm tra trước mount | Không khởi động module không tương thích |
+| Mount throw đồng bộ | Shell catch; adapter giải phóng app/guard đã tạo | Slot không bị đánh dấu occupied vĩnh viễn |
+| Render/setup/lifecycle hoặc lỗi Vue chuyển tới handler | `app.config.errorHandler` và Root fallback | Không render lặp component đã lỗi; report context |
+| Command cart reject | `try/catch` trong CatalogApp | Hết pending, message tại thao tác, không phát success event |
+| Kết quả đến sau unmount | `stopped` ở shell, `disposed` ở component | Không mount app cũ, không phát emit hoặc ghi UI muộn |
+
+Không phải mọi async task tùy ý đều đi qua Vue error handler. Promise do bạn tạo phải có catch ở nơi sở hữu nó. Error handler là lớp bảo vệ cuối, không thay thế lỗi nghiệp vụ có trạng thái UI cụ thể.
+
+Fallback của ví dụ chưa khôi phục app tại chỗ sau lỗi render. Mở lại route tạo app mới; reset một cờ lỗi mà không giải quyết nguyên nhân chỉ có thể đưa bạn về vòng lặp lỗi cũ. Retry command mutation cũng cần phân biệt lỗi từ chối xác định với timeout chưa biết kết quả, tránh thêm sản phẩm hai lần.
+
+## Kiểm thử boundary
+
+Test component chứng minh CatalogApp render đúng; test contract chứng minh shell dùng được catalog mà không biết nội bộ Vue. Bạn cần cả hai, rồi kiểm tra E2E với loader thật.
+
+Trong unit/integration test, inject fake cart service có Promise điều khiển được và spies cho các callbacks. Với cập nhật Vue, chờ `nextTick()`; khi test command async, flush Promise trước rồi chờ Vue flush DOM.
+
+| Ca kiểm tra | Cách kích hoạt | Điều cần assert |
+| --- | --- | --- |
+| Mount bình thường | Container rỗng, ba sản phẩm của shop mẫu | Một Vue app, ba sản phẩm, không tạo root ngoài slot |
+| Update không remount | Đổi locale hoặc array products qua handle | Giá/danh sách cập nhật; instance và pending hiện tại không bị reset |
+| Command thành công | Resolve fake `addItem()` | Một command, một success event đúng payload sau resolve |
+| Command thất bại | Reject fake `addItem()` | Hết pending, message lỗi, không success event; badge không tự tăng |
+| Unmount trong lúc pending | Unmount rồi resolve/reject fake Promise | Signal đã abort; không emit muộn, không unhandled rejection |
+| Tải muộn | Giữ loader Promise, đóng slot rồi resolve | Không có lần mount Vue nào sau khi slot đóng |
+| Props đổi khi đang tải | Update trước khi resolve loader | Lần mount đầu nhận snapshot mới nhất |
+| Mount trùng container | Gọi mount hai lần khi app đầu còn sống | Lần hai bị từ chối, app đầu không bị ghi đè |
+| Cleanup lặp | Unmount hai lần | Không lỗi và không cleanup tài nguyên dùng chung hai lần |
+| Remount cùng slot | Mount → unmount → mount mới | App mới hoạt động; không nhân đôi listeners/subscriptions |
+| Sai module contract | Loader trả version khác hoặc thiếu mount | Shell fallback, không gọi code mount không tương thích |
+| Lỗi render Vue | Component test throw trong render/setup | Vue fallback hiện; shell còn hoạt động; có report |
+
+Trong E2E, chuyển `/catalog` → `/cart` → Back/Forward nhiều lần, rồi thử thêm sản phẩm. Một click phải tạo một command; giỏ không reset vì catalog unmount. Chặn remote chunk/CSS và quan sát Network để phân biệt lỗi loader với lỗi style hoặc render.
+
+Nếu giới thiệu memory router, bổ sung deep link, query, route không tồn tại và đồng bộ Back/Forward. Nếu có Teleport, đóng route khi modal mở rồi kiểm tra overlay, focus và global listeners đã được cleanup.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân cần kiểm tra | Hướng sửa |
+| --- | --- | --- |
+| Catalog không đổi khi shell cập nhật props | Mutate snapshot hoặc sửa root props trực tiếp | Thay snapshot qua `update()` và reactive wrapper |
+| Quay lại route thấy warning/app không mount đúng | Reuse app instance đã unmount | Tạo `createApp()` mới cho mỗi mount |
+| Giỏ mất khi rời catalog | Cart state đặt trong lifecycle của catalog | Chuyển owner cart ra ngoài UI catalog |
+| Click tạo nhiều command sau vài lần navigation | Listener/subscription cũ chưa cleanup | Track và unsubscribe; không chỉ xóa DOM |
+| Route bị push hai lần hoặc Back sai | Hai routers cùng sở hữu browser history | Chọn một URL owner, đồng bộ intent/snapshot rõ ràng |
+| `inject()` không thấy services | Provider thuộc Vue app khác hoặc key khác identity | Provide trong app hiện tại qua adapter; review key identity |
+| Store ngoài component lấy sai app state | Dựa vào active Pinia toàn cục | Truyền đúng Pinia instance vào store factory |
+| React fallback không bắt lỗi Vue | Vue nằm ngoài React component tree | Dùng Vue handler/boundary và public report callback |
+| Rời trang rồi catalog tự xuất hiện lại | Loader resolve sau cleanup | Guard `stopped`/generation trước mount |
+| Style rò rỉ hoặc modal bị CSS shell đổi | Coi scoped CSS là Shadow DOM | Thu hẹp selectors, tokens và overlay contract; kiểm tra styles thực tế |
+| Shell tải module làm app standalone chạy thêm | Remote entry có top-level bootstrap | Tách bootstrap standalone khỏi public entry |
+
+## Checklist trước khi tích hợp thật
+
+- [ ] Public module không tự mount khi import; có contract version kiểm tra được.
+- [ ] Shell chỉ cấp container, props và services, không truy cập Vue internals.
+- [ ] Mỗi slot chỉ có một DOM owner; unmount trước khi xóa container.
+- [ ] Props được cập nhật bằng snapshot mới; update không tạo lại app.
+- [ ] Command có kết quả; success event không trở thành writer thứ hai của cart.
+- [ ] Cart/session có owner và lifetime không phụ thuộc catalog UI.
+- [ ] URL có một owner; deep link và Back/Forward đã được kiểm chứng.
+- [ ] Timers, listeners, subscriptions và async work có cleanup/late-result guard.
+- [ ] Vue fallback và shell fallback độc lập; telemetry callbacks không throw.
+- [ ] CSS, overlay targets, focus và ID không xung đột với shell.
+- [ ] Runtime/version policy khớp boundary; entry, chunks và CSS tải đúng origin/base.
+- [ ] Mount lại và unmount trong lúc pending đã có tests, không chỉ happy path.
+
+## Tài liệu tham khảo
+
+- [Vue — Application API](https://vuejs.org/api/application.html) — `createApp`, `mount`, `unmount`, app context và error handler.
+- [Vue — Lifecycle Hooks](https://vuejs.org/api/composition-api-lifecycle.html) — unmount, cleanup và lifecycle của cached components.
+- [Vue — Component Events](https://vuejs.org/guide/components/events.html) — emits và việc component events không bubble như DOM events.
+- [Vue — SFC CSS Features](https://vuejs.org/api/sfc-css-features.html) — scoped CSS, global và deep selectors.
+- [Vue Router — Different History modes](https://router.vuejs.org/guide/essentials/history-mode.html) — web history, memory history và initial navigation.
+- [Pinia — Stores outside components](https://pinia.vuejs.org/core-concepts/outside-component-usage.html) — truyền đúng Pinia instance khi không có injection context.
+- [Pinia — disposePinia](https://pinia.vuejs.org/api/pinia/functions/disposePinia.html) — dispose instance riêng khi owner kết thúc.
+
+## Đọc tiếp
+
+Để kiểm chứng boundary này, bắt đầu bằng fake cart service và ca mount → update → unmount → mount lại. Khi lifecycle đã đúng, mới nối loader remote thật và giỏ hàng; như vậy bạn có baseline để biết lỗi nằm ở Vue adapter hay đường tải module.
+
+<Cards>
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Thiết kế commands, snapshots và callbacks để framework không lọt ra boundary." />
+  <Card title="Routing giữa các frontend" href="/docs/giao-tiep-va-trang-thai/routing" description="Chốt URL owner và protocol điều hướng xuyên ứng dụng." />
+  <Card title="CSS isolation" href="/docs/ui-va-framework/css-isolation" description="Chọn mức cô lập style và xử lý overlays trong trang ghép nhiều UI." />
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Quản trị runtime sharing và version compatibility giữa các build." />
+</Cards>

@@ -1,18 +1,583 @@
 ---
 title: "Local development nhiều ứng dụng"
-description: "Dùng dev orchestration, mocks và remote overrides để phát triển từng ứng dụng."
+description: "Điều phối dev server, chọn remote bằng profile và mock API để sửa từng micro-frontend mà vẫn kiểm tra được tích hợp trong shell."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Bạn chỉ muốn sửa bộ lọc catalog, nhưng để mở màn hình lại phải clone cart, chạy backend và chờ tất cả dev server compile. Nếu mỗi thay đổi nhỏ đều cần cả hệ thống trên máy, ranh giới micro-frontend chưa giúp được nhiều cho vòng lặp phát triển.
+
+Mình mặc định chọn **chạy app đang sửa cùng shell local, còn các remote không đổi dùng artifact đã pin**. Standalone và mocks giúp bạn sửa nhanh; trước khi merge, cần kiểm tra lại trong shell thật để bắt lỗi routing, contract và shared dependencies mà môi trường riêng không thể thấy.
+
+<Callout type="info" title="Phạm vi và điều kiện bắt đầu">
+  Các lệnh và file mẫu thuộc `shop-workspace` riêng, không phải site Next.js + Fumadocs `micro-frontend-learn`. Bạn cần workspace từ [Cấu trúc workspace](/docs/bat-dau/workspace) và tích hợp webpack 5 từ [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien).
+
+  Catalog trong lab đầu tiên dùng container `shop_catalog`, alias `catalog` và expose `./CatalogPage`. Cart dưới đây là phần mở rộng giả định đã có container `shop_cart` và public module tương ứng; bài này không dựng implementation cart. Nếu bạn mới có shell/catalog, bỏ cart khỏi profiles, object `scopes` của helper và mapping production; không chạy script cart. Trong `dev:all`, chỉ giữ hai commands và hai tên `shell,catalog`.
+
+  Các URL `assets.example.com` và release ID bên dưới chỉ minh họa. Hãy thay bằng artifact thật mà browser truy cập được. Sơ đồ dùng ASCII nên không cần cấu hình Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn vòng lặp phát triển phù hợp](#chọn-vòng-lặp-phát-triển-phù-hợp)
+- [Giữ một bản đồ port và runtime rõ ràng](#giữ-một-bản-đồ-port-và-runtime-rõ-ràng)
+- [Điều phối nhiều dev server](#điều-phối-nhiều-dev-server)
+  - [Chạy song song và quản lý process](#chạy-song-song-và-quản-lý-process)
+  - [Readiness không phải process còn sống](#readiness-không-phải-process-còn-sống)
+- [Remote overrides bằng profile](#remote-overrides-bằng-profile)
+  - [Khai báo tổ hợp remote](#khai-báo-tổ-hợp-remote)
+  - [Áp dụng profile trong webpack của shell](#áp-dụng-profile-trong-webpack-của-shell)
+  - [Tạo lệnh chạy theo công việc](#tạo-lệnh-chạy-theo-công-việc)
+  - [Khi nào cần override ở runtime](#khi-nào-cần-override-ở-runtime)
+- [Mocks đúng ranh giới](#mocks-đúng-ranh-giới)
+  - [Mock API khác mock remote](#mock-api-khác-mock-remote)
+  - [Thiết lập MSW cho shell local](#thiết-lập-msw-cho-shell-local)
+  - [Khởi động worker trước khi render](#khởi-động-worker-trước-khi-render)
+  - [Dùng fixture như một contract](#dùng-fixture-như-một-contract)
+- [Proxy API và authentication](#proxy-api-và-authentication)
+- [HMR và reload khi thay remote](#hmr-và-reload-khi-thay-remote)
+- [Quy trình sửa catalog từ đầu đến cuối](#quy-trình-sửa-catalog-từ-đầu-đến-cuối)
+- [Local development trong multi-repo](#local-development-trong-multi-repo)
+- [Chẩn đoán theo lớp](#chẩn-đoán-theo-lớp)
+- [Checklist trước khi gửi PR](#checklist-trước-khi-gửi-pr)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn vòng lặp phát triển phù hợp
 
-Bài này sẽ giúp bạn: dùng dev orchestration, mocks và remote overrides để phát triển từng ứng dụng.
+Không cần một chế độ chạy duy nhất cho mọi việc. Khi sửa layout, bạn cần feedback nhanh; khi đổi payload thêm giỏ, bạn cần producer và consumer thật. Chọn theo ranh giới bị tác động, không theo số app đang có trong repo.
 
-[Xem các bài trong nhóm Kiểm thử và tooling](/docs/kiem-thu-va-tooling).
+| Chế độ | Chạy trên máy | Phù hợp với | Điểm chưa chứng minh |
+| --- | --- | --- | --- |
+| Standalone | Catalog với context tối thiểu và API mocks | UI, loading/error states, logic nội bộ | Composition trong shell, auth và router thật |
+| Focused integration | Shell + catalog local; cart dùng release đã pin | Công việc catalog hằng ngày | Mọi tổ hợp version hoặc backend thật |
+| All local | Shell + catalog + cart local | Đổi contract xuyên app, debug lifecycle | Candidate mới tương thích với consumer đã release |
+| Local shell với remotes đã pin | Chỉ shell local | Layout, routing và remote selection của shell | Code remote candidate đang sửa |
+| Preview/integration | Artifacts build thật và test backend | Smoke/E2E trước merge hoặc promotion | Toàn bộ điều kiện production |
+
+Standalone nên dùng chính public component hoặc lifecycle API mà shell consume, với props/context giả ở adapter riêng. Đừng viết một màn hình catalog thứ hai chỉ để chạy demo: bản demo ấy có thể xanh trong khi module expose thật bị hỏng.
+
+Nếu app luôn cần store nội bộ của shell hoặc source cart mới chạy được, đừng dùng mocks để che dependency đó. Hãy xem lại public contract. Mocks nên thay một dependency đã có ranh giới, không hợp thức hóa deep import giữa các app.
+
+## Giữ một bản đồ port và runtime rõ ràng
+
+Giữ quy ước của lab thay vì để từng server tự chọn port tiếp theo:
+
+| Thành phần | Địa chỉ mẫu | Vai trò |
+| --- | --- | --- |
+| Shell | `http://localhost:3000` | Origin của document khi chạy tích hợp |
+| Catalog | `http://localhost:3001` | Standalone và `/remoteEntry.js` của catalog |
+| Cart | `http://localhost:3002` | Standalone và `/remoteEntry.js` của cart |
+| Backend local, nếu dùng | `http://localhost:4000` | Đích proxy `/api`, không phải Federation remote |
+
+Trong chế độ focused integration, browser tải như sau:
+
+```text
+Browser: document tại localhost:3000
+  ├─► localhost:3000       shell local
+  ├─► localhost:3001       catalog entry + chunks local
+  └─► assets.example.com   cart entry + chunks của release k09
+```
+
+Cart vẫn chạy trong document shell nếu được tải bằng Federation; origin của file JavaScript không tạo sandbox riêng. Ví dụ, `fetch('/api/cart')` trong code cart sẽ gọi origin document `localhost:3000`, không tự gọi origin CDN của cart. API base URL được nhúng sẵn trong artifact có thể cho hành vi khác, nên phải kiểm tra Network của release đã chọn.
+
+Dùng `localhost` nhất quán trong cấu hình và URL. Với container/WSL, địa chỉ browser truy cập phải là địa chỉ đã publish/forward ra máy host; tên service kiểu `catalog:3001` chỉ resolve trong Docker network không phải URL remote hợp lệ cho browser bên ngoài.
+
+<Callout type="warn" title="Đừng đổi port mà quên mapping">
+  Site docs cũng mặc định chạy ở `3000`. Dừng nó hoặc chạy docs ở `3100`. Khi remote chuyển từ `3001` sang port khác, phải cập nhật mapping và địa chỉ WebSocket liên quan nếu đã cấu hình cố định; việc server tự mở ở port mới không sửa URL bên shell.
+</Callout>
+
+## Điều phối nhiều dev server
+
+### Chạy song song và quản lý process
+
+Ba terminal là baseline dễ debug nhất. Khi cần một lệnh chung, dùng process runner có prefix log và cơ chế dừng các process con. Với workspace nhỏ này, mình dùng `concurrently`; chưa cần task orchestrator chỉ để mở ba server.
+
+Chạy tại root **`shop-workspace`**, sau khi dừng các dev server:
+
+```bash
+npm install --save-dev --save-exact concurrently@9
+```
+
+Thêm các scripts sau vào `package.json` root, **giữ các fields và scripts đang có**:
+
+```json title="shop-workspace/package.json — phần scripts bổ sung"
+{
+  "scripts": {
+    "dev:all": "concurrently --kill-others --names shell,catalog,cart \"npm run dev:shell\" \"npm run dev:catalog\" \"npm run dev:cart\""
+  }
+}
+```
+
+`--kill-others` dừng các lệnh còn lại nếu một lệnh kết thúc, dù thành công hay thất bại. Điều này hợp với một nhóm dev server cần sống cùng nhau; không đặt một lệnh build ngắn trong cùng nhóm, vì build xong sẽ làm các server bị dừng.
+
+```bash
+npm run dev:all
+```
+
+Log có prefix app để bạn biết lỗi compile đến từ đâu. Nhấn `Ctrl+C` để dừng nhóm và xác nhận các port đã được giải phóng. Compile error thường không làm dev server thoát, nên runner không thể tự biến mọi lỗi compile thành thất bại của cả nhóm.
+
+Không dùng `npm run dev --workspaces` hoặc nối `npm run dev:catalog && npm run dev:shell`: các lệnh đó không tạo nhóm server chạy song song. Cũng không cần background process bằng `&` rồi bỏ qua cleanup, vì process sót lại dễ khiến lượt chạy sau dùng nhầm server cũ.
+
+### Readiness không phải process còn sống
+
+Process runner chỉ khởi động lệnh; nó không đảm bảo catalog đã compile xong trước khi shell import remote. Với thao tác thủ công, chờ remote compile thành công rồi mở hoặc reload browser. Bạn không nhất thiết phải trì hoãn process shell, chỉ cần tránh kích hoạt lượt tải đầu quá sớm.
+
+Kiểm tra entry bằng HTTP:
+
+```bash
+curl --fail --show-error --include http://localhost:3001/remoteEntry.js
+```
+
+Bạn cần response thành công, MIME JavaScript phù hợp và body là code. `200` chứa HTML fallback không phải readiness của remote. Sau đó kiểm tra shell thực sự import và render được module; HTTP entry tốt vẫn chưa chứng minh shared dependencies hay exports đúng.
+
+Nếu thêm bước wait tự động, đặt timeout hữu hạn và kiểm tra resource cần dùng thay vì chỉ TCP port. Với CI smoke, cần readiness sâu hơn: tải entry, resolve public module và đi tới trạng thái UI usable. Tránh `sleep 10` như một cam kết rằng mọi máy sẽ compile trong cùng thời gian.
+
+## Remote overrides bằng profile
+
+**Remote override** là chọn implementation khác cho cùng alias public, chẳng hạn alias `catalog` trỏ từ artifact integration sang dev server local. Host vẫn import `catalog/CatalogPage`; bạn đổi nơi tải code, không import source catalog vào bundle shell.
+
+Ví dụ bên dưới chọn profile lúc webpack khởi động. Đây là **build-time configuration của remote URL**, dù module vẫn được tải ở runtime. Đổi profile cần khởi động lại dev server shell; không gọi nó là runtime switching.
+
+### Khai báo tổ hợp remote
+
+Tạo file cấu hình trong workspace thực hành:
+
+```json title="shop-workspace/dev/remotes.profiles.json — schema do ứng dụng tự quy định"
+{
+  "all-local": {
+    "catalog": "http://localhost:3001/remoteEntry.js",
+    "cart": "http://localhost:3002/remoteEntry.js"
+  },
+  "catalog-local": {
+    "catalog": "http://localhost:3001/remoteEntry.js",
+    "cart": "https://assets.example.com/cart/releases/k09/remoteEntry.js"
+  },
+  "integration": {
+    "catalog": "https://assets.example.com/catalog/releases/c42/remoteEntry.js",
+    "cart": "https://assets.example.com/cart/releases/k09/remoteEntry.js"
+  }
+}
+```
+
+File này không phải `mf-manifest.json` và webpack không tự đọc nó. Nó chỉ là input cho helper của shell. Release URL phải giữ entry **và toàn bộ chunks/assets liên quan**; trỏ entry versioned vào chunks mutable vẫn không tái lập được môi trường.
+
+Pin release giúp bạn biết mình đang kiểm tra candidate local với consumer nào. Tránh tên `latest` cho baseline chia sẻ giữa team. Hai người mở cùng profile nhưng nhận hai build cart khác nhau sẽ khó so sánh lỗi.
+
+### Áp dụng profile trong webpack của shell
+
+Helper sau chuyển profile thành cấu hình `remotes` kiểu script container. Scope được giữ cố định theo contract của lab, không suy ra từ alias hoặc tên package.
+
+```js title="shop-workspace/tools/dev-remotes.cjs"
+const profiles = require('../dev/remotes.profiles.json');
+
+const scopes = {
+  catalog: 'shop_catalog',
+  cart: 'shop_cart',
+};
+
+const allowedOrigins = new Set([
+  'http://localhost:3001',
+  'http://localhost:3002',
+  'https://assets.example.com',
+]);
+
+module.exports = function createDevRemotes(env = {}) {
+  const profileName = env.profile ?? 'all-local';
+  if (!Object.hasOwn(profiles, profileName)) {
+    throw new Error(`Unknown remote profile: ${profileName}`);
+  }
+
+  const entries = Object.entries(scopes).map(([alias, scope]) => {
+    const entry = profiles[profileName][alias];
+    if (typeof entry !== 'string') {
+      throw new Error(`Missing entry for ${alias}`);
+    }
+
+    const url = new URL(entry);
+    if (!allowedOrigins.has(url.origin) || url.username || url.password) {
+      throw new Error(`Remote origin is not allowed: ${alias}`);
+    }
+    if (!url.pathname.endsWith('/remoteEntry.js') || url.search || url.hash) {
+      throw new Error(`Invalid remote entry URL: ${alias}`);
+    }
+
+    console.info(`[remotes] ${profileName}: ${alias} -> ${url.href}`);
+    return [alias, `${scope}@${url.href}`];
+  });
+
+  return Object.fromEntries(entries);
+};
+```
+
+Khi thay domain minh họa, thay cả `allowedOrigins`. Đây là kiểm tra lỗi cấu hình ở local, **không phải một security policy hoàn chỉnh**: origin được phép vẫn có thể phục vụ code xấu hoặc redirect. Mỗi remote vẫn cần nguồn artifact tin cậy và scope đúng.
+
+Webpack config hiện đang export object thì chuyển thành function nhận `(env, argv)` và trả lại cấu hình đó. Phần liên quan tới lựa chọn remote có dạng sau; đây là **trích đoạn để ghép vào config đang có**, không phải file đầy đủ:
+
+```js title="apps/shell/webpack.config.cjs — trích đoạn trong config function"
+const createDevRemotes = require('../../tools/dev-remotes.cjs');
+
+// Trong function module.exports = (env = {}, argv = {}) => { ... }
+const remotes = argv.mode === 'development'
+  ? createDevRemotes(env)
+  : {
+      catalog: 'shop_catalog@https://assets.example.com/catalog/releases/c42/remoteEntry.js',
+      cart: 'shop_cart@https://assets.example.com/cart/releases/k09/remoteEntry.js',
+    };
+
+// Dùng remotes trong instance ModuleFederationPlugin hiện có.
+new ModuleFederationPlugin({
+  name: 'shop_shell',
+  remotes,
+  shared: {
+    react: {
+      singleton: true,
+      requiredVersion: dependencies.react,
+      strictVersion: true,
+    },
+    'react-dom': {
+      singleton: true,
+      requiredVersion: dependencies['react-dom'],
+      strictVersion: true,
+    },
+    'react-dom/client': {
+      singleton: true,
+      packageName: 'react-dom',
+      requiredVersion: dependencies['react-dom'],
+      strictVersion: true,
+    },
+  },
+});
+```
+
+`ModuleFederationPlugin` và `dependencies` là các biến đã có trong config lab đầu tiên. Giữ entry, JSX loader, `resolve.extensions`, `publicPath`, `uniqueName`, HTML plugin và async bootstrap. Thay option `remotes` của plugin hiện có, không thêm một plugin Federation thứ hai. Giữ shared policy phù hợp với JSX runtime thật nếu bạn đã thay cấu hình lab.
+
+Nhánh production trong trích đoạn chỉ minh họa sự tách biệt. Dùng release mapping hoặc loader production của bạn thay cho URL mẫu; không đưa profile local vào đường build production. Với hệ thống dùng dynamic remotes sẵn, áp dụng profile ở lớp config của loader đó thay vì thêm một loader khác song song.
+
+### Tạo lệnh chạy theo công việc
+
+Bổ sung scripts root sau khi helper/config đã được nối:
+
+```json title="shop-workspace/package.json — scripts chọn profile"
+{
+  "scripts": {
+    "dev:shell:catalog": "npm run dev --workspace=@shop/shell -- --env profile=catalog-local",
+    "dev:shell:integration": "npm run dev --workspace=@shop/shell -- --env profile=integration",
+    "dev:catalog-in-shell": "concurrently --kill-others --names shell,catalog \"npm run dev:shell:catalog\" \"npm run dev:catalog\""
+  }
+}
+```
+
+Chạy công việc catalog bằng:
+
+```bash
+npm run dev:catalog-in-shell
+```
+
+Bạn chỉ cần hai process local. Shell log phải cho thấy catalog ở port `3001` và cart ở release `k09`. Nếu shell import cart ngay khi bootstrap, artifact cart phải truy cập được dù bạn chưa mở UI cart.
+
+Muốn chỉ sửa shell, chạy `npm run dev:shell:integration`. Muốn cả ba local, dùng `npm run dev:all`; profile mặc định trong helper là `all-local`.
+
+`--env profile=...` là input của webpack config, không tự tạo `process.env.profile` trong code browser. Profile không tồn tại phải fail sớm thay vì âm thầm dùng integration hoặc production. Khi dừng focused mode rồi chuyển sang all-local, mở document mới hoặc reload để bỏ module cache của lượt chạy cũ.
+
+### Khi nào cần override ở runtime
+
+Build-time profiles đủ cho phần lớn vòng lặp local. Runtime overrides hữu ích khi muốn mở một preview shell có sẵn với remote của một PR mà không rebuild shell, nhưng chỉ hoạt động nếu shell có runtime config/loader hỗ trợ.
+
+Mình giữ policy đơn giản:
+
+- Override chỉ có hiệu lực trên local hoặc môi trường preview được phép; build production không đọc query/local storage để chọn URL tùy ý.
+- Chỉ cho alias đã biết, origin/path được cho phép và release phù hợp. Không biến `?catalog=https://...` thành script injection API.
+- Chọn mapping trước import đầu tiên, ghi snapshot đã resolve, rồi giữ nó cho vòng đời document.
+- Đổi release hoặc reset override bằng một document mới. Xóa script tag không unload container, shared singleton hay module references đã dùng.
+
+Nếu có nhiều nguồn config, quy định thứ tự rõ, ví dụ override preview hợp lệ → release set của preview → baseline đã pin. Giá trị override sai phải báo lỗi; không nên fallback im lặng làm bạn tưởng đang chạy candidate trong khi browser thực tế tải baseline.
+
+Xem [Dynamic remotes](/docs/module-federation/dynamic-remotes) cho loader và snapshot policy. Remote đến từ HTTPS shell nhưng dùng HTTP localhost cũng có thể gặp mixed-content hoặc giới hạn truy cập mạng local tùy browser; local shell hoặc HTTPS tunnel được kiểm soát thường dễ vận hành hơn việc tắt security checks.
+
+## Mocks đúng ranh giới
+
+### Mock API khác mock remote
+
+Hai loại mock phục vụ hai câu hỏi khác nhau:
+
+| Loại | Thay phần nào? | Dùng để | Không kiểm tra được |
+| --- | --- | --- | --- |
+| API mock | Response HTTP như `/api/products` | UI và state với dữ liệu/lỗi deterministic | Auth, backend validation và business rules thật |
+| Component/lifecycle stub | Module public ở vùng mount của shell | Layout và fallback mà không chạy remote | Entry, sharing, chunks và exports của artifact thật |
+| Stub Federation remote | Container thật expose implementation tối thiểu | Đường load khi chưa có remote domain | Hành vi và contract đầy đủ của remote domain |
+
+Đừng trả JSON hoặc HTML ở `/remoteEntry.js` rồi gọi đó là remote mock. Nếu test cần đường tải Federation, stub phải là container hợp lệ. Nếu chỉ test UI shell, inject stub ở composition boundary và ghi rõ đang bỏ qua remote loading.
+
+Với công việc catalog, mình ưu tiên catalog thật + API mocks. Bạn giữ được code UI đang sửa và chỉ loại dependency backend khỏi vòng lặp.
+
+### Thiết lập MSW cho shell local
+
+Ví dụ này dùng **MSW major 2**, với API `http`, `HttpResponse` và `onUnhandledRequest` của major đó. Nó bổ sung API mock cho một catalog đã chuyển sang gọi `/api/products`; catalog trong lab đầu tiên dùng mảng hard-code nên chưa tự gọi endpoint này.
+
+Trong chế độ tích hợp, shell sở hữu một mock worker cho document shell. Không khởi động thêm worker trong module catalog được expose. Từ root workspace:
+
+```bash
+npm install --save-dev --save-exact msw@2 --workspace=@shop/shell
+mkdir -p apps/shell/public
+npm exec --workspace=@shop/shell -- msw init public --save
+```
+
+CLI tạo `apps/shell/public/mockServiceWorker.js` và lưu worker directory trong manifest của shell. Commit generated worker cùng source mocks; sau nâng MSW, sinh lại worker theo version đã cài.
+
+Thay `static: false` trong **dev server shell** bằng directory phục vụ worker, giữ các options khác:
+
+```js title="apps/shell/webpack.config.cjs — option devServer"
+devServer: {
+  host: 'localhost',
+  static: {
+    directory: path.resolve(__dirname, 'public'),
+  },
+},
+```
+
+`path` là import `node:path` đã có trong config. `/mockServiceWorker.js` phải trả JavaScript từ origin shell, không phải HTML do history fallback. localhost được browser xem là môi trường phù hợp cho service worker; khi truy cập qua hostname hoặc IP mạng khác, cần kiểm tra secure context và HTTPS.
+
+```js title="apps/shell/src/mocks/handlers.js"
+import { delay, http, HttpResponse } from 'msw';
+
+const products = [
+  { sku: 'ao-thun-den', name: 'Áo thun đen', price: 150000 },
+  { sku: 'tui-vai', name: 'Túi vải', price: 80000 },
+  { sku: 'binh-nuoc', name: 'Bình nước', price: 120000 },
+];
+
+export const handlers = [
+  http.get('/api/products', async ({ request }) => {
+    const scenario = new URL(request.url).searchParams.get('scenario');
+    await delay(300); // Độ trễ minh họa để nhìn thấy loading state.
+
+    if (scenario === 'error') {
+      return HttpResponse.json(
+        { code: 'CATALOG_UNAVAILABLE' },
+        { status: 503 },
+      );
+    }
+
+    return HttpResponse.json({
+      products: scenario === 'empty' ? [] : products,
+    });
+  }),
+];
+```
+
+```js title="apps/shell/src/mocks/browser.js"
+import { setupWorker } from 'msw/browser';
+import { handlers } from './handlers';
+
+export const worker = setupWorker(...handlers);
+```
+
+Ba request `/api/products`, `/api/products?scenario=empty` và `/api/products?scenario=error` lần lượt tạo success, empty và error. Query này là convention của mock endpoint, không tự đọc query trên URL trang shell. Muốn nút chọn scenario trong dev UI, dev adapter phải chuyển lựa chọn đó thành request tương ứng; không bắt production API hỗ trợ tham số mock.
+
+### Khởi động worker trước khi render
+
+Trong config function webpack của shell, thêm `DefinePlugin` vào plugins hiện có:
+
+```js title="apps/shell/webpack.config.cjs — plugin flag dành cho browser"
+const { DefinePlugin } = require('webpack');
+
+// Thêm instance này vào plugins trong config function.
+new DefinePlugin({
+  __SHOP_MOCK_API__: JSON.stringify(
+    argv.mode === 'development' &&
+    (env.mockApi === true || env.mockApi === 'true')
+  ),
+});
+```
+
+Thêm import `DefinePlugin` cạnh các imports webpack hiện có, còn instance plugin nằm trong config function để đọc được `env` và `argv`. Flag chỉ bật ở development; `--env mockApi=false` không được hiểu thành true chỉ vì chuỗi không rỗng. Nếu dùng TypeScript, khai báo type cho global flag trong file declarations của app.
+
+Giữ async bootstrap và await worker trước khi code UI bắt đầu request:
+
+```js title="apps/shell/src/index.js — thay entry bootstrap hiện có"
+async function start() {
+  if (__SHOP_MOCK_API__) {
+    const { worker } = await import('./mocks/browser.js');
+    await worker.start({
+      serviceWorker: { url: '/mockServiceWorker.js' },
+      onUnhandledRequest(request, print) {
+        const url = new URL(request.url);
+        if (url.pathname.startsWith('/api/')) {
+          print.error();
+        }
+      },
+    });
+  }
+
+  await import('./bootstrap.jsx');
+}
+
+start().catch((error) => {
+  console.error('[shell] Startup failed', error);
+});
+```
+
+Handler không khai báo cho `/api/` sẽ tạo lỗi thay vì âm thầm đi backend. Asset, entry và chunk không bị coi là API mock bị thiếu. Không coi cách phân loại theo path này là allowlist production; nếu app gọi API với prefix khác, cập nhật policy cho đúng.
+
+Khởi động catalog ở một terminal, shell có API mock ở terminal khác:
+
+```bash title="Terminal 1 — root shop-workspace"
+npm run dev:catalog
+```
+
+```bash title="Terminal 2 — root shop-workspace"
+npm run dev --workspace=@shop/shell -- --env profile=catalog-local --env mockApi=true
+```
+
+Trên tab shell, sau khi worker báo sẵn sàng, thử:
+
+```js title="DevTools Console — origin localhost:3000"
+await fetch('/api/products?scenario=empty').then((response) => response.json());
+// Kết quả mong đợi: { products: [] }
+```
+
+Worker kiểm soát document shell, nên có thể intercept request phù hợp phát sinh từ remote chạy trong document đó. Mở catalog standalone ở `3001` là document và origin khác: nó cần dev bootstrap/worker riêng nếu muốn dùng cùng API mocks. Đừng import file nội bộ từ `shell/src` vào catalog để chia sẻ handlers; nếu nhiều app thật sự cần chung fixtures, đưa contract fixtures vào package có public entry hoặc phân phối snapshot có version.
+
+<Callout type="warn" title="Bật mock phải dễ nhìn thấy và dễ tắt">
+  Hiển thị dev badge hoặc log rõ `API mocks enabled`. Khi chuyển sang backend thật, tắt flag, tạo document mới và kiểm tra service worker của đúng origin trong DevTools Application. Chỉ unregister worker mock liên quan nếu còn stale state; đừng xóa mọi storage hoặc worker trên máy. Production build/deployment cũng cần kiểm tra không ship mock worker hay kích hoạt mock bootstrap ngoài ý muốn.
+</Callout>
+
+### Dùng fixture như một contract
+
+Fixture phải theo schema mà app thực sự consume: kiểu ID, currency, pagination, error body và field optional. TypeScript types ở checkout hiện tại chưa xác minh payload từ remote/backend build vào thời điểm khác.
+
+Ngoài happy path, thêm dữ liệu rỗng, request chậm, lỗi có mã mà UI xử lý, text dài và dữ liệu biên hợp lệ. Dùng dữ liệu giả có thể commit; không lấy response production chứa thông tin cá nhân rồi đưa vào repo.
+
+Một mock luôn trả `200` và mảng đủ đẹp chỉ chứng minh UI chạy với fixture đẹp. Trước merge, chạy smoke với backend/test account thật theo policy và kiểm tra fixtures bằng public schema hoặc contract tests. Nếu đang sửa logic thêm giỏ, đừng để mock cart chấp nhận mọi SKU trong khi cart thật reject SKU không tồn tại.
+
+## Proxy API và authentication
+
+Khi cần backend thật, proxy API qua origin shell giúp giảm cấu hình cross-origin ở browser. Với webpack-dev-server major 5, cấu hình proxy dùng array:
+
+```js title="apps/shell/webpack.config.cjs — trích devServer khi dùng backend local"
+devServer: {
+  host: 'localhost',
+  proxy: [
+    {
+      context: ['/api'],
+      target: 'http://localhost:4000',
+      changeOrigin: true,
+    },
+  ],
+},
+```
+
+Ghép vào config đang có thay vì ghi đè `static` phục vụ mock worker nếu vẫn cần nó cho chế độ khác. Backend phải hiểu path `/api/...`; nếu backend dùng path khác, cấu hình rewrite theo API thực tế. Remote gọi URL absolute sẽ không tự đi qua proxy này.
+
+`changeOrigin` sửa Host header ở request gửi tới backend; nó không xử lý mọi vấn đề authentication. Cookie có `Domain` của môi trường integration, `Secure`, `SameSite` hoặc `Path` không phù hợp vẫn có thể không được browser gửi/lưu như mong đợi. Redirect login, CSRF và callback URL cũng phải hỗ trợ origin local hoặc được kiểm tra trong preview HTTPS.
+
+Dùng test account và môi trường có dữ liệu kiểm thử. Không copy cookie production hay token thật vào profile, URL, source hoặc fixture. Biến được DefinePlugin/bundler nhúng vào JavaScript là dữ liệu public cho browser, không phải nơi giữ secret.
+
+API mock xử lý request trước backend, nên để mock bật rồi kiểm tra proxy có thể cho kết luận sai. Khi debug backend, xác nhận flag mock tắt và Network cho thấy request/response của backend thật. Mình không chọn nới CORS toàn bộ, `allowedHosts: 'all'` hoặc `secure: false` làm bước sửa lỗi mặc định; hãy xác định request và policy nào đang chặn trước.
+
+## HMR và reload khi thay remote
+
+Một remote cập nhật được trong trang standalone không đảm bảo nó hot-update được trong shell. Đường HMR còn phụ thuộc dev-server client, WebSocket endpoint, runtime integration và React Refresh. `hot: true` không tự cài React Refresh, cũng không hứa giữ state khi thay remote.
+
+Mình dùng **full reload làm baseline của integration** rồi mới tối ưu HMR:
+
+| Bạn vừa đổi | Thao tác baseline |
+| --- | --- |
+| Component catalog | Chờ catalog compile xong, reload shell và kiểm tra UI |
+| Webpack config hoặc scope/expose | Restart dev server liên quan, reload shell |
+| Profile remote URL | Restart shell với profile mới, tạo document mới |
+| Shared dependency/version | Restart các app bị tác động, tạo document mới |
+| Handler hoặc flag API mock | Chờ rebuild hoặc restart khi đổi flag, tạo document mới và kiểm tra worker |
+
+Nếu WebSocket lỗi, kiểm tra browser đang connect tới dev server nào. Khi có reverse proxy hoặc HTTPS tunnel, có thể cần `devServer.client.webSocketURL` phù hợp với địa chỉ browser nhìn thấy. HTTP entry đúng không chứng minh WebSocket cũng được forward; ngược lại, HMR socket lỗi không nhất thiết làm lượt tải module đầu tiên thất bại.
+
+Disable cache trong Network chủ yếu tác động HTTP cache khi DevTools mở. Nó không gỡ module đã evaluate khỏi runtime và không tự bỏ service worker/cache storage. Reload tạo document mới; stale response từ service worker vẫn cần xử lý ở tầng riêng.
+
+## Quy trình sửa catalog từ đầu đến cuối
+
+Giả sử bạn đang thêm empty state cho bộ lọc catalog. Một lượt làm việc có thể đi theo thứ tự sau:
+
+1. **Chọn phạm vi:** logic chỉ nằm trong catalog, public props/event không đổi. Dùng standalone để sửa UI, focused integration để kiểm tra trong shell.
+2. **Chuẩn bị baseline:** `npm ci` từ lockfile ở checkout mới, kiểm tra port, chọn profile `catalog-local` với cart release đã pin. Nếu dùng API mocks, bật flag rõ ràng.
+3. **Khởi động:** chạy catalog và shell, đợi compile/worker readiness rồi mở `http://localhost:3000`.
+4. **Xác nhận đang dùng candidate:** xem log profile và Network. Catalog entry/chunks phải đến từ `3001`; cart từ release đã chọn. Đổi tạm một text catalog để xác nhận source local xuất hiện trong shell, rồi hoàn tác.
+5. **Kiểm tra states:** success, empty, loading, error; đổi route rồi quay lại để kiểm tra state/lifecycle theo contract. Không chỉ xác nhận lần render đầu.
+6. **Kiểm tra ranh giới thật:** tắt API mock và chạy smoke với test backend nếu thay đổi liên quan dữ liệu. Kiểm tra routing, auth context và interaction với cart trong shell.
+7. **Kiểm tra build:** build catalog và shell bằng script đã có; chạy smoke trên artifact production trong preview/integration. Dev server xanh không chứng minh asset paths, chunks và shared behavior của production build đúng.
+8. **Ghi bằng chứng rồi dừng:** ghi candidate commit, profile, release cart, scenario và kết quả vào PR. Dừng các process local, kiểm tra không còn server sót giữ port.
+
+Nếu bạn đổi payload thêm giỏ, all-local có thể cần để sửa cả hai phía, nhưng vẫn phải test catalog mới với cart đã release. Producer/consumer cùng source mới pass không chứng minh rollout độc lập an toàn.
+
+Một ca lỗi đáng thử trước PR: giữ shell, dừng catalog, rồi mở document mới và vào route catalog. Fallback phải nằm ở vùng catalog trong khi phần shell độc lập còn dùng được. Dừng server sau khi module đã tải mà UI vẫn còn trên màn hình không phải bài test remote unavailable.
+
+## Local development trong multi-repo
+
+Focused integration không yêu cầu shell, catalog và cart cùng repository. Điều quan trọng là có cấu hình composition dùng được mà không cần checkout mọi app.
+
+Một dev kit cho multi-repo nên cung cấp:
+
+| Thông tin | Nội dung cần có |
+| --- | --- |
+| Baseline | Shell release hoặc shell checkout, remote release set đã pin |
+| Public contract | Alias, scope, expose, props/events/lifecycle và compatibility window |
+| Local override | Port, profile/loader policy, cách reset override |
+| API/auth | Test backend, test account, fixtures và proxy conventions |
+| Diagnostics | Mapping đã resolve, release IDs và owner của từng app |
+
+Bạn có thể clone shell/catalog hoặc dùng shell artifact qua local composition server rồi override catalog. Phương án thứ hai đòi shell thực sự hỗ trợ runtime config; không phải tải một shell bất kỳ là đổi được remote URL.
+
+Shared packages trong multi-repo nên được publish/pin hoặc consume bằng cơ chế đã thống nhất. `npm link` tiện cho một thử nghiệm, nhưng có thể đổi dependency resolution và tạo React instance ngoài shared policy dự kiến. Đừng coi kết quả từ linked source là kết quả kiểm tra artifact release; hãy kiểm tra lại package/artifact đúng version.
+
+Khi chia sẻ bug, ghi source commit của app local và release IDs của baseline, không chỉ “cart integration”. Thêm scenario mock và resolved entry URL, bỏ token hoặc query nhạy cảm khỏi log. Đây là phần nhỏ nhưng giúp người khác tái hiện mà không đoán bạn đã mở bao nhiêu terminal.
+
+## Chẩn đoán theo lớp
+
+Debug từ process và tài nguyên ngoài vào runtime rồi mới tới UI. Lỗi request đầu tiên thường hữu ích hơn một loạt exception phát sinh sau đó.
+
+| Dấu hiệu | Kiểm tra trước | Hướng xử lý |
+| --- | --- | --- |
+| `EADDRINUSE` hoặc UI không giống source hiện tại | Process giữ port, cwd và profile | Dừng process đã nhận diện; không đổi port tùy tiện |
+| Shell chỉ chạy được khi tất cả repo có mặt | Deep imports, dependencies ngầm, context quá rộng | Thu hẹp public contract; không dùng mocks để che boundary bị phá |
+| Entry `404` hoặc trả HTML | URL, Federation plugin, proxy/history fallback | Kiểm tra body/MIME; không coi status `200` là đủ |
+| Entry local nhưng UI vẫn baseline | Profile thực tế, module cache và tab cũ | Restart shell nếu đổi build config, mở document mới |
+| Entry đúng nhưng chunk `404` | URL chunk, `publicPath`, artifact retention | Sửa base URL và giữ graph entry/chunks nhất quán |
+| Standalone HMR tốt, shell không cập nhật | WebSocket endpoint và integration HMR | Dùng reload baseline; kiểm tra proxy WebSocket riêng |
+| Worker không đăng ký được | Origin, secure context, script URL và scope | Phục vụ worker tại origin document, không trả HTML fallback |
+| Mock pass nhưng backend fail | Flag mock, schema, auth/cookie/CSRF | Tắt mock, kiểm tra request thật và contract |
+| CORS/CSP/mixed-content error | Loại request và policy cụ thể trong Console | Cấu hình origin/sources đúng; không tắt bảo mật browser |
+| `Invalid hook call` hoặc shared init lỗi | Hooks, dependency resolution, React sharing và loader owner | Không mặc định mọi lỗi đều do cache; không nuốt lỗi init |
+| All-local pass, release candidate fail | Consumer version, production chunks và shared policy | Test candidate với baseline artifacts, không chỉ HEAD cùng revision |
+
+Classic script remote, ESM remote và fetch manifest/API có yêu cầu CORS khác nhau. Nếu Console không báo CORS, đừng thêm wildcard header như một phản xạ. Tương tự, cho phép origin remote ở `script-src` chưa đủ nếu chunks hoặc HMR connections đến nguồn khác; đối chiếu từng request với policy hiện hành.
+
+## Checklist trước khi gửi PR
+
+- [ ] Có thể chạy app standalone hoặc focused integration mà không checkout app không liên quan.
+- [ ] Các port, hostname và resolved remote mapping đúng, không có server cũ giữ port.
+- [ ] Remote baseline được pin bằng release ID, entry và chunks nhất quán.
+- [ ] Shell consume public module thật, không import implementation xuyên `apps`.
+- [ ] API mock có success, empty, loading và error scenarios phù hợp contract.
+- [ ] Mock worker có một owner cho mỗi document; startup đợi worker trước request đầu tiên.
+- [ ] Mocks và remote overrides không hoạt động ngoài môi trường được phép.
+- [ ] Đã kiểm tra trong shell với routing/context/consumer thật, không chỉ standalone.
+- [ ] Có smoke trên production artifacts khi thay đổi chạm composition, assets hoặc sharing.
+- [ ] PR ghi app commit, baseline releases và scenario đủ để tái hiện, không chứa credential.
+
+Để kiểm chứng setup ngay, hãy chạy `catalog-local`, xác nhận một thay đổi text chỉ ở catalog xuất hiện trong shell, rồi mở document mới khi catalog đã tắt. Hai phép thử này cho biết bạn đang sửa đúng remote và đang xử lý đúng boundary tải lỗi trước khi tối ưu tốc độ HMR.
+
+## Tài liệu tham khảo
+
+- [webpack — Environment variables](https://webpack.js.org/guides/environment-variables/) — truyền `--env` vào config function, khác biến môi trường browser.
+- [webpack — DevServer](https://webpack.js.org/configuration/dev-server/) — static assets, proxy, HMR client và WebSocket URL.
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/) — container, promise-based remotes và async bootstrap.
+- [concurrently](https://github.com/open-cli-tools/concurrently) — process runner, prefix logs và dừng nhóm commands.
+- [MSW — Browser integration](https://mswjs.io/docs/integrations/browser/) — worker setup; ví dụ trong bài pin major 2, hãy đối chiếu API khi nâng major.
+- [MDN — ServiceWorkerContainer.register](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerContainer/register) — origin, secure context và phạm vi kiểm soát của worker.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Chạy và kiểm tra local" href="/docs/bat-dau/chay-local" description="Baseline hai app: đọc Network, kiểm tra entry/chunks và thử ngắt remote." />
+  <Card title="Dynamic remotes" href="/docs/module-federation/dynamic-remotes" description="Chọn release ở runtime, validate config và giữ snapshot theo document." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm tra public boundary thay vì dựa vào fixtures đẹp." />
+  <Card title="Integration và E2E tests" href="/docs/kiem-thu-va-tooling/integration-e2e" description="Kiểm tra hành trình đi qua shell và nhiều remote." />
+</Cards>

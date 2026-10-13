@@ -1,24 +1,330 @@
 ---
 title: "Kiểm thử và tooling"
-description: "Tổ chức phát triển, kiểm thử các ranh giới và quan sát hệ thống."
+description: "Chọn lớp kiểm thử, tổ chức vòng lặp phát triển và gắn bằng chứng kiểm chứng với artifact để micro-frontend có thể release độc lập."
 ---
 
-Đây là trang khung cho nhóm **Kiểm thử và tooling**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử catalog vừa deploy bộ lọc mới. Unit tests xanh, màn hình standalone vẫn chạy, nhưng shell đang mở trong tab cũ không tải được public module của catalog. Hoặc module tải được, người dùng thêm hàng thành công, còn badge giỏ hàng lại không cập nhật. Test riêng của mỗi app chưa chắc nhìn thấy những lỗi xuất hiện ở điểm ghép.
+
+Nhóm **Kiểm thử và tooling** giúp bạn xây vòng lặp phát triển đủ nhanh cho từng team, nhưng vẫn có bằng chứng rằng các frontend hoạt động cùng nhau. Mình ưu tiên kiểm tra hành vi ở boundary và artifact thực tế, thay vì lấy coverage cao hoặc một suite E2E rất lớn làm thước đo duy nhất.
+
+<Callout type="info" title="Phạm vi trang này">
+  Đây là trang định hướng, không phải lab cài đặt test runner. Ví dụ dùng shop giả định gồm shell, catalog và cart; cart tích hợp là phần mở rộng so với lab shell/catalog ban đầu. Repository hiện tại là site Next.js + Fumadocs, không phải workspace ứng dụng shop. Các JSON bên dưới minh họa dữ liệu cần lưu, không phải cấu hình được site này tự đọc. Sơ đồ text không cần plugin Mermaid.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Kiểm thử điều gì khi các app release độc lập](#kiểm-thử-điều-gì-khi-các-app-release-độc-lập)
+- [Chọn lớp test theo câu hỏi cần trả lời](#chọn-lớp-test-theo-câu-hỏi-cần-trả-lời)
+  - [Unit và component giữ vòng lặp nhanh](#unit-và-component-giữ-vòng-lặp-nhanh)
+  - [Contract bảo vệ cam kết giữa các owner](#contract-bảo-vệ-cam-kết-giữa-các-owner)
+  - [Integration và E2E kiểm chứng phần ghép thật](#integration-và-e2e-kiểm-chứng-phần-ghép-thật)
+- [Từ rủi ro đến một kế hoạch kiểm thử](#từ-rủi-ro-đến-một-kế-hoạch-kiểm-thử)
+- [Tooling phục vụ boundary thay vì quyết định boundary](#tooling-phục-vụ-boundary-thay-vì-quyết-định-boundary)
+- [Local development không cần chạy cả hệ thống](#local-development-không-cần-chạy-cả-hệ-thống)
+- [Kiểm chứng tổ hợp release thay vì chỉ kiểm tra HEAD](#kiểm-chứng-tổ-hợp-release-thay-vì-chỉ-kiểm-tra-head)
+  - [Ghi lại bản đồ artifact của lần chạy](#ghi-lại-bản-đồ-artifact-của-lần-chạy)
+  - [Chọn ma trận tương thích có chủ đích](#chọn-ma-trận-tương-thích-có-chủ-đích)
+- [CI và release gate theo mức tác động](#ci-và-release-gate-theo-mức-tác-động)
+- [Observability nối lỗi với đúng app và release](#observability-nối-lỗi-với-đúng-app-và-release)
+- [Giữ test ổn định và kết quả có ý nghĩa](#giữ-test-ổn-định-và-kết-quả-có-ý-nghĩa)
+- [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
+- [Bài tập cho một thay đổi catalog](#bài-tập-cho-một-thay-đổi-catalog)
+- [Checklist trước khi coi một thay đổi là sẵn sàng](#checklist-trước-khi-coi-một-thay-đổi-là-sẵn-sàng)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Kiểm thử điều gì khi các app release độc lập
 
-Tổ chức phát triển, kiểm thử các ranh giới và quan sát hệ thống.
+Trong một frontend build chung, nhiều lỗi import hoặc type xuất hiện ngay khi compile. Với runtime composition, shell có thể được build hôm trước nhưng hôm nay mới tải catalog candidate. Vì thế, tính đúng đắn không chỉ thuộc về một commit: nó còn phụ thuộc **tổ hợp artifact, contract và môi trường đang chạy**.
 
-## Các bài trong nhóm
+Có ba phạm vi cần nhìn riêng:
 
-- [Monorepo và multi-repo](/docs/kiem-thu-va-tooling/monorepo-multi-repo) — So sánh repository strategy, workspace tooling và quyền sở hữu pipeline.
-- [Local development nhiều ứng dụng](/docs/kiem-thu-va-tooling/local-development) — Dùng dev orchestration, mocks và remote overrides để phát triển từng ứng dụng.
-- [Unit và component tests](/docs/kiem-thu-va-tooling/unit-component-tests) — Kiểm thử logic, UI và lifecycle riêng của từng frontend.
-- [Contract tests](/docs/kiem-thu-va-tooling/contract-tests) — Kiểm tra tính tương thích của module exports, props và event schemas.
-- [Integration và E2E tests](/docs/kiem-thu-va-tooling/integration-e2e) — Kiểm thử user journeys đi qua nhiều frontend mà không tạo test suite quá dễ vỡ.
-- [Logs, metrics và tracing](/docs/kiem-thu-va-tooling/observability) — Gắn tên ứng dụng, release version và correlation IDs vào lỗi cùng telemetry.
+| Phạm vi | Câu hỏi cần trả lời | Ví dụ trong shop |
+| --- | --- | --- |
+| Bên trong app | App có làm đúng việc mình sở hữu không? | Catalog validate quantity và hiển thị trạng thái pending |
+| Giữa các app | Hai phía còn hiểu cùng một cam kết không? | Shell import đúng module; callback và event giữ semantics đã công bố |
+| Hệ thống đã ghép | Code được deploy có tải và phối hợp đúng trong browser không? | Remote chunks tải đúng URL, badge đổi, navigation không bị khóa khi catalog lỗi |
+
+Repository strategy không thay thế ba phạm vi này. Monorepo có thể kiểm tra mọi app trên cùng HEAD nhưng bỏ sót consumer cũ; multi-repo có thể giữ source tách biệt nhưng không lưu nổi một tổ hợp release để tái hiện lỗi.
+
+Mình bắt đầu bằng việc ghi owner của từng boundary: ai sở hữu loader, routing, cart state, public module và telemetry. Khi test fail, cần biết nó đang phát hiện lỗi của app, lỗi cam kết hay lỗi môi trường. Nếu câu trả lời luôn là “team E2E xử lý”, khả năng release độc lập vẫn phụ thuộc vào một hàng đợi chung.
+
+## Chọn lớp test theo câu hỏi cần trả lời
+
+Tên runner không quyết định loại test. Một test chạy trong browser chưa chắc là E2E; một test component có thể đồng thời bảo vệ callback contract. Hãy đặt tên theo mục đích và những phần thật đang tham gia.
+
+| Lớp test | Phần thật cần chạy | Dependency có thể kiểm soát | Không chứng minh được |
+| --- | --- | --- | --- |
+| Unit | Logic thuần, decoder hoặc state transition | Clock, random, input | UI, module loading hay deploy compatibility |
+| Component và lifecycle | Component/adapter của một app | API hoặc capability được inject | Remote artifact tải được trong shell thật |
+| Contract | Consumer thật và provider verification qua public entry | Dependency phía sau provider; fixtures có version | Toàn bộ user journey và cấu hình CDN |
+| Integration | Các điểm ghép thật trong phạm vi đã chọn | Backend hoặc dịch vụ ngoài nếu công bố rõ | Những phần đang mock hoạt động đúng trên production |
+| E2E | Journey qua shell, remote và các dịch vụ thuộc phạm vi end-to-end | Dữ liệu test và dịch vụ ngoài phạm vi | Mọi nhánh lỗi, mọi version hoặc mọi thiết bị |
+
+Không cần ấn định tỷ lệ unit/component/E2E cho mọi hệ thống. Mặc định mình đưa logic và trạng thái UI xuống lớp nhanh, giữ một số integration tests tại điểm ghép và một tập E2E cho journeys quan trọng. Nếu lỗi nằm ở loader, lifecycle hay browser, ép nó thành unit test chỉ tạo thêm mocks mà bỏ mất điều cần kiểm chứng.
+
+### Unit và component giữ vòng lặp nhanh
+
+Catalog nên tự kiểm tra quantity, loading, retry, callback và xử lý response cũ mà không cần khởi động cart. Đây là phần mỗi team kiểm soát tốt nhất, nên phản hồi cần đến sớm khi sửa code.
+
+Với component, quan sát DOM và tương tác như người dùng: tìm nút theo role/name, nhập dữ liệu rồi kiểm tra kết quả. Tránh assert tên hook hay cấu trúc store nội bộ, vì refactor đúng hành vi không nên làm cả suite fail.
+
+Lifecycle cần được bảo vệ riêng nếu remote có adapter mount/update/unmount. Một instance đã unmount không được tiếp tục nhận subscription hoặc ghi vào UI mới. Kiểm tra DOM trống chưa đủ chứng minh listeners và timers đã được dọn.
+
+### Contract bảo vệ cam kết giữa các owner
+
+Contract gồm shape **và ý nghĩa**: exposed module key, exports, props, callbacks, mount semantics và event schemas. `itemCount` vẫn là số nguyên nhưng đổi từ tổng quantity sang số dòng hàng là breaking change về semantics, dù schema validation pass.
+
+Consumer test phải dùng decoder/adapter thật của consumer; provider verification phải chạm implementation thật của provider. Nếu cả hai chỉ assert cùng một object mock do test viết, kết quả không nói gì về code đang deploy.
+
+TypeScript hỗ trợ compile-time compatibility, nhưng declaration `catalog/CatalogPage` trong shell không bảo đảm artifact catalog expose module đó. Contract suite cần kết hợp typecheck, runtime behavior và kiểm tra public entry của artifact tùy boundary đang dùng.
+
+### Integration và E2E kiểm chứng phần ghép thật
+
+Integration harness nên ghép remote với những thứ có thể gây xung đột: shell styles, providers, routing, overlays và loader. Một ca mount trong trang trắng không nhìn thấy lỗi CSS rò sang header hay focus bị hai app cùng điều khiển.
+
+Với E2E, chọn một journey có kết quả nghiệp vụ rõ, chẳng hạn mở catalog → thêm sản phẩm → mở cart → thấy đúng quantity. Nếu cart chưa tồn tại trong lab, dừng ở journey shell tải catalog và xử lý lỗi tải; đừng viết assertion cho một app chưa được triển khai.
+
+<Callout type="warn" title="Mock ở đâu thì bằng chứng dừng ở đó">
+  Nếu test thay remote bằng component giả, nó không kiểm chứng remote loading. Nếu test intercept toàn bộ API, nó kiểm chứng composition và UI trên dữ liệu kiểm soát, không chứng minh backend ghi nhận đơn hàng. Ghi rõ phạm vi đó trong tên suite và report; không gọi mọi browser test là full-system E2E.
+</Callout>
+
+## Từ rủi ro đến một kế hoạch kiểm thử
+
+Giả sử catalog thêm chức năng chọn quantity trước khi gửi lệnh thêm giỏ. Không cần chạy mọi test của mọi app cho từng lần nhập số, nhưng cũng không nên chỉ test một hàm validate rồi release.
+
+Bắt đầu từ hậu quả sai mà bạn muốn ngăn:
+
+| Rủi ro của thay đổi | Kiểm tra gần nhất với lỗi | Bằng chứng bổ sung ở điểm ghép |
+| --- | --- | --- |
+| Quantity bằng 0 hoặc vượt giới hạn | Unit cho validation theo policy đã chốt | Component báo lỗi và không gửi command |
+| Click lặp khi command pending | Component với promise được kiểm soát | Cart/backend kiểm tra idempotency theo contract; disable nút không thay thế việc này |
+| Callback gửi sai field hoặc đổi semantics | Contract cho consumer input và provider behavior | Catalog artifact ghép với capability cart thật trong phạm vi integration |
+| Badge dùng dữ liệu optimistic như dữ liệu đã xác nhận | Test state transition và event semantics | Journey kiểm tra snapshot/revision đã xác nhận đến shell |
+| Response đến sau khi rời route | Lifecycle test với response đến muộn | Browser test chuyển route khi catalog còn pending |
+| Build catalog tải chunk từ sai origin | Artifact smoke test trong browser | Chạy qua topology assets gần với deploy thật |
+
+Bảng này không yêu cầu sáu suite riêng. Một test có thể cung cấp nhiều assertion liên quan, nhưng cần chỉ ra assertion nào bảo vệ rủi ro nào. Ngược lại, đừng nhồi mọi tình huống vào một E2E dài: khi bước đầu fail, các boundary phía sau chưa hề được kiểm chứng.
+
+Với command timeout, tách “backend từ chối” khỏi “chưa biết backend đã commit hay chưa”. Test cần kiểm tra reconciliation hoặc retry policy tương ứng; tự coi timeout là thất bại chắc chắn có thể khiến UI và cart owner lệch nhau. Semantics chi tiết nằm trong [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts).
+
+## Tooling phục vụ boundary thay vì quyết định boundary
+
+Mình chọn công cụ sau khi biết muốn chạy phần thật nào, cần môi trường gì và ai sở hữu kết quả. Bắt đầu ít công cụ giúp bạn biết lỗi đến từ app hay từ lớp orchestration mới thêm.
+
+| Nhu cầu | Điểm bắt đầu hợp lý | Giới hạn cần nhớ |
+| --- | --- | --- |
+| Quản lý source và dependency | npm workspaces hoặc package manager phù hợp team; package public entries rõ | Workspace không ngăn app import sâu vào source app khác |
+| Chạy task theo dependency graph, cache kết quả | Thêm Turborepo hoặc Nx khi task graph và thời gian CI tạo nhu cầu thật | Source dependency graph không tự biết mọi runtime consumer |
+| Logic/component tests | Vitest hoặc Jest; Testing Library cho UI phù hợp framework | DOM mô phỏng không phải browser thật; test runner transpile TS chưa chắc typecheck |
+| Mock API để tạo trạng thái xác định | MSW hoặc adapter fake ở boundary đã định nghĩa | Mock phải được đối chiếu contract, không tự chứng minh backend thật |
+| Runtime và user journeys | Playwright hoặc Cypress, chọn một công cụ theo nhu cầu suite | Browser automation không tự làm dữ liệu hoặc môi trường ổn định |
+| Kiểm tra payload contract | Schema validator cùng fixtures/expectations có version | Schema không kiểm tra hết semantics; Pact chỉ phù hợp boundary/protocol được hỗ trợ |
+| Chẩn đoán lỗi sau deploy | Error reporting, structured events và tracing phù hợp | Telemetry cần sampling, privacy policy và owner; không thay release gate |
+
+Không bắt buộc dùng cả Turborepo lẫn Nx, cả Vitest lẫn Jest, hoặc cả Playwright lẫn Cypress. Suite nhỏ, dễ chạy và có owner thường hữu ích hơn một danh sách công cụ dài mà không ai biết phải xem report nào.
+
+Nếu dùng task cache, khai báo đủ inputs, outputs và biến môi trường ảnh hưởng kết quả. Test browser phụ thuộc một remote URL mutable không thể được coi là xác định chỉ vì source hash không đổi. Với kiểu test đó, pin artifact và đưa release map vào cache key, hoặc không cache kết quả nếu chưa mô hình hóa được đầu vào.
+
+## Local development không cần chạy cả hệ thống
+
+Có ba vòng lặp khác nhau, và mỗi vòng trả lời một câu hỏi:
+
+| Vòng lặp | Thành phần chạy | Khi dùng |
+| --- | --- | --- |
+| Standalone | Catalog local với API/capability được kiểm soát | Sửa UI, validation và phần lớn trạng thái nội bộ |
+| Shell local với override | Shell và catalog local; remote không đổi dùng artifact đã pin | Kiểm tra routing, props, styles và giao tiếp trong composition |
+| Preview theo release map | Candidate build cùng các artifact dự kiến tích hợp | Kiểm tra build production, assets và compatibility trước release |
+
+Mặc định mình dùng standalone khi sửa chi tiết UI, rồi chuyển sang shell local trước khi merge. Chỉ chạy tất cả app local khi thay đổi thật sự đi qua nhiều owner. Các remote không đổi nên dùng một profile rõ ràng, không dùng URL `latest` mà hôm nay trỏ A, ngày mai trỏ B.
+
+Orchestration cần kiểm tra readiness của app, không chỉ thấy process còn sống. Với federation, nhận HTTP 200 cho `remoteEntry.js` vẫn chưa chứng minh public module và dependent chunks import được. Một smoke check qua loader/browser thật sẽ gần với điều shell cần hơn.
+
+Giữ API mocks và remote overrides trong phạm vi dev/test có kiểm soát. Không đưa cơ chế chọn URL remote tùy ý từ query string ra production: remote chạy cùng trang là code được cấp quyền trong trang đó, không phải dữ liệu vô hại.
+
+Chi tiết scripts, profiles và MSW nằm trong [Local development nhiều ứng dụng](/docs/kiem-thu-va-tooling/local-development).
+
+## Kiểm chứng tổ hợp release thay vì chỉ kiểm tra HEAD
+
+Một PR có thể cập nhật shell, catalog và fixture trong cùng commit rồi chạy xanh. Nhưng sau deploy catalog, shell cũ còn trong browser không tự biến thành shell mới. Do đó, kiểm tra mọi app trên HEAD là hữu ích cho phát triển, chưa đủ cho release độc lập.
+
+### Ghi lại bản đồ artifact của lần chạy
+
+Lưu một release map bất biến cạnh report. Ví dụ dưới dùng release ID và domain minh họa; URL phải được thay bằng artifact thật trong môi trường của bạn:
+
+```json title="release-map.json — dữ liệu minh họa"
+{
+  "runId": "integration-catalog-candidate-0042",
+  "environment": "preview",
+  "shell": {
+    "releaseId": "shell-r12",
+    "url": "https://preview.example.com/shell-r12/"
+  },
+  "remotes": {
+    "catalog": {
+      "releaseId": "catalog-r28-candidate",
+      "entryUrl": "https://assets.example.com/catalog/r28-candidate/remoteEntry.js"
+    },
+    "cart": {
+      "releaseId": "cart-r9",
+      "entryUrl": "https://assets.example.com/cart/r9/remoteEntry.js"
+    }
+  }
+}
+```
+
+Report cũng cần test revision, browser, cấu hình và fixture/dataset version, cùng artifact digest hoặc định danh bất biến tương đương. Với remote mapping baked vào shell build, phải ghi mapping build đó thực sự sử dụng; một file JSON nằm cạnh report không tự thay được URL trong shell.
+
+Hãy xác nhận release thực tế đã tải, không chỉ release dự định tải. Cache, service worker hoặc config runtime có thể khiến browser dùng artifact khác. Source maps phục vụ chẩn đoán cũng phải khớp đúng artifact, và chính sách phát hành source maps cần phù hợp yêu cầu bảo mật.
+
+### Chọn ma trận tương thích có chủ đích
+
+Không cần nhân mọi shell version với mọi remote version mãi mãi. Chốt support window dựa trên phiên browser, cache, rollout và khả năng rollback, rồi chọn các cặp có rủi ro:
+
+| Tổ hợp cần xét | Lý do |
+| --- | --- |
+| Shell đang release + catalog candidate | Đây là tổ hợp sẽ xuất hiện khi catalog deploy riêng |
+| Shell cũ còn trong support window + catalog candidate | Tab cũ hoặc shell cache cũ có thể tải remote mới |
+| Shell candidate + catalog đang release | Shell deploy trước, remote chưa nâng cấp |
+| Shell hiện hành + catalog rollback target | Rollback phải là tổ hợp dùng được, không chỉ là file còn tồn tại |
+
+Các hàng trên phụ thuộc cách resolve remote. Nếu shell pin URL bất biến, tab cũ có thể tiếp tục dùng catalog cũ; nếu shell resolve URL mutable hoặc config mới, nó có thể nhận candidate. Kiểm thử đúng topology của bạn, không mặc định mọi tab cũ luôn tải remote mới.
+
+Với nhiều app, giữ contract verification cho các consumer còn hỗ trợ và chọn integration journeys theo runtime graph. Thêm thử nghiệm đúng vùng shared runtime/CSS/routing bị ảnh hưởng, thay vì chạy tích Descartes của tất cả version mà không có policy kết thúc hỗ trợ.
+
+## CI và release gate theo mức tác động
+
+Một pipeline hữu ích trả lời hai việc: thay đổi này ảnh hưởng ai, và bằng chứng nào còn thiếu trước khi promote artifact? Không chỉ nhìn thư mục có diff, vì đổi shared package, theme token hay loader có thể tác động tới app không sửa source.
+
+Luồng tối thiểu có thể hình dung như sau:
+
+```text
+Checks trong app → Contract verification → Build artifact
+                                               ↓
+Promotion decision ← Integration theo release map
+```
+
+Trong thực tế, một số bước chạy song song. Điểm quan trọng là integration kiểm tra **artifact đã build**, và decision dùng report gắn với artifact đó; không build lại một bản khác sau khi test rồi coi là tương đương.
+
+| Thay đổi | Phạm vi cần bổ sung ngoài checks của app |
+| --- | --- |
+| Logic private của catalog | Test cho hành vi đổi; artifact smoke cho đường chạy liên quan |
+| Public props, callbacks hoặc event | Consumer expectations và provider verification trong support window |
+| Loader, routing hay shared runtime của shell | Integration với các remote và browser paths bị ảnh hưởng |
+| Design system hoặc global styles | Consumer checks; visual/accessibility checks ở composition phù hợp |
+| CDN, cache policy hoặc runtime config | Kiểm tra assets, resolution và fallback qua topology deploy tương ứng |
+
+Unit/component suite thuộc app owner. Public contract cần owner ở hai phía. Integration journeys cần người chịu trách nhiệm duy trì, dù infrastructure do platform team cung cấp. Đừng để suite chung trở thành nơi mọi team thêm test nhưng không ai sửa khi fail.
+
+<Callout type="warn" title="Affected checks không phải toàn bộ runtime impact">
+  Workspace tooling thường suy tác động từ source/task graph. Catalog expose module cho shell qua URL runtime có thể không tạo source import edge. Cần khai báo consumer/provider inventory hoặc một runtime impact map để chọn thêm contract và integration checks; không suy rằng “shell không affected” đồng nghĩa “shell không cần kiểm chứng”.
+</Callout>
+
+Bắt đầu bằng vài gate gắn với rủi ro thật, rồi mở rộng sau các lỗi đã phân loại. Với rollout theo phần trăm, giữ promotion criteria và rollback target rõ ràng; tham khảo nhóm [Triển khai](/docs/trien-khai) cho chính sách vận hành, không coi suite test pass là kế hoạch rollout hoàn chỉnh.
+
+## Observability nối lỗi với đúng app và release
+
+Test chỉ chạy các tình huống bạn đã chọn. Người dùng thật còn có mạng chậm, browser khác, tab mở lâu và cache cũ. Observability giúp bạn nhìn thấy phần còn lại, nhưng không nên là lý do để bỏ kiểm tra compatibility trước deploy.
+
+Khi shell báo “catalog không mở được”, cần phân biệt ít nhất: tải entry thất bại, thiếu chunk, public module sai, mount lỗi, render lỗi và API nghiệp vụ lỗi. Một metric “frontend errors” gom tất cả không cho biết nên rollback catalog, sửa CDN hay kiểm tra backend.
+
+Ví dụ một structured event cho lỗi load, với ID minh họa:
+
+```json title="Sự kiện chẩn đoán — không phải schema chuẩn"
+{
+  "event": "remote_load_failed",
+  "app": "shell",
+  "releaseId": "shell-r12",
+  "remoteApp": "catalog",
+  "remoteReleaseId": "catalog-r28-candidate",
+  "stage": "chunk_load",
+  "routeTemplate": "/products/:productId",
+  "correlationId": "journey-demo-0042",
+  "errorCode": "CHUNK_LOAD_FAILED"
+}
+```
+
+Nếu chưa tải được metadata remote, release ID có thể chỉ là target lấy từ release map; ghi rõ nó là target, không giả vờ đó là version đã chạy. Shell report lỗi load mà shell nhìn thấy; remote report lỗi bên trong nó. Chốt cách deduplicate nếu cùng một lỗi đi qua cả hai đường, đồng thời không tắt mất lỗi chỉ vì một phía đã cố report.
+
+Theo dõi kết quả thao tác, không chỉ trạng thái mount: remote mount thành công không nói rằng thêm giỏ đã commit. Metric nên tách load failure, fallback, command outcome và thời gian thao tác phù hợp; dùng route template thay URL chứa dữ liệu người dùng.
+
+`correlationId` giúp nối các bản ghi, nhưng không tự tạo distributed trace. Muốn nối browser với backend, cần instrumentation và propagation trace context theo policy, gồm cấu hình cross-origin/CORS khi liên quan. Tránh để shell và remote cùng đăng ký global instrumentation gây ghi nhận trùng.
+
+Không đặt event ID, user ID hay full URL thành metric labels không giới hạn. Những định danh cardinality cao phù hợp hơn với log/trace được kiểm soát. Redact token, cookie và dữ liệu cá nhân; browser telemetry có thể bị chặn hoặc mất khi đóng tab, nên không dùng nó như sổ xác nhận giao dịch.
+
+## Giữ test ổn định và kết quả có ý nghĩa
+
+Một test fail ngẫu nhiên không chỉ làm chậm CI. Nó khiến team quen bấm rerun mà không đọc lỗi; lúc đó một regression thật cũng dễ bị coi là “lại flaky”.
+
+Mình giữ các nguyên tắc sau:
+
+- Mỗi test có dữ liệu, session và cleanup rõ; không phụ thuộc test khác đã thêm hàng vào giỏ.
+- Clock, random và responses được kiểm soát ở lớp cần tính xác định. Tránh `sleep` cố định để chờ UI; chờ trạng thái quan sát được với timeout hữu hạn.
+- Ưu tiên role/name hoặc test ID như explicit contract khi cần. Không khóa test vào class hash hay chuỗi DOM nội bộ.
+- Lưu trace browser, network evidence, error details và release map cho run fail; giới hạn retention và dữ liệu nhạy cảm trong artifacts.
+- Retry hỗ trợ chẩn đoán, không xóa flaky signal. Test chỉ pass sau retry vẫn cần owner và đánh giá nguyên nhân.
+- Nếu quarantine, ghi issue, phạm vi mất bảo vệ và thời hạn xử lý; không âm thầm loại gate quan trọng để release.
+
+Coverage cho biết code nào đã chạy, không chứng minh assertion đúng. Một suite phủ hết lines vẫn có thể không kiểm tra quantity gửi ra boundary. Mình review theo failure modes trước, rồi dùng coverage để tìm vùng bỏ trống, thay vì tăng phần trăm bằng test lặp lại implementation.
+
+Accessibility và performance cũng cần tiêu chí riêng ở trang ghép: keyboard/focus, fallback dùng được, CSS/overlay và chi phí tải remote. Không coi E2E happy path là bằng chứng đầy đủ cho các thuộc tính đó; xem thêm [Accessibility và UX xuyên ứng dụng](/docs/ui-va-framework/accessibility) và [Hiệu năng](/docs/production/performance).
+
+## Lộ trình đọc trong nhóm
+
+Chọn bài theo quyết định bạn đang thiếu, không cần đọc hết tooling trước khi viết test đầu tiên.
+
+| Bài | Khi nên đọc | Kết quả cần mang ra |
+| --- | --- | --- |
+| [Monorepo và multi-repo](/docs/kiem-thu-va-tooling/monorepo-multi-repo) | Đang chọn repository strategy hoặc task orchestration | Source boundaries, task graph, cache inputs và pipeline owners |
+| [Local development nhiều ứng dụng](/docs/kiem-thu-va-tooling/local-development) | Sửa một app nhưng phải chạy quá nhiều dependency | Profile local/pinned remotes, readiness và mock policy |
+| [Unit và component tests](/docs/kiem-thu-va-tooling/unit-component-tests) | Cần phản hồi nhanh cho logic, UI và lifecycle | Suite local kiểm tra hành vi qua public boundary |
+| [Contract tests](/docs/kiem-thu-va-tooling/contract-tests) | Các app bắt đầu nâng cấp/release lệch nhịp | Consumer expectations, provider verification và support window |
+| [Integration và E2E tests](/docs/kiem-thu-va-tooling/integration-e2e) | Cần kiểm chứng điểm ghép và journeys qua nhiều app | Phạm vi suite, dữ liệu test và evidence theo release map; bài chi tiết hiện là placeholder |
+| [Logs, metrics và tracing](/docs/kiem-thu-va-tooling/observability) | Cần biết lỗi đến từ app/release nào sau deploy | Telemetry ownership, context và privacy policy; bài chi tiết hiện là placeholder |
+
+Nếu đã có lab shell/catalog, mình đọc Local development → Unit và component → Contract tests. Nếu đang thiết kế nền tảng cho nhiều team, bắt đầu từ Monorepo và multi-repo nhưng chốt luôn release ownership; đừng để quyết định repository che mất compatibility policy.
+
+Hai trang placeholder vẫn là điểm điều hướng cho nội dung tiếp theo. Bạn có thể dùng ngay các ma trận kiểm thử và nguyên tắc telemetry trên trang này, không cần chờ bài chi tiết mới thêm smoke check đầu tiên.
+
+## Bài tập cho một thay đổi catalog
+
+Chọn thay đổi quantity ở ví dụ trên và tạo một test plan ngắn trong workspace ứng dụng của bạn. Bài tập này không yêu cầu cài thêm công cụ trong site docs.
+
+1. **Viết boundary inventory.** Ghi catalog nhận props gì, gọi capability nào, ai sở hữu cart state và ai cập nhật badge. Nếu lab chưa có cart, chọn boundary loader và module export thay vì giả định cart đã hoạt động.
+2. **Chọn ba failure modes.** Ví dụ quantity sai, command timeout và rời route khi pending. Với mỗi mode, chọn lớp test gần lỗi nhất và một assertion quan sát được.
+3. **Chốt bằng chứng trước release.** Ghi artifact catalog candidate, shell/remote versions cần ghép, backend nào thật hoặc mock, cùng report sẽ lưu khi fail.
+4. **Thử một lỗi chủ động.** Trong môi trường kiểm soát, chặn chunk của catalog hoặc làm capability trả kết quả không hợp lệ. Quan sát đúng test có fail không, shell fallback có giữ navigation không và report có chỉ ra app/release/stage không.
+
+Kết quả đạt không phải “CI xanh”. Bạn cần chứng minh test phát hiện được lỗi mình cố ý tạo, chỉ ra phần nào chưa được kiểm chứng và biết owner sẽ xử lý khi report đó xuất hiện trong release thật.
+
+## Checklist trước khi coi một thay đổi là sẵn sàng
+
+- [ ] Failure modes và public boundaries bị ảnh hưởng đã được ghi rõ.
+- [ ] Unit/component tests chạm code thật; mocks dừng ở boundary có chủ đích.
+- [ ] Typecheck là bước riêng khi runner chỉ transpile TypeScript.
+- [ ] Contract tests bảo vệ cả shape và semantics với consumer còn hỗ trợ.
+- [ ] Có kiểm tra production artifact và dependent assets, không chỉ dev server.
+- [ ] Release map phản ánh tổ hợp thực tế, có report gắn với artifact được promote.
+- [ ] Support window, các cặp version cần thử và rollback target đã được chốt.
+- [ ] Source/task graph được bổ sung runtime impact khi chọn checks.
+- [ ] Journey quan trọng, failure/fallback và cleanup có kiểm tra đúng phạm vi.
+- [ ] Test data/session được cô lập; retry không che flaky signal.
+- [ ] Logs/trace cho phép xác định app, release và stage mà không lộ dữ liệu nhạy cảm.
+- [ ] Gate, suite và telemetry đều có owner xử lý khi fail.
+
+## Tài liệu tham khảo
+
+- [Testing Library — Guiding Principles](https://testing-library.com/docs/guiding-principles/): kiểm thử gần cách người dùng sử dụng UI, tránh bám vào component internals.
+- [Playwright — Best Practices](https://playwright.dev/docs/best-practices): test isolation, user-facing locators, assertions và trace để chẩn đoán lỗi CI.
+- [OpenTelemetry — Client-side Apps](https://opentelemetry.io/docs/platforms/client-apps/): đặc điểm telemetry phía client, privacy, sampling và nối context với backend.
+
+## Đọc tiếp
+
+Bắt đầu bằng một vòng lặp catalog local có thể chạy độc lập, rồi thêm một contract check và một artifact smoke test cho shell đang release. Chỉ mở rộng suite sau khi bạn biết ba kiểm tra đó bảo vệ boundary nào.
+
+<Cards>
+  <Card title="Local development nhiều ứng dụng" href="/docs/kiem-thu-va-tooling/local-development" description="Chạy app đang sửa với shell và các remote đã pin." />
+  <Card title="Unit và component tests" href="/docs/kiem-thu-va-tooling/unit-component-tests" description="Kiểm tra logic, UI bất đồng bộ và lifecycle của từng app." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Bảo vệ cam kết giữa consumer và provider qua các release." />
+  <Card title="Monorepo và multi-repo" href="/docs/kiem-thu-va-tooling/monorepo-multi-repo" description="Chọn workspace tooling và quyền sở hữu pipeline." />
+</Cards>

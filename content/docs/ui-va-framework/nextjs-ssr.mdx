@@ -1,18 +1,656 @@
 ---
 title: "Next.js, SSR và hydration"
-description: "Đánh giá hỗ trợ theo phiên bản trước khi chọn federation, SSR hoặc composition cho Next.js."
+description: "Chọn boundary micro-frontend cho Next.js, đánh giá hỗ trợ federation theo router và phiên bản, triển khai Multi-Zones và tránh lỗi hydration khi deploy độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shop dùng Next.js để trang sản phẩm có nội dung ngay trong HTML, còn team catalog muốn deploy riêng. Trong SPA, shell có thể tải một remote rồi render component. Với SSR, bạn phải trả lời thêm một câu hỏi: **server đã render catalog bằng release nào, và browser có tải đúng code cùng dữ liệu để hydrate HTML đó không?**
+
+Nếu server dùng catalog r18 nhưng browser tải r19 từ URL `latest`, hai bên có thể tạo ra markup khác nhau. Trang vẫn có thể hiện nội dung ban đầu, nhưng báo lỗi hydration hoặc mất state khi React phải dựng lại một phần tree. Vì vậy, chọn boundary render và policy release trước khi chọn plugin federation.
+
+<Callout type="info" title="Phạm vi và môi trường ví dụ">
+  Bài giả định bạn biết React, routing và khái niệm host–remote. Ví dụ Multi-Zones và App Router dùng Next.js 16, TypeScript, Node.js runtime và không bật `cacheComponents`; chúng thuộc một lab shop riêng. Repository này chỉ là site docs, đang dùng `output: 'export'`: không có server SSR hay shop backend để chạy các snippet. Không thêm cấu hình lab vào site docs. Sơ đồ dùng ASCII, không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [SSR RSC và hydration là ba việc khác nhau](#ssr-rsc-và-hydration-là-ba-việc-khác-nhau)
+  - [HTML được tạo lúc nào](#html-được-tạo-lúc-nào)
+  - [Server Component khác Client Component thế nào](#server-component-khác-client-component-thế-nào)
+  - [Hydration cần những gì khớp nhau](#hydration-cần-những-gì-khớp-nhau)
+- [Đánh giá hỗ trợ federation trước khi chọn](#đánh-giá-hỗ-trợ-federation-trước-khi-chọn)
+  - [Pages Router và nextjs-mf](#pages-router-và-nextjs-mf)
+  - [App Router và runtime phía browser](#app-router-và-runtime-phía-browser)
+  - [Ma trận cần ghi cho mỗi thử nghiệm](#ma-trận-cần-ghi-cho-mỗi-thử-nghiệm)
+- [Chọn kiến trúc theo boundary](#chọn-kiến-trúc-theo-boundary)
+- [Multi-Zones cho catalog deploy riêng](#multi-zones-cho-catalog-deploy-riêng)
+  - [Chia quyền sở hữu route](#chia-quyền-sở-hữu-route)
+  - [Cấu hình assets và rewrites](#cấu-hình-assets-và-rewrites)
+  - [Điều hướng qua zone khác](#điều-hướng-qua-zone-khác)
+- [Ví dụ SSR và hydration trong catalog](#ví-dụ-ssr-và-hydration-trong-catalog)
+  - [Server đọc dữ liệu và tạo trang](#server-đọc-dữ-liệu-và-tạo-trang)
+  - [Client Component nhận snapshot ban đầu](#client-component-nhận-snapshot-ban-đầu)
+  - [Quan sát kết quả](#quan-sát-kết-quả)
+- [Client-only island trong một trang SSR](#client-only-island-trong-một-trang-ssr)
+- [Giữ server và browser cùng release](#giữ-server-và-browser-cùng-release)
+  - [Pin artifact và dữ liệu render](#pin-artifact-và-dữ-liệu-render)
+  - [Cache không chỉ có một lớp](#cache-không-chỉ-có-một-lớp)
+  - [Rollout rollback và tab cũ](#rollout-rollback-và-tab-cũ)
+- [Hydration mismatch và cách sửa](#hydration-mismatch-và-cách-sửa)
+- [Streaming lỗi và dependency phía server](#streaming-lỗi-và-dependency-phía-server)
+- [Auth state và Server Actions qua boundary](#auth-state-và-server-actions-qua-boundary)
+- [Kiểm thử trên artifact production](#kiểm-thử-trên-artifact-production)
+- [Checklist trước khi chọn Next.js cho micro-frontend](#checklist-trước-khi-chọn-nextjs-cho-micro-frontend)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## SSR RSC và hydration là ba việc khác nhau
 
-Bài này sẽ giúp bạn: đánh giá hỗ trợ theo phiên bản trước khi chọn federation, SSR hoặc composition cho Next.js.
+Trước khi ghép nhiều ứng dụng, cần tách việc tạo HTML, thực thi Server Components và kích hoạt tương tác phía browser. Chúng thường xuất hiện cùng nhau trong Next.js, nhưng không thay thế nhau.
 
-[Xem các bài trong nhóm UI và framework](/docs/ui-va-framework).
+### HTML được tạo lúc nào
+
+SSR theo request nghĩa là server tạo HTML khi request đến. Static generation tạo HTML trước, thường trong lúc build; ISR cho phép tái tạo nội dung đã cache theo policy. Cả ba đều có thể đưa HTML có nội dung tới browser, nhưng độ mới của dữ liệu và chi phí mỗi request khác nhau.
+
+| Cách render | Nội dung ban đầu đến từ đâu | Điều phải cân nhắc |
+| --- | --- | --- |
+| CSR | JavaScript trong browser render UI sau khi tải code/dữ liệu | Nội dung chính có thể chưa có trong HTML ban đầu |
+| SSR theo request | Server render cho request hiện tại | Latency và availability phụ thuộc server cùng upstream |
+| Static generation | Artifact được tạo trước | Dữ liệu có thể cũ cho đến lần build hoặc tái tạo tiếp theo |
+| ISR | Nội dung đã cache, được tái tạo theo policy | Phải chấp nhận freshness window và cấu hình hạ tầng hỗ trợ |
+
+Mình không mặc định chọn SSR cho toàn bộ shop. Mô tả sản phẩm công khai có thể phù hợp với static generation hoặc revalidation, còn thông tin giỏ hàng theo user cần policy riêng. SSR giúp gửi nội dung sớm, không bảo đảm TTFB thấp nếu server phải chờ nhiều remote.
+
+<Callout type="warn" title="Static export không phải server SSR">
+  `output: 'export'` xuất file tĩnh để hosting phục vụ. Nó không cung cấp request-time SSR, Next.js rewrites chạy trên server hay ISR của Next.js. Static export vẫn có thể có HTML prerender và Client Components được hydrate. Nếu dùng hosting tĩnh, việc định tuyến nhiều apps phải nằm ở hạ tầng bên ngoài và mỗi app phải phù hợp giới hạn static export.
+</Callout>
+
+### Server Component khác Client Component thế nào
+
+Trong App Router, pages và layouts mặc định là Server Components. Next.js tạo RSC payload — biểu diễn kết quả render cùng references tới Client Components — rồi dùng nó và Client Components để tạo HTML cho lần tải trang đầu.
+
+```text
+Server Components + dữ liệu
+             │
+             ▼
+         RSC payload
+             │  kết hợp Client Components
+             ▼
+       HTML gửi tới browser
+             │  RSC payload + JavaScript
+             ▼
+   Client Components được hydrate
+```
+
+Server Components không được hydrate như các component tương tác; code server-only của chúng không cần gửi xuống browser. Tuy nhiên, kết quả render và props truyền xuống client vẫn có thể chứa dữ liệu mà browser nhìn thấy.
+
+`'use client'` đánh dấu boundary module dùng phía client, **không có nghĩa “component này không render trên server”**. Client Components vẫn có thể được prerender thành HTML ở lần tải đầu. Vì vậy, đọc `window` trong render hoặc ở module scope vẫn có thể gây lỗi.
+
+Khi điều hướng mềm trong cùng App Router app, browser thường nhận RSC payload để cập nhật tree, không tải lại toàn bộ HTML document như lần đầu. Một server trả HTML đúng chưa chứng minh đường client navigation cũng đúng.
+
+### Hydration cần những gì khớp nhau
+
+Hydration là lúc React nối logic tương tác vào DOM đã có từ server. Hãy hình dung server gửi một biểu mẫu đã điền sẵn, browser gắn các nút xử lý lên đúng trường: nếu hai bên dùng hai mẫu biểu khác nhau, việc ghép sẽ sai. Giới hạn của ví dụ này là React còn quản lý component tree và state, không chỉ gắn từng listener lên DOM.
+
+Để hydrate ổn định, hai phía cần tương thích về:
+
+- Component implementation, tree structure và renderer/runtime.
+- Snapshot dữ liệu dùng cho lần render đầu.
+- Locale, timezone, feature flags và các giá trị ảnh hưởng markup.
+- ID generation khi có nhiều roots, đặc biệt `useId` và `identifierPrefix`.
+
+Trong một Next.js app bình thường, **để Next.js quản lý root và hydration**. Không gọi `createRoot` hay `hydrateRoot` lên container mà Next.js đang sở hữu.
+
+Nếu tự thiết kế server-side fragment composition với root riêng, owner của fragment phải hydrate đúng container bằng đúng tree và snapshot. `identifierPrefix` phía client phải khớp phía server. Đây là một integration contract riêng, không phải thao tác bổ sung tùy ý vào Next.js root.
+
+## Đánh giá hỗ trợ federation trước khi chọn
+
+“Next.js hỗ trợ Module Federation” là nhận định quá rộng. Plugin, router, bundler và runtime đều ảnh hưởng kết quả. Một demo Pages Router trên Webpack không chứng minh App Router trên Turbopack hoạt động.
+
+### Pages Router và nextjs-mf
+
+Tài liệu chính thức của `@module-federation/nextjs-mf` công bố hỗ trợ Next.js 12–15, Pages Router và SSR; đồng thời ghi rõ **App Router không được hỗ trợ** và hỗ trợ Next.js đang kết thúc. Thông báo của maintainer cho biết dự án ở maintenance mode, không còn active development từ core team và có lộ trình EOL.
+
+Đây là trạng thái của plugin, không phải tuyên bố mọi kiến trúc micro-frontend dùng Next.js đều không khả thi. Multi-Zones là một hướng khác, không cần plugin này.
+
+Với một hệ thống Pages Router đã dùng `nextjs-mf`, mình ưu tiên pin tổ hợp đang chạy, kiểm thử trên production build và lập kế hoạch chuyển boundary. Không nâng Next.js chỉ vì version mới vẫn còn thư mục `pages/`.
+
+Các điểm cần kiểm tra của integration cũ:
+
+- Plugin yêu cầu local Webpack cùng `NEXT_PRIVATE_LOCAL_WEBPACK=true`; không suy ra nó chạy được trên Turbopack.
+- Server build và browser build có entry khác nhau; tài liệu plugin minh họa nhánh `ssr` và `chunks`. URL, khả năng truy cập và asset policy phải đúng ở cả hai môi trường.
+- Plugin tự share một số React và Next.js internals; không sao chép nguyên cấu hình `shared` của một React SPA vào mà bỏ qua cơ chế đó.
+- Tài liệu plugin khuyên dùng `React.lazy` thay `next/dynamic` cho federated components để tránh vấn đề hydration trong integration này. Đừng khái quát lời khuyên đó thành “Next.js không nên dùng `next/dynamic`”.
+
+<Callout type="warn" title="Danh sách version không phải bảo đảm an toàn">
+  Next.js 12–15 ở đây là phạm vi plugin công bố, không phải khuyến nghị dùng framework version cũ hoặc đã hết hỗ trợ bảo mật. Next.js 16 không nằm trong danh sách hỗ trợ trên trang integration tại thời điểm đối chiếu. Hãy kiểm tra lại tài liệu và release notes cho exact version bạn định dùng; không coi một workaround build thành công là hỗ trợ chính thức.
+</Callout>
+
+### App Router và runtime phía browser
+
+Với App Router, mình không chọn `nextjs-mf` cho một dự án mới. Nếu chỉ cần tải UI phía browser, có thể đánh giá một federation runtime bên trong Client Component, với remote được build bởi toolchain tương thích. Nhưng đó là **client-only integration do bạn kiểm chứng**, không phải hỗ trợ SSR hoặc RSC federation của plugin.
+
+Một runtime tải được React component phía browser không tự giải quyết:
+
+- Server load và execute remote để tạo HTML.
+- RSC client references, module manifests và mapping của build Next.js.
+- Remote Server Actions cùng references và deployment policy của chúng.
+- Việc phát sinh remote entry từ một Next.js app chỉ nhờ cài runtime package.
+
+RSC payload không phải HTML fragment hay public API ổn định giữa hai apps deploy tùy ý. `remoteEntry.js` cũng không tự trở thành Server Component mà App Router có thể gọi. Nếu cần ghép RSC xuyên ứng dụng, phải có integration được toolchain của bạn hỗ trợ rõ ràng và test riêng; không suy từ khả năng federation component React thông thường.
+
+### Ma trận cần ghi cho mỗi thử nghiệm
+
+Đừng ghi “chạy với Next 16”. Ghi đủ để người khác có thể tái hiện:
+
+| Trục | Ví dụ thông tin cần lưu |
+| --- | --- |
+| Framework | Exact `next`, `react`, `react-dom` từ lockfile |
+| Router | Pages Router hay App Router; có trộn cả hai không |
+| Bundler | Webpack hay Turbopack, ở cả dev lẫn build |
+| Integration | Package/plugin/runtime và exact version |
+| Role | Next.js làm host, remote hay chỉ một zone độc lập |
+| Render path | Hard load, SSR, hydrate, client navigation, client-only mount |
+| Runtime server | Node.js hay Edge; API của loader có chạy ở đó không |
+| Hosting | Server deployment, static export, CDN/proxy và cache policy |
+| Release | Host build, remote build, assets và rollback target |
+
+Mình coi một tổ hợp là được kiểm chứng khi production build vượt qua các đường render cần dùng, không chỉ khi `next dev` hiển thị component. Một Node.js loader hoạt động cũng chưa chứng minh nó chạy được trong Edge runtime.
+
+## Chọn kiến trúc theo boundary
+
+Với shop mới dùng App Router, mình chọn **Multi-Zones nếu cần deploy độc lập theo nhóm route**, hoặc package composition nếu chưa cần release độc lập. Client-only island phù hợp cho vùng tương tác phụ; federation SSR cùng trang chỉ nên chọn khi integration thực sự hỗ trợ toolchain của bạn.
+
+| Nhu cầu | Lựa chọn mặc định | Đổi lại |
+| --- | --- | --- |
+| Catalog và cart sở hữu các nhóm trang, deploy riêng | Multi-Zones, route request tới app sở hữu trang | Qua zone khác sẽ hard navigation; không giữ React Context trong RAM |
+| Các team chia code nhưng dùng chung release của app | Build-time composition qua packages | Thay UI package cần build/deploy app tiêu thụ |
+| Trang SSR cần một widget browser-only | Client-only island với loading/error boundary | HTML ban đầu không chứa nội dung thật của widget |
+| Cần component remote được SSR trong cùng trang | Integration SSR/federation đã kiểm chứng exact versions | Phải quản lý artifact parity, shared runtime và release compatibility |
+| Cần composition nhiều fragments phía server | Server-side composition có contract rõ | Phải giải quyết scripts, styles, metadata, hydration và timeout |
+| Cần document hoặc security boundary riêng | iframe theo sandbox policy | Thêm contract message, điều hướng và chi phí UX |
+
+Multi-Zones là route-level composition, không phải cách giữ shell React luôn sống rồi mount catalog bên trong. Khi vào catalog zone, app catalog render cả trang, kể cả layout chung của nó. Các apps có thể dùng chung design system package, nhưng mỗi release chọn version riêng.
+
+Nếu requirement bắt buộc header, cart drawer và nhiều remote trên cùng trang chia sẻ state tức thì mà không reload, Multi-Zones có thể không phù hợp. Khi đó, hãy đánh giá một app với modules/packages trước; chỉ thêm runtime composition khi lợi ích deploy độc lập đủ bù chi phí SSR.
+
+## Multi-Zones cho catalog deploy riêng
+
+### Chia quyền sở hữu route
+
+Giả sử shell zone sở hữu home và cart, catalog zone sở hữu toàn bộ `/catalog`. Browser vẫn truy cập cùng public domain; một gateway hoặc shell server phân phối request.
+
+```text
+Browser: shop.example.com
+            │
+            ▼
+     Gateway / rewrites
+            ├── /catalog và /catalog/* ──► Catalog Next.js
+            ├── /catalog-static/* ───────► Catalog assets
+            └── các route còn lại ──────► Shell Next.js
+```
+
+Một path chỉ có một owner. Catalog phải có route thật `/catalog`, chẳng hạn `app/catalog/page.tsx`; rewrite trong ví dụ **giữ nguyên** prefix `/catalog`, không cắt nó trước khi gửi upstream.
+
+Nếu catalog có Route Handlers, đặt chúng trong namespace đã dành cho zone, ví dụ `/catalog/api/...`, hoặc khai báo route mapping riêng. Đừng để hai apps cùng nhận `/api/cart` mà không có quy tắc ưu tiên.
+
+### Cấu hình assets và rewrites
+
+Lab giả định có hai ứng dụng Next.js 16 đã được tạo, mỗi app có root layout hợp lệ. Shell chạy port 3000, catalog chạy port 3001. Cả hai là server deployments, không có `output: 'export'`.
+
+Catalog đặt `assetPrefix` riêng để JS/CSS không va chạm với shell:
+
+```js title="catalog/next.config.mjs"
+/** @type {import('next').NextConfig} */
+const config = {
+  assetPrefix: '/catalog-static',
+};
+
+export default config;
+```
+
+Shell chuyển routes và assets tới catalog. Với môi trường local, đặt `CATALOG_ORIGIN=http://localhost:3001` trong `shell/.env.local`; production dùng origin của catalog server do đội vận hành kiểm soát.
+
+```js title="shell/next.config.mjs"
+const catalogOrigin = process.env.CATALOG_ORIGIN;
+if (!catalogOrigin) {
+  throw new Error('Thiếu CATALOG_ORIGIN');
+}
+const origin = new URL(catalogOrigin).origin;
+
+/** @type {import('next').NextConfig} */
+const config = {
+  async rewrites() {
+    return {
+      beforeFiles: [
+        {
+          source: '/catalog',
+          destination: `${origin}/catalog`,
+        },
+        {
+          source: '/catalog/:path+',
+          destination: `${origin}/catalog/:path+`,
+        },
+        {
+          source: '/catalog-static/:path+',
+          destination: `${origin}/catalog-static/:path+`,
+        },
+      ],
+    };
+  },
+};
+
+export default config;
+```
+
+`beforeFiles` làm ownership tường minh trước khi kiểm tra filesystem routes của shell. Đừng dùng một shell page cùng path để “fallback” ngầm: rewrite không tự chuyển về page đó khi upstream lỗi. Fallback khi catalog server unavailable cần policy của gateway/hosting hoặc trang thay thế có chủ đích.
+
+`assetPrefix` không phải `basePath`: nó không thêm `/catalog` cho mọi route và không tự prefix file trong `public/`. Các file như `/catalog-media/logo.svg` cần namespace và proxy rule riêng nếu catalog phục vụ chúng. Image optimization endpoint cũng cần xem xét riêng; không giả định rule cho static JS/CSS bao phủ mọi request ảnh.
+
+Tài liệu Multi-Zones cho biết Next.js trước version 15 có thể cần rewrite bổ sung **trong app của zone** để xử lý asset prefix. Ví dụ ở đây dành cho Next.js 16, không phải config dùng nguyên cho mọi version.
+
+Ngoài file config, proxy production cần giữ query string, headers cần thiết và POST body; không làm mất RSC request metadata. Kiểm tra cả client navigation, Route Handlers và Server Actions nếu dùng, không chỉ GET HTML.
+
+### Điều hướng qua zone khác
+
+Trong cùng catalog zone, dùng `next/link` để soft navigate. Từ shell sang catalog hoặc ngược lại, dùng anchor thông thường để tải document của app đích:
+
+```tsx title="Các link từ một trang thuộc catalog zone"
+import Link from 'next/link';
+
+export function CatalogNavigation() {
+  return (
+    <nav aria-label="Điều hướng shop">
+      <Link href="/catalog">Danh sách sản phẩm</Link>
+      <Link href="/catalog/products/shirt-001">Áo thun</Link>
+      <a href="/cart">Giỏ hàng ở shell zone</a>
+    </nav>
+  );
+}
+```
+
+Dùng `Link` tới app khác có thể khiến router hiện tại prefetch hoặc cố soft navigate bằng protocol không thuộc app đó. Anchor cho cross-zone navigation tránh việc dựa vào tree và manifests của zone hiện tại.
+
+Hard navigation reset state trong RAM. Vì vậy, draft cần giữ khi đổi zone phải có nơi lưu phù hợp; cart nên có backend làm nguồn dữ liệu chính thay vì chỉ dựa vào React Context của shell. Nếu người dùng thường xuyên đi qua lại hai nhóm trang, cân nhắc để chúng cùng zone trước khi chấp nhận chi phí reload.
+
+## Ví dụ SSR và hydration trong catalog
+
+Ví dụ tiếp theo là **một trang trong catalog zone**, không phải component federation. Nó cho thấy server và client có thể dùng cùng snapshot dữ liệu mà Next.js quản lý, trước khi bạn thêm một boundary phân tán.
+
+Lab cần `CATALOG_API_ORIGIN` trỏ tới backend đáng tin cậy. Endpoint `GET /products/shirt-001` trả JSON như sau; hãy tạo fixture hoặc mock trong môi trường lab của bạn:
+
+```json title="Response của backend mẫu"
+{
+  "sku": "shirt-001",
+  "name": "Áo thun",
+  "priceVnd": 150000
+}
+```
+
+Các con số là dữ liệu minh họa, không phải giá thật hay benchmark. Endpoint này cung cấp thông tin công khai; ví dụ không triển khai authentication, checkout hoặc inventory.
+
+### Server đọc dữ liệu và tạo trang
+
+```tsx title="catalog/app/catalog/products/[sku]/page.tsx"
+import { notFound } from 'next/navigation';
+import ProductControls from './ProductControls';
+
+export const runtime = 'nodejs';
+
+type Product = {
+  sku: string;
+  name: string;
+  priceVnd: number;
+};
+
+function isProduct(value: unknown): value is Product {
+  if (typeof value !== 'object' || value === null) return false;
+  const product = value as Record<string, unknown>;
+  return (
+    typeof product.sku === 'string' &&
+    typeof product.name === 'string' &&
+    typeof product.priceVnd === 'number' &&
+    Number.isSafeInteger(product.priceVnd) &&
+    product.priceVnd >= 0
+  );
+}
+
+export default async function ProductPage({
+  params,
+}: {
+  params: Promise<{ sku: string }>;
+}) {
+  const { sku } = await params;
+  const apiOrigin = process.env.CATALOG_API_ORIGIN;
+  if (!apiOrigin) throw new Error('Thiếu CATALOG_API_ORIGIN');
+
+  const url = new URL(
+    `/products/${encodeURIComponent(sku)}`,
+    new URL(apiOrigin).origin,
+  );
+  const response = await fetch(url, {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(3000),
+  });
+
+  if (response.status === 404) notFound();
+  if (!response.ok) throw new Error('Không đọc được sản phẩm');
+
+  const product: unknown = await response.json();
+  if (!isProduct(product) || product.sku !== sku) {
+    throw new Error('Response sản phẩm sai contract');
+  }
+
+  const priceLabel = `${new Intl.NumberFormat('vi-VN').format(
+    product.priceVnd,
+  )} ₫`;
+
+  return (
+    <main>
+      <h1>{product.name}</h1>
+      <ProductControls sku={product.sku} priceLabel={priceLabel} />
+      <a href="/cart">Mở giỏ hàng</a>
+    </main>
+  );
+}
+```
+
+Ở cấu hình lab không bật Cache Components, `cache: 'no-store'` khiến fetch này không dùng Data Cache của Next.js và route cần render động. Không dựa vào default cache của từng version. Nếu bật `cacheComponents`, hãy thiết kế lại boundary dynamic data và Suspense theo tài liệu của version đó, thay vì mang nguyên kết luận về route caching ở đây sang.
+
+Timeout 3000 ms là giá trị minh họa. Production chọn timeout từ latency budget, đồng thời cân nhắc retry có giới hạn, cancellation và tác động lên upstream. `fetch` không throw chỉ vì HTTP 500, nên đoạn code kiểm tra `response.ok` riêng.
+
+`params` là Promise trong Next.js 16. Ví dụ cũ truy cập thẳng `params.sku` không phải mẫu nên sao chép vào môi trường này.
+
+### Client Component nhận snapshot ban đầu
+
+```tsx title="catalog/app/catalog/products/[sku]/ProductControls.tsx"
+'use client';
+
+import { useId, useState } from 'react';
+
+export default function ProductControls({
+  sku,
+  priceLabel,
+}: {
+  sku: string;
+  priceLabel: string;
+}) {
+  const [quantity, setQuantity] = useState(1);
+  const quantityId = useId();
+
+  return (
+    <section aria-label={`Tùy chọn cho ${sku}`}>
+      <p>Giá tham khảo: {priceLabel}</p>
+      <label htmlFor={quantityId}>Số lượng xem thử</label>
+      <input
+        id={quantityId}
+        type="number"
+        min={1}
+        value={quantity}
+        onChange={(event) => {
+          const next = event.currentTarget.valueAsNumber;
+          setQuantity(Number.isFinite(next) ? Math.max(1, next) : 1);
+        }}
+      />
+      <p aria-live="polite">Đang chọn {quantity} sản phẩm</p>
+    </section>
+  );
+}
+```
+
+Server tính `priceLabel` rồi truyền chuỗi đó xuống client; client không format lại bằng locale của thiết bị trong lần render đầu. `quantity` bắt đầu từ `1` ở cả hai phía. Hai lựa chọn này giữ output ban đầu ổn định, còn `useId` được Next.js/React quản lý trong cùng tree.
+
+Props từ Server Component sang Client Component phải serializable theo React. Không truyền callback JavaScript thông thường từ page server như cách shell CSR truyền `onAddToCart` cho remote. Callback tương tác nên được tạo trong client boundary; Server Functions/Actions là cơ chế riêng, không phải ngoại lệ cho mọi function.
+
+Label giá là thông tin hiển thị, không phải giá đáng tin cậy cho checkout. Backend phải tính lại giá, quyền mua và tồn kho khi xử lý command thật.
+
+### Quan sát kết quả
+
+Chạy cả hai apps trong lab, rồi truy cập qua shell origin:
+
+```bash title="Kiểm tra HTML qua gateway của lab"
+curl -sS http://localhost:3000/catalog/products/shirt-001
+```
+
+Với fixture trên, response HTML chứa tên `Áo thun` và UI ban đầu của quantity. Nếu response được stream, `curl` chờ nhận hết body; thao tác này không đo thời điểm người dùng thấy nội dung.
+
+Trong browser, bạn cần quan sát ba điều:
+
+1. Tắt JavaScript rồi reload: tên sản phẩm và giá tham khảo vẫn có, nhưng input chưa cập nhật đoạn “Đang chọn…” bằng React.
+2. Bật JavaScript rồi reload: đổi số lượng làm đoạn trạng thái đổi, không có hydration warning trong console.
+3. Trong Network, JS/CSS của catalog tải qua `/catalog-static/_next/...`; bấm `/cart` tạo document navigation sang shell zone.
+
+Sau thử nghiệm local, lặp lại với `next build` và `next start` của hai apps. Thử thêm SKU không tồn tại, upstream 500 và timeout. Các trường hợp lỗi nên đi qua `not-found.tsx`/`error.tsx` phù hợp của lab; ví dụ này chưa cung cấp các trang fallback đó.
+
+## Client-only island trong một trang SSR
+
+Một trang sản phẩm có thể SSR nội dung chính nhưng để widget browser-only tải sau, chẳng hạn công cụ xem thử dùng canvas. Trong App Router, đặt `ssr: false` **bên trong Client Component**, không đặt trực tiếp ở Server Component.
+
+```tsx title="catalog/app/catalog/BrowserTools.tsx"
+'use client';
+
+import dynamic from 'next/dynamic';
+
+const RecentlyViewed = dynamic(() => import('./RecentlyViewed'), {
+  ssr: false,
+  loading: () => <p role="status">Đang tải tiện ích…</p>,
+});
+
+export default function BrowserTools() {
+  return <RecentlyViewed />;
+}
+```
+
+```tsx title="catalog/app/catalog/RecentlyViewed.tsx"
+'use client';
+
+import { useEffect, useState } from 'react';
+
+export default function RecentlyViewed() {
+  const [sku, setSku] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      setSku(localStorage.getItem('shop:last-viewed-sku'));
+    } catch {
+      // Storage bị chặn: tiện ích vẫn render được trạng thái trống.
+    }
+  }, []);
+
+  return <p>Sản phẩm xem gần nhất: {sku ?? 'Chưa có dữ liệu'}</p>;
+}
+```
+
+Server page có thể import và render `BrowserTools`. Snippet dùng dynamic import **local**, không tải remote, không deploy widget độc lập và không tự ghi lịch sử xem. Nó chỉ minh họa placement đúng của browser-only boundary.
+
+Nếu thay loader bằng federation runtime, phải bổ sung khởi tạo runtime, contract, version pinning, dependency policy và xử lý load failure. `next/dynamic` không phải federation loader; `ssr: false` chỉ bỏ prerender component đó, không tạo hỗ trợ remote cho bundler.
+
+Loading UI không phải error fallback. Khi chunk/module tải thất bại, cần boundary và diagnostics riêng. Nội dung chính phục vụ SEO hoặc chức năng cần hoạt động không có JavaScript không nên bị đẩy sang island chỉ để né hydration mismatch.
+
+## Giữ server và browser cùng release
+
+Multi-Zones giảm coupling vì mỗi app render document riêng. Tuy nhiên, app đó vẫn phải phục vụ HTML/RSC và client assets tương thích. Nếu ghép remote trong cùng trang SSR, bạn còn phải giữ parity giữa server remote và browser remote.
+
+### Pin artifact và dữ liệu render
+
+Giả sử SSR chọn catalog r18. Cặp cần giữ là:
+
+```text
+Request chọn catalog r18
+          ├── server artifact r18 → HTML + initial snapshot
+          └── browser artifact r18 → hydrate initial snapshot
+
+Không hydrate HTML r18 bằng browser artifact r19 từ URL latest.
+```
+
+Mình ưu tiên artifacts bất biến theo release, cùng descriptor/version selection được resolve một lần cho render. Đó có thể là policy riêng của ứng dụng hoặc capability của integration; không phải tính năng mà mọi federation runtime tự cung cấp.
+
+Một quy trình SSR composition cần làm rõ:
+
+1. Chọn release từ registry/allowlist đã kiểm thử với host hiện tại.
+2. Giữ cả server entry và browser entry thuộc đúng release đó.
+3. Server render với snapshot và feature flags đã chọn.
+4. Đưa references cùng snapshot cần thiết xuống browser; không đưa secrets.
+5. Browser dùng lựa chọn đã gắn vào response, không resolve lại `latest` trước hydrate.
+
+URL nội bộ dùng để server tải artifact có thể khác URL public để browser tải assets, nhưng phải ánh xạ tới cùng release. Không gửi server-only entry xuống client chỉ vì hai loại entry có chung tên `remoteEntry.js`.
+
+Server và browser cũng phải dùng cùng initial data. Nếu browser fetch giá mới trước khi render lần đầu trong khi HTML còn giá cũ, pin code thôi chưa đủ. Hydrate snapshot đã gửi rồi mới cập nhật dữ liệu theo policy freshness; với giao dịch như checkout, backend vẫn là nơi xác thực giá cuối cùng.
+
+### Cache không chỉ có một lớp
+
+| Lớp | Thứ có thể được giữ lại | Rủi ro cần kiểm tra |
+| --- | --- | --- |
+| CDN hoặc reverse proxy | HTML, RSC responses, assets | HTML cũ trỏ tới assets đã xóa; cache nội dung user thành public |
+| Next.js Data Cache | Kết quả fetch được cache có chủ đích | Dữ liệu cũ sau release hoặc invalidation không đồng bộ |
+| Next.js Full Route Cache | Output render của route đủ điều kiện | Route output không phản ánh policy freshness mới |
+| Client Router Cache | RSC route segments trong browser | Tab cũ vẫn có tree/payload của release trước |
+| Browser cache hoặc service worker | JS/CSS và responses | Con trỏ mutable bị giữ lại, hoặc assets khác release |
+| Server module/runtime cache | Remote modules đã load | Đổi registry nhưng process vẫn execute artifact cũ |
+
+Bảng là mô hình chẩn đoán; chi tiết caching thay đổi theo version và việc bật Cache Components. `cache: 'no-store'` trên một fetch không có nghĩa CDN, browser và mọi cache khác đều đã bị tắt.
+
+HTML và RSC cần cache policy riêng phù hợp request identity. Proxy không được gộp RSC response với HTML response chỉ vì pathname giống nhau; giữ headers/query mà Next.js dùng để phân biệt request. Không bỏ `Vary` hay các chỉ dẫn cache quan trọng trong khi tối ưu gateway.
+
+Assets có URL versioned thực sự bất biến có thể cache dài. Registry hoặc manifest mutable cần policy revalidation phù hợp rollback. Chọn retention dựa trên window hỗ trợ tab cũ, HTML cache và lazy-loaded chunks, không xóa release cũ ngay khi deploy release mới.
+
+### Rollout rollback và tab cũ
+
+Một rollout an toàn publish đủ artifacts trước, kiểm tra mọi asset URL rồi mới đổi routing. Với nhiều server replicas, không để HTML từ build A dẫn tới request RSC hoặc Server Action bị chuyển sang build B không tương thích mà không có deployment-skew policy.
+
+Giữ build ID và deployment metadata theo cơ chế hosting của bạn; đánh giá các khả năng version-skew handling trong tài liệu Next.js/self-hosting. Một setting deployment ID không thay cho toàn bộ release routing và asset retention.
+
+Rollback thay đổi request routing hoặc lựa chọn release tiếp theo. Nó không hoàn tác JavaScript đã evaluate, state trong tab hay business mutation đã gửi. Sau rollback, một tab cũ có thể vẫn lazy-load chunk của release mới; vì vậy vẫn cần giữ artifacts của release đó trong window đã cam kết.
+
+Khi bắt buộc reload để thoát tổ hợp lỗi, cần cơ chế bảo toàn draft và thông báo rõ. Không reload vòng lặp mỗi lần thấy hydration warning; nếu server/browser vẫn resolve hai release khác nhau, reload chỉ lặp lại lỗi.
+
+## Hydration mismatch và cách sửa
+
+Đi theo thứ tự: xác nhận build/artifacts, kiểm tra initial snapshot, rồi mới kiểm tra render logic. Đừng bắt đầu bằng việc thêm `suppressHydrationWarning`.
+
+| Triệu chứng hoặc nguyên nhân | Vì sao lệch | Cách sửa ưu tiên |
+| --- | --- | --- |
+| `Date.now()` hoặc `Math.random()` trong render | Hai môi trường tạo giá trị khác nhau | Server tạo giá trị và truyền snapshot; hoặc cập nhật sau hydrate |
+| Đọc `localStorage` để chọn theme trong render đầu | Server không có browser storage | Dùng theme snapshot từ request hoặc initial UI ổn định rồi cập nhật trong effect |
+| Format ngày/giá theo locale mặc định | Server và thiết bị có locale/timezone khác nhau | Chốt locale/timezone hoặc truyền label đã format |
+| Feature flag resolve lại ở browser | Hai lần chọn có thể khác cohort hoặc thời điểm | Gửi lựa chọn ban đầu từ server; cập nhật sau khi UI đã hydrate |
+| HTML catalog r18, JS catalog r19 | Implementation và tree có thể thay đổi | Pin release, sửa mutable references và cache policy |
+| HTML nesting không hợp lệ | Browser sửa cấu trúc DOM trước khi React chạy | Sửa markup; kiểm tra table, paragraph và interactive elements |
+| Nhiều roots tạo IDs trùng hoặc khác prefix | `useId` không có namespace matching giữa server/client | Fragment owner thống nhất `identifierPrefix`; không can thiệp Next.js root |
+| Script bên ngoài sửa DOM trước hydrate | DOM không còn giống output của server | Trì hoãn script hoặc dành boundary không do React sở hữu |
+
+Các lỗi liên quan không phải lúc nào cũng là hydration mismatch. `window is not defined` thường là lỗi execute code browser-only trên server; invalid hook call có thể đến từ duplicate React hoặc renderer không tương thích. Phân loại đúng trước khi đổi kiến trúc.
+
+<Callout type="warn" title="Đừng dùng cảnh báo bị tắt làm tiêu chí đúng">
+  `suppressHydrationWarning` là escape hatch giới hạn cho khác biệt không tránh được, không chữa sai component tree hoặc version mismatch. `ssr: false` tránh hydrate nội dung thật của island bằng cách không SSR nó; đó là thay đổi render strategy, không phải sửa nguyên nhân SSR sai. Chỉ chọn khi vùng UI đó thực sự có thể client-only.
+</Callout>
+
+## Streaming lỗi và dependency phía server
+
+SSR remote đặt remote loader và upstream vào critical path của server. Một region truy cập CDN chậm có thể tăng TTFB dù browser tải cùng asset rất nhanh. Vì vậy đo riêng thời gian resolve release, load module, fetch data, render và hydrate.
+
+Streaming với Suspense cho phép gửi shell/loading UI trước khi một vùng hoàn tất. Nó không tự tạo timeout, circuit breaker hoặc SSR support cho remote loader. Cũng không bảo đảm vùng nội dung chính xuất hiện sớm nếu chính vùng đó đang chờ upstream.
+
+Trong App Router, `loading.tsx` và Suspense phục vụ pending UI; `error.tsx` là client error boundary cho route segment phù hợp. Loader Promise rejection phía browser phải có đường catch/boundary đúng. React Error Boundary kiểu client không tự bắt lỗi render server hay mọi lỗi event handler.
+
+| Điểm lỗi | Hướng xử lý nên thiết kế |
+| --- | --- |
+| Không resolve được release hợp lệ | Chọn last-known-good tương thích hoặc fallback, không tải candidate tùy tiện |
+| Server load artifact thất bại | Timeout/retry có giới hạn theo integration, diagnostics theo release |
+| Fetch data timeout hoặc 5xx | Trang lỗi hoặc nội dung giảm chức năng theo mức quan trọng |
+| Browser entry/chunk tải lỗi | Error fallback và đường mở lại/reload có kiểm soát |
+| Remote render lỗi | Boundary thuộc đúng tree/segment, giữ phần độc lập nếu có thể |
+
+Không phải mọi remote đều nên fallback thành HTML rỗng. Với widget gợi ý, có thể bỏ vùng đó; với giá, thanh toán hoặc thông tin bắt buộc, hiển thị trạng thái không khả dụng thường đúng hơn hiển thị dữ liệu không xác thực.
+
+Nếu response đã bắt đầu stream, HTTP headers/status không còn dễ đổi như trước khi gửi body. Theo dõi cả kết quả UI và errors server, không dùng riêng tỷ lệ HTTP 200 làm bằng chứng SSR thành công. Với SEO, kiểm tra HTML, metadata, canonical và nội dung lỗi thực tế của các routes quan trọng.
+
+## Auth state và Server Actions qua boundary
+
+Cùng public domain không có nghĩa mọi zone tự dùng chung session một cách đúng đắn. Cookies cần thống nhất name, domain/path, `Secure`, `HttpOnly`, `SameSite` và session contract. Gateway phải chuyển đúng cookie cần thiết tới đúng app, nhưng không biến upstream tùy ý thành nơi nhận credentials.
+
+Mỗi server vẫn phải kiểm tra quyền cho dữ liệu và mutation của mình. Không tin `userId` hoặc “đã đăng nhập” gửi từ client; cũng không coi việc shell đã xác thực là đủ nếu backend catalog chưa kiểm tra request.
+
+<Callout type="warn" title="Server Component không tự giữ bí mật dữ liệu render">
+  Secrets dùng để gọi backend phải ở server-only modules và không được truyền xuống props, HTML hoặc RSC payload. Lọc dữ liệu trước khi đưa sang Client Component. Với server-side remote code, security boundary còn lớn hơn: code đó chạy trong server process và có thể tiếp cận tài nguyên của process. Chỉ tải artifact từ nguồn tin cậy, có policy quyền hạn và provenance rõ ràng.
+</Callout>
+
+Qua hard navigation, React Context và event bus trong RAM không đi theo user. Dùng session/backend cho state nghiệp vụ cần bền, URL cho state điều hướng thích hợp và packages/contracts cho schema dùng chung. Không biến `localStorage` thành auth authority; dữ liệu ở đó do client sửa được.
+
+Với Server Actions trong Multi-Zones, tài liệu Next.js yêu cầu cho phép user-facing origin tường minh khi cần. Ví dụ cấu hình này được **merge vào config của app xử lý action**, không thay phần `assetPrefix`/rewrites đã có:
+
+```js title="Phần config khi zone dùng Server Actions"
+experimental: {
+  serverActions: {
+    allowedOrigins: ['shop.example.com'],
+  },
+},
+```
+
+`allowedOrigins` là kiểm soát origin, không phải authentication hay authorization. Chỉ allow những host thực sự cần và kiểm tra proxy headers. Nếu deploy nhiều instances, tìm hiểu thêm encryption key consistency và version skew của Server Actions theo hosting của bạn.
+
+Không expose Server Action reference từ một app như public API lâu dài để app khác deploy tùy ý gọi. References và handling gắn với framework/build. Với business command xuyên zone, mình mặc định chọn HTTP API/BFF có auth, schema và version policy rõ, trừ khi có integration Server Actions xuyên deployment được hỗ trợ và kiểm thử riêng.
+
+## Kiểm thử trên artifact production
+
+Test component riêng lẻ không kiểm tra được proxy, SSR artifacts hay tab cũ. Với mỗi tổ hợp được hỗ trợ, chạy cùng routes trên production builds và giữ build IDs trong kết quả test.
+
+| Scenario | Điều cần chứng minh |
+| --- | --- |
+| Hard load URL sản phẩm qua public origin | HTML có nội dung cần thiết, status/metadata đúng, assets không 404 |
+| JavaScript bị tắt | Nội dung chính vẫn đọc được nếu đó là requirement SSR |
+| Hydration với fixture cố định | Không có console warning; tương tác hoạt động và không reset UI bất ngờ |
+| Soft navigation trong catalog | RSC requests tới đúng zone, query/headers giữ nguyên |
+| Cross-zone navigation và Back/Forward | Document navigation đúng, state bền được khôi phục theo policy |
+| Browser storage bị chặn | Browser-only island không phá trang |
+| Catalog server hoặc API chậm/lỗi | Timeout, fallback và diagnostics đúng phase; shell routes độc lập còn hoạt động |
+| Deploy r19 khi tab r18 đang mở | Old assets còn tồn tại, lazy load/RSC/actions có policy skew rõ |
+| Rollback sau deploy | HTML/RSC/assets cùng release tương thích; tab của release bị rollback vẫn được hỗ trợ |
+| Hai users và hai cohorts | Không chia sẻ nhầm HTML/RSC cá nhân hóa hoặc flags qua cache |
+
+Để tái hiện mismatch release, trong môi trường test hãy render HTML bằng r18 rồi cố tình cho loader browser resolve r19. Với policy đúng, browser phải giữ r18 hoặc chuyển sang đường recovery có chủ đích, không âm thầm ghép hai bản. Đây là fault injection trong lab, không phải thử nghiệm nên chạy với traffic production.
+
+Thu thập console errors, failed requests, server render errors và timing của nội dung chính. Gắn telemetry với zone, host build, remote build nếu có, data/render phase và cohort; không log tokens hay nguyên snapshot chứa PII.
+
+SSR chỉ giúp người dùng khi nội dung xuất hiện và tương tác hoàn tất đúng. Đo TTFB, LCP, INP, JavaScript tải ban đầu và thời điểm widget sẵn sàng cho từng route. Không kết luận “SSR nhanh hơn” từ một lần mở trang local hoặc một response status 200.
+
+## Checklist trước khi chọn Next.js cho micro-frontend
+
+- [ ] Requirement phân biệt deploy độc lập theo route với ghép nhiều remote cùng trang.
+- [ ] Đã chọn Multi-Zones, packages hoặc client-only boundary trước khi thêm federation SSR.
+- [ ] Exact versions, router, bundler, integration và server runtime có ma trận kiểm chứng.
+- [ ] Không dùng `nextjs-mf` như lời hứa hỗ trợ App Router hoặc Next.js 16.
+- [ ] Mỗi path, API namespace, asset URL và layout có owner rõ ràng.
+- [ ] Cross-zone links hard navigate; state cần giữ không chỉ nằm trong Context/RAM.
+- [ ] Browser và server dùng cùng artifact release, initial snapshot và feature flags.
+- [ ] Cache HTML, RSC, data, registry và assets có policy riêng, không leak dữ liệu user.
+- [ ] Assets được giữ cho tab cũ, rollback và lazy loading trong window đã công bố.
+- [ ] Không tạo root thủ công trên DOM do Next.js quản lý.
+- [ ] Timeout, pending UI, error fallback và recovery được test riêng.
+- [ ] Auth và mutation được kiểm tra tại server; origin allowlist không thay authorization.
+- [ ] Production test bao gồm hard load, hydration, soft navigation, deploy skew và rollback.
+
+Bước tiếp theo nên là một vertical slice: `/catalog/products/shirt-001` chạy qua public gateway, có HTML đúng, hydrate không lỗi và vẫn hoạt động khi deploy catalog release mới. Chỉ sau khi slice đó vượt qua ma trận test mới mở rộng boundary sang các flow khác của shop.
+
+## Tài liệu tham khảo
+
+- [Next.js — Server and Client Components](https://nextjs.org/docs/app/getting-started/server-and-client-components): HTML, RSC payload, hydration và serializable props.
+- [Next.js — Multi-Zones](https://nextjs.org/docs/app/guides/multi-zones): route-level micro-frontends, asset prefix, rewrites, cross-zone links và Server Actions.
+- [Next.js — Lazy loading](https://nextjs.org/docs/app/guides/lazy-loading): `next/dynamic`, `ssr: false` và giới hạn trong Server Components.
+- [Next.js — Caching](https://nextjs.org/docs/app/guides/caching): các lớp cache; đối chiếu thêm Cache Components nếu bật tính năng đó.
+- [Next.js — Self-hosting](https://nextjs.org/docs/app/guides/self-hosting): cache coordination, nhiều instances, streaming và version skew.
+- [Next.js — Static exports](https://nextjs.org/docs/app/guides/static-exports): giới hạn khi không có Next.js server.
+- [React — hydrateRoot](https://react.dev/reference/react-dom/client/hydrateRoot): yêu cầu output matching, nhiều roots và `identifierPrefix`.
+- [Module Federation — Next.js integration](https://module-federation.io/integrations/framework/nextjs): phạm vi Pages Router/SSR, versions và cảnh báo App Router.
+- [Module Federation — thông báo maintenance và deprecation](https://github.com/module-federation/core/issues/3153): lộ trình của `nextjs-mf`; cần đọc lại trước quyết định nâng cấp.
+
+Các policy pin release, compatibility window và fault injection trong bài là thiết kế ứng dụng, không phải bảo đảm mà Next.js hoặc mọi federation runtime tự cung cấp.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Tích hợp React" href="/docs/ui-va-framework/react" description="Phân biệt component cùng tree với root riêng, Context và shared runtime." />
+  <Card title="Server-side composition" href="/docs/kien-truc/server-side-composition" description="Đánh giá ghép UI phía server và trách nhiệm ở boundary render." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Thiết kế ma trận host–remote và window hỗ trợ releases." />
+  <Card title="Caching" href="/docs/trien-khai/caching" description="Phân biệt cache entry, chunks, runtime configuration và release artifacts." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Đưa release mới vào traffic mà không bỏ quên những phiên đang chạy." />
+</Cards>

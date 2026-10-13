@@ -1,18 +1,456 @@
 ---
 title: "Checklist debug và FAQ"
-description: "Tổng hợp trình tự kiểm tra network, console, manifests, release versions và telemetry."
+description: "Runbook debug micro-frontend theo bằng chứng: kiểm tra Network, Console, manifests, release versions, telemetry và xác nhận phục hồi."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Shell vẫn hiện header, catalog không mở được, còn cart chỉ lỗi trên một số tab sau deploy. Bạn nên kiểm tra URL, cache hay React trước? Bắt đầu bằng **bước đầu tiên có bằng chứng sai**, không bằng config dễ chỉnh nhất.
+
+Trang này là checklist dùng xuyên suốt một lần điều tra: giữ lần lỗi ban đầu, xác định document đang dùng tổ hợp release nào, khoanh vùng boundary rồi chuyển sang runbook chuyên sâu. Mình ưu tiên mỗi lần thử chỉ thay một yếu tố; xóa cache, đổi URL và nâng dependency cùng lúc có thể làm lỗi biến mất nhưng không giải thích được nguyên nhân.
+
+<Callout type="info" title="Phạm vi và cách dùng">
+  Ví dụ dùng shop giả định gồm shell, catalog và cart. Lab webpack 5 dùng shell ở `http://localhost:3000`, catalog ở `http://localhost:3001`, container `shop_catalog` và public key `./CatalogPage`. URL production, release IDs và dữ liệu incident bên dưới đều là minh họa, không phải deployment có sẵn trong repository tài liệu này.
+
+  Checklist áp dụng cho nhiều cách tích hợp; các kiểm tra webpack classic script, Module Federation enhanced, ESM và SSR được ghi rõ phạm vi. Sơ đồ text không cần thêm renderer. Khi đã xác định lớp lỗi, dùng bài chuyên sâu thay vì thử mọi nhánh trong checklist.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Trình tự xử lý khi đang có incident](#trình-tự-xử-lý-khi-đang-có-incident)
+  - [Giảm ảnh hưởng](#giảm-ảnh-hưởng)
+  - [Giữ bằng chứng ban đầu](#giữ-bằng-chứng-ban-đầu)
+  - [Tìm boundary đầu tiên bị lỗi](#tìm-boundary-đầu-tiên-bị-lỗi)
+  - [Kiểm chứng giả thuyết rồi sửa đúng owner](#kiểm-chứng-giả-thuyết-rồi-sửa-đúng-owner)
+- [Chọn nhánh điều tra theo triệu chứng](#chọn-nhánh-điều-tra-theo-triệu-chứng)
+- [Checklist bằng chứng tối thiểu](#checklist-bằng-chứng-tối-thiểu)
+- [Kiểm tra Network và Console](#kiểm-tra-network-và-console)
+  - [Theo đường tải thực tế](#theo-đường-tải-thực-tế)
+  - [Đọc response thay vì chỉ đọc status](#đọc-response-thay-vì-chỉ-đọc-status)
+  - [Kiểm chứng HTTP bằng curl](#kiểm-chứng-http-bằng-curl)
+- [Đối chiếu manifests và release versions](#đối-chiếu-manifests-và-release-versions)
+  - [Phân biệt các loại manifest](#phân-biệt-các-loại-manifest)
+  - [Lập release map của document đang lỗi](#lập-release-map-của-document-đang-lỗi)
+  - [Kiểm tra contract và tổ hợp tương thích](#kiểm-tra-contract-và-tổ-hợp-tương-thích)
+- [Kiểm tra runtime đúng format](#kiểm-tra-runtime-đúng-format)
+  - [Webpack classic script](#webpack-classic-script)
+  - [Module Federation enhanced và ESM](#module-federation-enhanced-và-esm)
+  - [SSR và hydration](#ssr-và-hydration)
+- [Dùng telemetry để xác định phạm vi](#dùng-telemetry-để-xác-định-phạm-vi)
+- [So sánh có kiểm soát](#so-sánh-có-kiểm-soát)
+- [Giảm ảnh hưởng và phục hồi an toàn](#giảm-ảnh-hưởng-và-phục-hồi-an-toàn)
+- [Ca mẫu entry thành công nhưng catalog không mở](#ca-mẫu-entry-thành-công-nhưng-catalog-không-mở)
+- [Checklist xác nhận đã sửa](#checklist-xác-nhận-đã-sửa)
+- [Mẫu bàn giao incident](#mẫu-bàn-giao-incident)
+- [FAQ](#faq)
+  - [Remote trả 200 thì đã loại trừ lỗi tải chưa](#remote-trả-200-thì-đã-loại-trừ-lỗi-tải-chưa)
+  - [Standalone chạy được thì lỗi chắc chắn ở shell không](#standalone-chạy-được-thì-lỗi-chắc-chắn-ở-shell-không)
+  - [Hard reload hết lỗi có chứng minh CDN cache sai không](#hard-reload-hết-lỗi-có-chứng-minh-cdn-cache-sai-không)
+  - [Đổi config rồi vì sao tab vẫn chạy release cũ](#đổi-config-rồi-vì-sao-tab-vẫn-chạy-release-cũ)
+  - [Không có telemetry có nghĩa là không còn lỗi không](#không-có-telemetry-có-nghĩa-là-không-còn-lỗi-không)
+  - [Nên xử lý lỗi nào khi Console có nhiều lỗi](#nên-xử-lý-lỗi-nào-khi-console-có-nhiều-lỗi)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Trình tự xử lý khi đang có incident
 
-Bài này sẽ giúp bạn: tổng hợp trình tự kiểm tra network, console, manifests, release versions và telemetry.
+<Steps>
+<Step>
 
-[Xem các bài trong nhóm Xử lý sự cố](/docs/troubleshooting).
+### Giảm ảnh hưởng
+
+Xác định journey bị ảnh hưởng: mở catalog, xem sản phẩm hay thao tác cart. Nếu lỗi xuất hiện cùng rollout và đang lan rộng, pause rollout theo quy trình vận hành, giữ fallback do shell sở hữu và thông báo phần chức năng chưa dùng được.
+
+Không biến một lỗi load thành thành công giả. Nếu thao tác ghi dữ liệu chưa rõ kết quả, kiểm tra trạng thái backend trước khi yêu cầu người dùng thử lại.
+
+</Step>
+<Step>
+
+### Giữ bằng chứng ban đầu
+
+Ghi route, thao tác, thời điểm kèm timezone và release context trước khi reload. Bật **Preserve log** ở Network và Console cho lần tái hiện tiếp theo, rồi giữ request hoặc error đầu tiên liên quan.
+
+Nếu log ban đầu đã mất, ghi rõ điều đó. Đừng gán response của lần reload sau cho lần lỗi trước.
+
+</Step>
+<Step>
+
+### Tìm boundary đầu tiên bị lỗi
+
+Đi theo luồng phía dưới: document/config → resolve remote → entry/chunks → initialize/evaluate → mount/render → API và giao tiếp. Một lỗi xảy ra sớm có thể tạo nhiều lỗi downstream; xử lý nơi khởi phát trước.
+
+Khi có bằng chứng đủ rõ, chuyển sang runbook trong bảng triệu chứng. Không cần kiểm tra shared React nếu request entry đang trả HTML.
+
+</Step>
+<Step>
+
+### Kiểm chứng giả thuyết rồi sửa đúng owner
+
+Viết một giả thuyết có thể kiểm tra, chẳng hạn: “document pin catalog r18 nhưng chunk lazy r18 đã bị cleanup”. Ghi phép kiểm chứng và kết quả, sau đó chọn thay đổi nhỏ nhất ở đúng lớp.
+
+Sau khi sửa, chạy lại journey ban đầu trên document cũ và mới nếu sự cố liên quan deploy. Chỉ một tab của người điều tra chạy được chưa đủ để kết luận production đã phục hồi.
+
+</Step>
+</Steps>
+
+## Chọn nhánh điều tra theo triệu chứng
+
+| Triệu chứng quan sát được | Kiểm tra trước | Runbook phù hợp |
+| --- | --- | --- |
+| Shell không khởi động, config parse/validate thất bại | Document, config response, schema và bootstrap error | [Runtime configuration](/docs/trien-khai/runtime-configuration) |
+| Không có request remote khi mở route | Route/flag, alias resolution, Console blocked reason | [Remote không tải được](/docs/troubleshooting/remote-khong-tai) |
+| Entry/chunk lỗi HTTP, MIME, CORS hoặc CSP | Request URL, body, redirect và browser policy | [Remote không tải được](/docs/troubleshooting/remote-khong-tai) |
+| Tab cũ lỗi sau deploy, lazy chunk không còn | Release pin trong tab, inventory origin, lớp cache trả response | [Cache lỗi thời và chunk errors](/docs/troubleshooting/stale-cache) |
+| Shared version mismatch hoặc initialize thất bại | Share scope, provider được chọn, version constraints | [Shared version mismatch](/docs/troubleshooting/shared-version-mismatch) |
+| `Invalid hook call` | Stack, Rules of Hooks, React identity và renderer compatibility | [Duplicate React](/docs/troubleshooting/duplicate-react) |
+| Refresh 404, Back sai màn hình, CSS bị ảnh hưởng | Document routing, history owner, asset URL, winning declaration | [Lỗi routing và CSS](/docs/troubleshooting/routing-css) |
+| Module tải được nhưng UI không ready hoặc API lỗi | Mount/render boundary, handshake và API/command outcomes | [Observability](/docs/kiem-thu-va-tooling/observability), [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) |
+
+Error string là chỉ dẫn chọn nơi xem, không phải kết luận. Ví dụ `ChunkLoadError` có thể do asset thiếu, sai `publicPath`, timeout hoặc policy chặn; nó không tự chứng minh cache sai.
+
+## Checklist bằng chứng tối thiểu
+
+- [ ] Môi trường, browser/version, route đã normalize và thao tác tái hiện cụ thể.
+- [ ] Lỗi xảy ra khi click trong app, mở trực tiếp, refresh, Back/Forward hay sau khi tab để lâu.
+- [ ] Thời điểm kèm timezone; thời điểm tab khởi động nếu biết; mốc deploy/config change liên quan.
+- [ ] Shell release thực tế, config revision đang dùng, remote release được chọn và release thực tế nếu đã có metadata.
+- [ ] Error đầu tiên, stack và boundary sở hữu lỗi; ghi riêng các lỗi xuất hiện sau đó.
+- [ ] Request URL liên quan, status hoặc blocked reason, response body/MIME, redirect chain và Initiator.
+- [ ] Response đến từ network, HTTP cache, service worker hay CDN; ghi `unknown` nếu chưa xác định.
+- [ ] Phạm vi ảnh hưởng từ telemetry: journey, cohort, tổ hợp release và nhóm đối chứng.
+- [ ] Những thử nghiệm đã làm, mỗi lần thay gì, kết quả và hành động giảm ảnh hưởng hiện tại.
+
+Không ghi “latest” thay cho build ID. Không biết remote đã chạy release nào thì ghi **chưa xác nhận**, thay vì lấy version trên trang dashboard deploy để điền vào.
+
+<Callout type="warn" title="Rà soát dữ liệu trước khi chia sẻ">
+  HAR, screenshot, stack, response body và Copy as cURL có thể chứa cookie, Authorization, signed URL, query hoặc dữ liệu người dùng. HAR sanitized của Chrome giảm rủi ro bằng cách bỏ một số headers nhạy cảm, nhưng không đảm bảo mọi URL và body đã sạch. Rà soát thủ công, chỉ giữ phần cần thiết và chia sẻ qua kênh được phép.
+
+  Không xóa toàn bộ storage, unregister service worker hay tắt browser security trước khi giữ bằng chứng. Những thao tác đó có thể mất session hoặc dữ liệu chưa lưu và làm thay đổi điều kiện tái hiện.
+</Callout>
+
+## Kiểm tra Network và Console
+
+### Theo đường tải thực tế
+
+```text
+Document / config → resolve remote → entry và dependency graph
+                                                 ↓
+                                  initialize / evaluate
+                                                 ↓
+                                     mount / render / ready
+                                                 ↓
+                                     API / events / commands
+```
+
+Đây là các boundary để khoanh vùng, không phải thứ tự nội bộ bắt buộc: runtime có thể tải shared modules và chunks xen kẽ, hoặc preload trước khi route mở.
+
+1. Kiểm tra request **Document** nếu shell không lên hoặc deep link lỗi. Với SPA tĩnh, response phải là shell HTML đúng; với SSR, kiểm tra server response theo framework.
+2. Tìm config hoặc manifest mà document thực sự consume. Nếu config được nhúng vào HTML hoặc remotes được chốt lúc build, không có request config riêng là bình thường.
+3. Đối chiếu Request URL của entry với descriptor đã resolve. Bỏ bộ lọc Network nếu không thấy request; CSP/mixed content có thể chặn trước khi gửi.
+4. Khi entry thành công, theo Initiator tới chunk, module, CSS hoặc font liên quan. Giữ request thất bại đầu tiên trong đường này.
+5. Nếu graph tải được, xem lỗi initialize/evaluate/mount. Network toàn `200` không chứng minh code đã chạy thành công.
+6. Khi UI đã mount, tách API/command failure khỏi loader failure. API `401` không mặc nhiên là lỗi CORS của remote.
+
+Chọn đúng execution context của shell, iframe hoặc worker trong DevTools. Console của tab standalone không cho biết runtime trong shell; với SSR, server logs cũng không thay thế Console của browser.
+
+### Đọc response thay vì chỉ đọc status
+
+| Quan sát | Cần xác nhận thêm |
+| --- | --- |
+| Entry `200` | Body là JavaScript đúng artifact, MIME phù hợp, không phải HTML fallback/login |
+| Manifest `200` | JSON parse được, đúng loại manifest và schema runtime hỗ trợ |
+| Redirect `301/302` | `Location`, origin đích, auth/CDN rewrite và response cuối |
+| `304` | Response đã cache được tái sử dụng, validator và body cache thuộc artifact nào |
+| Chunk `404` | URL có đúng prefix không; origin thiếu file hay edge giữ negative cache |
+| HTTP thành công nhưng Console báo blocked | Directive CSP, CORS loading mode, CORP/COEP, MIME hoặc integrity mismatch nếu có |
+| `from ServiceWorker` | Worker/controller và chiến lược Cache Storage đang chọn response nào |
+| Request pending hoặc timeout | Timing, network condition, deadline của loader và giới hạn retry |
+
+Đọc `Cache-Control`, `Age`, `ETag`, `Vary` và headers cache của nhà cung cấp cùng nhau. `Age` không phải tuổi của release; ETag không mặc nhiên là commit/build ID nếu pipeline chưa định nghĩa ánh xạ đó. Một header riêng lẻ không đủ xác định owner của bytes sai.
+
+### Kiểm chứng HTTP bằng curl
+
+Ví dụ sau dùng GET tới catalog của lab đang chạy, lưu kết quả vào thư mục tạm, không ghi đè file trong workspace:
+
+```bash title="Quan sát response của remote entry"
+ENTRY_URL='http://localhost:3001/remoteEntry.js'
+CHECK_DIR="$(mktemp -d)"
+
+curl --silent --show-error \
+  --connect-timeout 5 --max-time 15 \
+  --dump-header "$CHECK_DIR/headers.txt" \
+  --output "$CHECK_DIR/body.txt" \
+  --write-out 'status=%{http_code}\nurl=%{url_effective}\n' \
+  "$ENTRY_URL"
+
+cat "$CHECK_DIR/headers.txt"
+head -c 300 "$CHECK_DIR/body.txt"
+printf '\nKết quả lưu tại: %s\n' "$CHECK_DIR"
+```
+
+Timeouts là giá trị minh họa cho chẩn đoán, không phải SLO. Lệnh không follow redirect để bạn thấy response đầu tiên và không dùng `--fail` để giữ body lỗi HTTP. Đọc cả exit status của curl và HTTP status: curl có thể thoát thành công khi endpoint trả `404`.
+
+Kết quả mong đợi cho GET mới là `200`, MIME JavaScript và body của entry; đây vẫn chỉ là kiểm chứng HTTP. Curl không thực thi JavaScript, CORS/CSP, service worker hay module cache của tab. Dùng cùng URL thực tế từ browser khi kiểm tra production, không tự thêm token hoặc signed query vào log chia sẻ.
+
+## Đối chiếu manifests và release versions
+
+### Phân biệt các loại manifest
+
+| Loại | Vai trò | Cách kiểm tra |
+| --- | --- | --- |
+| Application runtime config | Team chọn remote release, URL, flags và environment | Snapshot shell consume, schema validation, revision và selection policy |
+| `mf-manifest.json` | Metadata do integration Module Federation enhanced sinh | Runtime/plugin version, entry descriptor, assets và resolution thực tế |
+| Import map | Ánh xạ ESM specifier tới URL | Map hiệu lực lúc resolution, imports/scopes và URL module |
+| `remoteEntry.js` dạng webpack script | Executable container entry, không phải JSON config | Container name, public key, runtime graph và format |
+
+Config của ứng dụng có thể chọn một URL federation manifest, rồi runtime đọc manifest để tìm entry. Đừng đưa `mf-manifest.json` vào loader classic script mong đợi JavaScript, hoặc dùng validator của config shop để kết luận federation manifest “sai schema”.
+
+Đối chiếu **snapshot đã dùng lúc resolve**, không fetch config hiện tại rồi coi đó là snapshot của tab lỗi. Endpoint có thể đã đổi revision trong lúc document vẫn pin revision cũ. Với remotes compile-time, URL nằm trong shell artifact; đổi biến môi trường của hosting không tự cập nhật bundle đã build.
+
+### Lập release map của document đang lỗi
+
+Một release map cần phân biệt ba loại bằng chứng: config đã chọn gì, network đã trả gì và module đã báo metadata gì. Bảng sau là mẫu ghi nhận, không phải API bắt buộc:
+
+| Thành phần | Thông tin cần ghi | Nguồn bằng chứng |
+| --- | --- | --- |
+| Shell | Build ID thực tế trong document | Metadata nhúng trong shell artifact |
+| Config | Revision và environment đã consume | Snapshot của bootstrap/resolver |
+| Catalog được chọn | Candidate release và entry/manifest URL | Descriptor sau validation/resolution |
+| Catalog đã chạy | Build ID từ metadata của module hoặc mount handshake; có thể chưa biết | Metadata nhúng lúc build, sau khi module execute |
+| Cart | Candidate và actual release riêng | Descriptor và handshake riêng của cart |
+| Asset graph | Entry/chunk/CSS URLs, hashes nếu có | Network và artifact inventory/pipeline |
+| Shared provider | Runtime/provider version được chọn | Runtime inspection theo integration |
+
+Nếu load thất bại trước khi module execute, chỉ biết candidate release; không điền actual bằng candidate. Metadata tự khai báo là bằng chứng chẩn đoán cần đối chiếu artifact inventory, không phải cơ chế xác thực code đáng tin cậy.
+
+Hai tab chạy catalog r18 và r19 có thể đều đúng nếu policy pin release theo document. Điều cần kiểm tra là mỗi tab có graph nhất quán và còn tải được lazy chunks trong cửa sổ hỗ trợ. “Không chạy bản mới nhất” khác với “nhận bytes sai tại URL bất biến”.
+
+### Kiểm tra contract và tổ hợp tương thích
+
+- [ ] Schema version của config được shell đang chạy hỗ trợ.
+- [ ] Environment, flag/cohort và URL allowlist khớp policy của shell.
+- [ ] Host alias, container name, remote format và public key khớp integration.
+- [ ] Remote contract version, export shape hoặc mount handshake được shell chấp nhận.
+- [ ] Shared version constraints, singleton policy và provider selection đúng contract đã test.
+- [ ] Tổ hợp shell/catalog/cart hiện tại có bằng chứng contract hoặc integration test; không chỉ từng app standalone pass.
+- [ ] Với rollback target, toàn bộ entry, chunks, CSS và source maps cần thiết vẫn được giữ theo policy.
+
+Version package trong source mới nhất không chứng minh version đang chạy. `npm ls` trong workspace giúp xem dependency tree của build đó, nhưng không tự chứng minh browser có một React identity hay share scope đã chọn provider nào.
+
+## Kiểm tra runtime đúng format
+
+### Webpack classic script
+
+Sau khi shell **đã thử tải** catalog của lab, chọn Console context của shell và chỉ đọc container:
+
+```js title="Chỉ cho container shop_catalog trong lab webpack script"
+const container = globalThis.shop_catalog;
+({
+  present: Boolean(container),
+  get: typeof container?.get,
+  init: typeof container?.init,
+});
+```
+
+Kỳ vọng `present: true`, `get: 'function'`, `init: 'function'`. Nếu thiếu, kiểm tra format, tên container và error lúc execute entry. Nếu có, mới chuyển sang public key `./CatalogPage`, share initialization và lỗi module.
+
+Không tự gọi `container.init({})`, ghi đè global hay chèn entry của release khác vào document để “reset”. Việc đó thay runtime state, có thể tạo container/share-scope conflict và phá tính hợp lệ của phép so sánh. Không có public reset chung áp dụng cho mọi integration.
+
+### Module Federation enhanced và ESM
+
+Trong integration enhanced có hỗ trợ debug globals, xem dữ liệu đã được runtime công bố:
+
+```js title="Quan sát nếu integration hiện tại cung cấp các globals này"
+({
+  federation: globalThis.__FEDERATION__,
+  shared: globalThis.__SHARE__,
+});
+```
+
+Theo tài liệu runtime tương ứng, `__FEDERATION__` chứa thông tin federation sau initialization; `__SHARE__` giúp quan sát trạng thái shared modules. Đọc instance, module resolution và provider/version liên quan, nhưng không sửa các globals. Structure và khả năng có mặt phụ thuộc integration/version; thiếu globals không tự chứng minh remote lỗi và webpack core không bắt buộc cung cấp chúng.
+
+Với ESM remote, container có thể nằm trong module namespace thay vì `window`. Kiểm tra module URL, imports, MIME, CORS và export contract của plugin. Đừng thêm global chỉ để snippet webpack bên trên trả `true`.
+
+### SSR và hydration
+
+Ghi riêng server release/config snapshot và browser release/config snapshot. Server consume remote thành công không chứng minh browser tải được client graph; `localhost` trên server và trong browser cũng không cùng đích.
+
+Nếu hydration lỗi, đối chiếu release pin giữa HTML server render và client bootstrap, dữ liệu đầu vào, shared framework compatibility và stack phía browser. Dùng logs/traces phía server cho lỗi server, Console/Network phía client cho lỗi client; không gom hai lỗi thành một kết luận “CORS”. Xem thêm [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
+
+## Dùng telemetry để xác định phạm vi
+
+Bắt đầu từ journey và khoảng thời gian có deploy/config change, rồi chia theo môi trường, shell release, candidate/actual remote release, config revision và cohort. So sánh với tổ hợp chưa rollout cùng journey; lỗi tăng ngay sau deploy là tương quan để điều tra, chưa đủ chứng minh deploy là nguyên nhân.
+
+| Câu hỏi | Bằng chứng cần tìm |
+| --- | --- |
+| Lỗi ở bước nào | Load outcome, initialize/mount/render errors hoặc API/command outcome |
+| Ai tạo event và ai bị ảnh hưởng | `app_name`, `app_release`, `subject_app`, `subject_release` nếu dùng schema của series |
+| Document dùng cấu hình nào | `shell_release`, `config_revision`, release map |
+| Cùng một thao tác có những bước nào | `correlation_id`; trace/span IDs khi có tracing hợp lệ |
+| Stack thuộc source nào | Matching artifact/source map của build đó, không phải map của latest |
+| Có bao nhiêu lượt bị ảnh hưởng | Failure numerator và denominator cùng journey/cohort/cửa sổ đo |
+
+Các field trên là schema ứng dụng minh họa theo [Observability](/docs/kiem-thu-va-tooling/observability), không phải tên bắt buộc của mọi SDK. Nếu `subject_release` ở load event chỉ là candidate, giữ nguyên ý nghĩa đó khi điều tra; chỉ gán actual release khi có bằng chứng module đã chạy.
+
+Đừng kết luận remote “ready” chỉ vì import Promise resolve. Ready phải theo contract của journey, chẳng hạn route render được và dữ liệu thiết yếu đã sẵn sàng. Tách timeout, cancellation do navigation bị thay thế và failure thực sự để không làm sai tỷ lệ lỗi.
+
+Nếu global handler chỉ biết `app unknown`, giữ thông tin đó, không đoán owner từ route. Với API lỗi, nối request/trace tới backend nếu propagation đã được triển khai và kiểm chứng; một `correlation_id` không tự tạo distributed trace.
+
+<Callout type="warn" title="Không có event chưa chắc là không có lỗi">
+  SDK có thể chưa khởi động, endpoint bị CSP/content blocker chặn, queue chưa flush hoặc sampling bỏ event. Kiểm tra pipeline telemetry bằng tín hiệu kiểm thử được phép trong preview. Không sửa kết luận incident bằng cách đổi tags hoặc tắt alert; IDs chỉ dùng cho logs/traces, không làm metric labels có cardinality không giới hạn.
+</Callout>
+
+## So sánh có kiểm soát
+
+Sau khi giữ bằng chứng, chọn phép thử có thể bác bỏ giả thuyết. Ghi cả điều giữ nguyên và điều thay đổi.
+
+| Phép thử | Giữ nguyên | Kết quả giúp phân biệt |
+| --- | --- | --- |
+| Composed với standalone | Remote artifact, dữ liệu và environment | Khác integration, context, loading path hoặc policy; không tự xác định owner |
+| Document cũ với document mới | Network và thao tác | Snapshot/runtime pin cũ với selection mới; ghi release map của cả hai |
+| Document mới, Disable cache khi DevTools mở | URL/cohort và thao tác | Ảnh hưởng HTTP cache browser; không tự purge CDN hay bypass mọi worker |
+| Một lần bật service-worker bypass bằng DevTools | URL/release dự kiến, cùng browser | Ảnh hưởng worker; kiểm tra có phát sinh request network và ghi release map mới |
+| Profile sạch được phép dùng | Deployment và quyền truy cập tương đương | Extension, storage hoặc browser state; auth/cohort khác thì chưa thể so trực tiếp |
+| Preview pin một tổ hợp artifact | Input và journey, flags đã ghi nhận | Compatibility của tổ hợp; không tự chứng minh mọi cohort production đã phục hồi |
+| Đổi thứ tự mở catalog/cart trong preview | Cùng artifacts và viewport | Shared provider selection, CSS leakage hoặc lifecycle dependency |
+
+Disable cache chỉ có tác dụng theo công cụ browser khi bật; nó không xóa module đã evaluate. Nếu lỗi không tạo request mới, xem runtime/module cache và snapshot trước khi chỉnh cache headers.
+
+Không bật query cache-buster ngẫu nhiên cho mọi asset: nó có thể đổi cache key và che graph sai, nhưng không khôi phục chunk đã bị xóa. Không unregister worker hoặc xóa storage hàng loạt chỉ để đạt một lần test xanh.
+
+## Giảm ảnh hưởng và phục hồi an toàn
+
+| Bằng chứng đã có | Hành động ưu tiên | Giới hạn cần nhớ |
+| --- | --- | --- |
+| Candidate mới gây lỗi, tổ hợp cũ đã được kiểm chứng | Pause rollout, publish selection/config revision rollback theo quy trình | Document đã tải code không tự đổi sang release cũ |
+| Lazy chunk của release còn được hỗ trợ bị cleanup | Dừng cleanup, phục hồi artifact gốc; xử lý negative cache đúng key nếu có | Purge CDN không tạo lại file thiếu ở origin |
+| Entry URL/publicPath hoặc hosting rewrite sai | Sửa mapping/hosting hoặc phát hành artifact/config đúng | Giữ URL bất biến đúng bytes; không đổi MIME để che HTML body |
+| Policy chặn origin hợp lệ | Sửa directive/headers ở đúng lớp sau review | Không tắt CORS/CSP hay mở wildcard để chữa mọi lỗi |
+| Một vùng remote lỗi, shell vẫn hoạt động | Giữ fallback, disable lần mount mới theo kill-switch contract | Flag không unload code, không hủy mọi operation đang chạy |
+| Một tab không thể phục hồi runtime an toàn | Cho người dùng reload có kiểm soát sau khi xử lý dữ liệu chưa lưu | Không tạo reload loop; không hứa reload sửa được mọi nguyên nhân |
+
+Retry load phải có giới hạn, backoff và classification phù hợp runtime. Không retry liên tục lỗi schema, module key không tồn tại hoặc lỗi policy đã biết.
+
+Với command ghi dữ liệu như thêm cart hoặc checkout, timeout không chứng minh backend chưa xử lý. Dùng operation/idempotency contract và xác minh kết quả trước khi retry; retry network loader và retry nghiệp vụ là hai việc khác nhau. Chi tiết vận hành ở [Rollout và rollback](/docs/trien-khai/rollout-rollback) và [Resilience](/docs/production/resilience).
+
+## Ca mẫu entry thành công nhưng catalog không mở
+
+Giả sử tab A đã mở trước deploy và pin catalog r18; tab B mở sau deploy chọn r19. Sau khi tab A vào một route lazy chưa tải, UI hiện fallback. Dữ liệu minh họa:
+
+```text
+Tab A:
+  shell release:         shell@demo-a
+  config revision:       demo-config-42
+  catalog candidate:     r18
+  catalog actual:        r18 (metadata ghi nhận từ lần mount trước)
+  entry response:        200, JavaScript r18, đã tải trước deploy
+  lazy chunk request:    /catalog/releases/r18/product.demo.js → 404
+
+Tab B:
+  config revision:       demo-config-43
+  catalog candidate:     r19
+  same journey:          thành công
+```
+
+Chẩn đoán theo checklist:
+
+1. Giữ Network của tab A, xác nhận URL chunk thuộc r18 và không phải HTML fallback `200`.
+2. Kiểm tra inventory origin qua công cụ được phép: chunk r18 không còn, trong khi artifact lưu trữ của r18 có file đó.
+3. Đối chiếu audit pipeline: cleanup đã xóa graph r18 khi publish r19. Đây là bằng chứng nguyên nhân; tab B chạy tốt một mình chưa chứng minh được điều này.
+4. Khôi phục nguyên artifact r18 từ bản lưu và dừng cleanup sớm. Nếu edge cache `404`, invalidation đúng URL/key sau khi origin đã phục hồi.
+5. Thử lại lazy journey ở tab cũ nếu runtime hỗ trợ retry an toàn; nếu không, dùng phục hồi client có kiểm soát và kiểm thử tab pin r18 trong preview. Kiểm tra thêm tab mới r19.
+
+Kết luận không phải “mọi người cần hard reload” hay “entry phải no-cache”. Selection của hai tab có thể đều đúng; sai ở availability của graph r18. Regression test nên giữ document cũ qua một lần deploy rồi mở route lazy, kèm kiểm tra retention của rollback target.
+
+## Checklist xác nhận đã sửa
+
+- [ ] Journey gây lỗi ban đầu thành công; không chỉ GET entry hoặc mở trang chủ.
+- [ ] Config/candidate/actual release có bằng chứng và graph khớp artifact inventory.
+- [ ] Deep link, refresh, Back/Forward và mount/unmount chạy đúng nếu lỗi chạm routing/lifecycle.
+- [ ] Tab cũ lẫn document mới được kiểm tra khi liên quan deploy/cache; có route lazy chưa tải.
+- [ ] Shell/catalog/cart chạy với tổ hợp rollback và rollout target đã kiểm chứng.
+- [ ] Fallback, timeout, retry và cancellation không tạo loop hoặc mất dữ liệu chưa lưu.
+- [ ] Command không bị thực hiện trùng; kết quả chưa rõ đã được reconcile theo contract.
+- [ ] Không nới security policy hoặc ghi đè URL immutable để làm test pass.
+- [ ] Telemetry có dữ liệu với denominator phù hợp; cohorts bị ảnh hưởng phục hồi trong cửa sổ quan sát đã thống nhất.
+- [ ] Source map đúng build; owner, nguyên nhân, thay đổi và evidence links đã được lưu.
+- [ ] Có regression test đúng boundary hoặc kiểm tra pipeline ngăn nguyên nhân tái diễn.
+
+Smoke test xanh là bước đầu. Nếu sampling hoặc traffic thấp chưa đủ xác nhận tỷ lệ lỗi phục hồi, ghi trạng thái “đang quan sát” cùng tiêu chí kết thúc thay vì tuyên bố đã hết lỗi.
+
+## Mẫu bàn giao incident
+
+Dùng mẫu này khi chuyển từ shell owner sang remote, CDN hoặc platform owner. Điền `unknown` cho phần chưa biết, không tự suy luận để đủ field.
+
+```text title="Mẫu đã loại bỏ dữ liệu nhạy cảm"
+Incident / evidence links:
+Environment, thời điểm và timezone:
+Journey / route template:
+Impact / cohorts / cửa sổ quan sát:
+Browser và execution context:
+Cách tái hiện, tab cũ hay document mới:
+
+Shell actual release:
+Config revision đã consume:
+Remote alias / format / container / public key:
+Remote candidate release + entry/manifest URL đã rà soát:
+Remote actual release + nguồn metadata, hoặc unknown:
+Các app/shared providers liên quan:
+
+Boundary đầu tiên bị lỗi:
+Error / stack đã sanitize:
+Request URL đã rà soát, status/blocked reason, MIME, Initiator:
+Response source / cache headers / body excerpt an toàn:
+Correlation / trace / request IDs qua kênh nội bộ:
+
+Giả thuyết:
+Phép thử, yếu tố thay đổi và kết quả:
+Hành động giảm ảnh hưởng hiện tại:
+Thay đổi đề xuất / owner / rollback plan:
+Kết quả kiểm chứng, phần chưa xác nhận và bước tiếp theo:
+```
+
+Khi escalation, gửi một request/stack đại diện và release map có nguồn, thay vì toàn bộ log không chọn lọc. Ghi rõ bạn cần owner kiểm tra gì, chẳng hạn “xác nhận chunk r18 còn ở origin và thời điểm cleanup”, để lần bàn giao có hành động cụ thể.
+
+## FAQ
+
+### Remote trả 200 thì đã loại trừ lỗi tải chưa
+
+Chưa. `200` có thể là HTML/login, script không execute được hoặc entry đúng nhưng dependency graph lỗi. Kiểm tra body, MIME, browser policy, container/export và chunk tiếp theo. Import thành công cũng chưa chứng minh mount/render/ready đã thành công.
+
+### Standalone chạy được thì lỗi chắc chắn ở shell không
+
+Không. Standalone có HTML, bootstrap, base URL, router và shared providers riêng; nó có thể không đi qua federated entry. So sánh cùng artifact trong hai đường chạy rồi tìm boundary khác nhau. Owner sửa lỗi có thể là shell, remote adapter, hosting hoặc contract chung.
+
+### Hard reload hết lỗi có chứng minh CDN cache sai không
+
+Không. Reload tạo document/runtime mới, có thể nhận config, cohort hoặc worker controller khác; đồng thời ảnh hưởng browser cache. Ghi release map và nguồn response trước/sau, rồi kiểm tra từng lớp. Một lần reload hết lỗi chỉ cho biết điều kiện tái hiện đã thay đổi.
+
+### Đổi config rồi vì sao tab vẫn chạy release cũ
+
+Document có thể pin snapshot, module đã evaluate hoặc remote đã mount. Config mới chỉ ảnh hưởng lần resolve theo contract của loader, không thay code đang chạy. Với giá trị compile-time như URL trong shell bundle hoặc client `NEXT_PUBLIC_*` của Next.js, đổi environment sau build không cập nhật bundle đó.
+
+### Không có telemetry có nghĩa là không còn lỗi không
+
+Không. Kiểm tra SDK bootstrap, delivery, sampling và ingest health; đối chiếu Console/Network cùng lượng journey thực tế. Nếu không có denominator hoặc pipeline đang mất dữ liệu, chưa đủ bằng chứng để kết luận phục hồi.
+
+### Nên xử lý lỗi nào khi Console có nhiều lỗi
+
+Ưu tiên lỗi liên quan journey tại boundary sớm nhất, dùng timing và Initiator để nối chuỗi. Chunk lỗi có thể làm mount thất bại rồi tạo thêm render error; telemetry endpoint lỗi lại có thể độc lập. Timestamp từ nhiều máy không đủ suy ra thứ tự chính xác: dùng correlation/trace context và bằng chứng trong cùng execution context.
+
+## Tài liệu tham khảo
+
+- [Chrome DevTools: Network features reference](https://developer.chrome.com/docs/devtools/network/reference) — Preserve log, cache controls, Initiator và HAR export.
+- [Module Federation: Global variables](https://module-federation.io/guide/debug/variables.html) — debug globals của integration hỗ trợ; chỉ đọc, không sửa.
+- [Webpack: Module Federation](https://webpack.js.org/concepts/module-federation/) — container, shared modules và các boundary của federation core.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Remote không tải được" href="/docs/troubleshooting/remote-khong-tai" description="Đi sâu vào URL, response, policy, container và publicPath." />
+  <Card title="Cache lỗi thời và chunk errors" href="/docs/troubleshooting/stale-cache" description="Tách selection, HTTP cache, service worker và graph retention." />
+  <Card title="Shared version mismatch" href="/docs/troubleshooting/shared-version-mismatch" description="Kiểm tra share scope, constraints và provider được chọn." />
+  <Card title="Duplicate React" href="/docs/troubleshooting/duplicate-react" description="Phân biệt React identity với Hooks và renderer compatibility." />
+  <Card title="Lỗi routing và CSS" href="/docs/troubleshooting/routing-css" description="Khoanh vùng document routing, history và style leakage." />
+  <Card title="Observability" href="/docs/kiem-thu-va-tooling/observability" description="Chuẩn hóa metadata, ready signals, source maps và tracing." />
+</Cards>

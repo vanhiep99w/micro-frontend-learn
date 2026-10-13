@@ -1,23 +1,302 @@
 ---
 title: "Các cách tích hợp khác"
-description: "Khảo sát những cách ghép frontend ngoài Module Federation."
+description: "Chọn cách ghép frontend ngoài Module Federation bằng cách tách rõ module loading, lifecycle, UI contract và isolation."
 ---
 
-Đây là trang khung cho nhóm **Các cách tích hợp khác**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử shell của shop dùng React, catalog cần release riêng, còn cart vẫn chạy bằng framework cũ. Bạn muốn giữ một trải nghiệm liền mạch, nhưng không chắc phải dùng Module Federation, single-spa, import maps hay Web Components. Nếu đặt tất cả lên cùng một bảng rồi chọn một cái tên, bạn dễ bỏ sót việc chúng giải quyết những phần khác nhau của bài toán.
+
+Nhóm **Các cách tích hợp khác** giúp bạn xác định phần nào cần một cơ chế tải code, phần nào cần điều phối lifecycle và phần nào cần ranh giới DOM hoặc bảo mật mạnh hơn. Các cơ chế này có thể kết hợp; “không dùng federation” không có nghĩa phải viết lại mọi thứ từ đầu.
+
+<Callout type="info" title="Phạm vi trang này">
+  Đây là trang định hướng, không phải lab cài đặt. Ví dụ dùng shop giả định gồm shell, catalog và cart; repository hiện là site tài liệu. Bạn nên biết ES modules, routing, mount/unmount và origin ở mức cơ bản. Sơ đồ text hiển thị trực tiếp với cấu hình Fumadocs hiện tại, không cần thêm plugin.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bắt đầu từ điểm ghép cần thiết](#bắt-đầu-từ-điểm-ghép-cần-thiết)
+- [Bốn trách nhiệm cần tách](#bốn-trách-nhiệm-cần-tách)
+- [Bản đồ các cơ chế tích hợp](#bản-đồ-các-cơ-chế-tích-hợp)
+  - [single-spa điều phối lifecycle](#single-spa-điều-phối-lifecycle)
+  - [ES modules và import maps tìm và tải module](#es-modules-và-import-maps-tìm-và-tải-module)
+  - [Web Components công khai giao diện DOM](#web-components-công-khai-giao-diện-dom)
+  - [iframe tạo document riêng](#iframe-tạo-document-riêng)
+- [Các cơ chế có thể kết hợp như thế nào](#các-cơ-chế-có-thể-kết-hợp-như-thế-nào)
+- [Chọn hướng theo tình huống](#chọn-hướng-theo-tình-huống)
+- [Contract tối thiểu ở điểm ghép](#contract-tối-thiểu-ở-điểm-ghép)
+  - [Lifecycle và quyền sở hữu DOM](#lifecycle-và-quyền-sở-hữu-dom)
+  - [Giao tiếp và quyền sở hữu state](#giao-tiếp-và-quyền-sở-hữu-state)
+- [Release độc lập cần nhiều hơn một loader](#release-độc-lập-cần-nhiều-hơn-một-loader)
+- [Những giới hạn cần kiểm chứng](#những-giới-hạn-cần-kiểm-chứng)
+- [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
+- [Bài tập chọn một boundary](#bài-tập-chọn-một-boundary)
+- [Checklist trước khi chốt cách tích hợp](#checklist-trước-khi-chốt-cách-tích-hợp)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Bắt đầu từ điểm ghép cần thiết
 
-Khảo sát những cách ghép frontend ngoài Module Federation.
+Trước khi chọn thư viện, hãy trả lời: **bạn muốn ghép một trang, một vùng UI hay một ứng dụng có document riêng?** Cùng là catalog, nhưng ghép toàn bộ trải nghiệm `/products` khác nhiều với nhúng một product card vào mọi trang.
 
-## Các bài trong nhóm
+Nếu catalog và cart chỉ cần xuất hiện ở các route khác nhau, mình bắt đầu từ ranh giới theo route. Mỗi app có vùng DOM và router con rõ ràng, nên ít phải chia sẻ state UI hơn việc tách từng widget. Nếu chấp nhận navigation tải lại trang, route có thể trỏ đến những ứng dụng riêng qua reverse proxy hoặc cấu hình server; chưa chắc cần runtime composition trong browser.
 
-- [single-spa và lifecycle](/docs/cac-cach-tich-hop/single-spa) — Tổ chức bootstrap, mount, unmount và route activation với single-spa.
-- [ES modules và import maps](/docs/cac-cach-tich-hop/import-maps) — Ánh xạ module URLs và quản lý loading bằng ES modules cùng import maps.
-- [Web Components](/docs/cac-cach-tich-hop/web-components) — Dùng custom elements và Shadow DOM làm ranh giới tích hợp đa framework.
-- [iframe isolation](/docs/cac-cach-tich-hop/iframe) — Đánh giá isolation, sandbox, postMessage và giới hạn UX của iframe.
-- [So sánh các cách tích hợp](/docs/cac-cach-tich-hop/so-sanh) — Chọn giữa federation, single-spa, Web Components và iframe theo tình huống.
+Nếu cần catalog và cart cùng hiện trên một màn hình, bạn phải xử lý thêm layout, loading từng vùng, focus và giao tiếp giữa chúng. Tách càng nhỏ không mặc nhiên càng độc lập: một widget hỏi shell về mọi thay đổi state có thể tạo coupling chặt hơn một trang nghiệp vụ tự quản lý phần lớn hành vi.
+
+Có thật sự cần release riêng không? Nếu một team vẫn phát hành toàn bộ sản phẩm cùng lúc và chưa có điểm nghẽn cụ thể, mình giữ modular frontend hoặc package dùng chung. Build-time integration thường đơn giản hơn về runtime; đổi lại, consumer thường phải build và deploy lại để nhận code package mới. Đó là đánh đổi hợp lý nếu deploy độc lập chưa phải yêu cầu.
+
+## Bốn trách nhiệm cần tách
+
+Một điểm ghép runtime có thể hình dung như sau:
+
+```text
+Chọn release / URL
+        ↓
+Resolve và tải code
+        ↓
+Kích hoạt và mount UI
+        ↓
+Giao tiếp trong boundary đã chọn
+        ↓
+Unmount và cleanup khi không còn dùng
+```
+
+Đây là mô hình trách nhiệm, không phải thứ tự API bắt buộc. Với iframe, browser tải cả document thay vì shell import một module rồi gọi mount; với custom element, việc thêm hoặc tháo element kích hoạt lifecycle của nó.
+
+| Trách nhiệm | Câu hỏi cần trả lời | Cơ chế có thể tham gia |
+| --- | --- | --- |
+| Chọn và tải code | Release nào được dùng, URL nào được fetch, lỗi tải xử lý ra sao? | Native ESM, import maps, federation loader hoặc `iframe.src` |
+| Điều phối lifecycle | Khi nào phần này active, ai mount và ai cleanup? | single-spa, shell adapter, custom element lifecycle hoặc vòng đời document |
+| UI và communication contract | Shell truyền gì vào, remote thông báo hay nhận command bằng cách nào? | Public module API, properties/methods/events của element hoặc message protocol |
+| Isolation | CSS, DOM, quyền truy cập và lỗi được giới hạn đến đâu? | Quy tắc ownership, Shadow DOM hoặc iframe khác origin với chính sách phù hợp |
+
+Release policy, observability và compatibility đi xuyên cả bốn trách nhiệm. Không có một ô nào trong bảng tự chứng minh catalog có thể release độc lập.
+
+## Bản đồ các cơ chế tích hợp
+
+### single-spa điều phối lifecycle
+
+single-spa chọn ứng dụng active theo điều kiện như URL, gọi hàm tải app rồi điều phối `bootstrap`, `mount` và `unmount`. Root config đăng ký app; mỗi app cung cấp lifecycle, trực tiếp hoặc thông qua adapter cho framework.
+
+Với shop, shell có thể kích hoạt catalog ở `/products` và cart ở `/cart`. Khi chuyển route, cart mount vào vùng được giao, còn catalog phải dọn DOM và side effect thuộc lifecycle của nó. Nếu catalog quên xóa listener trên `window`, việc gọi `unmount` không tự sửa được implementation đó.
+
+Mình cân nhắc single-spa khi có nhiều ứng dụng theo route, đặc biệt trong migration giữa các framework. Với một vùng UI nhỏ và lifecycle đơn giản, một adapter rõ ràng có thể đủ; thêm orchestrator chưa chắc giảm công việc.
+
+single-spa không quyết định toàn bộ cách resolve module hoặc chia sẻ dependency. Hàm tải app có thể dùng native `import()`, SystemJS hoặc một loader khác phù hợp với output của build. Nó cũng không tạo CSS sandbox hay security boundary cho các app cùng trang.
+
+### ES modules và import maps tìm và tải module
+
+Native ES modules cung cấp `import`/`export` và module loading trong browser. Import map ánh xạ specifier như `@shop/catalog` sang URL; shell giữ tên import ổn định trong khi cấu hình phục vụ trang chọn release tương ứng.
+
+Hình dung import map như sổ địa chỉ: bạn gọi một tên quen thuộc, browser tra ra nơi lấy module. Nhưng sổ địa chỉ không quyết định module phải mount vào đâu, không cleanup UI và không kiểm tra hai bên có hiểu cùng API hay không.
+
+Mình chọn hướng này khi build output thực sự là browser-compatible ESM và team muốn một đường resolve module minh bạch, ít phụ thuộc runtime riêng. Import map phải có hiệu lực trước những import cần dùng nó. Nếu bundler đã gói catalog vào shell hoặc chuyển import thành cơ chế riêng, một map trong HTML không tự biến output đó thành runtime loading.
+
+Import maps không có cơ chế thương lượng version như federation share scope. Nếu nhiều phần cần cùng một dependency instance, bạn phải thiết kế URL resolution và build externals tương ứng; trỏ tên về cùng URL không sửa được incompatibility giữa các consumer. Browser support, CORS, MIME type và CSP vẫn cần được kiểm tra theo môi trường triển khai.
+
+### Web Components công khai giao diện DOM
+
+Web Components cho phép công khai UI bằng custom element, chẳng hạn `<shop-product-card>`. Shell làm việc với attributes, properties, methods và DOM events thay vì phải hiểu component API của framework bên trong.
+
+Custom element là giao diện tích hợp; Shadow DOM là cơ chế encapsulation có thể dùng bên trong nó. Hai thứ không đồng nghĩa: một custom element không bắt buộc có shadow root, và chỉ đăng ký tag không làm CSS được cô lập.
+
+Mình cân nhắc hướng này khi một vùng UI cần được nhúng vào các shell khác stack, hoặc cần public contract không bám vào React/Vue component API. Với các phần đều dùng cùng framework và cần Context/router chung sâu, wrapper có thể tạo thêm adapter mà không đem lại lợi ích tương xứng.
+
+Shadow DOM hạn chế selector CSS xuyên boundary và encapsulate DOM nội bộ, nhưng vẫn có các đường thiết kế như inherited properties, CSS custom properties, slots và parts. Overlay portal ra `document.body` có thể rời boundary đó. Quan trọng hơn, code của element vẫn là JavaScript chạy trong trang: Shadow DOM không phải security sandbox.
+
+### iframe tạo document riêng
+
+iframe nhúng một document với browsing context riêng. Cart legacy có thể tiếp tục chạy như một ứng dụng tương đối nguyên vẹn, thay vì phải chuyển ngay sang API `mount`/`unmount` của shell.
+
+CSS của hai document không tự áp dụng chéo như khi dùng chung DOM. Với iframe khác origin, same-origin policy hạn chế truy cập trực tiếp giữa hai phía; `sandbox` và Permissions Policy bổ sung các giới hạn theo nhu cầu. Đó là một hướng cần đánh giá khi trust boundary quan trọng hơn khả năng dùng chung component tree.
+
+Đổi lại, bạn phải thiết kế message protocol, resize, navigation, focus, accessibility và session flow. Modal trong frame không tự trở thành modal toàn trang; đăng nhập dựa vào cookies/storage có thể chịu chính sách browser trong ngữ cảnh nhúng. Mình không chọn iframe mặc định cho các vùng UI tin cậy cần tương tác sát nhau, trừ khi lợi ích isolation hoặc migration đủ rõ.
+
+<Callout type="warn" title="Document riêng chưa đủ để kết luận an toàn">
+  iframe cùng origin có thể cho phép truy cập DOM giữa parent và child. Với nội dung không tin cậy, cần thiết kế origin, sandbox và quyền được cấp; tránh xem tổ hợp `allow-scripts` và `allow-same-origin` trên frame cùng origin như một sandbox bảo mật. iframe cũng không phải cam kết mỗi app có CPU thread hoặc process riêng.
+</Callout>
+
+## Các cơ chế có thể kết hợp như thế nào
+
+Điểm dễ nhầm nhất là nghĩ phải chọn giữa single-spa và import maps. Một tổ hợp hoàn toàn hợp lý là:
+
+```text
+Import map: @shop/catalog → URL release catalog
+                         ↓
+single-spa: chọn route → load → mount → unmount
+                         ↓
+Catalog: render và cleanup trong container được giao
+```
+
+Trong tổ hợp này, import map giúp browser resolve module, single-spa điều phối khi nào app xuất hiện, còn app chịu trách nhiệm implementation lifecycle. Không thành phần nào tự tạo CSS isolation.
+
+Một tổ hợp khác là native ESM tải bundle đăng ký custom element, shell tạo element rồi truyền properties. Shadow DOM có thể giữ CSS nội bộ, còn shell vẫn phải quản lý loading, lỗi đăng ký và fallback. Bạn không bắt buộc thêm single-spa nếu đây chỉ là một vùng UI với lifecycle dễ quản lý.
+
+Module Federation cũng có thể cung cấp module lifecycle cho single-spa hoặc bundle triển khai một custom element. Ngược lại, iframe không cần federation để nhúng document. Vấn đề không phải “stack nào nhiều công cụ hơn”, mà là **mỗi công cụ có giải quyết một trách nhiệm còn thiếu hay đang làm trùng trách nhiệm với công cụ khác?**
+
+Đừng tạo hai owner cho cùng vùng DOM hoặc cùng bước mount. Nếu adapter tạo element và element tự mount framework root, orchestrator chỉ nên quản lý adapter theo contract đã thống nhất, không mount lại framework đó từ bên ngoài.
+
+## Chọn hướng theo tình huống
+
+Bảng này là điểm xuất phát cho thử nghiệm, không phải xếp hạng công cụ. Một hệ thống có thể dùng các hướng khác nhau cho những boundary khác nhau.
+
+| Tình huống | Hướng mình xem trước | Điều phải kiểm chứng |
+| --- | --- | --- |
+| Chỉ cần tách code, vẫn release chung | Module/package và build-time integration | Quy tắc import, ownership và chi phí cập nhật consumer |
+| Mỗi domain là một trang; full navigation chấp nhận được | Route đến các app riêng qua server/proxy | Deep links, auth, assets, navigation và thiết kế nhất quán |
+| Nhiều app theo route, cần chuyển không reload toàn trang | single-spa với loader phù hợp | Lifecycle adapters, cleanup và router ownership |
+| Cần resolve module theo release URL, output là native ESM | ES modules và import maps | External imports, dependency URLs, browser support và fallback |
+| UI cần nhúng qua nhiều framework với DOM contract | Web Components, cân nhắc Shadow DOM | Properties/events, CSS/overlay và lifecycle reconnect |
+| App legacy khó chuyển lifecycle hoặc nội dung khác trust boundary | iframe với origin và chính sách phù hợp | Message protocol, session, focus và giới hạn UX |
+| Cần public modules giữa các build và runtime dependency sharing | Module Federation | Shared policy, compatibility và cách chọn remote release |
+
+Nếu đang phân vân, mình ưu tiên ranh giới nghiệp vụ đủ lớn và cơ chế đơn giản nhất đáp ứng yêu cầu thật. Ví dụ, không cần iframe chỉ để chống một selector CSS sai; nhưng cũng không dùng Shadow DOM làm biện pháp chạy script không tin cậy.
+
+Yêu cầu SSR hoặc SEO cần được đánh giá riêng. Có một custom tag trong HTML không chứng minh nội dung đã SSR; tải module client-side không chứng minh server biết render remote. Hãy kiểm tra HTML trả về, hydration và ownership dữ liệu theo framework/pipeline thực tế.
+
+## Contract tối thiểu ở điểm ghép
+
+Chọn loader xong mới là biết lấy code ở đâu. Trước khi tích hợp, cần thống nhất điều shell có thể yêu cầu và điều app cam kết làm.
+
+### Lifecycle và quyền sở hữu DOM
+
+Với app cùng document, một contract có thể quy định: shell giao container, app mount trong container đó và trả lại cách cleanup. Ví dụ TypeScript dưới đây chỉ minh họa hình dạng public API, không phải API của single-spa hay implementation cho site Next.js:
+
+```ts title="Contract minh họa cho app cùng document"
+type CartCommand = {
+  sku: string;
+  quantity: number;
+};
+
+type CatalogContext = {
+  locale: string;
+  navigate: (path: string) => void;
+  addItem: (command: CartCommand) => Promise<void>;
+};
+
+export type MountedCatalog = {
+  unmount: () => Promise<void>;
+};
+
+export type CatalogModule = {
+  mount: (
+    container: HTMLElement,
+    context: CatalogContext,
+  ) => Promise<MountedCatalog>;
+};
+```
+
+Contract còn phải nói rõ những điều type signature không thể hiện: nếu mount thất bại giữa chừng, app phải cleanup phần đã tạo; nếu người dùng rời route khi mount còn pending, shell không được để kết quả muộn chiếm lại outlet. Listeners ngoài container, timers, subscriptions và framework roots cũng cần dọn, không chỉ xóa HTML.
+
+Với single-spa, chuyển các trách nhiệm này vào lifecycle của ứng dụng. Với Web Components, gắn chúng vào lifecycle kết nối/ngắt kết nối, có tính đến reconnect. Với iframe, parent quản lý phần tử frame và các listener giao tiếp phía parent; hai document trao đổi qua protocol thay vì truyền function như ví dụ trên.
+
+### Giao tiếp và quyền sở hữu state
+
+Catalog cần yêu cầu thêm sản phẩm, không cần quyền sửa trực tiếp store của cart. `addItem` là command; cart owner xử lý thao tác và backend xác nhận dữ liệu hợp lệ. Badge của shell nên đọc snapshot hoặc subscription từ cart owner, không tự tăng số lượng chỉ vì một nút catalog đã được bấm.
+
+Command và notification có ý nghĩa khác nhau. “Hãy thêm SKU này” không phải “SKU này đã được thêm thành công”. Nếu lẫn hai loại, shell có thể hiển thị giỏ hàng đã đổi dù request thất bại.
+
+Với iframe, message payload phải là dữ liệu có thể truyền qua structured clone, không phải callback hoặc React Context. Receiver cần kiểm tra sender, schema và quyền thực hiện command. Trong thiết kế dùng origin cụ thể, kiểm tra `event.origin`, `event.source` và dùng `targetOrigin` cụ thể khi gửi; sandbox tạo opaque origin cần một thiết kế channel riêng, không chỉ bỏ kiểm tra origin cho tiện.
+
+TypeScript giúp kiểm tra consumer khi build, nhưng không validation message từ document khác hoặc artifact được release sau đó. Public contract cần runtime validation ở boundary thích hợp, version policy và tests cho những tổ hợp version còn được hỗ trợ.
+
+## Release độc lập cần nhiều hơn một loader
+
+Shell tải code lúc chạy chưa chứng minh catalog có thể release riêng. Nếu mỗi thay đổi URL vẫn buộc shell sửa source, build và deploy lại, bạn chưa đạt mục tiêu không rebuild shell cho thay đổi tương thích của catalog.
+
+Một đường release có kiểm soát thường cần:
+
+1. Publish artifact mới và toàn bộ assets liên quan trước khi chọn nó cho người dùng.
+2. Kiểm thử contract với consumer đang được hỗ trợ, không chỉ test catalog riêng lẻ.
+3. Cập nhật mapping, manifest hoặc cấu hình route để chọn release đã kiểm chứng.
+4. Ghi nhận release identity để phân biệt lỗi của artifact với lỗi tải hoặc tích hợp.
+5. Giữ artifact cũ và cách chọn lại nó nếu vẫn tương thích với backend và dữ liệu hiện tại.
+
+Cấu hình chọn release có thể nằm trong HTML import map, runtime manifest, root config hoặc route policy. Đường cập nhật đó phải có owner và cơ chế rollout; không nên biến việc thay một entry thành hàng chờ thủ công mới cho mọi team.
+
+<Callout type="warn" title="Đổi cấu hình không tự thay app trong tab đang mở">
+  Native ESM giữ module đã tải trong document; custom element trong global registry không thể tùy ý redefine cùng tên. Đổi mapping cho lượt truy cập mới không tự unmount code cũ, thay class đã đăng ký hay phục hồi state hiện hữu. Cần chính sách refresh hoặc migration riêng, và không hứa rollback frontend có thể đảo ngược mutation đã ghi ở backend.
+</Callout>
+
+## Những giới hạn cần kiểm chứng
+
+Đừng lấy việc “UI render được” làm bằng chứng toàn bộ boundary hoạt động. Một lần chuyển route, một request thất bại hoặc một tab cũ đủ để lộ những phụ thuộc mà happy path không cho thấy.
+
+| Khía cạnh | Câu hỏi kiểm chứng |
+| --- | --- |
+| CSS và layout | Style có vượt boundary không? Theme đi qua đâu? Overlay có rời container/shadow root không? |
+| Routing | Ai sở hữu top-level URL? Deep link và back/forward có hoạt động khi các app dùng router khác nhau không? |
+| Loading và readiness | Module tải xong đã đồng nghĩa UI dùng được chưa? Frame có handshake ready và deadline không? |
+| Failure | Có fallback riêng khi tải hoặc mount thất bại không? App lỗi có để sót listeners hoặc chặn phần khác không? |
+| Performance | Tải bao nhiêu framework instances? Đo transfer, parse/evaluate, main-thread work và memory của luồng thật ra sao? |
+| Accessibility | Focus đi đâu khi mount/unmount? Keyboard và screen reader có hiểu custom UI hoặc frame không? |
+| Auth và trust | Ai được tải code, gọi command hoặc nhận dữ liệu? Backend có kiểm quyền độc lập với UI không? |
+
+Không suy ra iframe sẵn sàng chỉ từ event `load`; cần tín hiệu readiness của ứng dụng nếu shell phụ thuộc vào nó. Cũng không suy ra unmount đã hủy network request hoặc rollback command; việc ngừng hiển thị và kết quả nghiệp vụ là hai chuyện khác nhau.
+
+Với JavaScript cùng document, một error boundary hoặc `try/catch` chỉ xử lý được một số loại lỗi. Chúng không cô lập vòng lặp chặn main thread hay code tùy tiện sửa global state. Chọn cách giới hạn ảnh hưởng phải dựa vào loại lỗi cần ngăn, không chỉ dựa vào tên framework.
+
+## Lộ trình đọc trong nhóm
+
+Bạn không cần đọc tất cả theo thứ tự nếu đã biết boundary cần giải quyết. Với người mới, mình đọc về module loading trước, rồi lifecycle, UI contract và isolation.
+
+| Bài | Câu hỏi chính | Nên đọc khi |
+| --- | --- | --- |
+| [ES modules và import maps](/docs/cac-cach-tich-hop/import-maps) | Browser resolve module, chia sẻ dependency theo URL và chọn release như thế nào? | Bạn cần một đường loading native ESM rõ ràng |
+| [single-spa và lifecycle](/docs/cac-cach-tich-hop/single-spa) | Ai active theo route, bootstrap, mount và cleanup app? | Bạn ghép nhiều ứng dụng trong cùng trang |
+| [Web Components](/docs/cac-cach-tich-hop/web-components) | Public DOM contract và Shadow DOM có giới hạn gì? | Bạn nhúng UI qua các framework hoặc cần encapsulation |
+| [iframe isolation](/docs/cac-cach-tich-hop/iframe) | Document boundary, sandbox và message protocol đổi UX ra sao? | Bạn đánh giá legacy integration hoặc trust boundary riêng |
+| [So sánh các cách tích hợp](/docs/cac-cach-tich-hop/so-sanh) | Chọn tổ hợp nào theo yêu cầu cụ thể? | Bạn đã có tiêu chí và muốn đối chiếu các hướng |
+
+Đây là bản đồ nội dung của nhóm; một số trang liên kết có thể còn là trang khung. Trang tổng quan này không thay thế hướng dẫn implementation hay khẳng định mọi bài đã có lab hoàn chỉnh.
+
+## Bài tập chọn một boundary
+
+Giả sử catalog muốn thêm bộ lọc thương hiệu trong khi shell và cart giữ nguyên artifact. Hãy viết một bản quyết định ngắn trước khi cài thêm thư viện:
+
+| Quyết định | Câu trả lời minh họa |
+| --- | --- |
+| Phạm vi ghép | Toàn bộ catalog ở `/products`, không tách từng bộ lọc thành remote |
+| Yêu cầu UX | Chuyển route không reload toàn trang; shell giữ navigation |
+| Trust model | Catalog là code nội bộ được tin cậy, chạy cùng document |
+| Loading | Native ESM với import map chọn release URL |
+| Lifecycle | single-spa điều phối; catalog cung cấp lifecycle và cleanup |
+| State | Catalog giữ filters; cart owner nhận command thêm hàng và cung cấp snapshot |
+| Failure | Shell giữ loading/fallback ở outlet; log nhận diện app, release và phase lỗi |
+| Release | Publish assets trước mapping; giữ URL release cũ cho rollback có kiểm soát |
+
+Đây là một lựa chọn minh họa, không phải stack mặc định cho mọi shop. Nếu full navigation chấp nhận được, hãy thử route-level integration đơn giản hơn. Nếu yêu cầu chính là nhúng product card vào nhiều shell, thay điểm xuất phát bằng Web Components; nếu code không tin cậy, hãy xem lại trust boundary trước khi quyết định dùng chung document.
+
+Sau đó kiểm chứng bốn ca: release catalog tương thích mà shell/cart không rebuild, chặn URL catalog để quan sát fallback, chuyển route khi catalog còn đang tải, và mount/unmount lặp lại để phát hiện side effect còn sót. Thêm một lượt với tab mở từ release cũ để kiểm tra chính sách version thực tế.
+
+## Checklist trước khi chốt cách tích hợp
+
+- [ ] Bạn đã nêu một thay đổi cần release riêng và lý do modular frontend chưa đủ.
+- [ ] Điểm ghép là route, vùng UI hoặc document, với owner cụ thể.
+- [ ] Loading, lifecycle, communication và isolation không bị giao trùng hoặc bỏ trống.
+- [ ] Public contract không phụ thuộc DOM, router hoặc store nội bộ của app khác.
+- [ ] Loading có deadline, fallback và cách xử lý kết quả muộn sau navigation.
+- [ ] Cleanup đã được kiểm thử cho mount lỗi, unmount và reconnect nếu có.
+- [ ] CSS, overlays, accessibility và auth được thử trên browser mục tiêu.
+- [ ] Release selection, compatibility, rollback và tab cũ có policy rõ ràng.
+- [ ] Log giúp nhận diện app, release và phase lỗi mà không lộ dữ liệu nhạy cảm.
+
+Bước tiếp theo là chọn **một** boundary trong bảng quyết định, đọc bài tương ứng rồi kiểm chứng nó trong project thử nghiệm riêng. Chỉ thêm cơ chế thứ hai khi bạn chỉ ra được trách nhiệm mà cơ chế đầu tiên chưa giải quyết.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="ES modules và import maps" href="/docs/cac-cach-tich-hop/import-maps" description="Hiểu module resolution, dependency URLs và release selection." />
+  <Card title="single-spa và lifecycle" href="/docs/cac-cach-tich-hop/single-spa" description="Điều phối ứng dụng theo route và kiểm chứng cleanup." />
+  <Card title="Web Components" href="/docs/cac-cach-tich-hop/web-components" description="Thiết kế public DOM contract và hiểu giới hạn Shadow DOM." />
+  <Card title="iframe isolation" href="/docs/cac-cach-tich-hop/iframe" description="Hướng đọc về document boundary, sandbox và message protocol." />
+  <Card title="Module Federation" href="/docs/module-federation" description="Đối chiếu với module loading và runtime dependency sharing giữa các build." />
+  <Card title="Kiến trúc và ranh giới" href="/docs/kien-truc" description="Quay lại domain, composition và ownership nếu chưa rõ điểm ghép." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [single-spa — Getting Started](https://single-spa.js.org/docs/getting-started-overview/): root config, application registration và lifecycle.
+- [MDN — Import maps](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap): module specifier resolution và phạm vi áp dụng của map.
+- [MDN — Using custom elements](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_custom_elements): registration và lifecycle của custom elements.
+- [MDN — Using Shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM): DOM/CSS encapsulation và giới hạn bảo mật.
+- [MDN — iframe](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe): browsing context, sandbox, same-origin access và hành vi load event.
+- [MDN — Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage): giao tiếp cross-origin và kiểm tra sender.

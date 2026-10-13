@@ -1,18 +1,543 @@
 ---
 title: "Resilience khi remote lỗi"
-description: "Thiết kế timeout, error boundaries, fallback UI và giới hạn retry."
+description: "Giữ shell hoạt động khi remote lỗi: phân loại failure, đặt deadline, cô lập bằng Error Boundary, thiết kế fallback và giới hạn retry."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử người dùng đang xem catalog thì cart không tải được chunk sau một lần deploy. Nếu shell chờ cả hai remote trước khi render, một lỗi cart có thể biến toàn bộ shop thành màn hình trắng. Nếu shell chỉ giấu cart, người dùng lại có thể hiểu nhầm rằng giỏ hàng đang rỗng và bấm thêm sản phẩm lần nữa.
+
+Resilience không có nghĩa là làm cho mọi remote luôn chạy. Mục tiêu là **lỗi ở một phần không kéo sập những phần còn dùng được, và UI không nói sai về trạng thái nghiệp vụ**. Muốn vậy, bạn cần quyết định rõ khi nào ngừng chờ, ai hiển thị fallback, thao tác nào được thử lại và lúc nào phải dừng để rollback.
+
+<Callout type="info" title="Phạm vi và điều kiện dùng ví dụ">
+  Bài dùng shop giả định gồm shell, catalog và cart. Ví dụ TypeScript/React dành cho một lab CSR riêng, dùng React 18 trở lên, DOM types và target hỗ trợ `Error.cause`; repository hiện chỉ chứa tài liệu, không có shop để chạy các snippet. Loader được truyền qua contract, không giả định một federation runtime cụ thể. Sơ đồ text hiển thị trực tiếp, không cần Mermaid. Với SSR, cần thêm error handling phía server theo framework.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chốt mức suy giảm chấp nhận được](#chốt-mức-suy-giảm-chấp-nhận-được)
+- [Phân loại lỗi theo giai đoạn](#phân-loại-lỗi-theo-giai-đoạn)
+- [Giữ shell ngoài failure domain của remote](#giữ-shell-ngoài-failure-domain-của-remote)
+  - [Bootstrap không đợi remote không thiết yếu](#bootstrap-không-đợi-remote-không-thiết-yếu)
+  - [Boundary giao diện không phải sandbox](#boundary-giao-diện-không-phải-sandbox)
+- [Đặt deadline thay vì chờ vô hạn](#đặt-deadline-thay-vì-chờ-vô-hạn)
+  - [Loading timeout và ready là ba tín hiệu khác nhau](#loading-timeout-và-ready-là-ba-tín-hiệu-khác-nhau)
+  - [Timeout không tự hủy công việc](#timeout-không-tự-hủy-công-việc)
+  - [Helper deadline cho loader](#helper-deadline-cho-loader)
+- [Đặt Error Boundary đúng chỗ](#đặt-error-boundary-đúng-chỗ)
+  - [Suspense xử lý chờ boundary xử lý lỗi](#suspense-xử-lý-chờ-boundary-xử-lý-lỗi)
+  - [Những lỗi cần xử lý ngoài boundary](#những-lỗi-cần-xử-lý-ngoài-boundary)
+- [Ví dụ React với một lần thử lại có kiểm soát](#ví-dụ-react-với-một-lần-thử-lại-có-kiểm-soát)
+  - [Boundary do shell sở hữu](#boundary-do-shell-sở-hữu)
+  - [Slot giữ identity theo từng attempt](#slot-giữ-identity-theo-từng-attempt)
+  - [Contract của loader và cách kiểm chứng](#contract-của-loader-và-cách-kiểm-chứng)
+- [Retry có budget và có owner](#retry-có-budget-và-có-owner)
+  - [Chỉ retry lỗi có khả năng phục hồi](#chỉ-retry-lỗi-có-khả-năng-phục-hồi)
+  - [Backoff jitter và chống tải trùng](#backoff-jitter-và-chống-tải-trùng)
+  - [Reset UI không xóa cache module](#reset-ui-không-xóa-cache-module)
+- [Fallback đúng nghiệp vụ và accessible](#fallback-đúng-nghiệp-vụ-và-accessible)
+- [Circuit breaker kill switch và rollback](#circuit-breaker-kill-switch-và-rollback)
+- [State và lifecycle khi phục hồi](#state-và-lifecycle-khi-phục-hồi)
+- [Telemetry cho trạng thái degraded](#telemetry-cho-trạng-thái-degraded)
+- [Ma trận kiểm thử resilience](#ma-trận-kiểm-thử-resilience)
+- [Runbook khi remote lỗi trên production](#runbook-khi-remote-lỗi-trên-production)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chốt mức suy giảm chấp nhận được
 
-Bài này sẽ giúp bạn: thiết kế timeout, error boundaries, fallback UI và giới hạn retry.
+Bắt đầu bằng câu hỏi người dùng còn làm được gì, không phải bằng số lần retry. Một widget gợi ý sản phẩm có thể biến mất mà catalog vẫn hữu ích; cart lỗi thì hành động thêm hàng phải có kết quả rõ ràng. Cùng là remote load failure, nhưng policy không nên giống nhau.
 
-[Xem các bài trong nhóm Production](/docs/production).
+| Phần bị lỗi | Trải nghiệm còn giữ được | Policy đề xuất |
+| --- | --- | --- |
+| Widget gợi ý | Xem sản phẩm và thao tác chính | Bỏ widget hoặc dùng fallback nhỏ, không chặn route |
+| Catalog route | Header, navigation, mở cart nếu cart hoạt động | Fallback ngay trong vùng catalog; giữ đường điều hướng khác |
+| Cart UI | Xem catalog; biết rằng cart đang không khả dụng | Không biến lỗi thành giỏ rỗng hoặc badge `0` |
+| Cart capability dùng để thêm hàng | Xem sản phẩm nhưng không xác nhận thêm hàng được | Disable thao tác hoặc trả lỗi rõ ràng; không báo thành công giả |
+| Auth hoặc config bắt buộc | Chưa đủ điều kiện mở chức năng được bảo vệ | Dừng chức năng đó an toàn; không giả định anonymous có quyền |
+| Shell bootstrap | Chưa dựng được application frame | Error page tối thiểu ngoài app tree; kiểm tra shell deployment |
+
+Mình mặc định đặt boundary theo route hoặc vùng chức năng có ý nghĩa với người dùng. Bọc từng nút bằng một boundary riêng thường làm giao diện chắp vá và che lỗi contract; bọc cả shop bằng một boundary duy nhất lại làm tăng vùng ảnh hưởng.
+
+Nếu cart controller được nạp cùng cart UI, lỗi remote cart có thể làm cả badge và capability thêm hàng không khả dụng. Muốn vẫn thêm hàng khi cart UI lỗi, bạn phải có contract/domain capability hoạt động độc lập với UI đó. Một component fallback không tự tạo ra sự độc lập này.
+
+## Phân loại lỗi theo giai đoạn
+
+Không gộp mọi lỗi thành “network error”. Khi remote entry trả HTML thay vì JavaScript, retry liên tục không sửa được hosting rule. Khi component đã render nhưng API trả lỗi, tải lại module cũng không phải hướng xử lý đầu tiên.
+
+| Giai đoạn | Ví dụ failure | Owner xử lý | Hướng phục hồi |
+| --- | --- | --- | --- |
+| Config và resolution | Manifest sai schema, remote URL ngoài allowlist | Shell/platform | Reject config; dùng policy config đã kiểm chứng hoặc error page |
+| Load assets | Offline, entry/chunk 404, CSP/CORS chặn | Loader và deploy owner | Phân loại nguyên nhân, fallback; retry giới hạn nếu transient |
+| Evaluate và initialize | Top-level throw, shared dependency không tương thích | Integration và remote owner | Ngừng retry mù; sửa release set hoặc rollback |
+| Validate contract | Thiếu export, contract version không hỗ trợ | Shell adapter và remote owner | Không mount; report contract mismatch |
+| Render hoặc mount | Component throw, adapter mount thất bại | Boundary của đúng tree, lifecycle owner | Local fallback; cleanup phần khởi tạo dở |
+| Ready và domain data | API chậm, dữ liệu không hợp lệ, chưa usable | Remote/domain owner | Data-level loading/error state; timeout riêng |
+| User action | Thêm hàng thất bại, response mất sau khi server đã ghi | Domain owner | Kiểm tra outcome; chỉ retry theo contract idempotency |
+
+`TypeError` từ native `import()` có thể đến từ network, CORS hoặc HTTP error; tên exception không đủ để kết luận đây là lỗi transient. Adapter nên chỉ đánh dấu retryable khi có bằng chứng phù hợp. Với lỗi không xác định, mình ưu tiên fallback và diagnostics hơn là tự động thử lại.
+
+## Giữ shell ngoài failure domain của remote
+
+### Bootstrap không đợi remote không thiết yếu
+
+Shell cần render được header, navigation, route slot và fallback bằng artifact của chính nó. Không lấy component thông báo lỗi từ chính remote đang có nguy cơ tải thất bại, cũng không để fallback phụ thuộc API của remote đó.
+
+```text
+Shell artifact
+├── Header và navigation
+├── Catalog slot → loading | Catalog UI | fallback local
+└── Cart slot    → loading | Cart UI    | fallback local
+```
+
+Nếu bootstrap dùng `await Promise.all([loadCatalog(), loadCart()])` trước khi render shell, một Promise reject sẽ làm bước chờ chung reject. Với các vùng độc lập, khởi tạo shell trước rồi để từng slot xử lý kết quả tải của mình. Nếu thật sự cần tổng hợp diagnostics, `Promise.allSettled` giúp quan sát từng kết quả, nhưng vẫn chờ tất cả settle; nó không thay deadline hay progressive rendering.
+
+Static import một remote ngay trong shell entry cũng đưa lỗi tải/evaluate của remote vào đường bootstrap. Dùng async boundary trước phần composition khi integration yêu cầu nó, và chỉ tải remote lúc route hoặc capability cần. Các dependency thực sự bắt buộc vẫn cần failure policy cấp shell; đừng giả vờ rằng mọi thứ đều optional.
+
+### Boundary giao diện không phải sandbox
+
+Error Boundary giống cầu dao cho một nhánh giao diện: khi React xử lý lỗi trong nhánh đó, shell thay nhánh bằng fallback. Nhưng remote vẫn có thể chạy trong cùng JavaScript realm, dùng cùng main thread, sửa global state hoặc tạo CSS ảnh hưởng toàn trang. Đây là chỗ phép so sánh với cầu dao không còn đúng: boundary không ngắt được mọi tác động của code.
+
+Một vòng lặp đồng bộ vô hạn trong remote có thể khóa main thread, khiến cả timer timeout lẫn nút điều hướng không chạy. Boundary cũng không ngăn remote ghi nhầm vào store global. Nếu cần isolation mạnh hơn, đánh giá [iframe](/docs/cac-cach-tich-hop/iframe) và sandbox policy; iframe có document/security boundary riêng khi cấu hình phù hợp, nhưng không được mặc định là bảo đảm CPU isolation trong mọi browser.
+
+## Đặt deadline thay vì chờ vô hạn
+
+### Loading timeout và ready là ba tín hiệu khác nhau
+
+Loading UI nói “đang chờ”; timeout nói “slot này đã hết thời gian chờ”; ready nói “UI đã đạt điều kiện usable đã thống nhất”. Loader resolve mới chỉ chứng minh module đã có kết quả, chưa chứng minh API đã trả dữ liệu hay người dùng đã tương tác được.
+
+Bạn nên tách ít nhất hai budget: tải module và đến trạng thái usable. Một remote có thể render ngay với skeleton rồi xử lý data timeout nội bộ; không cần giữ toàn bộ route trong `Suspense` chỉ vì request dữ liệu chưa xong. Với lifecycle adapter, `mount()` trả handle cũng không nhất thiết là ready: hãy định nghĩa ready signal riêng nếu shell cần đo hoặc đặt deadline cho bước này.
+
+Ví dụ minh họa: budget mở route là 5 giây, load module tối đa 3 giây, phần còn lại dành cho render/data readiness. Đây không phải ngưỡng production mặc định; chọn budget từ yêu cầu trải nghiệm, phân bố latency thực tế và loại thiết bị. Các giai đoạn có thể chạy song song, nên không cộng mọi timeout cấu hình rồi coi đó là thời gian journey thực tế.
+
+### Timeout không tự hủy công việc
+
+`Promise.race` giúp caller ngừng chờ, không hủy Promise còn lại. Native `import()` không nhận `AbortSignal`; timeout có thể đã hiển thị fallback trong khi bundle vẫn đang download hoặc evaluate.
+
+Với `fetch`, dùng `AbortController` khi phù hợp để yêu cầu hủy công việc phía client. Điều đó không chứng minh server chưa xử lý mutation. Với script loader hoặc federation runtime, cancellation/deduplication tùy implementation; xóa script tag không phải bảo đảm code sẽ không chạy.
+
+Shell phải bỏ qua kết quả muộn của attempt đã timeout hoặc route đã dispose. Trong ví dụ React bên dưới, Promise mà `lazy` nhận đã reject khi hết deadline, nên kết quả load thành công muộn không đổi nó thành fulfilled. Tuy nhiên, side effect của module vẫn có thể xảy ra. Remote vì vậy không nên tự mount, đăng ký listener hay khởi động request nghiệp vụ ở top level.
+
+### Helper deadline cho loader
+
+Helper dưới bắt cả exception đồng bộ từ `start()` và Promise rejection. Nó dọn timer khi load kết thúc, nhưng cố ý không tuyên bố có cancellation.
+
+```ts title="src/resilience/remote-load.ts"
+export type LoadFailureKind =
+  | 'timeout'
+  | 'transient'
+  | 'contract'
+  | 'unknown';
+
+export class RemoteLoadError extends Error {
+  constructor(
+    readonly kind: LoadFailureKind,
+    options?: ErrorOptions,
+  ) {
+    super(`Remote load failed: ${kind}`, options);
+    this.name = 'RemoteLoadError';
+  }
+}
+
+export function withDeadline<T>(
+  start: () => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return Promise.reject(new RangeError('timeoutMs phải là số dương hữu hạn'));
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = Promise.resolve().then(start);
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new RemoteLoadError('timeout'));
+    }, timeoutMs);
+  });
+
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+export function normalizeLoadError(error: unknown): RemoteLoadError {
+  return error instanceof RemoteLoadError
+    ? error
+    : new RemoteLoadError('unknown', { cause: error });
+}
+```
+
+`Promise.race` đã gắn handlers vào `work`, nên một rejection muộn của Promise đó không trở thành unhandled rejection chỉ vì deadline thắng. Các Promise khác do remote tự tạo mà không trả về cho loader vẫn phải được remote xử lý.
+
+Timer cũng không phải hard real-time deadline: callback có thể chạy trễ khi main thread bận hoặc tab bị browser throttle. Helper giới hạn thời gian chờ theo event loop, không preempt được JavaScript đồng bộ.
+
+## Đặt Error Boundary đúng chỗ
+
+### Suspense xử lý chờ boundary xử lý lỗi
+
+Trong mô hình remote export React component, shell render component trong cùng tree và dùng cấu trúc sau:
+
+```text
+Shell React root
+└── Remote Error Boundary
+    └── Suspense với loading UI local
+        └── Remote component
+```
+
+`Suspense` hiển thị loading UI khi component suspend. Khi Promise của `React.lazy` reject, React đưa lỗi tới Error Boundary gần nhất; `Suspense` không tự biến nó thành error fallback. Một Promise fetch bất kỳ trong event handler hoặc effect cũng không tự kích hoạt `Suspense`.
+
+Giữ boundary gần vùng chức năng cần cô lập, nhưng nên có thêm boundary cuối cùng cho shell. Nếu fallback của boundary cục bộ throw, chính boundary đó không bắt được lỗi của mình; boundary tổ tiên hoặc error handling của root là lớp tiếp theo.
+
+### Những lỗi cần xử lý ngoài boundary
+
+| Tình huống | Cách xử lý |
+| --- | --- |
+| Loader ngoài React tree hoặc bootstrap reject | `try/catch` tại integration layer, chuyển slot sang failed |
+| Event handler có thao tác async | `try/catch`/Promise handler, hiển thị lỗi tại thao tác |
+| Timer, callback subscription, Promise chạy nền | Handler riêng và telemetry theo owner |
+| Remote tự tạo React root | Boundary bên trong root remote; shell nhận failure signal qua contract |
+| Server rendering lỗi | Error handling, streaming và response policy của framework |
+| Module import thất bại trước khi shell dựng tree | Bootstrap fallback ngoài app; không dựa vào boundary chưa mount |
+
+Boundary bắt lỗi trong phạm vi React xử lý ở tree con, không phải mọi exception trên trang. React hiện có một số semantics riêng cho Transition errors; vẫn không nên dùng boundary như handler tổng quát cho mọi công việc async. Đọc [Tích hợp React](/docs/ui-va-framework/react) nếu remote dùng root riêng.
+
+## Ví dụ React với một lần thử lại có kiểm soát
+
+Ví dụ chọn policy bảo thủ: không auto-retry; chỉ cho người dùng thử lại **một lần** khi adapter đã đánh dấu lỗi `transient`. Timeout, contract mismatch, lỗi không phân loại được và lỗi render không có nút retry. Timeout không retry ngay vì công việc cũ có thể vẫn chạy.
+
+### Boundary do shell sở hữu
+
+```tsx title="src/resilience/RemoteBoundary.tsx"
+import { Component } from 'react';
+import type { ErrorInfo, ReactNode } from 'react';
+
+type Props = {
+  children: ReactNode;
+  fallback: (error: Error) => ReactNode;
+  onError: (error: Error, info: ErrorInfo) => void;
+};
+
+export class RemoteBoundary extends Component<
+  Props,
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(thrown: unknown) {
+    return {
+      error: thrown instanceof Error ? thrown : new Error('Remote render failed'),
+    };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    try {
+      this.props.onError(error, info);
+    } catch {
+      // Diagnostics không được làm hỏng fallback.
+    }
+  }
+
+  render() {
+    return this.state.error
+      ? this.props.fallback(this.state.error)
+      : this.props.children;
+  }
+}
+```
+
+Production nên giữ thông tin lỗi gốc trong diagnostics được redact, không đưa stack trace hoặc `cause` ra UI. `onError` ở đây là callback đồng bộ; nếu transport trả Promise, facade phải tự xử lý rejection của nó.
+
+### Slot giữ identity theo từng attempt
+
+```tsx title="src/resilience/CatalogSlot.tsx"
+import { lazy, Suspense, useState } from 'react';
+import type { ComponentType } from 'react';
+import { RemoteBoundary } from './RemoteBoundary';
+import {
+  normalizeLoadError,
+  RemoteLoadError,
+  withDeadline,
+} from './remote-load';
+
+export type CatalogProps = {
+  onAddToCart: (sku: string) => Promise<void>;
+};
+
+export type CatalogLoader = () => Promise<{
+  default: ComponentType<CatalogProps>;
+}>;
+
+function createAttempt(loadCatalog: CatalogLoader, id: number) {
+  return {
+    id,
+    View: lazy(async () => {
+      try {
+        // 3 giây chỉ là budget minh họa.
+        return await withDeadline(loadCatalog, 3_000);
+      } catch (error) {
+        throw normalizeLoadError(error);
+      }
+    }),
+  };
+}
+
+export function CatalogSlot({
+  loadCatalog,
+  onAddToCart,
+}: {
+  loadCatalog: CatalogLoader;
+  onAddToCart: CatalogProps['onAddToCart'];
+}) {
+  const [attempt, setAttempt] = useState(() => createAttempt(loadCatalog, 1));
+  const View = attempt.View;
+
+  return (
+    <section aria-label="Catalog">
+      <RemoteBoundary
+        key={attempt.id}
+        onError={(error) => {
+          // Chỉ dành cho lab: production dùng facade có metadata và redaction.
+          console.error('[catalog-slot]', { attempt: attempt.id, error });
+        }}
+        fallback={(error) => {
+          const canRetry =
+            error instanceof RemoteLoadError &&
+            error.kind === 'transient' &&
+            attempt.id < 2;
+
+          return (
+            <div>
+              <p role="alert">
+                Catalog hiện không khả dụng. Bạn vẫn có thể mở giỏ hàng.
+              </p>
+              {canRetry && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAttempt(createAttempt(loadCatalog, attempt.id + 1));
+                  }}
+                >
+                  Thử tải lại catalog
+                </button>
+              )}
+              <a href="/cart">Mở giỏ hàng</a>
+            </div>
+          );
+        }}
+      >
+        <Suspense fallback={<p role="status">Đang tải catalog…</p>}>
+          <View onAddToCart={onAddToCart} />
+        </Suspense>
+      </RemoteBoundary>
+    </section>
+  );
+}
+```
+
+Mỗi attempt giữ một lazy component type ổn định trong state. Không tạo `lazy()` mới ở mỗi render: việc đó thay identity và có thể reset state của remote. Đây là ngoại lệ có chủ đích so với quy tắc thường dùng là khai báo lazy ở module scope: tạo type mới chỉ để bắt đầu **attempt phục hồi mới**, đồng thời đổi key để reset boundary.
+
+`loadCatalog` phải gắn với một config/release snapshot ổn định suốt đời slot; không đổi release âm thầm qua prop rồi kỳ vọng attempt cũ tự tải bản mới. Nếu route rời rồi quay lại, slot có thể được tạo lại và budget trong ví dụ bắt đầu lại. Budget theo document hoặc circuit breaker cần được giữ ở integration service bên ngoài slot.
+
+Link `/cart` giả định cart là đường phục hồi còn hoạt động. Nếu cart cũng lỗi, thay bằng đích shell vẫn phục vụ được. Link thường ở đây có thể tạo navigation toàn trang; ứng dụng thực tế nên dùng router link của shell để giữ state khi đó là yêu cầu của journey.
+
+### Contract của loader và cách kiểm chứng
+
+Trong lab local, adapter đơn giản có thể là `const loadCatalog = () => import('./catalog/App')`, với module export default component phù hợp. Lỗi chưa phân loại sẽ trở thành `unknown` và không retry. Với federation, thay bằng adapter của runtime đã chọn; đừng chép native `import()` rồi coi đó là federation loader hoàn chỉnh.
+
+Adapter production cần validate export/contract trước khi trả module, ghi nhận release thực được tải và chỉ throw `RemoteLoadError('transient', { cause })` khi xác định đây là failure có thể thử lại. TypeScript không validate artifact tải qua mạng, và kiểm tra component chỉ bằng `typeof value === 'function'` sẽ bỏ sót các React component types như `memo` hoặc `forwardRef`.
+
+Để kiểm chứng nhánh retry mà không cần CDN, dùng loader giả này trong một lab. `HealthyCatalog` là component local của lab, không có sẵn trong repository docs:
+
+```ts title="Loader giả cho component test"
+import type { CatalogLoader } from './CatalogSlot';
+import { RemoteLoadError } from './remote-load';
+import HealthyCatalog from '../catalog/App';
+
+export function makeFlakyLoader(): CatalogLoader {
+  let calls = 0;
+  return async () => {
+    calls += 1;
+    if (calls === 1) throw new RemoteLoadError('transient');
+    return { default: HealthyCatalog };
+  };
+}
+```
+
+Tạo loader một lần bên ngoài render hoặc trong fixture của test. Lần đầu phải hiện fallback, bấm retry phải gọi loader lần hai và render catalog. Thay loader bằng một Promise không settle để kiểm tra timeout; thay bằng component throw trong render để kiểm tra nhánh không có nút retry. Trong development, StrictMode và error logging có thể làm số log khác production; assertion nên tập trung vào UI và số invocation của loader trong attempt.
+
+## Retry có budget và có owner
+
+### Chỉ retry lỗi có khả năng phục hồi
+
+Mình không auto-retry mặc định cho code loading. Nếu dữ liệu vận hành cho thấy network transient đáng kể, thêm một lần retry trong tổng budget có thể hợp lý. Nhưng shell, federation runtime, service worker và API client không nên cùng retry một operation mà không thống nhất owner.
+
+| Failure | Mặc định đề xuất | Vì sao |
+| --- | --- | --- |
+| Transient network đã phân loại | Tối đa một retry có budget; manual hoặc automatic theo policy | Có khả năng phục hồi mà không đổi artifact |
+| Timeout khi operation chưa hủy được | Fallback trước; không mở attempt song song tùy tiện | Download/evaluation cũ có thể vẫn chạy |
+| Entry/chunk 404 sau deploy | Kiểm tra retention, mapping và public path | Tải lại cùng URL không tạo ra file còn thiếu |
+| CSP, CORS hoặc response sai content | Không retry tự động | Cần sửa policy/hosting |
+| Contract mismatch, evaluate throw, shared version mismatch | Không retry cùng release mù quáng | Lỗi code hoặc compatibility thường mang tính xác định |
+| API read transient | Retry theo API policy, trong budget riêng | Không cần tải lại code remote |
+| Mutation có outcome chưa rõ | Tra cứu outcome hoặc retry với idempotency contract | Tránh thực hiện nghiệp vụ hai lần |
+
+Nút “Thử lại” cũng phải có giới hạn. Một người bấm liên tục không nên tạo hàng chục downloads hoặc report cùng lỗi hàng chục lần. Khi budget hết, giữ thông báo ổn định và đường phục hồi thay vì để button quay về trạng thái enabled vô hạn.
+
+### Backoff jitter và chống tải trùng
+
+Nếu bật auto-retry, dùng backoff có jitter: khoảng chờ ngẫu nhiên làm các clients bớt gửi lại cùng thời điểm. Ví dụ full jitter cho retry thứ `n` là một khoảng ngẫu nhiên từ `0` đến `min(cap, base × 2^n)`, với `n = 0` cho retry đầu tiên. `base`, `cap` và số retries phải nằm trong total deadline; không restart budget sau mỗi lần lỗi.
+
+Single-flight giúp nhiều consumers dùng cùng một Promise đang tải, thay vì mỗi slot tự tải cùng remote. Key nên gồm app, release và runtime instance/share scope cần thiết, không chỉ một URL tùy ý. Một runtime có thể đã deduplicate script/container; wrapper cần hiểu semantics đó trước khi thêm cache riêng.
+
+Đặc biệt khi timeout: xóa cache in-flight trong wrapper không đồng nghĩa công việc runtime đã dừng. Nếu mở attempt khác ngay, hai công việc có thể cùng evaluate hoặc initialize. Hãy dùng cancellation thật khi runtime hỗ trợ, tiếp tục theo dõi operation cũ, hoặc không retry trong document đó như policy timeout của ví dụ.
+
+### Reset UI không xóa cache module
+
+React cache Promise và kết quả cho từng component type do `lazy()` tạo ra. Chỉ reset Error Boundary hoặc đổi key của component **cùng lazy type** không gọi lại loader đã reject. Ví dụ tạo type mới để có loader invocation mới, nhưng đó mới chỉ là một lớp cache.
+
+Native ESM có module cache, bundler có chunk/module cache, federation runtime có thể cache container và share scope, còn browser/service worker/CDN giữ response theo policy riêng. Native ESM có thể thử tải lại sau loading/linking failure, nhưng evaluation failure được cache; không suy diễn rằng mọi runtime có cùng behavior.
+
+<Callout type="warn" title="Không dùng cache busting như cơ chế phục hồi mặc định">
+  Thêm `?t=Date.now()` hoặc đổi remote release trong window đã initialize có thể tạo module identity khác, side effects lặp và xung đột container/share scope. `window.location.reload()` tạo document mới nhưng vẫn có thể nhận cache cũ; không tự bảo đảm hết lỗi, và có thể làm mất cart hoặc form chưa lưu. Không auto-reload theo vòng lặp.
+</Callout>
+
+## Fallback đúng nghiệp vụ và accessible
+
+Fallback phải do shell hoặc phần local tin cậy sở hữu, ít dependency và không throw. Mình giữ chiều cao vùng nội dung hợp lý để giảm layout shift, nhưng không giữ skeleton vô hạn sau deadline.
+
+| Trạng thái | Thông điệp nên dùng | Điều cần tránh |
+| --- | --- | --- |
+| Catalog đang tải | “Đang tải catalog…” | Nói đã lỗi ngay khi mới bắt đầu |
+| Catalog không tải được | “Catalog hiện không khả dụng”, kèm đường đi khác | Màn hình trắng hoặc stack trace |
+| Cart không đọc được | “Chưa lấy được thông tin giỏ hàng” | Giỏ rỗng, badge `0`, tổng tiền `0` giả |
+| Cart summary là snapshot cũ | “Thông tin giỏ chưa cập nhật”, nếu được phép giữ | Trình bày snapshot như dữ liệu hiện tại |
+| Thêm hàng chưa biết kết quả | “Chưa xác nhận được kết quả”, kèm hướng kiểm tra | Báo thất bại chắc chắn rồi yêu cầu bấm lại ngay |
+
+Dùng `role="status"` cho loading và `role="alert"` cho thông báo lỗi cần chú ý; tránh nhiều vùng cùng phát live announcements lặp. Button phải có tên cụ thể, dùng được bằng keyboard và không tạo retry trùng. Khi retry thay vùng có focus, cần chuyển focus tới heading/status hoặc vị trí usable phù hợp; không để focus biến mất khi button bị unmount.
+
+Ví dụ React ở trên minh họa load/boundary/budget, chưa triển khai focus restoration. Kiểm tra focus thật trong integration test, không chỉ assert có text “không khả dụng”. Nếu muốn giữ state qua navigation, dùng router của shell và contract state owner tương ứng.
+
+## Circuit breaker kill switch và rollback
+
+Retry giúp một failure ngắn hạn. Circuit breaker giúp ngừng gọi một dependency đang liên tục lỗi: giống tạm đóng một quầy đang hỏng thay vì để mọi khách tiếp tục xếp hàng. Trong browser, breaker thường chỉ biết lịch sử của document hiện tại; nó không thay hệ thống điều khiển traffic toàn fleet.
+
+```text
+CLOSED ── lỗi vượt policy ──► OPEN
+  ▲                            │
+  │                     hết thời gian chờ
+  │                            ▼
+  └── probe thành công ── HALF_OPEN
+                              │
+                         probe thất bại
+                              └────────► OPEN
+```
+
+Chỉ cho một probe ở `HALF_OPEN`, không cho mọi consumers đồng loạt tải lại. Key breaker theo remote/release và loại operation; cart lỗi không mở breaker catalog. Đừng coi mọi domain validation error là remote outage, và đừng mở breaker toàn cục chỉ vì một người offline.
+
+Với shop nhỏ, mình bắt đầu bằng deadline, bounded retry và kill switch trước khi tự xây breaker phức tạp. Breaker đáng thêm khi một document có nhiều lần gọi lặp vào cùng dependency và bạn đã có evidence rằng cần chặn các lần gọi đó.
+
+Kill switch ở config/flag có thể ngăn mount hoặc thao tác mới. Flag chỉ đọc ở bootstrap sẽ không tác động tab cũ cho tới document mới; nếu cần cập nhật live, phải có contract refresh riêng. Remote đã evaluate cũng không tự “unload” khi flag tắt. Shell có thể unmount UI và chặn capability mới, nhưng phải cleanup lifecycle và xử lý operation đang chạy.
+
+Rollback nên đổi selection sang release tương thích đã kiểm chứng cho **document mới**. Tránh hot-swap bản remote khác trong window đang initialize share scope trừ khi runtime và architecture có contract rõ ràng. Xem [Rollout và rollback](/docs/trien-khai/rollout-rollback) cho quy trình publish và xử lý tab cũ.
+
+## State và lifecycle khi phục hồi
+
+Boundary reset hoặc remote remount có thể xóa local state. Vì vậy, cart data không nên chỉ sống trong tree UI mà bạn sẵn sàng unmount khi render lỗi. Domain owner quyết định persistence và recovery; shell chỉ giữ những snapshot/capabilities được contract cho phép.
+
+Khi phục hồi, giữ các quy tắc sau:
+
+- Không tự replay event “thêm hàng” đã gửi trước lỗi UI. Nếu outcome chưa rõ, tra cứu operation hoặc dùng idempotency key theo backend contract.
+- Không queue mutation vô hạn lúc cart remote offline. Chỉ queue khi sản phẩm đã có policy durable queue, giới hạn và UI thể hiện pending đúng nghĩa.
+- Remote dùng root riêng phải expose `unmount()`/dispose; xóa DOM không thay cleanup timers, listeners và subscriptions.
+- Khi route đổi, dùng generation/instance ID hoặc disposed flag để không mount kết quả cũ vào slot mới. ID phải phân biệt cả remount, không chỉ số attempt trong một instance.
+- Mount thất bại một phần phải cleanup tài nguyên đã tạo. `try/catch` quanh `root.render()` không thay boundary trong root, vì render có thể diễn ra sau khi hàm trả về.
+
+Giữ last-known-good module hoặc config là quyết định compatibility, không chỉ là quyết định cache. Artifact cũ phải còn tồn tại, được phép sử dụng trong môi trường hiện tại và tương thích backend/contracts. Không lưu một manifest tùy ý trong local storage rồi coi đó là rollback đáng tin cậy.
+
+## Telemetry cho trạng thái degraded
+
+Một error report chứng minh đã có lỗi; nó chưa cho biết người dùng còn hoàn tất journey hay không. Đo cả lỗi load/render và degraded experience, đồng thời phân biệt recovery với việc lỗi bị fallback che đi.
+
+| Tín hiệu | Câu hỏi trả lời |
+| --- | --- |
+| Load attempts và load failures theo phase | Lỗi trước khi render nằm ở bước nào? |
+| Thời gian load và đến usable | Deadline có phù hợp với trải nghiệm thực tế không? |
+| Số slot chuyển sang fallback | Bao nhiêu journey bị suy giảm? |
+| Retry offered, started, recovered, exhausted | Retry có giúp hay chỉ tạo thêm traffic? |
+| Circuit open hoặc kill switch active | Chức năng bị chặn theo policy nào? |
+| Journey outcome, như xác nhận thêm hàng | Shell còn mở nhưng nghiệp vụ có thực sự hoạt động không? |
+
+Error event nên chứa app name, shell release, remote release dự kiến/thực tế khi biết, config revision, phase, instance/attempt ID, duration và failure kind. Nếu load thất bại trước khi xác minh remote metadata, đừng gán selected release thành “release thực chạy”. Metadata release giúp routing incident; IDs cá nhân hoặc theo attempt không nên làm metric labels có cardinality cao.
+
+Tỷ lệ load failure dùng số failed attempts chia tổng attempts trong cùng phạm vi đo. Tỷ lệ journey degraded cần mẫu số journeys phù hợp; không chia số error logs cho page views rồi coi đó là cùng một metric. Retry có thể làm tăng attempts trong khi số người bị ảnh hưởng không đổi.
+
+Chọn một nơi report lỗi tại mỗi boundary và deduplicate khi SDK/global handler cũng thu thập. Telemetry phải best-effort, redact URL/query/token và không làm fallback thất bại. Chi tiết facade, source maps và alert routing ở [Logs, metrics và tracing](/docs/kiem-thu-va-tooling/observability).
+
+## Ma trận kiểm thử resilience
+
+Không chỉ mock Promise reject. Bạn cần test hành vi khi công việc thành công muộn, người dùng rời route và một mutation đã được server xử lý nhưng response không về client.
+
+| Fault injection | Kết quả cần assert |
+| --- | --- |
+| Chặn entry hoặc một chunk thật | Shell/navigation còn dùng được; slot có fallback, phase/release metadata hợp lệ |
+| Loader không settle | Hết deadline thì skeleton biến thành fallback; không retry song song |
+| Loader resolve sau timeout | UI không tự quay lại ready; side effects của module không tự mount app |
+| Loader reject sau timeout | Không có unhandled rejection từ Promise loader; không report trùng attempt |
+| Transient rejection rồi success | Retry được phép gọi loader mới; phục hồi UI; không vượt budget |
+| Hai lần transient rejection | Không còn nút retry trong ví dụ; fallback ổn định |
+| Contract mismatch hoặc evaluate throw | Không auto-retry cùng release; diagnostics chỉ đúng phase |
+| Component throw khi render | Chỉ nhánh remote bị thay; shell giữ nguyên; không hiện retry load |
+| Event handler/API request reject | Domain error state xuất hiện; không kỳ vọng boundary tự xử lý |
+| Remote có root riêng bị lỗi | Boundary trong root xử lý; shell nhận failure signal như contract |
+| Rời route lúc đang load rồi quay lại | Không mount instance cũ; không trùng listeners hoặc roots |
+| Server đã ghi mutation nhưng response mất | Không báo outcome chắc chắn, không duplicate mutation khi phục hồi |
+| Cart unavailable hoặc summary stale | Không hiển thị cart rỗng/`0` giả; capability bị chặn đúng policy |
+| Retry bằng keyboard | Focus được giữ/chuyển hợp lý; thông báo live không lặp vô hạn |
+| Tab cũ sau rollback hoặc kill switch | Hành vi đúng contract refresh/reload; không giả định tự đổi code |
+
+Unit/component tests phù hợp với deadline, boundary và attempt budget; dùng fake timers và flush microtasks khi test timeout. Integration/E2E cần đi qua entry/chunks thật để bắt public path, caching và federation initialization errors. Network interception không mô phỏng đầy đủ CSP/CORS; dùng test origin/header policy khi cần kiểm chứng các lỗi đó.
+
+Cũng kiểm tra build production: development tooling, StrictMode và overlay có thể thay cách lỗi được hiển thị. Với một remote khóa main thread, quan sát bằng môi trường test cô lập và timeout của test runner; không kỳ vọng timer trong chính trang tự cứu được.
+
+## Runbook khi remote lỗi trên production
+
+1. **Xác nhận phạm vi.** App/route nào lỗi, phase nào, cohort nào và release/config revision nào? Kiểm tra journey outcome, không chỉ số exception.
+2. **Giảm ảnh hưởng.** Dừng mở rộng rollout; dùng kill switch đã được diễn tập để chặn mount/thao tác mới. Giữ fallback rõ ràng; không bật retry/reload vô hạn.
+3. **Kiểm tra failure thật.** Đối chiếu URL entry/chunks, response status/content, CSP/CORS, config selection và source maps. Phân biệt tab cũ với document mới.
+4. **Chọn phục hồi phù hợp.** Restore artifact còn thiếu, sửa mapping/policy hoặc publish rollback selection tương thích. Không sửa bytes bên dưới immutable URL đã phát hành.
+5. **Kiểm chứng hai loại document.** Document mới nhận release nào; tab cũ còn làm gì được; dữ liệu chưa lưu và mutations pending sẽ xử lý thế nào nếu cần reload.
+6. **Xác nhận outcome phục hồi.** Fallback giảm, journey hoàn tất trở lại và retry không tạo traffic bất thường. Lưu evidence để bổ sung test và chỉnh deadline/policy.
+
+Nếu shell cũng không bootstrap được, chuyển sang runbook shell/config/deployment. Một remote fallback không chữa được HTML sai, config bắt buộc không hợp lệ hoặc shell artifact bị thiếu.
+
+## Checklist trước production
+
+- [ ] Shell và fallback không phụ thuộc artifact/API của remote đang lỗi.
+- [ ] Mỗi route/capability có policy rõ khi load, render hoặc domain operation thất bại.
+- [ ] Load deadline và readiness budget được chọn từ yêu cầu/đo thực tế, không chép nguyên số minh họa.
+- [ ] Timeout xử lý late result, không bị hiểu nhầm là cancellation.
+- [ ] Boundary đặt đúng React tree; root riêng có lifecycle/error contract riêng.
+- [ ] Retry có owner, classification, total budget và chống tải trùng.
+- [ ] Reset boundary/lazy/runtime cache được hiểu và test trên integration thật.
+- [ ] Cart unavailable không biến thành cart rỗng; mutation không bị replay mù.
+- [ ] Fallback có navigation, keyboard/focus behavior và live announcement hợp lý.
+- [ ] Kill switch/rollback đã thử với document mới và tab cũ.
+- [ ] Telemetry đo degraded journey, có phase/release metadata và không gây lỗi UI.
+- [ ] Fault injection bao gồm late resolve/reject, route disposal và ambiguous mutation outcome.
+
+## Tài liệu tham khảo
+
+- [React lazy](https://react.dev/reference/react/lazy) — Promise caching, default export và rejection tới Error Boundary.
+- [React Suspense](https://react.dev/reference/react/Suspense) — loading fallback và phạm vi hỗ trợ Suspense.
+- [React Error Boundary](https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary) — cách triển khai và các loại lỗi không thuộc boundary.
+- [MDN dynamic import](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import) — lỗi load/evaluate và module caching của native ESM.
+- [MDN AbortController](https://developer.mozilla.org/en-US/docs/Web/API/AbortController) — cancellation cho API hỗ trợ signal.
+- [AWS Builders' Library: Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) — retry budget, idempotency và tránh khuếch đại traffic; cần điều chỉnh khi áp dụng cho browser code loading.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Tích hợp React" href="/docs/ui-va-framework/react" description="Chọn component boundary hay root riêng, và quản lý mount/update/unmount." />
+  <Card title="Logs, metrics và tracing" href="/docs/kiem-thu-va-tooling/observability" description="Nhận diện phase và release gây lỗi, đo degraded journey và recovery." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Dừng rollout, chọn release tương thích và xử lý tab cũ có kiểm chứng." />
+  <Card title="Checklist debug nhanh" href="/docs/troubleshooting/debug-checklist" description="Khoanh vùng lỗi tải remote, dependency, routing và cache." />
+</Cards>

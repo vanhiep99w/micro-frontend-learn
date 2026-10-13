@@ -1,18 +1,622 @@
 ---
 title: "Integration và E2E tests"
-description: "Kiểm thử user journeys đi qua nhiều frontend mà không tạo test suite quá dễ vỡ."
+description: "Kiểm thử shell và remote thật, user journeys xuyên micro-frontend, version skew và lỗi tải artifact mà không tạo test suite quá dễ vỡ."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Catalog render đúng khi chạy standalone, cart pass component tests, nhưng khi ghép vào shell thì nút thêm giỏ không cập nhật badge. Hoặc mọi app trên HEAD chạy cùng nhau, còn shell đang mở trong tab cũ lại không tải được catalog vừa deploy. Test riêng từng app không nhìn thấy những lỗi nằm giữa các app này.
+
+**Integration tests bảo vệ chỗ ghép các phần thật; E2E tests bảo vệ kết quả mà người dùng cần hoàn tất.** Mình bắt đầu bằng một browser smoke cho shell tải remote, thêm vài integration cases ở boundary có rủi ro, rồi giữ một nhóm E2E nhỏ cho các hành trình quan trọng. Không đưa toàn bộ business rules lên browser chỉ vì đã có Playwright.
+
+<Callout type="info" title="Phạm vi và điều kiện bắt đầu">
+  Các file và lệnh mẫu thuộc workspace ứng dụng `shop-workspace`, **không chạy trong repository Next.js + Fumadocs chứa tài liệu này**. Smoke test dùng đúng shell/catalog từ [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien), tại `localhost:3000` và `localhost:3001`.
+
+  Các ví dụ thêm giỏ là bước mở rộng giả định đã có cart remote, routing, API và UI tương ứng. Bài không dựng implementation của những phần đó. Playwright có thể kiểm thử React, Vue, Angular hay iframe vì quan sát browser, không yêu cầu các app dùng chung framework. Sơ đồ text không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn đúng phạm vi test](#chọn-đúng-phạm-vi-test)
+  - [Integration khác E2E ở đâu](#integration-khác-e2e-ở-đâu)
+  - [Giữ suite theo rủi ro](#giữ-suite-theo-rủi-ro)
+- [Dựng môi trường có thể tái lập](#dựng-môi-trường-có-thể-tái-lập)
+  - [Test đúng artifact sẽ deploy](#test-đúng-artifact-sẽ-deploy)
+  - [Readiness và remote mapping](#readiness-và-remote-mapping)
+- [Thiết lập Playwright cho lab hiện tại](#thiết-lập-playwright-cho-lab-hiện-tại)
+  - [Cài runner và cấu hình](#cài-runner-và-cấu-hình)
+  - [Smoke test shell tải catalog](#smoke-test-shell-tải-catalog)
+- [Integration journey với API được kiểm soát](#integration-journey-với-api-được-kiểm-soát)
+  - [Cam kết của ứng dụng mẫu](#cam-kết-của-ứng-dụng-mẫu)
+  - [Thêm hàng qua các frontend thật](#thêm-hàng-qua-các-frontend-thật)
+  - [Giới hạn của network mocks](#giới-hạn-của-network-mocks)
+- [E2E với backend thật và dữ liệu riêng](#e2e-với-backend-thật-và-dữ-liệu-riêng)
+  - [Thiết kế test support API](#thiết-kế-test-support-api)
+  - [Kiểm tra UI và trạng thái backend](#kiểm-tra-ui-và-trạng-thái-backend)
+  - [Auth và dịch vụ bên ngoài](#auth-và-dịch-vụ-bên-ngoài)
+- [Những boundary dễ bị bỏ sót](#những-boundary-dễ-bị-bỏ-sót)
+  - [Routing và lifecycle](#routing-và-lifecycle)
+  - [Remote lỗi hoặc tải chậm](#remote-lỗi-hoặc-tải-chậm)
+  - [Iframe và isolation](#iframe-và-isolation)
+- [Kiểm tra version skew và rollback](#kiểm-tra-version-skew-và-rollback)
+- [Giảm flaky tests](#giảm-flaky-tests)
+  - [Locators và chờ theo trạng thái](#locators-và-chờ-theo-trạng-thái)
+  - [Isolation và retry có giới hạn](#isolation-và-retry-có-giới-hạn)
+- [CI và bằng chứng kiểm thử](#ci-và-bằng-chứng-kiểm-thử)
+- [Chẩn đoán test thất bại](#chẩn-đoán-test-thất-bại)
+- [Checklist triển khai](#checklist-triển-khai)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn đúng phạm vi test
 
-Bài này sẽ giúp bạn: kiểm thử user journeys đi qua nhiều frontend mà không tạo test suite quá dễ vỡ.
+### Integration khác E2E ở đâu
 
-[Xem các bài trong nhóm Kiểm thử và tooling](/docs/kiem-thu-va-tooling).
+Tên runner không quyết định phạm vi. Hai tests đều chạy Playwright nhưng một test chỉ ghép shell/catalog với API mock, còn test kia đi qua cart backend thật. Ghi rõ những phần thật và những phần thay thế để người đọc kết quả không hiểu nhầm.
+
+| Suite | Phần chạy thật | Phần có thể thay thế | Điều cần chứng minh |
+| --- | --- | --- | --- |
+| Remote smoke | Shell, loader, catalog artifact, browser | Chưa cần backend nếu UI dùng dữ liệu tĩnh | Entry, chunks và exposed module tải được; UI render trong shell |
+| Frontend integration | Shell, catalog, cart, router và kênh giao tiếp | API phía sau frontend | Thao tác catalog đi tới cart và shell hiển thị đúng trạng thái |
+| E2E của shop | Browser, các frontend, API và storage backend | Payment/email bên ngoài theo policy | Người dùng hoàn tất hành trình và dữ liệu được ghi đúng |
+| Compatibility integration | Consumer/provider artifacts thuộc các version được hỗ trợ | Backend có thể dùng fixture ổn định | Tổ hợp release thật hoạt động ở runtime |
+
+Một E2E có payment stub vẫn hữu ích, nhưng không chứng minh thanh toán thật thành công. Tương tự, integration test dùng `page.route()` không chứng minh auth cookie, CORS hay backend persistence đúng. Mỗi kết quả cần đi kèm phạm vi đã kiểm tra.
+
+[Contract tests](/docs/kiem-thu-va-tooling/contract-tests) trả lời hai bên có giữ cam kết không. Integration bổ sung việc cam kết đó có được nối đúng trong runtime thật không: callback có truyền vào remote, listener có đăng ký, router có mount đúng module. E2E đi thêm một bước: hành trình có đưa người dùng đến kết quả mong muốn không.
+
+### Giữ suite theo rủi ro
+
+Mình chọn cases theo hậu quả khi boundary hỏng, không theo số màn hình. Với shop, bộ đầu tiên có thể là:
+
+| Case | Lớp test ưu tiên | Lý do |
+| --- | --- | --- |
+| Shell tải catalog và render sản phẩm | Remote smoke | Bắt sai URL, export, chunk path hoặc shared runtime |
+| Thêm sản phẩm cập nhật cart badge và trang cart | Frontend integration | Đi qua giao tiếp giữa các owner |
+| Reload trang cart vẫn thấy dữ liệu đã lưu | E2E | Bắt lỗi khôi phục state từ backend/session |
+| Catalog không tải được, shell vẫn dùng được | Frontend integration | Kiểm tra giới hạn ảnh hưởng của remote lỗi |
+| Deep link `/cart` mở đúng app | Browser integration với server thật | Bắt routing và cấu hình fallback của server |
+| Giảm quantity từ 2 xuống 1, xử lý mọi giá trị biên | Unit/component | Không cần tải cả hệ thống để kiểm tra phép tính |
+| Tương thích shell cũ với catalog candidate | Compatibility integration | Deploy độc lập tạo version skew |
+
+Các con số và danh sách ở đây chỉ là gợi ý khởi đầu, không phải tỷ lệ test bắt buộc. Nếu luồng checkout là luồng tạo doanh thu, nó cần E2E riêng; nếu chưa có checkout, đừng tạo test giả rồi gọi là full journey.
+
+## Dựng môi trường có thể tái lập
+
+Một browser test chỉ có ý nghĩa khi bạn biết browser đã chạy code nào. Môi trường integration dùng toàn bộ `/latest/` có thể thay đổi ngay trong lúc suite đang chạy, khiến lần fail không tái hiện được.
+
+### Test đúng artifact sẽ deploy
+
+Vòng lặp local có thể dùng dev servers để debug nhanh. Release gate nên dùng production artifacts đã build một lần, URL bất biến và mapping được pin:
+
+```text
+Browser → shell artifact
+             ├─→ catalog artifact đã pin
+             ├─→ cart artifact đã pin
+             └─→ API mock hoặc test backend
+```
+
+Shell vẫn tải remote qua loader thật. Không thay `import('catalog/CatalogPage')` bằng source import catalog ngay trong harness, vì cách đó bỏ qua container initialization, share scope và đường tải chunk đang cần test.
+
+Môi trường có thể là preview theo PR hoặc namespace theo test run. Pin shell, từng remote, runtime config và backend version cần thiết; giữ artifacts sống đủ lâu cho toàn bộ lượt chạy và điều tra sau đó. Không để deploy khác đổi pointer của môi trường chung giữa chừng.
+
+<Callout type="warn" title="Build-once không chỉ là cùng commit">
+  Nếu build lại sau khi test, artifact mới có thể khác do dependency, environment hoặc build configuration. Release gate phải promote đúng artifact/digest đã kiểm tra. Kiểm thử dev server không thay thế smoke cho production assets và cấu hình CDN.
+</Callout>
+
+### Readiness và remote mapping
+
+Process còn sống không có nghĩa remote dùng được. Có ba mức kiểm tra khác nhau:
+
+1. HTTP server trả response: runner có thể bắt đầu truy cập môi trường.
+2. Entry có nội dung JavaScript hợp lệ, chunks tồn tại: artifact có thể tải.
+3. Shell resolve public module và UI đạt trạng thái usable: composition thực sự hoạt động.
+
+`webServer.url` của Playwright là kiểm tra HTTP readiness, không validate MIME, nội dung module hay toàn bộ dependencies. Một `/remoteEntry.js` trả HTML fallback vẫn có thể vượt qua bước readiness; smoke test phải bắt lỗi đó ở browser.
+
+Remote mapping phải dùng địa chỉ **browser truy cập được**. Tên service `catalog:3001` trong Docker network không tự resolve trong browser chạy trên máy host. Với Federation chạy cùng document, `fetch('/api/cart')` trỏ về origin shell, không trỏ về origin CDN chứa cart bundle.
+
+Chi tiết profiles, ports và proxy nằm ở [Local development nhiều ứng dụng](/docs/kiem-thu-va-tooling/local-development). Đừng cho query parameter tùy ý đổi remote sang URL bên ngoài chỉ để phục vụ test; override cần allowlist và chỉ bật trong môi trường được kiểm soát.
+
+## Thiết lập Playwright cho lab hiện tại
+
+### Cài runner và cấu hình
+
+Chạy từ root `shop-workspace` đã có shell/catalog của lab. Cài version cụ thể được resolve và commit manifest cùng lockfile:
+
+```bash
+npm install --save-dev --save-exact @playwright/test @types/node
+npx playwright install chromium
+```
+
+Trên Linux CI, dùng `npx playwright install --with-deps chromium` khi runner có quyền cài system packages. Browser binaries cần phù hợp version Playwright trong lockfile; không dùng một image browser version khác tùy ý.
+
+Cấu hình này chỉ khởi động **hai app đã tích hợp trong lab**. Cart chưa cần chạy:
+
+```ts title="shop-workspace/playwright.config.ts"
+import { defineConfig, devices } from '@playwright/test';
+
+const targetURL = process.env.TEST_BASE_URL;
+const baseURL = targetURL ?? 'http://localhost:3000';
+
+export default defineConfig({
+  testDir: './tests/browser',
+  timeout: 30_000,
+  expect: { timeout: 10_000 },
+  forbidOnly: Boolean(process.env.CI),
+  fullyParallel: true,
+  workers: process.env.CI ? 2 : undefined,
+  retries: process.env.CI ? 1 : 0,
+  reporter: [['list'], ['html', { open: 'never' }]],
+  use: {
+    baseURL,
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: 'off',
+  },
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  webServer: targetURL ? undefined : [
+    {
+      command: 'npm run dev:catalog',
+      url: 'http://localhost:3001/remoteEntry.js',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+    {
+      command: 'npm run dev:shell',
+      url: baseURL,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  ],
+});
+```
+
+Các timeout và số workers là cấu hình minh họa; điều chỉnh theo môi trường đo được. `TEST_BASE_URL` là URL của môi trường **đã provision và kiểm tra readiness bên ngoài**, không làm Playwright tự deploy remote hay backend.
+
+Local cho phép reuse server để debug thuận tiện, nhưng bạn phải xác nhận đúng profile/code đang chạy. CI không reuse server có sẵn để tránh vô tình test process từ lượt chạy trước. Khi thêm cart local, bổ sung một entry `webServer` cho cart và mapping tương ứng trong shell; chỉ mở port `3002` không tự tích hợp cart.
+
+### Smoke test shell tải catalog
+
+Test dưới đây dùng các heading và sản phẩm đã có trong lab. Không cần API mock, props mới hay test-only component:
+
+```ts title="tests/browser/remote-smoke.spec.ts"
+import { expect, test } from '@playwright/test';
+
+test('shell render catalog remote trong trang host', async ({ page }) => {
+  const runtimeErrors: string[] = [];
+  page.on('pageerror', error => runtimeErrors.push(error.message));
+
+  await page.goto('/');
+
+  await expect(page.getByRole('heading', {
+    name: 'Shop shell', exact: true,
+  })).toBeVisible();
+  await expect(page.getByRole('heading', {
+    name: 'Catalog', exact: true,
+  })).toBeVisible();
+  await expect(page.getByText('Áo thun đen', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', {
+    name: 'Catalog standalone', exact: true,
+  })).toHaveCount(0);
+  expect(runtimeErrors).toEqual([]);
+});
+```
+
+```bash
+npx playwright test tests/browser/remote-smoke.spec.ts
+npx playwright show-report
+```
+
+Kết quả mong đợi là shell heading và catalog UI cùng hiện trong document host, không phải mở nhầm trang standalone. `pageerror` kiểm tra lỗi JavaScript không được xử lý trong khoảng test quan sát; nó không tự bắt mọi `console.error`, lỗi đã bị error boundary xử lý hay lỗi phát sinh sau khi test kết thúc.
+
+Với remote entry/chunks lỗi, assertion catalog visible sẽ fail dù HTTP readiness trước đó pass. Khi chạy gate, có thể bổ sung kiểm tra URL/build ID quan sát được để xác nhận đúng release; không chỉ dựa vào text giống nhau giữa hai bản build.
+
+## Integration journey với API được kiểm soát
+
+Sau smoke, bạn cần một case đi qua các frontend thật. API mock giúp tạo tình huống xác định mà không phụ thuộc tồn kho hoặc tài khoản của staging, nhưng không được mock chính boundary giữa catalog và cart.
+
+### Cam kết của ứng dụng mẫu
+
+Ví dụ tiếp theo giả định bạn **đã mở rộng lab** theo các cam kết sau. Đây là quy ước ứng dụng minh họa, không phải API có sẵn trong webpack hay Playwright:
+
+| Boundary | Cam kết dùng trong test |
+| --- | --- |
+| Routing | `/catalog` mount catalog; `/cart` mount cart; shell giữ header/navigation |
+| Product API | `GET /api/products` trả `{ products: [{ sku, name, price }] }` |
+| Cart read API | `GET /api/cart` trả `{ cartId, revision, itemCount, items }` |
+| Cart write API | `POST /api/cart/items` nhận `{ sku, quantity }`, trả snapshot cart đã commit |
+| Catalog UI | Có region `Catalog`; mỗi sản phẩm có `data-testid="product-<sku>"` và button `Thêm vào giỏ` |
+| Shell UI | Có `data-testid="cart-count"` hiển thị tổng quantity và link `Giỏ hàng` |
+| Cart UI | Có region `Giỏ hàng`, chứa tên sản phẩm và `data-testid="quantity-<sku>"` |
+| State | Catalog gọi cart capability thật; cart dùng API response để cập nhật snapshot; shell nhận trạng thái qua boundary đã công bố |
+
+Nếu ứng dụng dùng `productId` thay vì `sku`, envelope khác hoặc accessible name khác, sửa fixture/test theo contract thật. Không viết một adapter giả chỉ cho suite mà production không đi qua.
+
+### Thêm hàng qua các frontend thật
+
+Mock API trước khi `goto`. State của mock nằm trong test, không chia sẻ giữa tests. Các frontend và kênh giao tiếp vẫn là implementation thật:
+
+```ts title="tests/browser/cart.integration.spec.ts"
+import { expect, test } from '@playwright/test';
+
+test.use({ serviceWorkers: 'block' });
+
+test('catalog thêm hàng, shell và cart nhận snapshot mới', async ({ page }) => {
+  const product = { sku: 'ao-thun-den', name: 'Áo thun đen', price: 150000 };
+  let cart = {
+    cartId: 'cart-integration', revision: 0, itemCount: 0,
+    items: [] as Array<typeof product & { quantity: number }>,
+  };
+  let writes = 0;
+
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+
+    if (method === 'GET' && path === '/api/products') {
+      await route.fulfill({ json: { products: [product] } });
+      return;
+    }
+    if (method === 'GET' && path === '/api/cart') {
+      await route.fulfill({ json: cart });
+      return;
+    }
+    if (method === 'POST' && path === '/api/cart/items') {
+      expect(request.postDataJSON()).toEqual({ sku: product.sku, quantity: 1 });
+      writes += 1;
+      cart = {
+        ...cart, revision: cart.revision + 1, itemCount: writes,
+        items: [{ ...product, quantity: writes }],
+      };
+      await route.fulfill({ json: cart });
+      return;
+    }
+    // Không cho API chưa khai báo âm thầm gọi staging/backend khác.
+    throw new Error(`Unexpected API request: ${method} ${path}`);
+  });
+
+  await page.goto('/catalog');
+  await expect(page.getByTestId('cart-count')).toHaveText('0');
+
+  const catalog = page.getByRole('region', { name: 'Catalog', exact: true });
+  await catalog.getByTestId(`product-${product.sku}`)
+    .getByRole('button', { name: 'Thêm vào giỏ', exact: true }).click();
+
+  await expect(page.getByTestId('cart-count')).toHaveText('1');
+  await page.getByRole('link', { name: 'Giỏ hàng', exact: true }).click();
+  await expect(page).toHaveURL(/\/cart(?:\?.*)?$/);
+
+  const cartUI = page.getByRole('region', { name: 'Giỏ hàng', exact: true });
+  await expect(cartUI.getByText(product.name, { exact: true })).toBeVisible();
+  await expect(cartUI.getByTestId(`quantity-${product.sku}`)).toHaveText('1');
+  expect(writes).toBe(1);
+});
+```
+
+Case này kiểm tra catalog dùng cart boundary thật, shell nhận trạng thái mới và cart render đúng sau navigation. Nó không chỉ assert POST response, vì một request thành công vẫn có thể không đến được shell badge.
+
+Mock chỉ hỗ trợ một sản phẩm và thao tác thêm một đơn vị. Nếu test tăng quantity, xóa item hoặc retry, mở rộng state machine theo contract; đừng cho mọi POST trả cùng một snapshot thành công. `writes === 1` chỉ đếm requests trong đoạn journey này, không chứng minh backend có idempotency.
+
+### Giới hạn của network mocks
+
+`page.route()` can thiệp requests từ page, không tự intercept fetch chạy phía server của SSR/BFF. Nếu product được fetch trong Next.js server, cần stub ở dependency boundary phía server hoặc dùng test backend; browser mock không đổi được dữ liệu server đã render.
+
+Service worker có thể xử lý requests trước khi page routing thấy chúng. Vì vậy, ví dụ chặn service workers để mocks xác định. Nếu sản phẩm dựa vào offline/PWA behavior, cần suite riêng bật service worker; đừng coi suite đã chặn nó là bằng chứng cache/offline đúng.
+
+Tránh bật MSW browser worker và Playwright routing cho cùng endpoint trong cùng run mà không có quy tắc ownership. Fixtures cần lấy từ contract có version và được đối chiếu với backend thật; một mock tự viết luôn trả `200` có thể che việc backend đã đổi semantics.
+
+<Callout type="warn" title="Không mock điều bạn muốn kiểm chứng">
+  Không stub `window.shopCart`, callback thêm hàng, event bus hoặc module cart trong case xuyên app. Khi thay cart bằng fake rồi kiểm tra badge, bạn chỉ chứng minh shell hiểu fake đó. Mock API phía sau cart để kiểm tra frontend composition; dùng backend thật khi cần chứng minh dữ liệu đã được lưu.
+</Callout>
+
+## E2E với backend thật và dữ liệu riêng
+
+E2E không nên dùng một giỏ hàng staging chung rồi reset trước mỗi test. Khi hai workers chạy song song, worker này có thể xóa dữ liệu mà worker kia đang assert. Browser context riêng chỉ cô lập cookie/storage, không cô lập database.
+
+### Thiết kế test support API
+
+Mình dùng một scenario riêng cho mỗi test attempt, provision qua API được bảo vệ. API tạo account/session, một sản phẩm có stock ổn định và cart rỗng. Đây là **test support API cần tự triển khai**, không có sẵn trong lab:
+
+| Endpoint | Hành vi cần có |
+| --- | --- |
+| `POST /api/test-support/scenarios` | Nhận `{ key }` duy nhất; tạo scenario và session giới hạn vào dữ liệu đó |
+| Response tạo | `{ id, product: { sku, name }, sessionCookie: { name, value } }` |
+| `GET /api/test-support/scenarios/:id` | Đọc trạng thái đã commit: `{ cart: { items: [{ sku, quantity }] } }` |
+| `DELETE /api/test-support/scenarios/:id` | Cleanup idempotent; chỉ xóa tài nguyên thuộc scenario |
+
+Các endpoints chỉ hoạt động trong test environment, yêu cầu bearer token của CI và không nhận ID để sửa tài nguyên production. Session cookie trả về dành cho scenario, không phải admin token. Session này cần đi qua cơ chế session/cart lookup thật của backend.
+
+Thêm TTL cleanup phía server vì worker có thể bị kill trước khi chạy teardown. Các tests auth riêng vẫn cần đi qua login thật; provision session là cách giảm chi phí setup cho **journey giỏ hàng**, không phải cách chứng minh login đúng.
+
+### Kiểm tra UI và trạng thái backend
+
+Ví dụ dùng cùng UI contract ở phần integration, không khai báo `page.route()` và chạy trên preview có backend thật. Config `baseURL` phải là origin mà test support API và shop cùng được phục vụ:
+
+```ts title="tests/browser/cart.e2e.spec.ts"
+import { randomUUID } from 'node:crypto';
+import { expect, test } from '@playwright/test';
+
+test('giỏ hàng đã lưu còn tồn tại sau reload', async ({
+  page, context, request, baseURL,
+}) => {
+  const token = process.env.E2E_SUPPORT_TOKEN;
+  if (!token || !baseURL) throw new Error('Missing E2E_SUPPORT_TOKEN/baseURL');
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const created = await request.post('/api/test-support/scenarios', {
+    headers, data: { key: randomUUID() },
+  });
+  expect(created.status()).toBe(201);
+  const scenario = await created.json() as {
+    id: string;
+    product: { sku: string; name: string };
+    sessionCookie: { name: string; value: string };
+  };
+  const resource = `/api/test-support/scenarios/${encodeURIComponent(scenario.id)}`;
+
+  try {
+    await context.addCookies([{
+      ...scenario.sessionCookie,
+      url: new URL('/', baseURL).href,
+      httpOnly: true,
+      secure: new URL(baseURL).protocol === 'https:',
+      sameSite: 'Lax',
+    }]);
+    await page.goto('/catalog');
+    await expect(page.getByTestId('cart-count')).toHaveText('0');
+    await page.getByRole('region', { name: 'Catalog', exact: true })
+      .getByTestId(`product-${scenario.product.sku}`)
+      .getByRole('button', { name: 'Thêm vào giỏ', exact: true }).click();
+    await expect(page.getByTestId('cart-count')).toHaveText('1');
+    await page.getByRole('link', { name: 'Giỏ hàng', exact: true }).click();
+    await expect(page).toHaveURL(/\/cart(?:\?.*)?$/);
+
+    const cartUI = page.getByRole('region', { name: 'Giỏ hàng', exact: true });
+    await expect(cartUI.getByTestId(`quantity-${scenario.product.sku}`))
+      .toHaveText('1');
+    await page.reload();
+    await expect(cartUI.getByText(scenario.product.name, { exact: true }))
+      .toBeVisible();
+    await expect(cartUI.getByTestId(`quantity-${scenario.product.sku}`))
+      .toHaveText('1');
+    await expect(page.getByTestId('cart-count')).toHaveText('1');
+
+    // Đọc bằng token test-support, không lấy state từ frontend store.
+    await expect.poll(async () => {
+      const response = await request.get(resource, { headers });
+      expect(response.ok()).toBe(true);
+      const state = await response.json();
+      return state.cart.items;
+    }).toEqual([{ sku: scenario.product.sku, quantity: 1 }]);
+  } finally {
+    const deleted = await request.delete(resource, { headers });
+    expect(deleted.ok()).toBe(true);
+  }
+});
+```
+
+`expect.poll` cho phép chờ trạng thái commit trong khoảng timeout hữu hạn; nó không sửa được một endpoint chỉ trả cache sai mãi. Test support read phải quan sát state của cart mà session vừa dùng, không trả fixture mặc định. Type assertion trong ví dụ không validate JSON ở runtime; API support thực tế nên validate response và báo rõ lỗi setup.
+
+Reload cộng với backend assertion tránh trường hợp UI trông đúng chỉ vì giữ optimistic state trong memory hoặc localStorage. Case vẫn chưa chứng minh idempotency, race giữa nhiều tab hay checkout: mỗi rủi ro cần một scenario riêng và expected result rõ ràng.
+
+Nếu cleanup fail, xem cả lỗi journey ban đầu và lỗi teardown trong report, không chỉ lỗi cuối cùng. Với suite lớn, đưa provision/cleanup vào Playwright fixture để dùng lại và attach lỗi cleanup riêng; TTL là lớp bảo vệ cuối, không phải thay thế teardown.
+
+### Auth và dịch vụ bên ngoài
+
+Dùng `storageState` hoặc session provisioning cho tests không nhằm kiểm tra login. File auth state chứa cookies/tokens nên phải gitignore, giới hạn quyền truy cập và hết hạn hợp lý. Với tests thay đổi cart, mỗi worker/test cần identity riêng; dùng chung auth state của một account vẫn khiến backend state va chạm.
+
+Với payment, chọn sandbox hoặc stub tại API boundary bên ngoài shop, rồi ghi rõ phạm vi. Không nhập thẻ thật hay gửi email thật trong CI. Cần một suite nhỏ riêng cho handshake/webhook với sandbox nếu đây là dependency bắt buộc; E2E dùng payment stub không chứng minh provider đã nhận tiền.
+
+Nếu E2E cần iframe khác origin cho auth/payment, kiểm tra trên các browser thuộc support policy vì third-party cookies và storage policy có thể khác. Không dùng session cookie first-party của ví dụ trên để kết luận flow cross-origin sẽ hoạt động.
+
+## Những boundary dễ bị bỏ sót
+
+### Routing và lifecycle
+
+Điều hướng qua link chỉ kiểm tra SPA navigation; mở URL trực tiếp kiểm tra thêm server/CDN routing. Với mỗi route quan trọng, chọn các hành vi có ý nghĩa:
+
+| Tình huống | Kết quả cần quan sát |
+| --- | --- |
+| Mở trực tiếp `/cart` rồi reload | Shell trả đúng document; cart mount; không rơi vào 404 hoặc trang standalone |
+| Catalog → cart → browser Back | URL và UI đồng bộ; navigation không tạo vòng lặp |
+| Rời catalog rồi quay lại | Không nhân đôi thao tác thêm hàng do listener cũ còn sống |
+| Response chậm về sau khi rời route | Không ghi đè cart/session mới bằng kết quả của instance cũ |
+| Logout khi remote còn mounted | Các app xóa state theo auth boundary; dữ liệu user cũ không hiện cho user mới |
+
+Test cleanup bằng hành vi: quay lại route, click một lần và quan sát một mutation đúng. Đếm mọi listener nội bộ của React/Vue không phải bằng chứng ổn định về remote cleanup. Kiểm tra trực tiếp tài nguyên instance vẫn thuộc [Unit và component tests](/docs/kiem-thu-va-tooling/unit-component-tests); browser integration xác nhận shell thật gọi lifecycle đúng lúc.
+
+### Remote lỗi hoặc tải chậm
+
+Remote failure là lỗi ở frontend composition, khác API trả `503`. Với lab hiện tại, bạn có thể chặn chính catalog entry để kiểm tra error boundary đã có:
+
+```ts title="tests/browser/remote-failure.spec.ts"
+import { expect, test } from '@playwright/test';
+
+test.use({ serviceWorkers: 'block' });
+
+test('catalog entry lỗi không làm mất shell header', async ({ page }) => {
+  // URL này là mapping local của lab; preview phải dùng entry URL đã pin.
+  await page.route('http://localhost:3001/remoteEntry.js', route => route.abort());
+  await page.goto('/');
+
+  await expect(page.getByRole('heading', {
+    name: 'Shop shell', exact: true,
+  })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('Catalog chưa khả dụng');
+  await expect(page.getByRole('button', {
+    name: 'Tải lại trang', exact: true,
+  })).toBeVisible();
+});
+```
+
+Test cần browser context mới và intercept trước navigation để chưa có remote module trong memory/cache. Không dùng một glob chung `**/remoteEntry.js` nếu chỉ muốn phá catalog; nó có thể phá cả cart và làm kết quả không còn đúng scenario.
+
+Thêm các cases theo loader đang dùng: entry `404`, chunk lỗi sau khi entry đã tải, JavaScript runtime throw, hoặc entry bị giữ pending rồi được giải phóng. Với loading case, giữ request bằng một promise được test điều khiển, assert loading UI rồi release; không chờ một `sleep` cố định.
+
+Lab dùng nút reload toàn trang, nên không mặc định assert retry trong cùng React tree. `React.lazy`, module cache và loader có thể giữ rejected promise: muốn retry tại chỗ, ứng dụng phải có recovery strategy thật. Kiểm tra recovery bằng UI sau khi remote phục hồi, không chỉ bằng việc nút retry tồn tại.
+
+Trong failure tests, lỗi tải remote là lỗi được cố ý tạo. Phân loại expected error theo scenario, nhưng vẫn fail với lỗi khác. Không thêm một regex rộng bỏ qua mọi `ChunkLoadError` ở toàn suite.
+
+### Iframe và isolation
+
+Nếu app được nhúng bằng iframe, locators của document shell không nhìn vào document con. Giả sử iframe có `title="Cart"`, và bên trong có button `Thanh toán`:
+
+```ts
+const cartFrame = page.frameLocator('iframe[title="Cart"]');
+await cartFrame.getByRole('button', { name: 'Thanh toán', exact: true }).click();
+```
+
+Playwright có thể tương tác với frame khác origin, nhưng code ứng dụng vẫn phải tuân thủ same-origin policy. Test badge/message cần đi qua bridge `postMessage` thật với origin validation, không đọc trực tiếp store của iframe để cập nhật shell.
+
+Với cùng-document composition, kiểm tra CSS/focus tại vài boundary quan trọng: mở dialog cart, focus không nhảy sang catalog; CSS remote mới không che navigation shell. Visual regression và accessibility scans là suite bổ sung, không nên snapshot toàn trang trong mọi journey rồi coi đó là kiểm tra giao tiếp.
+
+## Kiểm tra version skew và rollback
+
+All-local HEAD + HEAD là một tổ hợp, không phải bằng chứng deploy độc lập an toàn. Giữ conventions của [Version compatibility](/docs/module-federation/version-compatibility): H là shell, C là catalog; cart và backend được pin rõ trong mỗi lượt chạy.
+
+| Tổ hợp | Câu hỏi cần trả lời |
+| --- | --- |
+| H1 + C1 | Baseline đang được hỗ trợ còn hoạt động không? |
+| H1 + C2 candidate | Catalog deploy trước, shell cũ có consume được không? |
+| H2 candidate + C1 | Shell deploy trước hoặc catalog rollback có hoạt động không? |
+| H2 + C2 | Tổ hợp mới có hoàn tất journey không? |
+
+Chỉ bắt buộc các cặp nằm trong compatibility window và rollback policy. Với nhiều remote, chọn theo dependency edges và tổ hợp rủi ro, không nhân mọi version của mọi app thành một matrix khổng lồ. Tuy vậy, không bỏ một cặp bắt buộc chỉ vì khó provision.
+
+Cần phân biệt **browser context mới chạy shell cũ** với **tab cũ đã sống qua một lần deploy**. Case thứ hai có thể giữ runtime, config và modules trong memory:
+
+1. Mở shell H1, ở route chưa lazy-load catalog; giữ tab sống.
+2. Trong namespace riêng của test, đổi mapping theo đúng cơ chế rollout production sang C2.
+3. Đi vào catalog bằng tab đó, kiểm tra module mới có được chọn theo policy và journey vẫn đúng.
+4. Lặp lại với tab đã load C1 trước rollout; ghi rõ expected behavior là giữ C1, reload hay update có kiểm soát.
+
+Nếu shell pin mapping bất biến tại bootstrap, bước 2 không làm tab cũ tự tải C2. Test phải bảo vệ policy giữ C1 và retention của C1 chunks, không ép hành vi “luôn mới nhất” chưa được thiết kế. Rollback cũng cần giữ chunks của release đang được tab cũ dùng, không chỉ đổi pointer entry.
+
+## Giảm flaky tests
+
+### Locators và chờ theo trạng thái
+
+Mặc định dùng role và accessible name, scope vào region của app để không click nhầm button trùng tên. Dùng test ID cho dữ liệu khó diễn đạt bằng semantic locator như SKU/quantity; test ID là cam kết automation nhỏ, không phải đường dẫn vào implementation.
+
+```ts
+// Tránh: phụ thuộc DOM/CSS nội bộ và timing của máy chạy.
+await page.locator('.catalog > div:nth-child(2) button').click();
+await page.waitForTimeout(2000);
+
+// Ưu tiên: phần tử đúng boundary và trạng thái người dùng quan sát được.
+await page.getByRole('region', { name: 'Catalog', exact: true })
+  .getByTestId('product-ao-thun-den')
+  .getByRole('button', { name: 'Thêm vào giỏ', exact: true }).click();
+await expect(page.getByTestId('cart-count')).toHaveText('1');
+```
+
+`click()` auto-wait theo actionability, còn web-first assertions retry tới trạng thái mong đợi. Chúng không biết mọi business operation đã hoàn thành; chọn assertion đúng, chẳng hạn thông báo đã commit hoặc quantity cuối cùng, thay vì chỉ nút xuất hiện.
+
+Không dùng `networkidle` làm readiness chung: polling, analytics và remote loading khiến “không còn request” khác với “người dùng dùng được”. Nếu cần `waitForResponse`, đăng ký wait **trước** action để không bỏ lỡ response nhanh, rồi vẫn assert UI. Response `200` chưa chứng minh remote đã render dữ liệu.
+
+### Isolation và retry có giới hạn
+
+Mỗi test cần có browser state riêng, backend scenario riêng và không phụ thuộc test trước đã login hoặc thêm hàng. Không giải quyết va chạm dữ liệu bằng việc tắt parallel mãi; sửa ownership của dữ liệu trước.
+
+Retry hữu ích để thu thập tín hiệu, nhưng pass sau retry vẫn là flaky test, không phải lần chạy sạch. Trong cấu hình mẫu, mỗi retry của E2E tạo scenario mới bằng UUID; một account dùng chung có thể khiến retry “pass” nhờ state từ attempt trước.
+
+Phân biệt ba loại lỗi khi triage:
+
+- Product bug: cùng artifact/config/input làm thất bại lặp lại.
+- Test bug: locator không rõ, chờ sai trạng thái, fixture lệch contract.
+- Environment bug: runner thiếu browser dependency, backend chưa ready, artifact bị xóa hoặc môi trường bị deploy khác ghi đè.
+
+Quarantine phải có owner, issue và hạn xử lý. Với test bảo vệ journey bắt buộc, cần gate thay thế hoặc quyết định chấp nhận rủi ro rõ ràng; không đổi test thành skipped để report xanh. Theo dõi tỷ lệ flaky theo case và first-attempt failure, không chỉ tổng pass cuối cùng.
+
+## CI và bằng chứng kiểm thử
+
+Một pipeline thực tế có thể chia thành các gate để feedback nhanh mà vẫn bảo vệ artifact:
+
+| Thời điểm | Gate mặc định |
+| --- | --- |
+| PR từng app | Unit/component, contract và smoke/integration tập trung vào boundary đổi |
+| Candidate đã build | Production artifact smoke với peers đã pin và cặp version bắt buộc |
+| Trước promotion | E2E journeys quan trọng trên preview có backend thật |
+| Scheduled hoặc thay runtime lớn | Browser matrix, tab sống lâu, recovery và scenarios tốn thời gian |
+| Sau deploy | Synthetic smoke chỉ đọc hoặc dữ liệu test được giới hạn, có cleanup |
+
+Chọn browser theo support policy: Chromium cho vòng lặp ban đầu; thêm Firefox/WebKit và device profiles khi cần bảo vệ hành vi được hỗ trợ. Browser mới trong matrix phải có ngân sách runtime và owner xử lý failures, không chỉ thêm để report trông đầy đủ.
+
+Với preview đã provision, chạy từ workspace ứng dụng, token lấy từ secret store của CI:
+
+```bash
+npm ci
+npx playwright install --with-deps chromium
+TEST_BASE_URL="https://run-123.preview.example.com" \
+  npx playwright test
+```
+
+Hostname trên chỉ minh họa; `E2E_SUPPORT_TOKEN` phải có trong environment của job chạy E2E. Các ví dụ dùng `page.goto('/catalog')` nên route bắt đầu từ **root origin**. Mình ưu tiên hostname riêng cho mỗi preview; nếu app phục vụ dưới base path như `/run-123/`, phải cấu hình app và sửa URLs/API paths trong suite để không test nhầm môi trường. Failure test cũng cần dùng catalog entry URL của preview thay cho URL local.
+
+Lưu `playwright-report/`, `test-results/` và server logs ngay cả khi command thất bại. Record kèm shell/remote digests, mapping/config digest, backend version, test suite revision, browser version và run URL. Kết quả pass từ tổ hợp khác không được dùng thay cho ô matrix còn thiếu.
+
+Cấu hình mẫu dùng `retain-on-failure` để giữ trace của attempt lỗi, kể cả khi retry sau đó pass. Với suite lớn cần giảm overhead, có thể dùng `on-first-retry`, nhưng lúc đó không có trace của first attempt. Khi debug local:
+
+```bash
+npx playwright test tests/browser/remote-smoke.spec.ts --trace on
+npx playwright show-trace test-results/<test-directory>/trace.zip
+```
+
+<Callout type="warn" title="Artifacts kiểm thử có thể chứa secrets">
+  Trace, HAR, screenshot và logs có thể chứa cookie, token, dữ liệu cá nhân hoặc response test support. Dùng dữ liệu giả, giới hạn quyền truy cập và retention; không publish report/auth state công khai. Không log bearer token để debug lỗi setup.
+</Callout>
+
+Gate phải promote đúng artifacts đã test, chặn khi thiếu kết quả bắt buộc và có policy với flaky attempts. Chi tiết provisioning nằm ở [Preview environments](/docs/trien-khai/preview-environments), còn pipeline và promotion nằm ở [CI/CD cho deploy độc lập](/docs/trien-khai/ci-cd).
+
+## Chẩn đoán test thất bại
+
+Đọc lỗi theo đường tải và giao tiếp thay vì tăng timeout ngay. Trace cho biết action, DOM snapshots, requests và console tại cùng một thời điểm; version record cho biết bạn đang điều tra artifact nào.
+
+| Dấu hiệu | Kiểm tra trước | Nguyên nhân thường gặp |
+| --- | --- | --- |
+| Shell không mở được | Process logs, readiness URL, browser binary | Server chưa ready, port bị chiếm, system packages thiếu |
+| Shell hiện, catalog fallback | Entry response, MIME/body, chunk URLs, exposed module | Entry là HTML, sai public path, export hoặc shared runtime lỗi |
+| Catalog hiện, POST không có | Accessible locator, disabled state, callback/capability wiring | Click sai app, callback chưa truyền hoặc boundary bị mock |
+| POST thành công, badge không đổi | Snapshot response, event/adapter logs, subscription lifecycle | Lệch payload semantics, consumer không subscribe, stale revision |
+| Badge đúng, cart rỗng | Route mount, cart query/session, dữ liệu mock/backend | Hai frontend không dùng cùng cart identity hoặc state chưa commit |
+| Chỉ fail khi parallel/retry | Scenario keys, tài khoản và cleanup | Backend state dùng chung, teardown xóa dữ liệu của worker khác |
+| Chỉ fail với production build | Config digest, CDN headers và chunks | Build-time URL khác, asset bị xóa, CSP/CORS/cache policy khác |
+| H2+C2 pass, H1+C2 fail | Consumer expectations và compatibility window | Breaking change chỉ được kiểm tra với HEAD |
+
+Không phải request lỗi nào cũng phát `requestfailed`: HTTP `404`/`500` vẫn là response HTTP, nên kiểm tra status qua response/trace. Với expected remote failure, đánh dấu lỗi mong đợi cụ thể; với happy path, đừng lọc sạch console errors để bỏ qua dependency mismatch.
+
+## Checklist triển khai
+
+- [ ] Mỗi suite ghi rõ frontend/backend thật và dependency được mock.
+- [ ] Có smoke tải public remote qua shell loader thật, không import source thay remote.
+- [ ] Release gate dùng artifact production bất biến và mapping được pin.
+- [ ] Có một integration journey quan sát cả catalog, shell badge và cart.
+- [ ] Mock API theo contract; requests ngoài fixture không âm thầm gọi staging.
+- [ ] E2E dùng scenario/session riêng cho từng attempt và kiểm tra backend state thật.
+- [ ] Test support API có auth, giới hạn môi trường, teardown và TTL cleanup.
+- [ ] Có deep link/reload, lifecycle và remote failure/recovery theo policy.
+- [ ] Kiểm tra các cặp version và rollback targets bắt buộc, không chỉ HEAD + HEAD.
+- [ ] Chờ theo UI/business state, không dựa vào sleep hoặc networkidle.
+- [ ] First-attempt failure, traces và flaky cases có owner xử lý.
+- [ ] CI lưu bằng chứng gắn với artifact; secrets/auth state không được publish.
+
+Nếu mới có shell/catalog, hãy chạy smoke và remote-failure case trước. Khi thêm cart boundary, bổ sung integration journey với API mock; sau đó mới provision backend scenario để nâng một journey quan trọng thành E2E. Bạn sẽ có từng lớp bằng chứng rõ ràng, thay vì một suite browser lớn mà không biết nó đang bảo vệ điều gì.
+
+## Tài liệu tham khảo
+
+- [Playwright — Web server](https://playwright.dev/docs/test-webserver): khởi động nhiều server và HTTP readiness.
+- [Playwright — Best practices](https://playwright.dev/docs/best-practices): test isolation, user-facing locators và web-first assertions.
+- [Playwright — Mock APIs](https://playwright.dev/docs/mock): intercept network, fixtures và HAR replay.
+- [Playwright — Service workers](https://playwright.dev/docs/service-workers): giới hạn routing khi có service worker.
+- [Playwright — Authentication](https://playwright.dev/docs/auth): tái sử dụng auth state và quản lý accounts theo worker.
+- [Playwright — Test retries](https://playwright.dev/docs/test-retries): phân biệt passed, flaky và failed tests.
+- [Playwright — Trace viewer](https://playwright.dev/docs/trace-viewer): điều tra actions, DOM, console và network khi CI fail.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Bắt lệch exports, callbacks và event semantics trước khi chạy journey đầy đủ." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Chọn compatibility window và bảo vệ tab cũ khi deploy độc lập." />
+  <Card title="Preview environments" href="/docs/trien-khai/preview-environments" description="Provision môi trường riêng và pin tổ hợp artifacts cho từng lượt kiểm thử." />
+  <Card title="Observability cho frontend phân tán" href="/docs/kiem-thu-va-tooling/observability" description="Nối runtime errors, correlation IDs và release context để điều tra lỗi xuyên app." />
+</Cards>

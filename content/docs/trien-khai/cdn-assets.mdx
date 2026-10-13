@@ -3,16 +3,491 @@ title: "Hosting, CDN và assets"
 description: "Phân phối artifacts, public paths, CORS và đường dẫn assets đúng môi trường."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell tải được `remoteEntry.js` của catalog, nhưng khi bạn mở màn hình sản phẩm, browser lại xin một chunk từ domain của shell và nhận `404`. Hoặc request trả `200`, nhưng nội dung là `index.html` thay vì JavaScript. Remote đã deploy, nhưng đường đi từ entry đến các assets vẫn chưa đúng.
+
+Với micro-frontend, hosting không chỉ là đưa một thư mục build lên CDN. Bạn cần giữ đúng ba thứ: **entry trỏ đến đúng release, runtime tải assets từ đúng nơi, và server trả đúng nội dung cùng headers**. Bài này đi qua cả ba bằng một ví dụ shell/catalog.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Ví dụ dành cho micro-frontend chạy trong browser, dùng webpack 5 hoặc Vite. Các domain, release ID và artifact bên dưới là minh họa; repository này chỉ chứa tài liệu, không có ứng dụng catalog hay hạ tầng để chạy trực tiếp các lệnh deploy. Ví dụ Vite chỉ nói về đường dẫn assets, không cấu hình một federation plugin. Sơ đồ dùng ASCII nên không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn nơi phục vụ shell và remote](#chọn-nơi-phục-vụ-shell-và-remote)
+- [Thiết kế layout artifact theo release](#thiết-kế-layout-artifact-theo-release)
+  - [Entry là cửa vào chứ không phải toàn bộ ứng dụng](#entry-là-cửa-vào-chứ-không-phải-toàn-bộ-ứng-dụng)
+  - [Giữ release bất biến](#giữ-release-bất-biến)
+- [Đường dẫn assets được tính như thế nào](#đường-dẫn-assets-được-tính-như-thế-nào)
+  - [Phân biệt route base và asset base](#phân-biệt-route-base-và-asset-base)
+  - [Webpack với publicPath](#webpack-với-publicpath)
+  - [Vite với base](#vite-với-base)
+  - [Ảnh font CSS và assets động](#ảnh-font-css-và-assets-động)
+- [CORS và quyền tải tài nguyên](#cors-và-quyền-tải-tài-nguyên)
+  - [Không phải request cross origin nào cũng giống nhau](#không-phải-request-cross-origin-nào-cũng-giống-nhau)
+  - [Chọn chính sách cho assets công khai](#chọn-chính-sách-cho-assets-công-khai)
+  - [CSP và trust boundary](#csp-và-trust-boundary)
+- [Cấu hình hosting trả đúng nội dung](#cấu-hình-hosting-trả-đúng-nội-dung)
+  - [MIME type compression và cache headers](#mime-type-compression-và-cache-headers)
+  - [Không áp dụng SPA fallback cho remote assets](#không-áp-dụng-spa-fallback-cho-remote-assets)
+  - [Ví dụ origin bằng Nginx](#ví-dụ-origin-bằng-nginx)
+- [Quy trình publish một release](#quy-trình-publish-một-release)
+- [Kiểm tra qua CDN và trong browser](#kiểm-tra-qua-cdn-và-trong-browser)
+- [Chẩn đoán các lỗi thường gặp](#chẩn-đoán-các-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn nơi phục vụ shell và remote
 
-Bài này sẽ giúp bạn: phân phối artifacts, public paths, CORS và đường dẫn assets đúng môi trường.
+Mình chọn mặc định: shell ở domain ứng dụng, còn các remote static ở object storage phía sau CDN. CDN giữ bản cache gần người dùng; object storage là origin, nơi giữ artifact gốc khi CDN cần lấy file.
 
-[Xem các bài trong nhóm Triển khai](/docs/trien-khai).
+```text
+Browser đang mở https://shop.example.com
+    │
+    ├── HTML và shell assets ──► Hosting của shell
+    │
+    └── Entry và chunks ──────► https://assets.example.com
+                                         │
+                                         ▼
+                                    CDN edge cache
+                                         │ cache miss
+                                         ▼
+                                 Object storage origin
+```
+
+Trong sơ đồ này, **browser tải remote**, không phải server của shell tải rồi trả lại. Vì vậy DNS, TLS, CORS và CSP phải đúng từ góc nhìn browser của người dùng. Việc server CI tải được file chưa chứng minh người dùng tải được.
+
+| Loại artifact | Nơi phục vụ phù hợp | Điều cần chú ý |
+| --- | --- | --- |
+| Shell dạng SPA hoặc static export | Static hosting, object storage hoặc CDN | Deep link cần route fallback phù hợp với kiểu build |
+| Shell dùng SSR | Server hoặc nền tảng chạy framework, CDN cho assets static | CDN không thay thế phần render, session hoặc server logic |
+| Remote JavaScript, CSS, ảnh và font | Object storage hoặc static server sau CDN | Phục vụ nguyên build output, giữ đúng đường dẫn và metadata |
+| Remote chạy standalone hoặc qua iframe | Hosting riêng có HTML và routing riêng | HTML của remote và assets của remote là hai lớp cấu hình khác nhau |
+| API và tài nguyên theo user | Backend hoặc gateway có authentication | Không áp dụng cache public của assets cho response cá nhân |
+
+Nếu các team chưa cần origin riêng, bạn có thể phục vụ remote qua prefix cùng origin, chẳng hạn `https://shop.example.com/mfe/catalog/`. Cách này giảm cấu hình CORS nhưng vẫn cần layout release, public path và quyền publish rõ ràng. Đừng thêm domain/CDN riêng chỉ vì tên kiến trúc là micro-frontend.
+
+Với SSR hoặc federation chạy phía server, địa chỉ mà server dùng có thể khác địa chỉ public của browser. Không đưa hostname nội bộ vào client bundle, và không coi cấu hình phía browser trong bài này là cấu hình SSR hoàn chỉnh.
+
+## Thiết kế layout artifact theo release
+
+### Entry là cửa vào chứ không phải toàn bộ ứng dụng
+
+Một build webpack có thể tạo các URL như sau. Tên hash bên dưới chỉ để minh họa, không phải quy ước bắt buộc của bundler:
+
+| Vai trò | URL public |
+| --- | --- |
+| Container entry | `https://assets.example.com/catalog/releases/r17/remoteEntry.js` |
+| Lazy chunk | `https://assets.example.com/catalog/releases/r17/assets/product.4e8a.js` |
+| CSS | `https://assets.example.com/catalog/releases/r17/assets/product.92ac.css` |
+| Font | `https://assets.example.com/catalog/releases/r17/assets/inter.81bd.woff2` |
+| Ảnh | `https://assets.example.com/catalog/releases/r17/assets/banner.3fa1.svg` |
+
+Shell chỉ cần biết entry URL hoặc một manifest mà loader hỗ trợ. Container/runtime sau đó tải các dependency khác. Với Vite và federation plugins, entry có thể là ES module, nằm dưới `assets/`, hoặc được tìm qua manifest; hãy theo đúng output và format của plugin đang dùng.
+
+Vì vậy, **publish toàn bộ tập artifact cần cho runtime, không chỉ `remoteEntry.js`**. Tập này bao gồm lazy chunks chưa được tải trong lần mở trang đầu tiên. Không đổi tên file thủ công sau build: entry, chunk imports và CSS có thể đã tham chiếu tên đó.
+
+### Giữ release bất biến
+
+Mình dùng prefix có release ID và không ghi đè nội dung trong prefix đã publish. Ví dụ mapping của shell đang trỏ catalog tới `r17`; release tiếp theo nằm ở `r18`, rồi mapping mới chuyển sang `r18` sau khi kiểm tra xong.
+
+```json title="Ví dụ dữ liệu mapping do hệ thống của bạn định nghĩa"
+{
+  "catalog": {
+    "release": "r17",
+    "entry": "https://assets.example.com/catalog/releases/r17/remoteEntry.js"
+  }
+}
+```
+
+Đây không phải schema manifest chuẩn của Module Federation. Loader hoặc lớp runtime configuration của bạn phải biết cách đọc nó và cách tải entry tương ứng.
+
+Release ID có thể là commit SHA hoặc build ID duy nhất. Nếu cùng một commit được build với cấu hình môi trường khác nhau, chỉ commit SHA chưa chắc phân biệt được hai artifact; dùng build ID hoặc prefix môi trường khi cần.
+
+Tại sao giữ file cũ? Một tab đang mở có thể còn chạy entry của `r17`, nhưng chỉ tải lazy chunk của màn hình thanh toán vài giờ sau. Nếu bạn xóa `r17` ngay khi deploy `r18`, tab đó sẽ lỗi dù người mới mở trang vẫn chạy bình thường. Rollback cũng cần cả mapping cũ **và** artifact cũ.
+
+Retention nên dựa vào thời gian sống của tab/session, thời hạn rollback và số liệu truy cập artifact, không chọn một số ngày tùy ý rồi coi là an toàn. URL có hash và prefix release giúp tránh trộn build, nhưng không tự kiểm tra compatibility giữa shell và remote.
+
+<Callout type="warn" title="Không sửa một URL đã coi là immutable">
+  Nếu file có lỗi, tạo release mới. Ghi đè `r17/remoteEntry.js` hoặc một chunk đã cache lâu sẽ khiến các CDN edge và browser nhìn thấy nội dung khác nhau dưới cùng URL. Purge CDN cũng không xóa được mọi bản cache trong browser hay service worker của người dùng.
+</Callout>
+
+## Đường dẫn assets được tính như thế nào
+
+### Phân biệt route base và asset base
+
+Route của catalog có thể nằm dưới `/products` trong shell, còn assets nằm ở `https://assets.example.com/catalog/releases/r17/`. Hai đường dẫn phục vụ hai việc khác nhau.
+
+| Khái niệm | Ví dụ | Ai xử lý |
+| --- | --- | --- |
+| Route base | `/products` | Router và contract navigation với shell |
+| Asset base | `https://assets.example.com/catalog/releases/r17/` | Bundler/runtime tạo URL tải chunks và assets |
+| API base | `https://api.example.com/catalog/` | API client, authentication và backend |
+
+Đặt router `basename` đúng không sửa được URL chunk sai. Ngược lại, đổi `publicPath` không giải quyết việc refresh `/products/123` trả `404` từ hosting của shell.
+
+Browser cũng không coi mọi URL tương đối là “tương đối với remote”:
+
+- `fetch('./config.json')` thông thường resolve theo base URL của document, không tự theo file JavaScript đang chạy.
+- `<img src="/logo.svg">` trỏ về origin của document, thường là shell.
+- Relative import trong ES module resolve theo URL của module import nó.
+- `url('./font.woff2')` trong stylesheet ngoài resolve theo URL của stylesheet đó; CSS được chèn inline cần xem cách bundler/plugin rewrite URL.
+
+Remote nằm dưới route nào không làm browser biết thư mục artifact của remote. Bạn phải để bundler quản lý dependency hoặc tạo URL dựa trên một base rõ ràng.
+
+### Webpack với publicPath
+
+Với remote webpack 5 được tải bằng script từ CDN, mình bắt đầu bằng `output.publicPath: 'auto'`. Runtime có thể suy ra base từ URL script hoặc các cơ chế mà webpack hỗ trợ, thay vì ghép chunk vào origin của shell.
+
+```js title="Trích cấu hình webpack 5 của catalog, không phải lab hoàn chỉnh"
+const { ModuleFederationPlugin } = require('webpack').container;
+
+module.exports = {
+  mode: 'production',
+  output: {
+    publicPath: 'auto',
+    uniqueName: 'catalog_app',
+    filename: 'assets/[name].[contenthash].js',
+    chunkFilename: 'assets/[name].[contenthash].js',
+    assetModuleFilename: 'assets/[name].[contenthash][ext]',
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'catalog_app',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './ProductPage': './src/public/ProductPage.js',
+      },
+    }),
+  ],
+};
+```
+
+Đoạn này giả định entry container nằm ngay dưới prefix release và các chunks nằm trong `assets/`. Định dạng `.cjs` phù hợp khi project khai báo `"type": "module"`. Cấu hình entry, loaders, CSS extraction và shared dependencies cần bổ sung theo ứng dụng; `assetModuleFilename` áp dụng cho Asset Modules, không tự đặt tên CSS của plugin extraction.
+
+Nếu entry được tải từ `https://assets.example.com/catalog/releases/r17/remoteEntry.js`, URL mong đợi của chunk là dưới cùng prefix `r17/`. Nếu runtime/container nằm ở vị trí khác, hoặc loader fetch nội dung rồi chạy qua `eval`/blob URL, đừng giả định `auto` vẫn suy ra base mong muốn. Kiểm tra output và requests thật.
+
+Khi biết chính xác nơi publish, `publicPath` tuyệt đối là lựa chọn dễ kiểm soát:
+
+```js title="Trích config với publicPath tuyệt đối, giữ các options khác của bạn"
+module.exports = {
+  output: {
+    publicPath: 'https://assets.example.com/catalog/releases/r17/',
+  },
+};
+```
+
+Dấu `/` cuối base là cần thiết để ghép đường dẫn con đúng. Đổi prefix hoặc domain sau build có thể buộc bạn build lại nếu URL đã được ghi cố định vào artifact.
+
+Webpack cũng có `__webpack_public_path__` để đặt base lúc runtime. Phải đặt nó trong **runtime của remote sở hữu các chunks**, trước khi các module phụ thuộc tải assets. Đặt biến trong shell không tự đổi public path của remote. Với ES imports, assignment ở đầu file entry có thể vẫn quá muộn vì imports được xử lý trước; webpack hướng dẫn tách module gán public path và import nó trước app. Với federation container, còn phải đảm bảo initialization đó chạy trước các exposed modules — không copy bootstrap standalone rồi mặc định nó đã bao phủ đường tải qua container.
+
+### Vite với base
+
+Vite dùng `base` để điều chỉnh đường dẫn khi build. Với một ứng dụng publish ở vị trí cố định, bạn có thể truyền base qua CLI:
+
+```bash title="Ví dụ chạy trong project Vite của catalog"
+npx vite build --base=https://assets.example.com/catalog/releases/r17/
+```
+
+Hoặc đặt trong `vite.config.ts`:
+
+```ts
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  base: 'https://assets.example.com/catalog/releases/r17/',
+});
+```
+
+Đây là hai cách cấu hình tương đương cho mục tiêu này, không phải hai bước cần chạy nối tiếp. Vite rewrite các tham chiếu mà nó xử lý, như assets import từ JavaScript, CSS `url()` và HTML. Với URL do code tự ghép, dùng `import.meta.env.BASE_URL` đúng cú pháp; giá trị này được thay tại build time, không phải remote config được đọc mỗi lần app chạy.
+
+```ts title="File public/brand/logo.svg được copy vào output"
+const logoUrl = `${import.meta.env.BASE_URL}brand/logo.svg`;
+```
+
+Nếu shell import module của remote thay vì tải HTML do Vite sinh, bạn không được hưởng các thẻ preload hoặc stylesheet mà HTML đó chứa. Federation plugin/loader phải xử lý dependencies và CSS theo format của nó. Một config `base` đúng không tự làm `import('catalog/ProductPage')` hoạt động.
+
+Vite hỗ trợ relative base như `./` cho một số mô hình nhúng hoặc chuyển thư mục. Mình chỉ dùng khi đã kiểm tra đường tải entry, dynamic import, CSS và public assets của plugin cụ thể. Đặc biệt, chuỗi URL tương đối do code tự tạo vẫn có thể resolve theo document của shell. Relative base không phải lời đảm bảo “đem output tới đâu cũng chạy”.
+
+### Ảnh font CSS và assets động
+
+Ưu tiên import tài nguyên qua bundler khi file thuộc dependency graph:
+
+```ts title="Ví dụ Vite hoặc webpack có Asset Modules phù hợp"
+import bannerUrl from './banner.svg';
+
+const image = new Image();
+image.src = bannerUrl;
+```
+
+Bundler có thể xuất file có hash và gắn đường dẫn đúng; file rất nhỏ cũng có thể được inline tùy cấu hình. Với Vite, mẫu URL sau phù hợp cho asset xác định được lúc build:
+
+```ts
+const bannerUrl = new URL('./banner.svg', import.meta.url).href;
+```
+
+Không thay nó bằng `new URL(userSuppliedPath, import.meta.url)` rồi kỳ vọng bundler tìm và publish mọi file runtime có thể yêu cầu. Assets động nên có map import được tạo lúc build hoặc URL được kiểm tra dựa trên asset base của release.
+
+Những file ở thư mục `public/` của Vite thường giữ tên và được copy nguyên. File không có hash vẫn có thể cache lâu nếu nằm trong **prefix release bất biến**. Nhưng khi nằm ở URL dùng chung như `/brand/logo.svg` và có thể bị ghi đè, chính sách cache phải khác.
+
+Font cross-origin cần CORS; CSS có thể tải được nhưng font bị browser chặn. Kiểm tra cả font thực sự được dùng, không chỉ stylesheet trả `200`. Đồng thời kiểm tra thứ tự tải CSS và phạm vi selectors: hosting đúng không ngăn stylesheet của remote tác động vào shell.
+
+## CORS và quyền tải tài nguyên
+
+### Không phải request cross origin nào cũng giống nhau
+
+CORS quyết định browser có cho JavaScript hoặc một số loại tài nguyên sử dụng response từ origin khác hay không. Nó không phải authentication, và không chặn công cụ HTTP ngoài browser tải một URL công khai.
+
+| Cách tải | Khi khác origin cần lưu ý gì |
+| --- | --- |
+| Classic `<script src="...">` không có `crossorigin` | Thông thường có thể tải cross-origin mà không yêu cầu CORS; lỗi JS có thể bị che chi tiết |
+| Classic script có `crossorigin="anonymous"` | Server cần cho phép CORS để tải thành công và cung cấp diagnostics tốt hơn |
+| `<script type="module">` và module imports | Dùng CORS, đồng thời cần JavaScript MIME type hợp lệ |
+| `fetch()` lấy manifest hoặc JSON | Cần CORS để code đọc response; `mode: 'no-cors'` không cho bạn đọc JSON vì response là opaque |
+| Font trong CSS | Cần CORS khi tải từ origin khác |
+| Ảnh hiển thị bằng `<img>` | Thường hiển thị được; đọc pixel qua canvas cần cấu hình CORS phù hợp để tránh canvas bị taint |
+
+Các chế độ tải còn có thể bị CSP, CORP/COEP hoặc mixed content chặn. Vì vậy “script thường không cần CORS” không có nghĩa mọi script URL công khai đều sẽ chạy.
+
+### Chọn chính sách cho assets công khai
+
+Mình ưu tiên remote static **không phụ thuộc cookies hoặc credentials**, và dùng chính sách CORS sau cho artifacts public:
+
+```http title="Ví dụ response của một chunk immutable"
+HTTP/1.1 200 OK
+Content-Type: text/javascript
+Cache-Control: public, max-age=31536000, immutable
+Access-Control-Allow-Origin: *
+X-Content-Type-Options: nosniff
+```
+
+Áp dụng CORS nhất quán cho entry, chunks, manifest và font cần tải cross-origin, không chỉ `remoteEntry.js`. Nếu chỉ shell của bạn được phép đọc response, có thể dùng allowlist origin thay `*`; nhưng classic script không bật CORS và HTTP client khác vẫn có thể tải assets. Allowlist không giữ bí mật source code.
+
+Khi response thay đổi `Access-Control-Allow-Origin` theo request `Origin`, kiểm tra allowlist rồi thêm `Vary: Origin`. CDN phải tôn trọng biến thể hoặc có cache key tương ứng. Không phản chiếu mọi giá trị `Origin` tùy ý. Với header `*` cố định cho mọi request, không cần `Vary: Origin` chỉ vì có CORS.
+
+Nếu tài nguyên thực sự cần credentials, response phải dùng origin cụ thể cùng `Access-Control-Allow-Credentials: true`, và request phải chọn credential mode phù hợp. `Access-Control-Allow-Origin: *` không dùng được cho credentialed CORS. Đây thường là dấu hiệu nên tách tài nguyên đó khỏi bucket assets public; cookie policies và chính sách cache/authentication cũng cần xử lý riêng.
+
+Một `GET` static thông thường không tự tạo preflight. Request có headers ngoài nhóm safelisted, chẳng hạn `Authorization`, có thể cần `OPTIONS`. Khi đó phải cho phép method/headers cần thiết; đừng thêm credentials và custom headers vào loader assets nếu không có lý do.
+
+### CSP và trust boundary
+
+Trang shell cần CSP cho phép nguồn tải thực tế. Tối thiểu, xem xét `script-src` cho scripts, `style-src` cho CSS, `font-src` cho font, `img-src` cho ảnh và `connect-src` cho manifest/JSON lấy bằng `fetch`. Styles inline do plugin inject cần chính sách riêng, chẳng hạn nonce nếu plugin hỗ trợ; không nới sang `unsafe-inline` hoặc `unsafe-eval` chỉ để bỏ lỗi mà chưa hiểu nguyên nhân.
+
+Không có một CSP mẫu dùng được cho mọi loader, bundler và SSR setup. Bắt đầu từ chính sách hiện có của shell, bổ sung đúng nguồn cần thiết rồi kiểm tra CSP violations trong browser. Với shell bật cross-origin isolation, còn phải kiểm tra COEP/CORP cùng CORS cho từng loại tài nguyên.
+
+<Callout type="warn" title="CDN khác origin không sandbox remote">
+  JavaScript remote chạy trong document của shell vẫn có quyền tác động DOM và dùng các khả năng mà trang cung cấp. Chỉ publish code từ các team/source đáng tin cậy, bảo vệ quyền ghi artifact và quyền đổi mapping. CORS không biến code đó thành an toàn. Nếu cần isolation cho nội dung không tin cậy, đánh giá [iframe](/docs/cac-cach-tich-hop/iframe) cùng sandbox và contract riêng.
+</Callout>
+
+SRI có thể kiểm tra bytes của một script khi loader hỗ trợ integrity và cross-origin loading được cấu hình đúng. Integrity trên entry không tự bao phủ các chunks mà runtime tải sau đó; muốn bảo vệ cả graph cần cơ chế tương ứng của build/loader, không chỉ gắn hash cho `remoteEntry.js`.
+
+## Cấu hình hosting trả đúng nội dung
+
+### MIME type compression và cache headers
+
+Object storage thường lưu MIME type dưới dạng metadata của object. Static server thường suy ra từ extension. Kiểm tra response sau khi đi qua CDN, vì edge rules có thể thay đổi headers.
+
+| Nội dung | Content-Type thông dụng | Ghi chú |
+| --- | --- | --- |
+| JavaScript và `.mjs` | `text/javascript` | MIME phải hợp lệ với module loader |
+| CSS | `text/css` | Không trả HTML thay stylesheet |
+| JSON manifest | `application/json` | Không trả trang login hoặc error document |
+| SVG | `image/svg+xml` | Giữ đúng MIME thay vì `text/plain` |
+| WOFF2 | `font/woff2` | Kiểm tra thêm CORS |
+| WebAssembly nếu có | `application/wasm` | Phù hợp với streaming APIs |
+
+CDN có thể nén JS/CSS bằng gzip hoặc Brotli. Nếu bạn upload file đã nén sẵn, phải phục vụ đúng `Content-Encoding` và vẫn giữ MIME của nội dung gốc. Không upload bytes gzip dưới tên `.js` rồi thiếu encoding. Khi response có nhiều representation theo `Accept-Encoding`, cấu hình CDN/server phải phân biệt chúng đúng, thường qua `Vary: Accept-Encoding` và cơ chế compression của CDN.
+
+Về cache, phân biệt URL bất biến và URL mutable:
+
+| URL | Chính sách minh họa | Điều kiện |
+| --- | --- | --- |
+| File dưới `/catalog/releases/r17/` | `public, max-age=31536000, immutable` | Mọi file trong prefix đó không bị ghi đè |
+| Manifest/mapping ở URL ổn định | `no-cache` hoặc TTL ngắn được xác định rõ | `no-cache` cho phép lưu nhưng yêu cầu revalidation trước khi reuse |
+| HTML shell có URL ổn định | Revalidation hoặc TTL có kiểm soát | Cần nhận HTML mới khi shell đổi assets |
+| Response cá nhân hoặc có secrets | Chính sách private/no-store theo yêu cầu | Không đưa vào cache public của remote artifacts |
+
+`remoteEntry.js` không có hash không đồng nghĩa luôn phải TTL ngắn: nếu URL chứa release bất biến như `r17`, nó vẫn có thể cache lâu. Ngược lại, `/catalog/remoteEntry.js` bị ghi đè là URL mutable. Chi tiết invalidation và cache nhiều lớp nằm ở [Caching và cache invalidation](/docs/trien-khai/caching).
+
+### Không áp dụng SPA fallback cho remote assets
+
+SPA hosting thường rewrite request không tìm thấy file sang `index.html` để router client xử lý deep link. Quy tắc đó chỉ dành cho navigation của SPA, không áp dụng cho JavaScript, CSS, font hay manifest bị thiếu.
+
+Ví dụ request này phải trả `404` nếu file không tồn tại:
+
+```text
+GET /catalog/releases/r17/assets/product.4e8a.js
+```
+
+Nếu CDN trả `200 text/html`, browser có thể báo `Unexpected token '<'` hoặc lỗi MIME của module script. Status `200` không còn phản ánh artifact có tồn tại hay không.
+
+Tách behavior của CDN theo prefix assets và theo origin khi cần. Với shell SPA, assets có prefix riêng nên trả `404` khi thiếu; chỉ các navigation route hợp lệ mới fallback. Với static export không phải SPA, phục vụ đúng trang HTML được build thay vì mặc định mọi route về một `index.html`.
+
+Đặc biệt, kiểm tra error-page mapping của object storage/CDN: origin trả `403` hoặc `404` không nên bị đổi thành HTML shell với status `200`. Negative caching cũng cần TTL thấp hoặc tắt theo nhu cầu trong quá trình publish, để một request sớm tới file chưa upload không giữ lỗi sau khi file đã xuất hiện.
+
+### Ví dụ origin bằng Nginx
+
+Nếu dùng Nginx thay object storage, đoạn server minh họa sau phục vụ remote từ `/srv/www/catalog/releases/`. Nó không phục vụ HTML shell và không có SPA fallback.
+
+```nginx title="Server block đặt trong http context của nginx.conf"
+server {
+    listen 8080;
+    server_name assets-origin.example.com;
+
+    root /srv/www;
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    location ^~ /catalog/releases/ {
+        try_files $uri =404;
+
+        add_header Access-Control-Allow-Origin "*" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    location / {
+        return 404;
+    }
+}
+```
+
+Request `/catalog/releases/r17/remoteEntry.js` được map tới `/srv/www/catalog/releases/r17/remoteEntry.js`. Copy **nội dung output** vào prefix release, không thêm nhầm một cấp `dist/` giữa URL và file.
+
+`Cache-Control` không dùng `always` trong ví dụ này để không gắn TTL immutable lên response `404`. CORS dùng `always` để browser có thể quan sát response lỗi qua CORS thay vì chỉ thấy lỗi thiếu header. Đường dẫn `mime.types` có thể khác theo bản cài; phải kiểm tra mapping cho `.mjs` và các extensions của build.
+
+Port `8080` là origin minh họa, không phải endpoint public production. CDN và browser cần HTTPS hợp lệ; bảo vệ đường CDN-to-origin bằng TLS hoặc cơ chế mạng phù hợp với hạ tầng. Kiểm tra thêm CDN không ghi đè TTL cho lỗi, không thay MIME và không biến `404` thành `200`. Nếu CDN là cửa vào duy nhất, giới hạn truy cập origin bằng cơ chế mà nhà cung cấp hỗ trợ.
+
+## Quy trình publish một release
+
+Upload nhiều files không phải một thao tác atomic. Cách tránh người dùng gặp build dở dang là publish vào prefix mới, kiểm tra toàn bộ artifact rồi mới đổi mapping đang phục vụ shell.
+
+1. **Chốt release ID và asset base.** Build/test artifact một lần; nếu base cố định, build phải biết URL sẽ publish. Kiểm tra output không còn hostname local hoặc prefix môi trường khác.
+2. **Upload vào prefix chưa từng dùng.** Đưa các chunks, CSS, font và assets lên trước, rồi entry/manifest cuối nếu format cho phép. Không xóa prefix cũ và không ghi đè release đang chạy.
+3. **Kiểm tra qua URL CDN.** Đợi artifact thật sự truy cập được và chạy smoke test với shell tương thích. Kiểm tra một lazy route chứ không chỉ trang đầu.
+4. **Đổi mapping hoặc cấu hình shell.** Chỉ công bố release sau khi checks đạt. Nếu host hard-code remote URL trong build, bước này là release shell mới; không tự trở thành runtime switch.
+5. **Theo dõi và giữ đường rollback.** Ghi lại release ID, URL entry và lỗi tải chunk; rollback mapping tới release đã biết tốt khi cần, giữ nguyên artifact cũ.
+
+Ví dụ nếu origin là S3, dùng AWS CLI đã cấu hình credentials và quyền write giới hạn cho prefix. Bucket dưới đây là tên minh họa; CDN giả định map path tới object key tương ứng và không yêu cầu credentials từ browser.
+
+```bash title="Chạy trong workspace build của remote, không phải repo tài liệu"
+set -euo pipefail
+
+RELEASE=r17
+BUCKET=example-mfe-artifacts
+PREFIX="catalog/releases/$RELEASE"
+
+  # CI phải bảo đảm prefix này chưa được publish và dist đã qua kiểm tra.
+  # Không đưa source maps public trong ví dụ này.
+aws s3 sync dist/ "s3://$BUCKET/$PREFIX/" \
+  --exclude "remoteEntry.js" \
+  --exclude "*.map" \
+  --cache-control "public, max-age=31536000, immutable"
+
+  # Entry của ví dụ webpack nằm ở root output.
+aws s3 cp dist/remoteEntry.js "s3://$BUCKET/$PREFIX/remoteEntry.js" \
+  --content-type "text/javascript" \
+  --cache-control "public, max-age=31536000, immutable"
+```
+
+Lệnh này không tạo CDN, CORS, runtime mapping hay quyền đọc origin. CORS có thể được cấu hình tại bucket hoặc edge, nhưng cần kiểm tra header cuối cùng; không để hai lớp thêm thành hai header `Access-Control-Allow-Origin` không hợp lệ. AWS CLI thường suy ra MIME từ extension khi upload; xác nhận metadata thực tế, nhất là `.mjs`, JSON và font.
+
+Không dùng `sync --delete` trên prefix chung chứa nhiều releases. Cũng không coi một lệnh kiểm tra “prefix chưa có” là đủ chống hai pipeline chạy đồng thời: cần release ID duy nhất hoặc serialization/lock trong CI.
+
+Source maps nên đưa vào kho diagnostics được kiểm soát nếu chứa source không muốn public. Việc không publish `.map` không làm JavaScript trở thành bí mật; client bundle vẫn được tải về và phân tích được. Nếu build có `sourceMappingURL` trỏ tới map không publish, DevTools có thể báo thiếu map; cấu hình hidden source maps hoặc bỏ annotation theo bundler nếu đó là chủ đích.
+
+Muốn promote cùng bytes từ staging sang production, kiểm tra artifact có thật sự portable không. Webpack `auto` có thể giúp khi cấu trúc URL được giữ nguyên; Vite `base` tuyệt đối hoặc API URL ghi lúc build có thể ràng buộc artifact với môi trường. Không gọi hai lần build với cấu hình khác nhau là “cùng một artifact”.
+
+## Kiểm tra qua CDN và trong browser
+
+Kiểm tra header bằng `GET` giống request tải thật, không chỉ `HEAD`. Ví dụ với Bash và `curl`, đã thay domain minh họa bằng endpoint của bạn:
+
+```bash
+set -euo pipefail
+
+BASE=https://assets.example.com/catalog/releases/r17
+
+curl --fail-with-body --silent --show-error \
+  -H 'Origin: https://shop.example.com' \
+  -D /tmp/catalog-entry.headers \
+  -o /tmp/catalog-remoteEntry.js \
+  "$BASE/remoteEntry.js"
+
+cat /tmp/catalog-entry.headers
+head -c 160 /tmp/catalog-remoteEntry.js
+printf '\n'
+
+  # File không tồn tại phải trả 404, không phải HTML shell với status 200.
+curl --silent --show-error -o /dev/null \
+  -w 'HTTP %{http_code}; Content-Type %{content_type}\n' \
+  "$BASE/assets/does-not-exist.js"
+```
+
+Lần gọi đầu cần trả `200`, JavaScript MIME hợp lệ, body không phải HTML/login page và CORS đúng chính sách. Lần gọi cuối mong đợi `404`. Một số storage origin có thể trả `403` cho key thiếu nếu quyền list bị giới hạn; cấu hình edge/origin theo mục tiêu vận hành, nhưng tuyệt đối không chuyển lỗi đó thành `200` giả.
+
+Lặp lại với **một URL chunk, stylesheet và font có thật trong output**. Tên hash thay đổi theo build nên không copy tên minh họa rồi coi `404` là lỗi hạ tầng. Nếu loader dùng JSON manifest, kiểm tra manifest và tất cả đường dẫn mà nó công bố.
+
+`curl` không thực thi chính sách bảo mật của browser. Sau kiểm tra HTTP, mở shell trên origin thật và dùng Network/Console để kiểm tra:
+
+1. Entry tải từ release đã chọn, không redirect sang URL dùng chung làm mất prefix release.
+2. Mở route có dynamic import; chunk URL ở prefix của remote, không ở origin shell hoặc release khác.
+3. CSS, font và ảnh tải thành công; nhìn giao diện để xác nhận stylesheet thực sự được áp dụng.
+4. Không có lỗi CORS, MIME, CSP, mixed content hoặc federation container format. ES module và classic script không thay thế trực tiếp cho nhau.
+5. Giữ một tab của release cũ, publish release mới rồi mở lazy route trên tab cũ; nó vẫn tải được assets cũ. Mở tab mới để xác nhận mapping mới.
+
+Chạy ít nhất một lượt với cache bình thường. “Disable cache” trong DevTools chỉ phục vụ chẩn đoán, không phản ánh đầy đủ CDN hoặc service worker. Xem thêm cache status, `Age`, request initiator và response body để biết lỗi xuất phát từ runtime tạo URL hay lớp hosting trả sai response.
+
+Nếu có service worker, xác định nó có intercept entry/chunks/manifest không. Một worker trả cache cũ hoặc HTML fallback có thể làm bạn tưởng CDN sai dù response tại edge đã đúng.
+
+## Chẩn đoán các lỗi thường gặp
+
+| Triệu chứng | Khả năng cần kiểm tra | Hành động đầu tiên |
+| --- | --- | --- |
+| Entry `200`, lazy chunk `404` | Sai asset base, chưa upload đủ graph, hoặc đã xóa release cũ | Mở URL chunk và Initiator trong Network; đối chiếu object key |
+| Chunk request sang `shop.example.com` | URL root-relative hoặc public path lấy từ shell | Kiểm tra runtime/publicPath của remote và URL tự ghép trong code |
+| `Unexpected token '<'` | JavaScript URL trả HTML | Xem body response; tắt SPA/error fallback trên prefix assets |
+| Module script bị từ chối vì MIME | Metadata sai hoặc trả HTML | Kiểm tra `Content-Type` ở origin và CDN; sửa metadata/rule |
+| CORS lỗi dù `curl` tải được | Thiếu header, sai allowlist, credential mode hoặc redirect | Gửi `Origin` khi kiểm tra HTTP, rồi kiểm tra request thật trong browser |
+| Font không tải nhưng CSS tải được | CORS của font, font URL sai hoặc CSP | Kiểm tra từng font request và `font-src` |
+| File đã upload nhưng CDN vẫn `404` | Negative cache hoặc origin path mapping sai | So sánh response origin với CDN; kiểm tra cache status và prefix |
+| Tải entry xong nhưng không có container | Sai entry format/tên container hoặc entry body không đúng | Xác nhận plugin, loader, global name/ESM exports; không chỉ kiểm tra status |
+| Chỉ tab cũ bị `ChunkLoadError` | Artifact cũ đã bị xóa hoặc mapping/content bị trộn | Xác định release mà tab đang chạy và phục hồi assets tương ứng |
+| Decode/compression error | Bytes nén và `Content-Encoding` không khớp | Kiểm tra representation tại origin và edge |
+
+Không purge mọi cache trước khi lấy bằng chứng. Ghi lại URL đầy đủ, release ID, status, headers, thời điểm và request initiator; purge sớm có thể che nguyên nhân. Retry hoặc reload chỉ nên có giới hạn và thông báo phù hợp, không lặp vô hạn để che một deploy thiếu artifacts.
+
+## Checklist trước production
+
+- [ ] Đã chọn static hosting hay server runtime đúng với kiểu build của shell và remote.
+- [ ] Mỗi release có prefix duy nhất; không ghi đè và không xóa ngay artifacts cũ.
+- [ ] Entry, chunks, CSS và public assets giữ đúng layout từ output đến URL CDN.
+- [ ] Asset base được kiểm chứng bằng request thật, độc lập với route base và API base.
+- [ ] CORS hoạt động cho format loader đang dùng, manifest và font; assets public không phụ thuộc credentials.
+- [ ] MIME types, compression và cache headers đúng sau khi đi qua CDN.
+- [ ] Request asset thiếu trả lỗi thật, không nhận HTML shell với `200`.
+- [ ] Mapping chỉ chuyển sau khi smoke test qua CDN đạt; có đường rollback còn artifacts.
+- [ ] Đã thử lazy route ở tab cũ và tab mới, với chính sách retention đã chốt.
+- [ ] CSP và quyền publish/mapping được kiểm soát; không có secrets trong client artifacts.
+- [ ] Đã xác định cách service worker, CDN rules và negative cache tác động đến release.
+
+Bắt đầu bằng một remote: ghi lại entry URL, mở một lazy route và đối chiếu từng request với artifact đã publish. Khi đường tải này đúng, mới tự động hóa cùng bộ checks trong pipeline cho các remote còn lại.
+
+## Tài liệu tham khảo
+
+- [webpack — Public Path](https://webpack.js.org/guides/public-path/): `auto`, runtime assignment và thứ tự ES imports.
+- [Vite — Building for Production](https://vite.dev/guide/build): public base path và giới hạn của URL tạo động.
+- [Vite — Static Asset Handling](https://vite.dev/guide/assets): import assets, public directory và `new URL`.
+- [MDN — JavaScript modules](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules): module loading, CORS và MIME.
+- [MDN — Cross-Origin Resource Sharing](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS): origin, credentials và preflight.
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control): `no-cache`, `max-age` và `immutable`.
+- [Nginx — Headers module](https://nginx.org/en/docs/http/ngx_http_headers_module.html): phạm vi status codes của `add_header` và tham số `always`.
+- [AWS CLI — s3 sync](https://docs.aws.amazon.com/cli/latest/reference/s3/sync.html): sync, filters và metadata upload.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Runtime configuration" href="/docs/trien-khai/runtime-configuration" description="Tách mapping remote và cấu hình môi trường khỏi artifact khi phù hợp." />
+  <Card title="Caching và cache invalidation" href="/docs/trien-khai/caching" description="Đi sâu vào cache của entry, manifests và assets qua nhiều lớp." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Điều khiển release và giữ khả năng quay về phiên bản đã biết tốt." />
+  <Card title="Cấu hình exposes và remotes" href="/docs/module-federation/exposes-remotes" description="Kiểm tra tên container, public keys và format entry theo bundler/plugin." />
+</Cards>

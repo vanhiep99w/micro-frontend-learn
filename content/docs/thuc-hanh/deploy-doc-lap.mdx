@@ -1,18 +1,772 @@
 ---
 title: "Lab deploy độc lập"
-description: "Release catalog mà không rebuild shell và kiểm tra tính tương thích."
+description: "Release catalog mà không rebuild shell, kiểm tra artifact và contract, rồi rollback bằng runtime configuration."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Catalog chỉ đổi cách hiển thị sản phẩm, nhưng pipeline vẫn bắt bạn build và deploy lại shell? Khi đó các ứng dụng có thể đã tách source code, còn release vẫn bị buộc chung. Bài lab này cho bạn một bằng chứng cụ thể hơn: **catalog đổi release, trong khi bytes của shell và cart giữ nguyên**.
+
+Bạn sẽ publish catalog mới vào URL bất biến, kiểm thử trước khi chọn traffic, rồi đổi runtime config. Sau đó, bạn thử một breaking change và rollback để thấy deploy độc lập không có nghĩa là bỏ qua tương thích.
+
+<Callout type="info" title="Chạy ở workspace riêng">
+  Repository hiện tại là site Next.js + Fumadocs, không có shop để deploy. Các file và lệnh bên dưới thuộc một thư mục lab riêng, không đặt trong repository docs. Lab dùng native ESM và mount API để tập trung vào release; không phải cấu hình webpack Module Federation hay bản triển khai đầy đủ của shop React. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
 </Callout>
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Mục tiêu và điều kiện hoàn thành](#mục-tiêu-và-điều-kiện-hoàn-thành)
+- [Mô hình release của lab](#mô-hình-release-của-lab)
+  - [Artifact khác selection](#artifact-khác-selection)
+  - [Contract cần giữ ổn định](#contract-cần-giữ-ổn-định)
+- [Chuẩn bị workspace](#chuẩn-bị-workspace)
+- [Tạo shell và cart cố định](#tạo-shell-và-cart-cố-định)
+  - [HTML của shop](#html-của-shop)
+  - [Cart sở hữu state](#cart-sở-hữu-state)
+  - [Shell đọc và pin runtime config](#shell-đọc-và-pin-runtime-config)
+- [Tạo artifact catalog theo release](#tạo-artifact-catalog-theo-release)
+  - [Mount API và lazy module](#mount-api-và-lazy-module)
+  - [Build một lần vào thư mục bất biến](#build-một-lần-vào-thư-mục-bất-biến)
+- [Phục vụ shop với cache policy rõ ràng](#phục-vụ-shop-với-cache-policy-rõ-ràng)
+- [Tạo candidate và kiểm soát promotion](#tạo-candidate-và-kiểm-soát-promotion)
+  - [Candidate giữ nguyên cart](#candidate-giữ-nguyên-cart)
+  - [Promotion kiểm tra base revision](#promotion-kiểm-tra-base-revision)
+- [Kiểm thử artifact trước promotion](#kiểm-thử-artifact-trước-promotion)
+- [Thực hiện release catalog độc lập](#thực-hiện-release-catalog-độc-lập)
+  - [Ghi baseline trước thay đổi](#ghi-baseline-trước-thay-đổi)
+  - [Publish catalog mới nhưng chưa promote](#publish-catalog-mới-nhưng-chưa-promote)
+  - [Promote chỉ descriptor catalog](#promote-chỉ-descriptor-catalog)
+  - [Kiểm chứng document mới qua URL stable](#kiểm-chứng-document-mới-qua-url-stable)
+- [Chặn một breaking change](#chặn-một-breaking-change)
+- [Rollback và quan sát tab cũ](#rollback-và-quan-sát-tab-cũ)
+- [Chẩn đoán lỗi thường gặp](#chẩn-đoán-lỗi-thường-gặp)
+- [Đưa quy trình sang ứng dụng thật](#đưa-quy-trình-sang-ứng-dụng-thật)
+- [Bằng chứng cần nộp](#bằng-chứng-cần-nộp)
+- [Tài liệu tham khảo và đọc tiếp](#tài-liệu-tham-khảo-và-đọc-tiếp)
 
-## Phạm vi dự kiến
+## Mục tiêu và điều kiện hoàn thành
 
-Bài này sẽ giúp bạn: release catalog mà không rebuild shell và kiểm tra tính tương thích.
+Lab dùng các ID minh họa: shell `s17`, cart `r7`, catalog từ `r18` lên `r19`. Revision config là một ID khác, ví dụ `cfg-1` rồi `cfg-2`; nó mô tả lần chọn release, không phải version code.
 
-[Xem các bài trong nhóm Thực hành](/docs/thuc-hanh).
+Bạn hoàn thành khi kiểm chứng được:
+
+- Document mới chạy `s17 + catalog r19 + cart r7` sau promotion.
+- SHA-256 của toàn bộ artifact shell và cart không đổi.
+- Catalog r19 vẫn mount, gửi đúng payload sang cart, tải được lazy module và unmount đúng contract.
+- Candidate r20 có breaking change bị gate từ chối trước khi sửa config đang phục vụ.
+- Rollback tạo revision mới chọn lại r18, không overwrite artifact và không rollback cart.
+- Tab đã chạy r19 vẫn giữ r19 sau rollback; bạn giải thích được vì sao.
+
+Bạn cần Node.js 22 trở lên, npm, terminal Bash trên Linux/macOS và browser hiện đại. Phần kiểm thử tự động dùng Playwright, cần tải Chromium và có thể cần thêm system dependencies theo hướng dẫn của Playwright. Không cần cloud account, Docker hay backend.
+
+## Mô hình release của lab
+
+### Artifact khác selection
+
+```text
+Document mới → shell s17 → config snapshot
+                              ├─ catalog → /catalog/r18/entry.mjs
+                              └─ cart    → /cart/r7/entry.mjs
+
+Publish r19: thêm /catalog/r19/*, config chưa đổi
+Promote r19: config mới chọn /catalog/r19/entry.mjs
+Rollback:   config mới hơn chọn lại /catalog/r18/entry.mjs
+```
+
+**Publish** làm artifact có thể tải được. **Promote** thay selection để document mới chọn artifact đó. Vì shell lấy URL ở runtime nên promotion không cần sửa bundle shell.
+
+Một URL có release ID không tự làm bytes bất biến. Build script bên dưới từ chối ghi vào thư mục đã tồn tại; production cần policy tương đương ở artifact store. Giữ cả entry lẫn lazy modules của release cũ, vì tab cũ có thể chưa tải hết graph.
+
+### Contract cần giữ ổn định
+
+| Boundary | Cam kết trong lab |
+| --- | --- |
+| Runtime config | `schemaVersion: 1`, revision không rỗng, đủ catalog và cart |
+| Remote descriptor | Entry same-origin theo đúng release path, `contractVersion: 1` |
+| Module metadata | Export `release` khớp descriptor, export `contractVersion === 1` |
+| Catalog API | Export `mount(container, { onAdd })`, trả `{ unmount() }` đồng bộ |
+| Payload catalog → cart | `{ sku: 'book-01', quantity: 1 }` |
+| Lifecycle | Unmount hai lần không lỗi; không gọi callback từ button cũ; không sửa sibling ngoài container |
+| Cart API | Export `mount(container)`, trả `{ add(item), unmount() }` |
+
+Mình giữ cùng contract major cho r18 và r19, chỉ thay nội dung UI. R20 sẽ đổi major và tên export để mô phỏng một thay đổi không thể đưa cho shell s17. Metadata là khai báo; test hành vi mới cho biết implementation có giữ lời hứa không.
+
+## Chuẩn bị workspace
+
+Chạy ở vị trí **ngoài repository tài liệu**, rồi giữ working directory này cho các lệnh tiếp theo:
+
+```bash
+mkdir independent-deploy-lab
+cd independent-deploy-lab
+npm init -y
+mkdir -p public/shell/s17 public/cart/r7 public/runtime src candidates evidence
+npm install --save-dev --save-exact playwright
+npx playwright install chromium
+```
+
+Commit `package.json` và lockfile nếu bạn lưu lab vào Git. CI dùng `npm ci` để chạy lại cùng dependency resolution. Tạo lần lượt các file có đường dẫn ghi ở tiêu đề code block; không có script nào ở đây là script sẵn có của site docs.
+
+## Tạo shell và cart cố định
+
+### HTML của shop
+
+```html title="public/index.html"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Independent deploy lab</title>
+  </head>
+  <body>
+    <h1>Shop — shell s17</h1>
+    <p id="status" role="status">Đang khởi động…</p>
+    <section aria-label="Cart"><div id="cart"></div></section>
+    <section aria-label="Catalog"><div id="catalog"></div></section>
+    <script type="module" src="/shell/s17/main.mjs"></script>
+  </body>
+</html>
+```
+
+### Cart sở hữu state
+
+Catalog gửi ý định thêm hàng; cart quyết định cách lưu và hiển thị. State chỉ ở memory để bạn tập trung vào boundary. Reload sẽ reset số lượng; đó không phải lỗi rollback.
+
+```js title="public/cart/r7/entry.mjs"
+export const release = 'r7';
+export const contractVersion = 1;
+
+export function mount(container) {
+  let count = 0;
+  let active = true;
+  const label = document.createElement('p');
+  const render = () => { label.textContent = `Cart r7 — ${count} sản phẩm`; };
+  container.replaceChildren(label);
+  render();
+
+  return {
+    add(item) {
+      if (!active) throw new Error('CART_UNMOUNTED');
+      if (item?.sku !== 'book-01' || item.quantity !== 1) {
+        throw new Error('CART_PAYLOAD_INVALID');
+      }
+      count += item.quantity;
+      render();
+    },
+    unmount() {
+      if (!active) return;
+      active = false;
+      container.replaceChildren();
+    },
+  };
+}
+```
+
+### Shell đọc và pin runtime config
+
+Shell fetch config đúng một lần cho mỗi document. Query `preview` chỉ chọn một trong các file lab đã biết, không cho truyền URL code tùy ý. Bỏ cơ chế override này khỏi production hoặc bảo vệ nó bằng policy QA riêng.
+
+```js title="public/shell/s17/main.mjs"
+const status = document.querySelector('#status');
+const catalogRoot = document.querySelector('#catalog');
+
+function parseConfig(raw) {
+  if (raw?.schemaVersion !== 1 ||
+      typeof raw.revision !== 'string' || !raw.revision.trim()) {
+    throw new Error('CONFIG_SCHEMA_INVALID');
+  }
+
+  const remotes = {};
+  for (const name of ['catalog', 'cart']) {
+    const spec = raw.remotes?.[name];
+    if (!spec || !/^r[1-9]\d*$/.test(spec.release) ||
+        spec.contractVersion !== 1 || typeof spec.entry !== 'string') {
+      throw new Error(`CONFIG_REMOTE_INVALID:${name}`);
+    }
+    const expectedPath = `/${name}/${spec.release}/entry.mjs`;
+    const url = new URL(spec.entry, location.origin);
+    if (url.origin !== location.origin || url.pathname !== expectedPath ||
+        url.search || url.hash || url.username || url.password) {
+      throw new Error(`CONFIG_URL_INVALID:${name}`);
+    }
+    remotes[name] = Object.freeze({
+      release: spec.release,
+      contractVersion: 1,
+      entry: url.href,
+    });
+  }
+  return Object.freeze({
+    revision: raw.revision,
+    remotes: Object.freeze(remotes),
+  });
+}
+
+async function load(spec) {
+  const remote = await import(spec.entry);
+  if (remote.release !== spec.release || remote.contractVersion !== 1 ||
+      typeof remote.mount !== 'function') {
+    throw new Error(`REMOTE_CONTRACT_INVALID:${spec.release}`);
+  }
+  return remote;
+}
+
+let snapshot;
+try {
+  const preview = new URL(location.href).searchParams.get('preview');
+  if (preview !== null && !['r18', 'r19', 'r20'].includes(preview)) {
+    throw new Error('PREVIEW_INVALID');
+  }
+  const configPath = preview
+    ? `/runtime/preview-${preview}.json`
+    : '/runtime/config.json';
+  const response = await fetch(configPath, {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(5000), // Deadline minh họa cho lab.
+  });
+  if (!response.ok) throw new Error(`CONFIG_HTTP_${response.status}`);
+  snapshot = parseConfig(await response.json());
+
+  const cartModule = await load(snapshot.remotes.cart);
+  const cart = cartModule.mount(document.querySelector('#cart'));
+  if (typeof cart?.add !== 'function' || typeof cart.unmount !== 'function') {
+    throw new Error('CART_HANDLE_INVALID');
+  }
+
+  const catalogModule = await load(snapshot.remotes.catalog);
+  const catalog = catalogModule.mount(catalogRoot, {
+    onAdd: item => cart.add(item),
+  });
+  if (typeof catalog?.unmount !== 'function') {
+    throw new Error('CATALOG_HANDLE_INVALID');
+  }
+
+  status.textContent = `s17 | catalog ${catalogModule.release} | ` +
+    `cart ${cartModule.release} | config ${snapshot.revision}`;
+  console.info('release-set', {
+    shell: 's17', catalog: catalogModule.release,
+    cart: cartModule.release, config: snapshot.revision,
+  });
+} catch (error) {
+  catalogRoot.textContent = 'Catalog tạm thời không khả dụng.';
+  status.textContent = `Bootstrap lỗi: ${error.message}`;
+  console.error('bootstrap-failed', {
+    config: snapshot?.revision, error: error.message,
+  });
+}
+```
+
+Validator chỉ nhận URL thuộc đúng origin và release path. Điều này giảm rủi ro config chọn nhầm code, **không phải sandbox**: module đã import có quyền trong cùng window. Code remote vẫn phải thuộc nguồn tin cậy.
+
+Loader kiểm tra metadata sau import, nên top-level code của module đã có thể chạy trước khi bị từ chối. Không dùng check này thay artifact verification hay security review. Lab không có shared framework dependencies; với React/Module Federation bạn còn phải kiểm tra share scope và singleton policy.
+
+## Tạo artifact catalog theo release
+
+### Mount API và lazy module
+
+Catalog có hai button: thêm hàng và xem chi tiết. Button thứ hai mới tải `details.mjs`, giúp bạn kiểm chứng rằng cả graph của release được phục vụ, không chỉ entry trả 200.
+
+```js title="src/catalog-entry.mjs"
+export const release = __RELEASE__;
+export const contractVersion = __CONTRACT_VERSION__;
+const title = __TITLE__;
+
+export function mount(container, { onAdd }) {
+  if (typeof onAdd !== 'function') throw new Error('ON_ADD_REQUIRED');
+  let active = true;
+  const root = document.createElement('article');
+  const heading = document.createElement('h2');
+  const add = document.createElement('button');
+  const details = document.createElement('button');
+  const output = document.createElement('p');
+  heading.textContent = `Catalog ${release} — ${title}`;
+  add.textContent = 'Thêm vào giỏ';
+  details.textContent = 'Xem chi tiết';
+  output.setAttribute('role', 'status');
+
+  const onClickAdd = () => {
+    if (active) onAdd({ sku: 'book-01', quantity: 1 });
+  };
+  const onClickDetails = async () => {
+    try {
+      const module = await import('./details.mjs');
+      if (active) output.textContent = module.description;
+    } catch {
+      if (active) output.textContent = 'Không tải được chi tiết.';
+    }
+  };
+  add.addEventListener('click', onClickAdd);
+  details.addEventListener('click', onClickDetails);
+  root.append(heading, add, details, output);
+  container.replaceChildren(root);
+
+  return {
+    unmount() {
+      if (!active) return;
+      active = false;
+      add.removeEventListener('click', onClickAdd);
+      details.removeEventListener('click', onClickDetails);
+      root.remove();
+    },
+  };
+}
+```
+
+Các token `__RELEASE__`, `__CONTRACT_VERSION__`, `__TITLE__` là input cho build script, không phải JavaScript chạy trực tiếp trong browser. Không chỉnh output đã publish để đổi label.
+
+### Build một lần vào thư mục bất biến
+
+Script này đóng vai trò bundler tối giản: thay build constants và sinh một lazy module. R19 giữ API v1; r20 cố ý expose `mountV2` và contract major 2.
+
+```js title="build-catalog.mjs"
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+const release = process.argv[2];
+const variants = {
+  r18: { title: 'Sách lập trình', major: 1 },
+  r19: { title: 'Sách lập trình — có mô tả mới', major: 1 },
+  r20: { title: 'Breaking API', major: 2 },
+};
+const variant = variants[release];
+if (!variant) throw new Error('RELEASE_UNKNOWN');
+
+let entry = await readFile('src/catalog-entry.mjs', 'utf8');
+entry = entry
+  .replace('__RELEASE__', JSON.stringify(release))
+  .replace('__CONTRACT_VERSION__', String(variant.major))
+  .replace('__TITLE__', JSON.stringify(variant.title));
+if (variant.major === 2) {
+  entry = entry.replace('export function mount(', 'export function mountV2(');
+}
+const directory = join('public', 'catalog', release);
+await mkdir('public/catalog', { recursive: true });
+await mkdir(directory); // EEXIST là lỗi: không overwrite release đã publish.
+await writeFile(join(directory, 'entry.mjs'), entry);
+await writeFile(join(directory, 'details.mjs'),
+  `export const description = ${JSON.stringify(`Chi tiết từ ${release}`)};\n`);
+console.log(`Published catalog ${release}; selection chưa thay đổi.`);
+```
+
+Nếu build dừng giữa chừng, thư mục có thể chưa đầy đủ. Đừng promote nó; trong lab bỏ release ID đó và dùng workspace sạch để chạy lại bài. Production nên build ở staging directory rồi upload graph đã kiểm chứng vào prefix mới, với inventory/digests và policy không overwrite.
+
+## Phục vụ shop với cache policy rõ ràng
+
+Server chỉ listen loopback và chỉ phục vụ các path lab đã biết. Không dùng server minh họa này làm hosting production.
+
+```js title="server.mjs"
+import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { resolve, extname } from 'node:path';
+
+const root = resolve('public');
+const types = {
+  '.html': 'text/html; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+};
+
+createServer(async (request, response) => {
+  try {
+    if (!['GET', 'HEAD'].includes(request.method)) {
+      response.writeHead(405, { 'Cache-Control': 'no-store' });
+      return response.end();
+    }
+    const path = new URL(request.url, 'http://127.0.0.1:4173').pathname;
+    const file = path === '/' ? '/index.html' : path;
+    const isArtifact = /^\/(shell|catalog|cart)\/(s|r)[1-9]\d*\/[a-z-]+\.mjs$/.test(file);
+    const isConfig = /^\/runtime\/(config|preview-r[1-9]\d*)\.json$/.test(file);
+    if (file !== '/index.html' && !isArtifact && !isConfig) {
+      response.writeHead(404, { 'Cache-Control': 'no-store' });
+      return response.end('Not found');
+    }
+    const body = await readFile(resolve(root, `.${file}`));
+    response.writeHead(200, {
+      'Content-Type': types[extname(file)],
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': isArtifact
+        ? 'public, max-age=31536000, immutable'
+        : 'no-store',
+    });
+    response.end(request.method === 'HEAD' ? undefined : body);
+  } catch (error) {
+    response.writeHead(error.code === 'ENOENT' ? 404 : 500, {
+      'Cache-Control': 'no-store',
+    });
+    response.end('File unavailable');
+  }
+}).listen(4173, '127.0.0.1', () => {
+  console.log('Shop: http://127.0.0.1:4173');
+});
+```
+
+HTML và runtime config dùng `no-store` cho dễ quan sát; artifact dùng cache dài vì URL bất biến. Lab không có service worker/CDN. Trong production, kiểm tra policy ở cả origin, CDN và service worker, không chỉ response của local server.
+
+Tạo config ban đầu và build stable catalog:
+
+```json title="public/runtime/config.json"
+{
+  "schemaVersion": 1,
+  "revision": "cfg-1",
+  "remotes": {
+    "catalog": {
+      "release": "r18",
+      "entry": "/catalog/r18/entry.mjs",
+      "contractVersion": 1
+    },
+    "cart": {
+      "release": "r7",
+      "entry": "/cart/r7/entry.mjs",
+      "contractVersion": 1
+    }
+  }
+}
+```
+
+```bash
+node build-catalog.mjs r18
+node server.mjs
+```
+
+Giữ server chạy ở terminal này. Mở `http://127.0.0.1:4173` và bấm thêm hàng; bạn phải thấy `s17 | catalog r18 | cart r7 | config cfg-1` cùng số lượng cart tăng. Các lệnh tiếp theo chạy ở terminal thứ hai, vẫn trong thư mục lab.
+
+## Tạo candidate và kiểm soát promotion
+
+### Candidate giữ nguyên cart
+
+Candidate được tạo từ config hiện tại, chỉ thay descriptor catalog và revision. File preview phục vụ snapshot này để browser thử r19 mà không thay selection stable. File envelope trong `candidates/` giữ base revision để phát hiện một writer khác đã thay config.
+
+```js title="candidate.mjs"
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const [release, revision] = process.argv.slice(2);
+if (!/^r[1-9]\d*$/.test(release ?? '') ||
+    !/^cfg-[1-9]\d*$/.test(revision ?? '')) {
+  throw new Error('ARGS: node candidate.mjs <release> <cfg-revision>');
+}
+const current = JSON.parse(await readFile('public/runtime/config.json', 'utf8'));
+if (current.schemaVersion !== 1 || revision === current.revision) {
+  throw new Error('CONFIG_REVISION_INVALID');
+}
+// Chỉ import artifact do lab tin cậy tạo ra; không phải cách inspect code lạ.
+const module = await import(pathToFileURL(
+  resolve(`public/catalog/${release}/entry.mjs`),
+).href);
+if (module.release !== release || module.contractVersion !== 1 ||
+    typeof module.mount !== 'function') {
+  throw new Error(`CANDIDATE_CONTRACT_INVALID:${release}`);
+}
+const snapshot = {
+  ...current,
+  revision,
+  remotes: {
+    ...current.remotes,
+    catalog: {
+      release, entry: `/catalog/${release}/entry.mjs`, contractVersion: 1,
+    },
+  },
+};
+await writeFile(`candidates/${revision}.json`, JSON.stringify({
+  baseRevision: current.revision, snapshot,
+}, null, 2), { flag: 'wx' });
+await writeFile(`public/runtime/preview-${release}.json`,
+  JSON.stringify(snapshot, null, 2));
+console.log(`Candidate ${revision} từ ${current.revision}; stable chưa đổi.`);
+```
+
+Preview config là mutable và không cache; artifact vẫn immutable. Không ghi secrets vào bất kỳ JSON nào được phục vụ cho browser.
+
+### Promotion kiểm tra base revision
+
+Promotion từ chối candidate cũ thay vì âm thầm rollback thay đổi của team khác. Script cũng xác nhận cart không bị candidate đổi và kiểm tra cả entry lẫn lazy module tồn tại.
+
+```js title="promote.mjs"
+import { readFile, writeFile, rename, access } from 'node:fs/promises';
+
+const revision = process.argv[2];
+if (!/^cfg-[1-9]\d*$/.test(revision ?? '')) throw new Error('REVISION_INVALID');
+const { baseRevision, snapshot } = JSON.parse(
+  await readFile(`candidates/${revision}.json`, 'utf8'),
+);
+const current = JSON.parse(await readFile('public/runtime/config.json', 'utf8'));
+if (current.revision !== baseRevision) throw new Error('BASE_REVISION_CHANGED');
+if (snapshot.schemaVersion !== 1 || snapshot.revision !== revision ||
+    revision === current.revision ||
+    JSON.stringify(snapshot.remotes.cart) !== JSON.stringify(current.remotes.cart)) {
+  throw new Error('CANDIDATE_INVALID');
+}
+const spec = snapshot.remotes.catalog;
+if (!/^r[1-9]\d*$/.test(spec?.release ?? '') || spec.contractVersion !== 1 ||
+    spec.entry !== `/catalog/${spec.release}/entry.mjs`) {
+  throw new Error('CATALOG_DESCRIPTOR_INVALID');
+}
+for (const file of ['entry.mjs', 'details.mjs']) {
+  await access(`public/catalog/${spec.release}/${file}`);
+}
+const temporary = `public/runtime/.config-${process.pid}.tmp`;
+await writeFile(temporary, JSON.stringify(snapshot, null, 2), { flag: 'wx' });
+await rename(temporary, 'public/runtime/config.json');
+console.log(`Promoted ${revision}: catalog ${spec.release}, cart giữ nguyên.`);
+```
+
+<Callout type="warn" title="Single writer, không phải distributed CAS">
+  Lab giả định bạn chạy tuần tự một promotion process. Check revision rồi rename tránh candidate stale và tránh browser đọc JSON đang ghi dở trên filesystem local, nhưng **không khóa được hai writer đồng thời**. Production cần conditional write/CAS theo version hoặc ETag của store, quyền promotion tách biệt và audit log. Script này cũng không tự biết browser tests đã pass: chỉ promote sau khi gate bên dưới thành công.
+</Callout>
+
+## Kiểm thử artifact trước promotion
+
+Test dùng artifact thật qua HTTP, không mock module catalog. Nó chạy journey shell → catalog → cart trong preview, rồi kiểm tra lifecycle riêng với export thật. Test mỗi release ở browser context mới để tránh nhầm ESM module cache với HTTP cache.
+
+```js title="verify.mjs"
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+
+const release = process.argv[2];
+if (!/^r[1-9]\d*$/.test(release ?? '')) throw new Error('RELEASE_INVALID');
+const base = 'http://127.0.0.1:4173';
+const browser = await chromium.launch();
+try {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`${base}/?preview=${release}`);
+  await page.waitForFunction(expected => {
+    const text = document.querySelector('#status').textContent;
+    if (text.startsWith('Bootstrap lỗi:')) throw new Error(text);
+    return text.startsWith(`s17 | catalog ${expected} | cart r7 | config `);
+  }, release);
+
+  await page.getByRole('button', { name: 'Thêm vào giỏ' }).click();
+  assert.equal(await page.locator('#cart').innerText(), 'Cart r7 — 1 sản phẩm');
+  await page.getByRole('button', { name: 'Xem chi tiết' }).click();
+  await page.waitForFunction(expected =>
+    document.querySelector('#catalog').textContent.includes(`Chi tiết từ ${expected}`),
+  release);
+
+  const result = await page.evaluate(async expected => {
+    const remote = await import(`/catalog/${expected}/entry.mjs`);
+    const host = document.createElement('div');
+    const sibling = document.createElement('span');
+    sibling.textContent = 'Không thuộc catalog';
+    const container = document.createElement('div');
+    host.append(sibling, container);
+    document.body.append(host);
+    const calls = [];
+    const handle = remote.mount(container, { onAdd: item => calls.push(item) });
+    const button = container.querySelector('button');
+    button.click();
+    handle.unmount();
+    handle.unmount();
+    button.click(); // Button bị detach không được phát thêm callback.
+    const result = {
+      release: remote.release, major: remote.contractVersion,
+      calls, empty: container.childElementCount === 0,
+      siblingIntact: sibling.textContent === 'Không thuộc catalog' && host.contains(sibling),
+    };
+    host.remove();
+    return result;
+  }, release);
+  assert.deepEqual(result, {
+    release, major: 1,
+    calls: [{ sku: 'book-01', quantity: 1 }],
+    empty: true, siblingIntact: true,
+  });
+  assert.deepEqual(errors, []);
+  console.log(`PASS: s17 + catalog ${release} + cart r7; journey, lazy module, lifecycle`);
+} finally {
+  await browser.close();
+}
+```
+
+Đây là gate tối thiểu cho boundary của lab, không phải chứng nhận mọi hành vi production. Nó chưa bao phủ backend, accessibility, CSS isolation, shared dependency negotiation hay toàn bộ async cleanup. Với app thật, thêm consumer fixtures của các shell được hỗ trợ và test pending callback khi unmount theo contract riêng.
+
+## Thực hiện release catalog độc lập
+
+<Steps>
+<Step>
+
+### Ghi baseline trước thay đổi
+
+Tạo preview stable để chạy test và lưu digests. Candidate cfg-2 ở bước này **không promote**; cfg-3 bên dưới mới là promotion r19.
+
+```bash
+node candidate.mjs r18 cfg-2
+node verify.mjs r18
+find public/index.html public/shell public/cart -type f -exec sha256sum {} + | sort > evidence/before.sha256
+cp public/runtime/config.json evidence/config-before.json
+```
+
+Trên macOS, thay `sha256sum` bằng `shasum -a 256` ở cả hai lệnh ghi digest. Baseline bao gồm cả HTML bootstrap, vì sửa script tag cũng là đổi shell deployment dù file JavaScript không đổi.
+
+</Step>
+<Step>
+
+### Publish catalog mới nhưng chưa promote
+
+```bash
+node build-catalog.mjs r19
+node candidate.mjs r19 cfg-3
+node verify.mjs r19
+curl -I http://127.0.0.1:4173/catalog/r19/entry.mjs
+curl -I http://127.0.0.1:4173/catalog/r19/details.mjs
+curl -fsS http://127.0.0.1:4173/runtime/config.json
+```
+
+Hai artifact phải trả 200, JavaScript MIME type và cache immutable. Config stable vẫn là cfg-1 chọn r18. Mở `http://127.0.0.1:4173/?preview=r19` để xem candidate; mở URL gốc ở tab khác vẫn thấy r18.
+
+Nếu test không pass, dừng ở đây. Không sửa file r19 đã publish rồi chạy lại test dưới cùng URL; hãy dùng release ID mới trong pipeline thật.
+
+</Step>
+<Step>
+
+### Promote chỉ descriptor catalog
+
+Chỉ chạy sau khi các lệnh kiểm thử thành công:
+
+```bash
+node promote.mjs cfg-3
+find public/index.html public/shell public/cart -type f -exec sha256sum {} + | sort > evidence/after.sha256
+diff -u evidence/before.sha256 evidence/after.sha256
+cp public/runtime/config.json evidence/config-after.json
+```
+
+`diff` không có output và exit code 0: shell/cart artifact không đổi. So hai config bằng diff để thấy chỉ revision và descriptor catalog đổi:
+
+```bash
+diff -u evidence/config-before.json evidence/config-after.json
+```
+
+Lệnh diff config có exit code 1 khi tìm được khác biệt; đây là kết quả mong đợi, không phải promotion lỗi. Không đưa nó vào chuỗi `&&` như một assertion thành công.
+
+</Step>
+<Step>
+
+### Kiểm chứng document mới qua URL stable
+
+Mở một tab mới tại `http://127.0.0.1:4173`, **không có `preview`**. Kết quả phải là:
+
+```text
+s17 | catalog r19 | cart r7 | config cfg-3
+```
+
+Bấm thêm hàng, mở chi tiết và lưu ảnh/Console `release-set`. Trong Network, kiểm tra entry và lazy module đều từ `/catalog/r19/`; module có thể được browser HTTP cache phục vụ nên không bắt buộc mọi request đều tới server.
+
+Giữ tab này mở cho phần rollback. Không rebuild shell, sửa script tag hay restart server để hoàn thành bước này.
+
+</Step>
+</Steps>
+
+## Chặn một breaking change
+
+R20 đổi `mount` thành `mountV2` và contract major 2. Build vẫn thành công: lỗi chỉ lộ ra khi kiểm tra boundary với shell s17.
+
+```bash
+cp public/runtime/config.json evidence/config-before-breaking.json
+node build-catalog.mjs r20
+if node candidate.mjs r20 cfg-4; then
+  echo 'FAIL: breaking candidate đã lọt qua gate'
+  exit 1
+else
+  echo 'PASS: gate từ chối r20; kiểm tra lỗi CANDIDATE_CONTRACT_INVALID:r20'
+fi
+cmp public/runtime/config.json evidence/config-before-breaking.json
+```
+
+Kiểm tra lỗi thực sự là `CANDIDATE_CONTRACT_INVALID:r20`, không phải thiếu file hay sai working directory. Gate chạy trước khi viết candidate, nên `candidates/cfg-4.json` chưa được tạo; config đang phục vụ vẫn cfg-3. Mở document stable mới phải tiếp tục chạy r19.
+
+Một thay đổi khó hơn là giữ nguyên metadata major 1 nhưng đổi payload `quantity` thành string. Khi đó shape gate có thể pass, nhưng journey sẽ không tăng cart và `verify.mjs` phải fail. Đây là lý do không chỉ dựa vào SemVer hay type declarations.
+
+Nếu sản phẩm thực sự cần API v2, ưu tiên rollout theo **expand → migrate → contract**: provider hỗ trợ cả v1/v2, deploy consumer đọc v2, rồi bỏ v1 khi hết cửa sổ hỗ trợ. Không ép mọi shell cũ đổi API chỉ bằng một runtime config chung.
+
+## Rollback và quan sát tab cũ
+
+Rollback là candidate mới dựa trên **config hiện tại**, chọn lại r18. Không restore nguyên file cfg-1, vì trong hệ thống thật cart hoặc flags có thể đã đổi độc lập kể từ đó.
+
+```bash
+node candidate.mjs r18 cfg-5
+node verify.mjs r18
+node promote.mjs cfg-5
+```
+
+Sau khi test pass và promotion thành công, quan sát hai document:
+
+| Document | Kết quả mong đợi |
+| --- | --- |
+| Tab r19 giữ mở từ trước rollback | Vẫn `catalog r19`, config cfg-3 |
+| Tab mới mở URL stable sau rollback | `catalog r18`, config cfg-5 |
+| Tab preview r19 | Vẫn chọn preview r19; không dùng nó để đánh giá rollback stable |
+
+Trong tab r19 cũ, bấm “Xem chi tiết” nếu trước đó chưa bấm: nó vẫn phải tải `/catalog/r19/details.mjs`. Không xóa r19 chỉ vì selection stable đã quay lại r18.
+
+Shell đã pin snapshot và giữ module instance; sửa JSON trên server không thay code đã chạy. ESM còn có module cache trong document, khác với HTTP cache. Reload document stable mới bootstrap theo cfg-5; chỉ chuyển route trong SPA hoặc khôi phục tab bằng back/forward cache không đảm bảo bootstrap mới.
+
+<Callout type="warn" title="Rollback không hoàn tác dữ liệu">
+  Lab chỉ có cart in-memory. Với checkout thật, rollback frontend không hủy đơn hàng đã tạo, không đảo migration và không làm API cũ xuất hiện lại. Trước promotion, kiểm tra rollback target vẫn tương thích với backend hiện tại và có policy an toàn cho draft của tab đang sống.
+</Callout>
+
+Bạn cũng có thể kiểm tra stale candidate bằng `node promote.mjs cfg-2`: nó phải fail với `BASE_REVISION_CHANGED`, không đưa selection về snapshot đã tạo từ cfg-1. Lưu output này như bằng chứng writer không được dùng candidate lỗi thời.
+
+## Chẩn đoán lỗi thường gặp
+
+| Triệu chứng | Kiểm tra trước | Cách xử lý |
+| --- | --- | --- |
+| `EADDRINUSE` khi chạy server | Process đang chiếm port 4173 | Dừng process lab cũ; đừng vô tình test server khác |
+| `EEXIST` khi build catalog | Release directory đã tồn tại | Không overwrite; dùng workspace sạch để làm lại hoặc ID mới trong app thật |
+| Browser báo MIME type không hợp lệ | `Content-Type` entry và response body | Entry phải là JavaScript, không phải HTML SPA fallback |
+| `CONFIG_HTTP_404` ở preview | Đã tạo candidate thành công chưa | Chạy candidate đúng release; r20 bị chặn thì không có preview |
+| Preview r19 pass nhưng stable vẫn r18 | URL có `preview`, config response, tab đã sống | Xem config stable và mở document mới sau promotion |
+| Entry 200 nhưng chi tiết lỗi | Request `details.mjs`, release path | Publish đầy đủ graph; không redirect lazy module về release latest |
+| `BASE_REVISION_CHANGED` | Current revision khác candidate base | Tạo candidate revision mới từ current rồi test lại; không force overwrite |
+| `verify.mjs` timeout | Status bootstrap, Console, Network, server terminal | Sửa nguyên nhân load/contract; không tăng timeout để che lỗi |
+| Playwright không launch được | Chromium download và system libraries | Hoàn tất installation theo tài liệu Playwright; đây chưa phải lỗi remote |
+| Shell checksum đổi | Có ai sửa artifact hoặc chạy pipeline chung không | Dừng release; tìm coupling trước khi gọi đó là deploy độc lập |
+
+Nếu muốn reset lab, dừng server và tạo workspace mới theo bài. Không xóa artifact trong workspace còn tab đang sử dụng rồi xem lỗi phát sinh như một rollback thành công.
+
+## Đưa quy trình sang ứng dụng thật
+
+Lab bỏ framework và bundler để bạn thấy cơ chế selection. Khi áp dụng vào shop Module Federation, giữ quy trình nhưng thay loader/build bằng integration đang dùng; đừng `import()` một classic-script `remoteEntry.js` như ESM.
+
+| Lab local | Ứng dụng production |
+| --- | --- |
+| `entry.mjs` + `details.mjs` | Artifact graph của bundler: entry, chunks, CSS, fonts, images |
+| Thư mục `/catalog/r19/` | Release prefix bất biến trong object storage/CDN |
+| Native ESM `import()` | Federation loader đúng format, scope và shared dependency policy |
+| `preview-r19.json` | Preview environment hoặc override QA được kiểm soát |
+| File config + local rename | Config publisher có validation, CAS/ETag, audit và quyền hạn riêng |
+| `verify.mjs` với s17/r7 | Contract fixtures và integration matrix của các consumer còn được hỗ trợ |
+| Console `release-set` | Telemetry gắn release thực chạy, config revision và journey outcome |
+| Chuyển toàn bộ document mới | Canary theo cohort ổn định nếu traffic và observability đủ |
+
+Pipeline catalog nên tạo artifact một lần, lưu digest/inventory rồi dùng chính artifact đó cho preview và production. CI test candidate với shell/cart hiện hành, với consumer cũ còn hỗ trợ nếu có, và xác nhận rollback target. Promotion chỉ thay selection, không build lại từ source vì artifact mới có thể khác artifact vừa test.
+
+Deploy độc lập không có nghĩa mọi tổ hợp version đều hợp lệ. Compatibility window phải được công bố: shell nào còn được phục vụ, tab cũ sống bao lâu, backend hỗ trợ contract nào và assets giữ tới khi nào. Khi đổi một boundary, kiểm thử các tổ hợp trong cửa sổ ấy; không chỉ “mọi app ở latest”.
+
+Nếu team luôn phải release shell để thêm mỗi export catalog, cần xem lại boundary trước khi thêm config service. Ngược lại, khi feature thật sự thay contract shell, shell có thể phải release trước để mở rộng hỗ trợ. Điều đó không phủ nhận deploy độc lập; nó cho thấy thứ tự rollout bị ràng buộc bởi compatibility.
+
+## Bằng chứng cần nộp
+
+- [ ] Output `verify.mjs r18` và `verify.mjs r19` pass trên artifact thật.
+- [ ] `before.sha256` và `after.sha256` giống nhau; HTML shell không bị sửa.
+- [ ] Config trước/sau chỉ đổi revision và catalog descriptor, cart vẫn r7.
+- [ ] Ảnh hoặc log document stable mới chạy s17/r19/r7 sau promotion.
+- [ ] Response headers đúng cho entry, lazy module và runtime config.
+- [ ] Breaking r20 bị từ chối với đúng lỗi, config stable không đổi.
+- [ ] Config rollback mới chọn r18, document mới chạy r18, tab cũ tiếp tục r19.
+- [ ] Stale candidate bị từ chối; bạn giải thích được giới hạn single-writer của script.
+
+Cuối cùng, thử trả lời bằng bằng chứng thay vì chỉ nói “test xanh”: nếu ngày mai catalog đổi `onAdd` payload, gate nào chặn nó, consumer nào đang được bảo vệ, và document nào vẫn còn chạy code cũ? Nếu chưa chỉ ra được cả ba, hãy bổ sung test matrix và release record trước khi mở rộng lab thành production pipeline.
+
+## Tài liệu tham khảo và đọc tiếp
+
+- [MDN — Dynamic import và module caching](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import).
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control).
+- [Playwright — Browser installation](https://playwright.dev/docs/browsers).
+
+<Cards>
+  <Card title="Runtime configuration" href="/docs/trien-khai/runtime-configuration" description="Schema, URL policy và snapshot của document." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Bảo vệ API, payload và lifecycle ở boundary." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Cohort, concurrent writers và recovery có kiểm chứng." />
+  <Card title="Lab giả lập remote lỗi" href="/docs/thuc-hanh/remote-loi" description="Tiếp tục kiểm tra network failures và fallback." />
+</Cards>

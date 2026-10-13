@@ -1,18 +1,726 @@
 ---
 title: "Unit và component tests"
-description: "Kiểm thử logic, UI và lifecycle riêng của từng frontend."
+description: "Kiểm thử logic, UI bất đồng bộ và lifecycle mount/update/unmount của từng micro-frontend với Vitest và React Testing Library."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog vẫn build thành công, nhưng nút “Thêm vào giỏ” gửi sai số lượng. Hoặc bạn rời route rồi quay lại và thấy request của instance cũ tiếp tục cập nhật UI. Không cần khởi động shell, cart và backend để phát hiện hai lỗi này: phần lớn hành vi đó có thể kiểm thử ngay trong catalog.
+
+Mục tiêu của unit và component tests là giúp mỗi team sửa code nội bộ với phản hồi nhanh, **không cần chạy cả hệ thống micro-frontend**. Nhưng test local xanh không chứng minh remote tải được trên shell production; bạn cần biết test đang bảo vệ boundary nào, và boundary nào còn để lại cho contract hoặc integration tests.
+
+<Callout type="info" title="Phạm vi và điều kiện chạy ví dụ">
+  Bài dùng TypeScript, React 18 trở lên, Vitest và React Testing Library trong một lab client-side riêng. Repository hiện tại là site tài liệu, chưa cài các dependency kiểm thử và chưa có ứng dụng catalog. Các đường dẫn `src/...` dưới đây là file bạn tạo trong lab, không phải file có sẵn trong repository này. Sơ đồ dùng ASCII, không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn đúng phạm vi kiểm thử](#chọn-đúng-phạm-vi-kiểm-thử)
+  - [Unit test bảo vệ logic thuần](#unit-test-bảo-vệ-logic-thuần)
+  - [Component test bảo vệ hành vi UI](#component-test-bảo-vệ-hành-vi-ui)
+  - [Lifecycle test bảo vệ tài nguyên của instance](#lifecycle-test-bảo-vệ-tài-nguyên-của-instance)
+- [Chọn runner và môi trường](#chọn-runner-và-môi-trường)
+- [Thiết lập lab Vitest](#thiết-lập-lab-vitest)
+  - [Cài dependency và cấu hình](#cài-dependency-và-cấu-hình)
+  - [Cleanup giữa các test](#cleanup-giữa-các-test)
+- [Unit test cho số lượng mua](#unit-test-cho-số-lượng-mua)
+- [Component test theo hành vi người dùng](#component-test-theo-hành-vi-người-dùng)
+  - [Component catalog và dependency boundary](#component-catalog-và-dependency-boundary)
+  - [Kiểm tra loading dữ liệu và callback](#kiểm-tra-loading-dữ-liệu-và-callback)
+  - [Kiểm tra lỗi và retry](#kiểm-tra-lỗi-và-retry)
+  - [Kiểm tra request cũ khi đổi sản phẩm](#kiểm-tra-request-cũ-khi-đổi-sản-phẩm)
+- [Kiểm thử mount update và unmount](#kiểm-thử-mount-update-và-unmount)
+  - [Adapter sở hữu root](#adapter-sở-hữu-root)
+  - [Test qua public entry của adapter](#test-qua-public-entry-của-adapter)
+  - [Những tài nguyên khác cần kiểm tra](#những-tài-nguyên-khác-cần-kiểm-tra)
+- [Mock đúng boundary](#mock-đúng-boundary)
+- [Giữ test ổn định](#giữ-test-ổn-định)
+- [Coverage và pipeline của từng frontend](#coverage-và-pipeline-của-từng-frontend)
+- [Lỗi thường gặp](#lỗi-thường-gặp)
+- [Checklist cho một thay đổi](#checklist-cho-một-thay-đổi)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn đúng phạm vi kiểm thử
 
-Bài này sẽ giúp bạn: kiểm thử logic, UI và lifecycle riêng của từng frontend.
+Một micro-frontend không phải một “unit” chỉ vì nó deploy độc lập. Bên trong vẫn có logic nghiệp vụ, component, API client và adapter tích hợp. Chọn phạm vi theo hành vi cần xác nhận, không theo tên thư mục.
 
-[Xem các bài trong nhóm Kiểm thử và tooling](/docs/kiem-thu-va-tooling).
+```text
+Trong catalog, không cần shell thật
+  Logic thuần       → input/output
+  Component + hooks → DOM, tương tác, trạng thái bất đồng bộ
+  Public adapter    → mount/update/unmount, cleanup tài nguyên
+
+Ngoài phạm vi trên
+  Contract tests    → các bên có hiểu cùng public API và payload không?
+  Integration/E2E   → shell, remotes và browser có phối hợp đúng không?
+```
+
+### Unit test bảo vệ logic thuần
+
+Dùng unit test cho validation, reducer, mapping dữ liệu hoặc quy tắc tính toán không cần DOM. Đưa vào input cụ thể rồi kiểm tra output; không cần mock React, router hoặc remote loader.
+
+Ví dụ: số lượng phải là số nguyên dương, không vượt stock. Logic này nên là một hàm riêng để bạn kiểm tra các giá trị biên mà không phải nhập đi nhập lại qua UI.
+
+### Component test bảo vệ hành vi UI
+
+Render component cùng hooks và children liên quan, sau đó tương tác như người dùng: tìm button theo accessible name, nhập số lượng, click và kiểm tra callback hoặc thông báo.
+
+“Component test” ở đây là **test local qua DOM**, không có nghĩa mọi child đều phải mock. Một test render cả form, input và nút submit có thể hữu ích hơn nhiều test shallow chỉ kiểm tra từng prop. Theo cách phân loại khác, bạn cũng có thể gọi nó là integration test nội bộ của app; điều cần thống nhất là phạm vi và dependency thật/giả.
+
+### Lifecycle test bảo vệ tài nguyên của instance
+
+Với remote export adapter, test trực tiếp `mount`, `update` và `unmount`. Kiểm tra instance có giữ local state khi update, giải phóng tài nguyên khi unmount và không ảnh hưởng instance khác.
+
+Test này dùng implementation thật của adapter trong cùng app. Nó khác contract test kiểm tra hai artifact release độc lập có cùng hiểu module exports, props hay event schema. Và nó chưa kiểm tra federation runtime, URL bundle hay shared React trên shell thật.
+
+## Chọn runner và môi trường
+
+Mình mặc định chọn Vitest cho lab Vite/React vì có thể dùng cùng cách transform TypeScript, TSX và aliases. Nếu dự án đã dùng Jest ổn định, không cần đổi runner chỉ để viết những test bên dưới; hành vi và cách chọn boundary vẫn giữ nguyên, còn API mock/config thay theo runner.
+
+| Môi trường | Phù hợp với | Không chứng minh được |
+| --- | --- | --- |
+| Node | Logic thuần, reducer, mapper | DOM và tương tác UI |
+| jsdom | Component, callbacks, phần lớn effect và cleanup | Layout thật, CSS cascade thực tế, browser networking đầy đủ |
+| Browser thật | Focus phức tạp, drag-and-drop, layout, browser APIs, Shadow DOM | Tự động chứng minh các artifact production tích hợp đúng |
+
+Trong lab mình dùng jsdom cho toàn suite để cấu hình ngắn gọn. Suite lớn có thể tách project Node cho logic thuần và project DOM cho UI, tránh trả chi phí khởi tạo DOM ở mọi test.
+
+Với Vue, dùng công cụ render tương ứng như Vue Test Utils hoặc Testing Library cho Vue; với Angular, dùng TestBed và tooling phù hợp version của app. Đừng mock framework lifecycle để ép mọi app chạy cùng một cấu hình React. Cùng chiến lược kiểm thử không đòi hỏi cùng test harness.
+
+<Callout type="warn" title="DOM giả không phải browser thu nhỏ đầy đủ">
+  Test jsdom xanh không xác nhận CSS isolation, vị trí popup, iframe navigation, CORS hay lỗi tải chunk. Những hành vi cần rendering/layout hoặc phối hợp nhiều frontend phải được kiểm tra thêm trong browser thật, theo phạm vi ở bài [Integration và E2E tests](/docs/kiem-thu-va-tooling/integration-e2e).
+</Callout>
+
+## Thiết lập lab Vitest
+
+### Cài dependency và cấu hình
+
+Chạy trong một thư mục lab riêng đã có `package.json` với `"type": "module"`. Cài các package tương thích với nhau và commit lockfile; không cần thêm chúng vào site docs chỉ để đọc bài này. Kiểm tra yêu cầu Node/Vite của phiên bản Vitest bạn chọn ở [Getting Started](https://vitest.dev/guide/): đừng mặc định mọi bản Vitest đều hỗ trợ mọi bản Node.
+
+```bash
+npm install react react-dom
+npm install -D typescript @types/react @types/react-dom @types/node \
+  vite @vitejs/plugin-react vitest jsdom \
+  @testing-library/react @testing-library/dom \
+  @testing-library/user-event @testing-library/jest-dom \
+  @vitest/coverage-v8
+```
+
+Package `@vitest/coverage-v8` cần cùng version với Vitest. Lab này chạy Vitest trên Node, kể cả khi bạn dùng Bun để cài package; `bun test` là runner khác, không phải lệnh chạy suite Vitest.
+
+```ts title="vitest.config.ts"
+import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    globals: false,
+    setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
+    restoreMocks: true,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**'],
+      reporter: ['text', 'html'],
+    },
+  },
+});
+```
+
+Nếu app đã có Vite config, giữ lại những plugin, aliases và define values mà test thực sự cần, hoặc merge config có chủ đích. Một `vitest.config.ts` riêng không tự merge mọi cấu hình của app; nhưng cũng không nên kéo plugin deploy hoặc remote loading vào local component suite nếu chúng không phục vụ hành vi đang test.
+
+```json title="tsconfig.json của lab"
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": ["src", "vitest.config.ts"]
+}
+```
+
+Thêm các scripts sau vào `scripts` hiện có, không thay cả manifest của app:
+
+```json title="Scripts cần thêm vào package.json"
+{
+  "test": "vitest",
+  "test:ci": "vitest run",
+  "test:coverage": "vitest run --coverage",
+  "typecheck": "tsc --noEmit"
+}
+```
+
+Vitest transform TypeScript để chạy test, không thay bước typecheck. Đây là lý do lab có một command riêng cho `tsc`.
+
+### Cleanup giữa các test
+
+Vì `globals: false`, mình đăng ký cleanup rõ ràng thay vì dựa vào việc Testing Library tìm được global `afterEach`.
+
+```ts title="src/test/setup.ts"
+import '@testing-library/jest-dom/vitest';
+import { cleanup } from '@testing-library/react';
+import { afterEach } from 'vitest';
+
+afterEach(() => {
+  cleanup();
+});
+```
+
+`cleanup()` unmount những tree do Testing Library `render()` tạo. **Root do public adapter tự tạo không nằm trong registry đó**: test adapter phải gọi `handle.unmount()` và xóa container của mình. DOM sạch không đồng nghĩa timer, request hay subscription đã sạch.
+
+## Unit test cho số lượng mua
+
+Đầu tiên tách quy tắc khỏi UI. Ví dụ dùng stock nguyên không âm như một điều kiện đầu vào của domain, và trả `null` nếu số lượng không hợp lệ. Kiểm tra dữ liệu stock từ backend là trách nhiệm của API boundary, không nằm trong hàm này.
+
+```ts title="src/quantity.ts"
+export function parseQuantity(raw: string, stock: number): number | null {
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) return null;
+
+  const quantity = Number(text);
+  if (!Number.isSafeInteger(quantity)) return null;
+  if (quantity < 1 || quantity > stock) return null;
+  return quantity;
+}
+```
+
+```ts title="src/quantity.test.ts"
+import { describe, expect, it } from 'vitest';
+import { parseQuantity } from './quantity';
+
+describe('parseQuantity', () => {
+  it.each([
+    ['1', 5, 1],
+    ['5', 5, 5],
+    [' 2 ', 5, 2],
+    ['', 5, null],
+    ['0', 5, null],
+    ['-1', 5, null],
+    ['1.5', 5, null],
+    ['6', 5, null],
+    ['1', 0, null],
+    ['9007199254740992', Number.MAX_SAFE_INTEGER, null],
+  ])('raw=%s stock=%s → %s', (raw, stock, expected) => {
+    expect(parseQuantity(raw, stock)).toBe(expected);
+  });
+});
+```
+
+Bảng test tập trung vào biên: giá trị nhỏ nhất/lớn nhất, hết hàng, vượt stock, giá trị không nguyên và số không biểu diễn an toàn. Không cần tạo hàng chục case chỉ khác số ở giữa khoảng hợp lệ.
+
+## Component test theo hành vi người dùng
+
+### Component catalog và dependency boundary
+
+Component nhận một `loadProduct` thay vì import store của shell. Đây là một port nhỏ tại boundary dữ liệu; production có thể truyền API client thật, còn test truyền fake có kiểm soát. Callback `onAddToCart` là yêu cầu thêm hàng, không phải xác nhận cart đã xử lý thành công.
+
+```tsx title="src/CatalogApp.tsx"
+import { useEffect, useState } from 'react';
+import { parseQuantity } from './quantity';
+
+export type Product = { sku: string; name: string; stock: number };
+export type LoadProduct = (
+  sku: string,
+  signal: AbortSignal,
+) => Promise<Product>;
+
+export type CatalogProps = {
+  sku: string;
+  locale: 'vi-VN' | 'en-US';
+  loadProduct: LoadProduct;
+  onAddToCart: (item: { sku: string; quantity: number }) => void;
+};
+
+type View =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; product: Product };
+
+export default function CatalogApp({
+  sku, locale, loadProduct, onAddToCart,
+}: CatalogProps) {
+  const [view, setView] = useState<View>({ status: 'loading' });
+  const [rawQuantity, setRawQuantity] = useState('1');
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    setView({ status: 'loading' });
+
+    void (async () => {
+      try {
+        const product = await loadProduct(sku, controller.signal);
+        if (active) setView({ status: 'ready', product });
+      } catch {
+        if (active) setView({ status: 'error' });
+      }
+    })();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [sku, loadProduct, attempt]);
+
+  if (view.status === 'loading') {
+    return <p role="status">Đang tải sản phẩm…</p>;
+  }
+  if (view.status === 'error') {
+    return (
+      <section>
+        <p role="alert">Không tải được sản phẩm.</p>
+        <button onClick={() => setAttempt((value) => value + 1)}>
+          Thử lại
+        </button>
+      </section>
+    );
+  }
+
+  const { product } = view;
+  const quantity = parseQuantity(rawQuantity, product.stock);
+  return (
+    <section aria-label="Catalog">
+      <h2>{product.name}</h2>
+      <label>
+        {locale === 'vi-VN' ? 'Số lượng' : 'Quantity'}
+        <input
+          type="number"
+          min={1}
+          max={product.stock}
+          step={1}
+          value={rawQuantity}
+          onChange={(event) => setRawQuantity(event.currentTarget.value)}
+        />
+      </label>
+      <button
+        disabled={quantity === null}
+        onClick={() => {
+          if (quantity !== null) {
+            onAddToCart({ sku: product.sku, quantity });
+          }
+        }}
+      >
+        {locale === 'vi-VN' ? 'Thêm vào giỏ' : 'Add to cart'}
+      </button>
+    </section>
+  );
+}
+```
+
+`AbortController` yêu cầu client hủy công việc nếu nó hỗ trợ signal; cờ `active` ngăn kết quả cũ cập nhật state ngay cả khi client không hủy được. Hai cơ chế giải quyết hai việc khác nhau. Production client dùng `fetch` cần truyền signal xuống `fetch(url, { signal })`, không chỉ nhận signal rồi bỏ qua.
+
+Lab giữ số lượng dưới dạng string để người dùng có thể xóa ô rồi nhập lại; validation mới chuyển sang number. `locale` chỉ đổi label/nút mua trong ví dụ, chưa phải hệ thống i18n hoàn chỉnh. `loadProduct` cần giữ identity ổn định nếu shell không muốn refetch mỗi lần update.
+
+### Kiểm tra loading dữ liệu và callback
+
+Dùng Promise chủ động resolve để giữ UI ở loading. Với fake trả `Promise.resolve()` ngay lập tức, trạng thái loading có thể qua nhanh đến mức test không còn chủ động kiểm soát được thời điểm quan sát.
+
+```ts title="src/test/deferred.ts"
+export function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+```
+
+```tsx title="src/CatalogApp.test.tsx"
+import { act, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { expect, it, vi } from 'vitest';
+import CatalogApp, { type LoadProduct, type Product } from './CatalogApp';
+import { deferred } from './test/deferred';
+
+const product: Product = {
+  sku: 'shirt-001', name: 'Áo thun', stock: 5,
+};
+
+it('hiển thị loading rồi gửi SKU và số lượng người dùng chọn', async () => {
+  const user = userEvent.setup();
+  const request = deferred<Product>();
+  const loadProduct = vi.fn<LoadProduct>(() => request.promise);
+  const onAddToCart = vi.fn();
+
+  render(
+    <CatalogApp
+      sku="shirt-001"
+      locale="vi-VN"
+      loadProduct={loadProduct}
+      onAddToCart={onAddToCart}
+    />,
+  );
+  expect(screen.getByRole('status')).toHaveTextContent('Đang tải');
+
+  await act(async () => { request.resolve(product); });
+  expect(await screen.findByRole('heading', { name: 'Áo thun' }))
+    .toBeInTheDocument();
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+  const quantity = screen.getByRole('spinbutton', { name: 'Số lượng' });
+  await user.clear(quantity);
+  await user.type(quantity, '3');
+  await user.click(screen.getByRole('button', { name: 'Thêm vào giỏ' }));
+
+  expect(onAddToCart).toHaveBeenCalledExactlyOnceWith({
+    sku: 'shirt-001', quantity: 3,
+  });
+
+  await user.clear(quantity);
+  await user.type(quantity, '6');
+  const addButton = screen.getByRole('button', { name: 'Thêm vào giỏ' });
+  expect(addButton).toBeDisabled();
+  await user.click(addButton);
+  expect(onAddToCart).toHaveBeenCalledTimes(1);
+});
+```
+
+Test không tìm `.primary-button` hay truy cập hook state. Nếu đổi cấu trúc DOM nhưng vẫn giữ label, button và callback, test tiếp tục phản ánh hành vi người dùng. Query theo role cũng giúp lộ những UI thiếu tên truy cập được, dù nó không thay một accessibility audit.
+
+### Kiểm tra lỗi và retry
+
+Thêm test sau vào cùng `src/CatalogApp.test.tsx`, dùng các imports và fixture ở trên:
+
+```tsx
+it('hiển thị lỗi và tải lại khi người dùng chọn thử lại', async () => {
+  const user = userEvent.setup();
+  const loadProduct = vi.fn<LoadProduct>()
+    .mockRejectedValueOnce(new Error('Network unavailable'))
+    .mockResolvedValueOnce(product);
+
+  render(
+    <CatalogApp
+      sku="shirt-001"
+      locale="vi-VN"
+      loadProduct={loadProduct}
+      onAddToCart={vi.fn()}
+    />,
+  );
+  expect(await screen.findByRole('alert'))
+    .toHaveTextContent('Không tải được sản phẩm');
+
+  await user.click(screen.getByRole('button', { name: 'Thử lại' }));
+  expect(await screen.findByRole('heading', { name: 'Áo thun' }))
+    .toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(loadProduct).toHaveBeenCalledTimes(2);
+});
+```
+
+Số lần gọi ở đây diễn đạt contract của retry trong harness **không bật StrictMode**: lần đầu thất bại, lần thứ hai thành công. Nó không phải một quy tắc rằng effect luôn chạy đúng một lần trong mọi môi trường React.
+
+### Kiểm tra request cũ khi đổi sản phẩm
+
+Đây là lỗi khó thấy nếu mọi fake đều trả kết quả ngay: request áo thun bắt đầu trước nhưng hoàn thành sau request mũ. Test phải chủ động tạo đúng thứ tự đó, không dùng `sleep` để hy vọng race xảy ra.
+
+Thêm tiếp vào cùng file test:
+
+```tsx
+it('không để kết quả SKU cũ ghi đè sản phẩm mới', async () => {
+  const first = deferred<Product>();
+  const second = deferred<Product>();
+  const signals: AbortSignal[] = [];
+  const loadProduct = vi.fn<LoadProduct>((sku, signal) => {
+    signals.push(signal);
+    return sku === 'shirt-001' ? first.promise : second.promise;
+  });
+  const props = {
+    locale: 'vi-VN' as const,
+    loadProduct,
+    onAddToCart: vi.fn(),
+  };
+  const { rerender } = render(<CatalogApp {...props} sku="shirt-001" />);
+
+  rerender(<CatalogApp {...props} sku="hat-001" />);
+  expect(signals[0].aborted).toBe(true);
+
+  await act(async () => {
+    second.resolve({ sku: 'hat-001', name: 'Mũ', stock: 2 });
+  });
+  expect(screen.getByRole('heading', { name: 'Mũ' })).toBeInTheDocument();
+
+  // Fake cố tình không tuân theo abort để kiểm tra guard kết quả muộn.
+  await act(async () => { first.resolve(product); });
+  expect(screen.queryByRole('heading', { name: 'Áo thun' }))
+    .not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Mũ' })).toBeInTheDocument();
+});
+```
+
+Test này không xác nhận HTTP client thật có hủy network request. Nó xác nhận component gửi signal hủy và không nhận kết quả của effect đã cleanup. Muốn kiểm tra client thật, test thêm client ở boundary HTTP.
+
+## Kiểm thử mount update và unmount
+
+### Adapter sở hữu root
+
+Nếu shell render trực tiếp component, React của shell điều khiển unmount. Nếu remote có root riêng, shell chỉ biết public adapter, nên test phải đi qua adapter đó; gọi riêng `render(<CatalogApp />)` không kiểm tra được việc adapter quên `root.unmount()`.
+
+Adapter dưới dùng full props snapshot khi update, chặn duplicate mount trong cùng module, cho phép gọi unmount nhiều lần và báo lỗi nếu update handle đã đóng. Đây là lựa chọn của contract lab, không phải chuẩn bắt buộc cho mọi micro-frontend.
+
+```tsx title="src/mount.tsx"
+import { createRoot } from 'react-dom/client';
+import CatalogApp, { type CatalogProps } from './CatalogApp';
+
+export type CatalogHandle = {
+  update: (props: CatalogProps) => void;
+  unmount: () => void;
+};
+
+const owners = new WeakMap<HTMLElement, CatalogHandle>();
+
+export function mount(
+  container: HTMLElement,
+  initialProps: CatalogProps,
+): CatalogHandle {
+  if (owners.has(container)) throw new Error('Container đã có owner');
+  const root = createRoot(container);
+  let active = true;
+
+  const handle: CatalogHandle = {
+    update(props) {
+      if (!active) throw new Error('Không update sau unmount');
+      root.render(<CatalogApp {...props} />);
+    },
+    unmount() {
+      if (!active) return;
+      active = false;
+      try {
+        root.unmount();
+      } finally {
+        owners.delete(container);
+      }
+    },
+  };
+  owners.set(container, handle);
+  handle.update(initialProps);
+  return handle;
+}
+```
+
+Lab chưa triển khai Error Boundary, readiness Promise hay remote loader. `mount()` trả handle không đồng nghĩa React đã commit UI; test đợi DOM trước khi khẳng định UI sẵn sàng. Production adapter cần chính sách xử lý lỗi render riêng, xem [Tích hợp React](/docs/ui-va-framework/react).
+
+### Test qua public entry của adapter
+
+Dùng `within(container)` để truy vấn đúng slot. Trong shell có thể có nhiều nút cùng tên; query toàn document dễ click nhầm instance mà vẫn cho test xanh.
+
+```tsx title="src/mount.test.tsx"
+import { act, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { expect, it, vi } from 'vitest';
+import { mount, type CatalogHandle } from './mount';
+import type { CatalogProps, LoadProduct, Product } from './CatalogApp';
+import { deferred } from './test/deferred';
+
+it('update giữ state, unmount hủy request và cho phép mount lại', async () => {
+  const user = userEvent.setup();
+  const request = deferred<Product>();
+  const signals: AbortSignal[] = [];
+  const loadProduct = vi.fn<LoadProduct>((_sku, signal) => {
+    signals.push(signal);
+    return request.promise;
+  });
+  const firstCallback = vi.fn();
+  const nextCallback = vi.fn();
+  const props: CatalogProps = {
+    sku: 'shirt-001', locale: 'vi-VN', loadProduct,
+    onAddToCart: firstCallback,
+  };
+  const container = document.createElement('div');
+  document.body.append(container);
+  const ui = within(container);
+  let handle: CatalogHandle | undefined;
+
+  try {
+    await act(async () => { handle = mount(container, props); });
+    expect(() => mount(container, props)).toThrow('Container đã có owner');
+    await act(async () => {
+      request.resolve({ sku: 'shirt-001', name: 'Áo thun', stock: 5 });
+    });
+    await ui.findByRole('heading', { name: 'Áo thun' });
+
+    const quantity = ui.getByRole('spinbutton', { name: 'Số lượng' });
+    await user.clear(quantity);
+    await user.type(quantity, '3');
+    await act(async () => {
+      handle!.update({ ...props, locale: 'en-US', onAddToCart: nextCallback });
+    });
+    expect(ui.getByRole('spinbutton', { name: 'Quantity' })).toHaveValue(3);
+    await user.click(ui.getByRole('button', { name: 'Add to cart' }));
+    expect(nextCallback).toHaveBeenCalledExactlyOnceWith({
+      sku: 'shirt-001', quantity: 3,
+    });
+    expect(firstCallback).not.toHaveBeenCalled();
+    expect(loadProduct).toHaveBeenCalledTimes(1);
+
+    // Bắt đầu request mới rồi rời route trước khi nó hoàn thành.
+    const pending = deferred<Product>();
+    const pendingLoader = vi.fn<LoadProduct>((_sku, signal) => {
+      signals.push(signal);
+      return pending.promise;
+    });
+    await act(async () => {
+      handle!.update({ ...props, loadProduct: pendingLoader });
+    });
+    expect(ui.getByRole('status')).toBeInTheDocument();
+    await act(async () => { handle!.unmount(); });
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(container).toBeEmptyDOMElement();
+    expect(() => handle!.update(props)).toThrow('Không update sau unmount');
+    expect(() => handle!.unmount()).not.toThrow();
+
+    await act(async () => {
+      pending.resolve({ sku: 'shirt-001', name: 'Kết quả muộn', stock: 5 });
+    });
+    expect(container).toBeEmptyDOMElement();
+
+    await act(async () => { handle = mount(container, props); });
+    await ui.findByRole('heading', { name: 'Áo thun' });
+    expect(ui.getByRole('spinbutton', { name: 'Số lượng' })).toHaveValue(1);
+  } finally {
+    await act(async () => { handle?.unmount(); });
+    container.remove();
+  }
+});
+```
+
+`act` bao quanh những thao tác tự điều khiển React như mount/update/unmount và resolve Promise. `render`, `rerender` và những helpers của Testing Library đã xử lý phần tương ứng; không cần bọc mọi assertion vào `act`.
+
+Cleanup trong `finally` vẫn chạy nếu assertion thất bại. Nếu chỉ unmount ở dòng cuối test, lỗi giữa chừng có thể để root sống và khiến test tiếp theo lỗi theo, che mất nguyên nhân đầu tiên.
+
+### Những tài nguyên khác cần kiểm tra
+
+Request chỉ là một loại tài nguyên. Chọn assertions quan sát được cho những thứ app thực sự tạo:
+
+| Tài nguyên | Sau mount hoặc update | Sau unmount |
+| --- | --- | --- |
+| Subscription/event bus | Phát event khiến UI hoặc callback đúng instance thay đổi | Phát lại không tác động instance đã đóng; số subscriber active trở về mức ban đầu |
+| Interval/debounce | Advance clock đúng khoảng thì có hành vi mong đợi | Advance tiếp không còn tick/callback của instance |
+| DOM/global listener | Event được xử lý đúng container | Dispatch event không còn side effect từ listener cũ |
+| Observer/socket | Theo dõi đúng target/session | `disconnect`/unsubscribe/close theo quyền sở hữu đã chốt |
+| Nhiều instances | Mỗi container có state riêng | Unmount A không làm B mất callback hoặc subscription |
+
+Với subscription, fake bus có `Set` chứa listeners là một test double hữu ích: kiểm tra số listener **đang active**, phát event và quan sát callback, thay vì chỉ spy `subscribe()` được gọi bao nhiêu lần. Shared socket do shell sở hữu thì remote chỉ unsubscribe phần của mình, không được tự đóng socket chung.
+
+Thêm suite StrictMode cho các effect nhạy cảm với cleanup. Trong development, StrictMode có thể chạy thêm chu kỳ setup/cleanup; kiểm tra còn đúng một subscription active sau setup và không còn sau unmount, thay vì khẳng định effect chỉ chạy một lần. Test adapter cũng nên có case hai container đồng thời nếu app cho phép nhiều instances.
+
+## Mock đúng boundary
+
+Mình ưu tiên chạy thật logic và component bên trong app, thay thế những dependency đi ra ngoài boundary. Mock toàn bộ hooks, children hoặc `createRoot` sẽ làm suite chạy nhanh nhưng bỏ qua đúng hành vi mà micro-frontend dễ gặp lỗi.
+
+| Boundary | Cách thay thế trong local tests | Cần kiểm tra thêm ở đâu |
+| --- | --- | --- |
+| Hàm tải dữ liệu được inject | Fake resolve/reject/deferred như lab | API client test để xác nhận URL, mapping, HTTP status và abort |
+| HTTP của client thật | MSW intercept ở network boundary, dùng fixtures nhỏ | Contract với backend và integration có cấu hình mạng thật |
+| Navigation/login của shell | Inject capability, spy tham số public | Shell có thực thi route/login flow đúng không |
+| Module remote loader | Fake resolve/reject nếu đang test loading state của shell | Bundle thật, export shape và runtime integration |
+| Event bus | Fake subscribe/publish có cleanup thật | Schema, version và tương thích giữa producer/consumer |
+
+Nếu cần kiểm tra component **cùng API client thật**, dùng MSW thay vì mock `fetch` khắp suite. Với MSW trong Node, mô hình setup thường là `server.listen({ onUnhandledRequest: 'error' })` trước suite, `server.resetHandlers()` sau mỗi test và `server.close()` sau suite. jsdom trong Vitest vẫn chạy ở Node, không tự cần service worker dành cho browser.
+
+Không dùng fake dữ liệu luôn hợp lệ để chứng minh parser/schema đúng. Thêm test cho response không hợp lệ tại boundary đọc dữ liệu; TypeScript types không validate JSON ở runtime. Fixture frontend tự viết cũng không chứng minh backend thật trả cùng schema.
+
+<Callout type="warn" title="Không để test gọi production">
+  Test local phải chủ động chặn network ngoài phạm vi hoặc cấu hình client chỉ dùng fake endpoints. Một request chưa có handler cần làm test thất bại, không im lặng đi ra mạng thật. Không đưa access token, cookie hay dữ liệu khách hàng vào fixtures.
+</Callout>
+
+## Giữ test ổn định
+
+Flaky test thường đến từ việc không kiểm soát thời gian, tài nguyên hoặc state dùng chung. Đừng tăng timeout trước khi hiểu nó đang chờ điều gì.
+
+| Nhu cầu | Chọn mặc định | Tránh |
+| --- | --- | --- |
+| Element đã có ngay | `getByRole` | Query CSS theo implementation |
+| Element sẽ xuất hiện | `await findByRole` | `sleep(500)` rồi `getByRole` |
+| Element phải vắng mặt | `queryByRole` và assertion phủ định | `getByRole` ném lỗi trước assertion |
+| Callback bất đồng bộ không có DOM tương ứng | `waitFor(() => expect(...))` | Đặt click hoặc publish event bên trong `waitFor` |
+| Thao tác người dùng | `userEvent.setup()` rồi `await user.click/type` | Gọi trực tiếp handler của component |
+| Thứ tự response | Deferred Promise | Dựa vào request ngoài mạng chạy nhanh/chậm |
+
+Callback của `waitFor` có thể chạy nhiều lần, nên chỉ đặt assertion trong đó. Nếu click nằm bên trong, mỗi vòng retry có thể gửi thêm yêu cầu; suite không còn kiểm tra một thao tác người dùng nữa.
+
+Với debounce hoặc timeout, dùng `vi.useFakeTimers()` trong test cần clock giả, advance đúng thời gian và khôi phục `vi.useRealTimers()` trong `finally`. Nếu dùng `user-event` cùng clock giả, tạo instance với `userEvent.setup({ advanceTimers: vi.advanceTimersByTime })` để thao tác không mắc kẹt ở timer nội bộ. Không bật fake timers toàn suite chỉ để một test debounce chạy nhanh hơn.
+
+`restoreMocks: true` khôi phục spies do runner quản lý; nó không xóa localStorage, reset singleton store, tháo listener hay đóng root tự tạo. Tạo store mới cho mỗi test nếu có thể. Nếu singleton là contract thật của app, cung cấp reset/dispose cho harness và kiểm tra lifecycle của nó riêng.
+
+Snapshot nhỏ có thể hữu ích cho output ổn định như một mapper. Snapshot toàn DOM không nên là bằng chứng chính cho UI: nó không nói người dùng click được hay payload đúng, và dễ biến review thành thao tác “update snapshot” theo thói quen.
+
+## Coverage và pipeline của từng frontend
+
+Chạy các lệnh dưới trong lab sau khi tạo những file ở trên:
+
+```bash
+npm run typecheck
+npm run test:ci
+npm run test:coverage
+```
+
+Kết quả mong đợi: các test logic, UI và adapter đều pass; báo cáo HTML nằm ở `coverage/index.html`. `coverage.include` đưa cả source chưa được test vào báo cáo, tránh trường hợp chỉ những file tình cờ được import mới được tính.
+
+Coverage trả lời “dòng/nhánh này đã được chạy chưa”, không trả lời “assertion có bắt lỗi không”. Để đánh giá một test, thử một thay đổi sai có chủ đích trong branch local: bỏ guard `active`, bỏ abort trong cleanup hoặc gửi số lượng cố định. Test tương ứng phải đỏ; sau đó khôi phục thay đổi. Mutation testing có thể tự động hóa cách kiểm tra này khi suite đủ lớn.
+
+Mình ưu tiên branch coverage và assertions cho validation, retry, race và cleanup, thay vì ép một con số toàn repo làm mục tiêu duy nhất. Nếu team đặt threshold, ghi rõ đó là policy của team và không loại adapter khỏi báo cáo chỉ để đạt threshold.
+
+Trong pipeline thực tế, mỗi app chạy typecheck và local tests với dependency/lockfile của nó. Monorepo có thể chọn apps bị ảnh hưởng theo dependency graph; đổi contracts hoặc shared UI vẫn cần chạy tests của consumers liên quan. Multi-repo cần pipeline từng repo và cơ chế kiểm tra tương thích artifact riêng, không cần gom mọi local tests vào một job buộc release đồng thời.
+
+Local tests là gate cho thay đổi nội bộ. Build check, contract tests và integration smoke tests vẫn là các gate khác: local component suite không phát hiện được remote URL sai, artifact thiếu hay cấu hình shared runtime không tương thích.
+
+## Lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân nên kiểm tra | Hướng sửa |
+| --- | --- | --- |
+| `document is not defined` | UI test đang chạy Node environment | Dùng jsdom hoặc browser project cho file đó |
+| `Invalid Chai property: toBeInTheDocument` | Chưa nạp jest-dom adapter cho Vitest | Import `@testing-library/jest-dom/vitest` trong setup file |
+| Nhiều element cùng role/name | DOM cũ chưa cleanup hoặc query sai slot | Cleanup sau test; dùng `within(container)` khi có nhiều instances |
+| Warning cập nhật chưa bọc `act` | Resolve Promise hoặc gọi adapter ngoài helpers | Dùng `await act(async () => ...)` ở thao tác trực tiếp đó; không chỉ tắt warning |
+| Test thứ hai thất bại khi chạy cả suite | Root, timer, singleton hoặc handler còn sống | Cleanup tài nguyên trong `finally`/hooks; kiểm tra thứ tự và state dùng chung |
+| Retry/effect bị đếm nhiều lần | StrictMode hoặc dependency function đổi identity | Kiểm tra số tài nguyên active và hành vi, giữ identity ổn định khi cần |
+| Test treo với fake timers | Timer của user-event không được advance | Cấu hình `advanceTimers`, khôi phục clock thật sau test |
+| UI test xanh nhưng deploy hỏng | Mock đã loại bỏ loader, HTTP hoặc runtime thật | Bổ sung đúng lớp contract/integration, không thêm snapshot để bù |
+
+## Checklist cho một thay đổi
+
+Trước khi merge thay đổi của catalog, chọn các mục thực sự liên quan:
+
+- [ ] Logic có input hợp lệ, giá trị biên và input bị từ chối.
+- [ ] UI được query theo role/label và tương tác qua user-event.
+- [ ] Callback gửi đúng payload; trạng thái disabled không phát thêm hành động.
+- [ ] Async flow có loading, success, error và retry nếu UI hỗ trợ.
+- [ ] Request cũ không ghi đè dữ liệu mới hoặc cập nhật instance đã đóng.
+- [ ] Update có giữ/reset local state đúng contract và sử dụng callback mới.
+- [ ] Unmount giải phóng request, listener, timer và subscription thuộc instance.
+- [ ] Test không gọi network thật ngoài phạm vi và không để state rò sang test khác.
+- [ ] Typecheck chạy riêng; coverage có cả source chưa được import bởi tests.
+- [ ] Thay đổi public contract hoặc remote loading được chuyển sang lớp test phù hợp.
+
+Nếu bạn đang bắt đầu từ một remote chưa có tests, viết trước ba case: một quy tắc nghiệp vụ có biên, một user action gửi callback và một mount/unmount cleanup. Chúng tạo ba điểm tựa cụ thể trước khi mở rộng suite, thay vì bắt đầu bằng snapshot cả màn hình.
+
+## Tài liệu tham khảo
+
+- [Vitest — Getting Started](https://vitest.dev/guide/): cấu hình runner và yêu cầu môi trường của phiên bản đang dùng.
+- [Vitest — Test Environment](https://vitest.dev/guide/environment.html): Node, jsdom và các environment khác.
+- [Vitest — Coverage](https://vitest.dev/guide/coverage.html): provider và phạm vi source trong báo cáo.
+- [React Testing Library — API](https://testing-library.com/docs/react-testing-library/api/): render, rerender, cleanup và act.
+- [Testing Library — About Queries](https://testing-library.com/docs/queries/about/): cách chọn query và ưu tiên accessibility.
+- [user-event — Introduction](https://testing-library.com/docs/user-event/intro/): mô phỏng tương tác thay vì chỉ dispatch một event.
+- [React — act](https://react.dev/reference/react/act): chờ cập nhật React trước khi assertions.
+- [MSW — Node integration](https://mswjs.io/docs/integrations/node/): intercept request trong test chạy ở Node.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm tra compatibility của exports, props và event schemas giữa các bản release." />
+  <Card title="Integration và E2E tests" href="/docs/kiem-thu-va-tooling/integration-e2e" description="Kiểm tra user journeys đi qua shell và remotes trong browser thật." />
+  <Card title="Tích hợp React" href="/docs/ui-va-framework/react" description="Chọn component boundary hay root riêng và xác định lifecycle owner." />
+</Cards>

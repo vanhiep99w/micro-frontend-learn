@@ -1,18 +1,609 @@
 ---
 title: "Tích hợp Angular"
-description: "Quản lý bootstrap, providers, router và lifecycle khi tích hợp Angular."
+description: "Thiết kế boundary Angular trong micro-frontend: bootstrap vào container, quản lý providers, router, change detection và cleanup khi unmount."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop dùng React, còn team catalog đã có một ứng dụng Angular. Tải được bundle catalog mới giải quyết bước đầu: bạn còn phải đưa nó vào đúng vùng DOM, truyền context từ shell và dọn sạch ứng dụng khi người dùng chuyển sang cart. Nếu chỉ chèn một thẻ `app-root` rồi chạy lại `main.ts`, bạn rất dễ có nhiều root, nhiều listener và hai router cùng sửa URL.
+
+Bài này đặt Angular sau một contract `mount → update → unmount`. Shell biết contract đó, không cần biết component, injector hay Angular version bên trong. Mình ưu tiên boundary này khi nhúng Angular vào shell khác framework; nếu cả shell lẫn remote cùng Angular và cùng chính sách runtime, tích hợp qua routes thường đơn giản hơn.
+
+<Callout type="info" title="Phạm vi và phiên bản">
+  Repository này là site tài liệu, chưa có ứng dụng Angular chạy sẵn. Code dưới đây dành cho lab browser-only với standalone components trên Angular 20.2 trở lên, dùng `provideZonelessChangeDetection()` và không dùng Angular Router trong ví dụ chính. Các package Angular trong lab phải cùng phiên bản tương thích. Sơ đồ dùng ASCII, không cần thêm renderer. SSR, hydration và cấu hình loader/federation không nằm trong ví dụ.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn boundary trước khi bootstrap](#chọn-boundary-trước-khi-bootstrap)
+  - [Cùng Angular application hay application riêng](#cùng-angular-application-hay-application-riêng)
+  - [Angular Elements và iframe](#angular-elements-và-iframe)
+- [Bootstrap và quyền sở hữu DOM](#bootstrap-và-quyền-sở-hữu-dom)
+- [Contract giữa shell và catalog](#contract-giữa-shell-và-catalog)
+- [Ví dụ mount update và unmount](#ví-dụ-mount-update-và-unmount)
+  - [Component nhận props và gọi capability](#component-nhận-props-và-gọi-capability)
+  - [Adapter quản lý Angular application](#adapter-quản-lý-angular-application)
+  - [Chạy thử từ shell](#chạy-thử-từ-shell)
+- [Providers và state qua boundary](#providers-và-state-qua-boundary)
+  - [Root service không phải singleton toàn trang](#root-service-không-phải-singleton-toàn-trang)
+  - [Token identity và shared dependencies](#token-identity-và-shared-dependencies)
+  - [Auth HTTP và configuration](#auth-http-và-configuration)
+- [Routing với một URL của browser](#routing-với-một-url-của-browser)
+  - [Một Angular Router ở shell](#một-angular-router-ở-shell)
+  - [Shell giữ URL và remote nhận route state](#shell-giữ-url-và-remote-nhận-route-state)
+  - [Remote có Angular Router riêng](#remote-có-angular-router-riêng)
+- [Change detection và Zone.js](#change-detection-và-zonejs)
+  - [Zoneless cần thông báo thay đổi](#zoneless-cần-thông-báo-thay-đổi)
+  - [Ứng dụng còn phụ thuộc Zone.js](#ứng-dụng-còn-phụ-thuộc-zonejs)
+- [Lifecycle và lỗi bất đồng bộ](#lifecycle-và-lỗi-bất-đồng-bộ)
+  - [Chuyển route khi mount chưa xong](#chuyển-route-khi-mount-chưa-xong)
+  - [Cleanup ngoài component tree](#cleanup-ngoài-component-tree)
+- [CSS overlays và accessibility](#css-overlays-và-accessibility)
+- [Kiểm thử boundary](#kiểm-thử-boundary)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn boundary trước khi bootstrap
 
-Bài này sẽ giúp bạn: quản lý bootstrap, providers, router và lifecycle khi tích hợp Angular.
+Angular có dependency injection, change detection và router gắn với môi trường ứng dụng. Vì vậy, câu hỏi đầu tiên không phải “expose component nào?”, mà là **remote có sống trong Angular application của shell không?** Hai mô hình này có cách chia sẻ providers và teardown khác nhau.
 
-[Xem các bài trong nhóm UI và framework](/docs/ui-va-framework).
+### Cùng Angular application hay application riêng
+
+| Mô hình | Ai tạo Angular application? | Remote cung cấp gì? | Mặc định nên chọn khi nào? |
+| --- | --- | --- | --- |
+| Cùng application | Shell | Standalone component hoặc `Routes` để shell render/lazy-load | Shell và remote cùng Angular, có ma trận version tương thích và chấp nhận chung router/DI hierarchy |
+| Application riêng | Adapter của từng remote | Hàm `mount` trả handle `update` và `unmount` | Shell khác framework, hoặc cần vòng đời ứng dụng riêng với contract nhỏ |
+
+Trong mô hình cùng application, remote không chạy `bootstrapApplication()` khi được tải. Shell đưa routes vào router hoặc tạo component trong injector phù hợp. Remote vẫn có thể tạo providers ở route/component scope, nhưng nó không tự có một root application độc lập.
+
+Trong mô hình application riêng, mỗi lần mount có `ApplicationRef` và application injector riêng. Đây là boundary quản lý UI và providers, **không phải security boundary**: các ứng dụng trong cùng document vẫn có thể truy cập DOM, global APIs và gây ảnh hưởng CPU cho nhau.
+
+```text
+Shell: navigation, cart controller, loading và fallback
+  │
+  ├── mount(container, context, signal)
+  │     └── Angular catalog application
+  │           ├── application injector
+  │           └── CatalogComponent trong host element riêng
+  │
+  ├── update(props)
+  └── unmount() → destroy view, destroy application, remove host
+```
+
+Mình bắt đầu với một application riêng cho mỗi phiên mount vì quyền sở hữu tài nguyên rõ nhất. Chỉ giữ application sống qua nhiều lần mount sau khi đã xác định state nào cần giữ, ai cleanup application cuối cùng và memory budget là bao nhiêu. Đừng biến một biến `appRef` global thành chiến lược cache vô thời hạn.
+
+### Angular Elements và iframe
+
+Angular Elements phù hợp khi contract tự nhiên là một custom element: shell gán properties và nghe DOM events. `createCustomElement()` nối Angular inputs/outputs với giao diện browser, nhưng bạn vẫn phải quản lý application injector dùng để tạo các element. Gỡ một element không đồng nghĩa application dùng chung cho mọi element đã bị hủy.
+
+Custom element cũng không tự tạo Shadow DOM. Muốn style boundary đó, component cần cấu hình encapsulation phù hợp. Tên tag đã đăng ký trong `customElements` không thể bị “undefine” để thay version tùy ý; cần chính sách đăng ký/version và lưu ý giới hạn detach/reattach của Angular Elements.
+
+Nếu remote phải dùng Angular major khác mà không muốn phối hợp runtime, global patches và CSS trong cùng document, hãy đánh giá iframe trước. Nó có document và môi trường JavaScript riêng, đổi lại giao tiếp, focus và routing tốn công hơn. Chi tiết nằm ở [Web Components](/docs/cac-cach-tich-hop/web-components) và [iframe isolation](/docs/cac-cach-tich-hop/iframe).
+
+## Bootstrap và quyền sở hữu DOM
+
+Entry chạy độc lập và entry để nhúng nên tách nhau. `main.ts` của ứng dụng standalone có thể gọi `bootstrapApplication(AppComponent, appConfig)` để khởi động toàn trang; entry expose cho shell chỉ export adapter, không tự bootstrap ngay khi import.
+
+| API | Dùng để làm gì? | Trách nhiệm đi kèm |
+| --- | --- | --- |
+| `bootstrapApplication()` từ `@angular/platform-browser` | Tạo application và bootstrap một standalone root component | Quản lý root host và hủy application khi kết thúc |
+| `createApplication()` từ `@angular/platform-browser` | Tạo application environment mà chưa render root component | Tạo/attach component sau đó và hủy application |
+| `createComponent()` từ `@angular/core` | Tạo component với `hostElement` và `environmentInjector` cụ thể | Attach view vào application, khởi tạo inputs và cleanup |
+| `ApplicationRef.destroy()` | Hủy application, các view liên quan và application injector | Không tự cleanup mọi tài nguyên bên ngoài Angular do bạn tạo |
+
+Ví dụ dưới dùng `createApplication()` rồi `createComponent()` để chọn chính xác host element và đặt required input trước lần render đầu. Nó tránh việc tìm root qua selector global như `document.querySelector('app-root')`, vốn dễ nhắm nhầm khi có nhiều vùng Angular trên trang.
+
+Shell sở hữu container; adapter tạo một host con và sở hữu subtree của host đó. Shell không render React/Vue children vào chính subtree Angular đang quản lý. Khi unmount, adapter chỉ xóa host của mình, không `replaceChildren()` cả container rồi làm mất fallback hoặc sibling do shell tạo.
+
+<Callout type="warn" title="Không bootstrap toàn trang từ remote entry">
+  Import một remote không được tự sửa `document.body`, tạo router hay khởi chạy polling. Những side effect đó phải nằm trong lifecycle có owner rõ ràng. Không dùng `destroyPlatform()` để unmount một remote: platform có thể đang được các Angular application khác trên trang sử dụng.
+</Callout>
+
+## Contract giữa shell và catalog
+
+Trong [shop mẫu](/docs/bat-dau/bai-toan-shop), catalog chỉ yêu cầu thêm sản phẩm; cart controller sở hữu quy tắc giỏ hàng. Vì vậy, shell truyền một capability nhỏ thay vì truyền toàn bộ store, injector hoặc access token.
+
+```ts title="catalog-contract.ts — contract framework-neutral"
+export interface CatalogProps {
+  readonly title: string;
+  readonly locale: 'vi' | 'en';
+}
+
+export interface ShellCapabilities {
+  addToCart(productId: string, quantity: number): Promise<void>;
+}
+
+export interface MountContext {
+  readonly props: CatalogProps;
+  readonly shell: ShellCapabilities;
+}
+
+export interface MountedCatalog {
+  update(props: CatalogProps): void;
+  unmount(): void;
+}
+
+export type MountCatalog = (
+  container: HTMLElement,
+  context: MountContext,
+  signal: AbortSignal,
+) => Promise<MountedCatalog>;
+```
+
+Contract này có vài quy tắc cần chốt cùng code:
+
+- Một phiên mount chiếm một container; muốn thay phiên phải đợi phiên cũ kết thúc và cleanup.
+- `update` nhận snapshot mới, không dựa vào việc mutate object props cũ.
+- Capability giữ nguyên trong một phiên. Đổi owner hoặc implementation capability thì unmount rồi mount lại.
+- `unmount` gọi nhiều lần vẫn an toàn; `update` sau unmount báo lỗi để lộ sai thứ tự lifecycle.
+- `signal` hủy quá trình mount đang chờ, không tự hủy application đã mount xong. Sau đó shell gọi `unmount`.
+- Promise của `addToCart` resolve khi cart chấp nhận thao tác, reject khi thất bại. Catalog không tự cộng badge hoặc giả định giỏ hàng đã đổi trước kết quả.
+
+Đây là TypeScript contract, không phải runtime validator. Nếu loader nhận module từ nguồn khác hoặc các team release riêng, cần kiểm tra export, contract version và shape dữ liệu tại boundary. Truyền function trực tiếp cũng chỉ phù hợp với composition trong cùng môi trường JavaScript, không dùng nguyên trạng qua `postMessage`.
+
+## Ví dụ mount update và unmount
+
+Ba file tiếp theo thuộc một Angular lab riêng. Chúng không yêu cầu shell import Angular; chỉ code catalog dùng các API Angular. Ví dụ dùng một sản phẩm cố định để bạn kiểm chứng lifecycle, không triển khai data fetching, persistence hay giỏ hàng thật.
+
+### Component nhận props và gọi capability
+
+Token chỉ dùng nội bộ remote. Shell không phải tạo cùng token; adapter chuyển capability framework-neutral thành provider trong application của catalog.
+
+```ts title="catalog.component.ts"
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  InjectionToken,
+  inject,
+  input,
+  signal,
+} from '@angular/core';
+import type { CatalogProps, ShellCapabilities } from './catalog-contract';
+
+export const SHELL_CAPABILITIES =
+  new InjectionToken<ShellCapabilities>('catalog.shell-capabilities');
+
+@Component({
+  selector: 'shop-catalog-root',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <section aria-labelledby="catalog-title">
+      <h2 id="catalog-title">{{ props().title }}</h2>
+      <p>{{ props().locale === 'vi' ? 'Áo thun' : 'T-shirt' }}</p>
+      <button type="button" [disabled]="pending()" (click)="add()">
+        {{ props().locale === 'vi' ? 'Thêm vào giỏ' : 'Add to cart' }}
+      </button>
+      <p role="status">{{ status() }}</p>
+    </section>
+  `,
+})
+export class CatalogComponent {
+  readonly props = input.required<CatalogProps>();
+  readonly pending = signal(false);
+  readonly status = signal('');
+
+  private readonly shell = inject(SHELL_CAPABILITIES);
+  private readonly destroyRef = inject(DestroyRef);
+
+  async add(): Promise<void> {
+    if (this.pending()) return;
+    this.pending.set(true);
+    this.status.set('');
+    const locale = this.props().locale;
+
+    try {
+      await this.shell.addToCart('p-001', 1);
+      if (!this.destroyRef.destroyed) {
+        this.status.set(locale === 'vi' ? 'Đã thêm vào giỏ' : 'Added to cart');
+      }
+    } catch {
+      if (!this.destroyRef.destroyed) {
+        this.status.set(locale === 'vi' ? 'Chưa thêm được sản phẩm' : 'Could not add item');
+      }
+    } finally {
+      if (!this.destroyRef.destroyed) this.pending.set(false);
+    }
+  }
+}
+```
+
+Signal giúp callback sau `await` thông báo thay đổi cho Angular, kể cả trong zoneless mode. Kiểm tra `DestroyRef.destroyed` ngăn callback cập nhật UI đã unmount. Nó **không hủy nghiệp vụ thêm giỏ**: command đã gửi có thể vẫn thành công, và cart controller phải tiếp tục quản lý kết quả đó.
+
+`catalog-title` là ID cố định vì lab chỉ render một catalog trên trang. Nếu production cho phép nhiều instance, thêm instance ID vào contract và tạo các ID khác nhau cho heading, label và ARIA references.
+
+### Adapter quản lý Angular application
+
+Adapter tạo một application cho mỗi phiên, attach view và render lần đầu sau khi inputs đã sẵn sàng. `WeakSet` chặn mount chồng vào cùng container trong cùng module instance; shell vẫn cần bảo đảm không có hai version adapter khác nhau tranh quyền sở hữu container.
+
+```ts title="mount.ts — entry được expose cho shell"
+import {
+  ApplicationRef,
+  ComponentRef,
+  createComponent,
+  provideZonelessChangeDetection,
+} from '@angular/core';
+import { createApplication } from '@angular/platform-browser';
+import { CatalogComponent, SHELL_CAPABILITIES } from './catalog.component';
+import type { MountCatalog, MountedCatalog } from './catalog-contract';
+
+const occupied = new WeakSet<HTMLElement>();
+
+export const mount: MountCatalog = async (container, context, signal) => {
+  signal.throwIfAborted();
+  if (occupied.has(container)) {
+    throw new Error('Catalog container is already occupied');
+  }
+  occupied.add(container);
+
+  const host = document.createElement('shop-catalog-root');
+  let app: ApplicationRef | undefined;
+  let component: ComponentRef<CatalogComponent> | undefined;
+  let attached = false;
+  let disposed = false;
+
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      if (component) {
+        if (attached) app?.detachView(component.hostView);
+        component.destroy();
+      }
+    } finally {
+      try {
+        app?.destroy();
+      } finally {
+        host.remove();
+        occupied.delete(container);
+      }
+    }
+  };
+
+  try {
+    container.append(host);
+    app = await createApplication({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: SHELL_CAPABILITIES, useValue: context.shell },
+      ],
+    });
+    // Mount có thể đã hết hiệu lực trong lúc tạo application.
+    signal.throwIfAborted();
+
+    component = createComponent(CatalogComponent, {
+      hostElement: host,
+      environmentInjector: app.injector,
+    });
+    component.setInput('props', context.props);
+    app.attachView(component.hostView);
+    attached = true;
+    component.changeDetectorRef.detectChanges();
+
+    const mounted: MountedCatalog = {
+      update(props) {
+        if (disposed || !component) {
+          throw new Error('Cannot update an unmounted catalog');
+        }
+        component.setInput('props', props);
+      },
+      unmount: dispose,
+    };
+    return mounted;
+  } catch (error) {
+    try {
+      dispose();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Catalog mount and cleanup failed');
+    }
+    throw error;
+  }
+};
+```
+
+`createComponent()` không tự attach view vào application. Nếu bỏ `attachView()`, lần `detectChanges()` thủ công có thể khiến UI ban đầu nhìn đúng, nhưng view không tham gia các chu kỳ change detection của application như bạn mong đợi.
+
+`setInput()` đi qua input API của Angular, đánh dấu view cần cập nhật và hỗ trợ lifecycle của inputs. Đừng thay bằng `component.instance.props = ...`: ở đây `props` là input signal, không phải field để gán snapshot. Với input thông thường, gán field trực tiếp cũng không tương đương `setInput()`.
+
+Cleanup cố gắng hủy application và trả container ngay cả khi teardown component báo lỗi. Những error đó vẫn phải được shell ghi nhận; idempotent không có nghĩa “nuốt mọi exception”. Application/provider initialization cần thời gian chờ có giới hạn nếu production có initializer bất đồng bộ: `AbortSignal` ở adapter không tự ngắt initializer đang chạy bên trong Angular.
+
+### Chạy thử từ shell
+
+Để thử local, dùng Angular CLI tạo một standalone app, thêm các file trên vào `src/app/`, rồi thay nội dung `src/main.ts` bằng đoạn dưới. Tạo `div` có ID `catalog-slot` trong `src/index.html`, không để entry cũ tiếp tục bootstrap `AppComponent`. Kiểm tra `angular.json` và test target không còn nạp `zone.js` nếu lab dùng zoneless hoàn toàn.
+
+```html title="src/index.html — vùng nội dung trong body"
+<div id="catalog-slot"></div>
+```
+
+```ts title="src/main.ts — shell tối thiểu trong Angular lab"
+import { mount } from './app/mount';
+
+async function runLab(): Promise<void> {
+  const container = document.getElementById('catalog-slot');
+  if (!container) throw new Error('Missing catalog slot');
+
+  const controller = new AbortController();
+  const catalog = await mount(container, {
+    props: { title: 'Danh mục', locale: 'vi' },
+    shell: {
+      async addToCart(productId, quantity) {
+        // Mock capability; production gọi cart controller.
+        console.log('cart command', { productId, quantity });
+      },
+    },
+  }, controller.signal);
+
+  // Dành riêng cho lab để thử lifecycle từ DevTools.
+  Object.assign(window, { catalogLab: catalog });
+}
+
+void runLab().catch(console.error);
+```
+
+Chạy `ng serve`, mở trang và bấm thêm sản phẩm. Console phải có command với `productId: 'p-001'`, UI hiển thị thông báo thành công. Sau đó thử trong DevTools:
+
+```js title="DevTools — kiểm tra update và teardown"
+window.catalogLab.update({ title: 'Catalog', locale: 'en' });
+// Heading và nhãn nút đổi ở lượt render tiếp theo.
+window.catalogLab.unmount();
+window.catalogLab.unmount(); // Không tạo lỗi vì gọi lại.
+document.querySelector('#catalog-slot').childElementCount; // 0
+```
+
+Đây là harness kiểm tra adapter, chưa chứng minh deploy độc lập. Trong shell thật, loader tải module chứa `mount` qua cơ chế bạn chọn, rồi gọi cùng contract. Shell không tải đồng thời entry `main.ts` của catalog. Không đưa handle debug lên `window` trong production.
+
+## Providers và state qua boundary
+
+### Root service không phải singleton toàn trang
+
+`@Injectable({ providedIn: 'root' })` có scope ở root application injector tương ứng. Nếu catalog và cart bootstrap thành hai application, cùng một service class có thể có **hai instance**, dù chúng dùng chung bản `@angular/core`.
+
+Tương tự, DOM nesting không tạo DI nesting. Đặt root của Angular catalog bên trong một Angular component của shell không tự làm injector của catalog thành con injector của shell. Muốn nối hierarchy phải thiết kế tích hợp có chủ đích; không suy ra từ vị trí element.
+
+| State/provider | Owner nên đặt ở đâu? | Sau unmount catalog |
+| --- | --- | --- |
+| Filter UI tạm thời | Catalog component hoặc service của catalog | Có thể mất; muốn khôi phục thì dùng route snapshot hoặc cơ chế persistence rõ ràng |
+| Cart state | Cart controller/domain owner | Tiếp tục sống nếu shell vẫn dùng badge/cart |
+| Context locale/theme | Shell hoặc composition layer | Truyền snapshot mới khi mount lại |
+| HTTP client cho catalog | Application providers của catalog nếu application riêng | Hủy các subscription theo scope; không mặc định có interceptors của shell |
+| Bridge tới shell | Provider `useValue` ở adapter | Reference hết được sử dụng; catalog không destroy owner bên shell |
+
+Destroy application không thu hồi state nghiệp vụ do shell sở hữu. Ngược lại, state local trong application đã hủy không nên được mong đợi còn nguyên khi quay lại route.
+
+### Token identity và shared dependencies
+
+Hai lần `new InjectionToken('auth')` tạo hai token khác nhau. Chuỗi mô tả giống nhau chỉ giúp debug, không làm DI coi chúng là một. Nếu remote component sống trong application của shell và inject token từ shared library, cả hai phía phải dùng cùng token object tại runtime; duplicate library có thể gây `NullInjectorError` dù tên token nhìn đúng.
+
+Ví dụ chính tránh vấn đề đó bằng cách chỉ để adapter và component catalog import token nội bộ. Shell truyền plain capability; không cần import token hoặc service class của remote.
+
+Với federation, cần chốt cả dependency graph, không chỉ `@angular/core`: kiểm tra `@angular/common`, `@angular/platform-browser`, `@angular/router`, secondary entry points, RxJS và các library chứa tokens/classes dùng xuyên boundary. Cấu hình sharing cụ thể phụ thuộc loader và builder; không có một đoạn `shared` đúng cho mọi workspace.
+
+<Callout type="warn" title="Shared runtime khác shared state">
+  `singleton` trong federation là chính sách chọn runtime module, không phải lệnh hợp nhất Angular injectors. Nó cũng không tự làm các Angular major không tương thích chạy được cùng nhau. Với cùng application, mình yêu cầu bộ Angular tương thích đã kiểm thử; với application riêng, vẫn phải đo/test ảnh hưởng khi dùng chung document và platform.
+</Callout>
+
+Chọn công cụ dựa trên builder thực tế. Plugin cho webpack Module Federation không mặc định áp dụng được cho Angular CLI application builder dùng pipeline esbuild. Native Federation hoặc builder tùy chỉnh là những lựa chọn khác, với cách xử lý dependency riêng. Đọc [Shared dependencies](/docs/module-federation/shared-dependencies) và [Version compatibility](/docs/module-federation/version-compatibility) trước khi chốt cấu hình.
+
+### Auth HTTP và configuration
+
+Application riêng không kế thừa `provideHttpClient()` hay interceptors của shell. Nếu catalog trực tiếp gọi API, nó phải có providers và chính sách auth phù hợp cho chính application đó. Đừng bootstrap thêm một bộ client rồi nghĩ interceptor của shell sẽ tự gắn token.
+
+Mình ưu tiên capability hẹp hoặc client contract đã thống nhất, thay vì truyền access token và store auth để remote tự quản lý refresh. Cần tính cả logout, token expiry, đổi user và request đang chạy: remount một component không giải quyết được toàn bộ lifecycle phiên đăng nhập.
+
+Truyền API base URL và public configuration qua context/provider hoặc config loader có owner rõ. Không lấy `window.location.origin` làm origin API mặc định chỉ vì app standalone từng chạy cùng host. Và không đưa secret vào browser configuration; remote JavaScript cùng document không phải nơi giữ bí mật với shell hay người dùng.
+
+## Routing với một URL của browser
+
+Hai Angular application riêng không tạo hai URL riêng trong cùng document. `history`, `location` và Back/Forward vẫn là tài nguyên chung. Bạn phải chọn một owner điều hướng trước khi bật router trong remote.
+
+### Một Angular Router ở shell
+
+Khi shell và remote sống trong cùng Angular application, shell cấu hình `provideRouter()` một lần. Remote export routes tương đối; shell gắn chúng dưới prefix mình sở hữu.
+
+```ts title="Remote routes — nằm trong application của Angular shell"
+import type { Routes } from '@angular/router';
+
+export const CATALOG_ROUTES: Routes = [
+  {
+    path: '',
+    loadComponent: () => import('./catalog-page').then(m => m.CatalogPage),
+  },
+  {
+    path: 'products/:id',
+    loadComponent: () => import('./product-page').then(m => m.ProductPage),
+  },
+];
+```
+
+```ts title="Shell routes — loader local để minh họa cấu trúc"
+import type { Routes } from '@angular/router';
+
+export const SHELL_ROUTES: Routes = [
+  {
+    path: 'catalog',
+    loadChildren: () => import('./catalog.routes').then(m => m.CATALOG_ROUTES),
+  },
+];
+```
+
+Các `CatalogPage` và `ProductPage` là page components cần tạo thêm; đoạn này minh họa route composition, không phải phần của lab mount ở trên. Trong runtime composition, thay import local bằng loader trả module có cùng routes contract. Các providers mà page cần phải được cung cấp ở application/route/component scope thích hợp.
+
+Remote không thêm `catalog` lần nữa vào child route và không cài root router thứ hai. Route guard chỉ điều khiển frontend navigation, không thay backend authorization. Kiểm tra cả policy `RouteReuseStrategy`: nếu shell cache route handles thì chuyển route chưa chắc destroy component/service ngay.
+
+### Shell giữ URL và remote nhận route state
+
+Đây là hướng mặc định của mình cho application riêng trong shell khác framework. Shell parse `/catalog/products/p-001?sort=price`, mount/update remote với route snapshot; remote gửi navigation intent cho shell thay vì trực tiếp gọi `history.pushState()`.
+
+Contract có thể mở rộng bằng `productId`, `sort` và capability `navigateToProduct(id)`. Shell cập nhật URL rồi truyền snapshot mới cho catalog. Catalog cần phân biệt thay đổi từ props với thao tác người dùng để không tạo vòng lặp “update → navigate → update”. Lab phía trên chưa có các field hay capability này.
+
+Bạn vẫn cần deep-link fallback ở server/CDN, khôi phục query khi reload, Back/Forward và chính sách focus/scroll sau navigation. Frontend router không thể sửa một response 404 xảy ra trước khi JavaScript tải được.
+
+### Remote có Angular Router riêng
+
+Mô hình này có thể cần khi tái sử dụng app lớn đã có router. Nhưng chỉ đặt `APP_BASE_HREF` thành `/catalog/` **không** cô lập router khỏi shell: token đó giúp xử lý base path, không ngăn đọc/ghi browser history hoặc nghe URL events.
+
+`withDisabledInitialNavigation()` cho bạn kiểm soát lúc bắt đầu navigation; nó không phải chế độ “router không đụng URL”, và không thay thế một routing adapter. `UrlHandlingStrategy` có thể giới hạn phần URL Angular xử lý, nhưng vẫn cần quy tắc phối hợp navigation với shell và cách merge phần URL còn lại.
+
+Nếu quyết định giữ router riêng, hãy thiết kế và kiểm thử cụ thể:
+
+- Prefix remote sở hữu, query/hash nào được bảo toàn và ai ghi history.
+- Cách đưa URL hiện tại vào remote trước initial navigation.
+- Cách Back/Forward đi qua shell mà không remount hoặc navigate hai lần.
+- Cách cancel navigation và xử lý guards khi remote bị unmount.
+- Cách ngăn router của remote xử lý `/cart` hoặc ghi đè URL bên ngoài domain.
+
+Mình không thêm router riêng chỉ để render hai tab trong widget. Với sub-navigation không cần URL độc lập, component state hoặc route snapshot nhỏ ít tạo coupling hơn. Xem thêm [Routing](/docs/giao-tiep-va-trang-thai/routing).
+
+## Change detection và Zone.js
+
+### Zoneless cần thông báo thay đổi
+
+Zoneless không có nghĩa Angular tự biết mọi field JavaScript đã đổi. Angular dựa vào các thông báo như signal được template đọc, `ComponentRef.setInput()`, template listeners và `ChangeDetectorRef.markForCheck()`; `AsyncPipe` cũng đánh dấu view khi nhận giá trị mới.
+
+Vì vậy, callback từ shell/event bus nên cập nhật signal hoặc gọi API thông báo thích hợp. Đừng gán một plain field trong callback rồi chữa UI cũ bằng vòng lặp `app.tick()` toàn application. Với reactive forms, thay đổi model bằng `patchValue()` cũng cần xem template phụ thuộc state nào và cách thông báo render, không mặc định mọi cập nhật form sẽ schedule change detection trong zoneless.
+
+Ví dụ dùng API stable `provideZonelessChangeDetection()` từ Angular 20.2. Theo tài liệu Angular, zoneless là mặc định từ v21 trở lên; ứng dụng có `provideZoneChangeDetection()` vẫn có thể bật zone-based mode. Hãy kiểm tra version và cấu hình thực tế, không suy ra mode chỉ từ việc thấy hoặc không thấy `zone.js` trong một bundle.
+
+### Ứng dụng còn phụ thuộc Zone.js
+
+Với application zone-based, Zone.js patch browser APIs ở phạm vi global. Vì vậy, remote zone-based trong cùng document có thể ảnh hưởng môi trường shell; tạo application injector riêng không tạo một bản browser APIs riêng.
+
+Composition layer phải chịu trách nhiệm nạp Zone.js theo chính sách thống nhất, không để mỗi remote tự nạp lại. Test cả các thư viện UI, callback bên ngoài Angular và cách orchestrator tích hợp `NgZone`; lỗi ở đây thường xuất hiện khi standalone chạy đúng nhưng nhúng vào shell lại không cập nhật UI.
+
+Trong zone-based mode, `NgZone.run()` có thể cần để đưa callback ngoài Angular zone trở lại vùng cập nhật. Trong zoneless mode, `run()` vẫn dùng được nhưng không thay thế signal/`markForCheck()` để thông báo render. Polling không liên quan UI cũng không nên làm mọi application kiểm tra lại liên tục.
+
+Nếu dùng single-spa, adapter Angular của single-spa đã định nghĩa bootstrap/mount/unmount và có hướng dẫn runtime riêng. Không ghép nguyên adapter thủ công ở bài này với adapter đó rồi để cả hai cùng sở hữu teardown. Xem [single-spa](/docs/cac-cach-tich-hop/single-spa).
+
+## Lifecycle và lỗi bất đồng bộ
+
+### Chuyển route khi mount chưa xong
+
+Hình dung người dùng mở catalog rồi bấm sang cart khi remote còn đang tải. Import module có thể vẫn hoàn thành; tạo application cũng có thể vẫn đang chờ initializer. Shell cần coi phiên catalog cũ là hết hiệu lực, không render nó chỉ vì Promise vừa resolve.
+
+Quy trình nên là:
+
+1. Tạo một mount generation và `AbortController` cho yêu cầu mới.
+2. Khi route đổi, abort phiên đang chờ; với phiên đã sẵn sàng, gọi `unmount`.
+3. Sau mỗi `await` trong loader, kiểm tra generation/signal trước khi tiếp tục.
+4. Nếu handle của phiên cũ đã trả về, hủy handle đó thay vì gán nó thành active UI.
+5. Đợi pending mount cũ settle và cleanup trước khi tái sử dụng cùng container.
+6. Chỉ phiên hiện tại được cập nhật loading/fallback; lỗi của phiên đã bị cancel không hiện đè lên route mới.
+
+Adapter lab kiểm tra signal trước khi bắt đầu và sau `createApplication()`. Khi đã trả handle, shell có trách nhiệm xử lý race còn lại giữa Promise resolve và việc nhận handle. `AbortController.abort()` không rollback `import()` đã chạy, không unload module và không tự ngắt mọi tác vụ Angular initialization.
+
+Để thử riêng nhánh cancel, gọi `mount()` với signal đã abort: Promise phải reject và container không có host mới. Sau đó thử abort ngay sau khi gọi `mount`, đợi Promise settle và xác nhận container rỗng. Dùng một test initializer bị giữ lại để kiểm chứng việc abort trong lúc application creation đang chờ.
+
+### Cleanup ngoài component tree
+
+Angular destroy hooks dọn được tài nguyên bạn gắn vào scope của chúng. Browser listeners, observer, subscription thủ công và DOM ở ngoài host cần cleanup tường minh.
+
+```ts title="Ví dụ cleanup trong component/service thuộc phiên mount"
+import { DestroyRef, inject } from '@angular/core';
+
+export function watchResize(callback: () => void): void {
+  // Gọi trong injection context, chẳng hạn constructor component.
+  const destroyRef = inject(DestroyRef);
+  window.addEventListener('resize', callback);
+  destroyRef.onDestroy(() => window.removeEventListener('resize', callback));
+}
+```
+
+Với RxJS, dùng `takeUntilDestroyed()` từ `@angular/core/rxjs-interop` trong scope thích hợp. Với `fetch`, tạo controller riêng và abort trong destroy hook nếu request chỉ phục vụ UI phiên đó. Không abort command nghiệp vụ do cart owner đang xử lý chỉ vì catalog biến mất.
+
+| Tài nguyên | Cần kiểm tra khi unmount |
+| --- | --- |
+| Component/view | Detach và destroy; không chỉ remove DOM |
+| Application injector | Hủy application của phiên, không hủy platform hoặc application shell |
+| Subscription/timer/listener | Unsubscribe, clear timer, remove listener theo scope |
+| Resize/Intersection/Mutation observer | Disconnect |
+| Dialog/overlay tạo ngoài host | Dispose instance, gỡ listener/focus trap và node thuộc phiên |
+| CSS/link tag do loader thêm | Có chính sách giữ/gỡ và deduplicate; không tự biến mất vì destroy component |
+| Promise đang chờ | Không cập nhật phiên đã hủy; owner vẫn xử lý kết quả nghiệp vụ nếu cần |
+
+Shell bắt được lỗi import/mount và thay vùng UI bằng fallback. Lỗi xảy ra sau mount, chẳng hạn trong event handlers hoặc async tasks, không tự đi vào `catch` của loader. Thiết kế `ErrorHandler`/telemetry của Angular và error channel phù hợp, gắn remote name, version và mount generation để debug. Đừng gọi fallback của shell trực tiếp từ mọi error rồi vô tình để lỗi phiên cũ phá phiên mới.
+
+## CSS overlays và accessibility
+
+`ViewEncapsulation.Emulated` của Angular viết lại selectors cho component styles; nó không tạo Shadow DOM và không chặn toàn bộ global CSS từ shell đi vào remote. `styles.css`, reset và stylesheet UI library có thể tác động cả document. Với app standalone được nhúng lại, đây thường là nguồn lỗi nhìn thấy trước cả DI.
+
+Mình bắt đầu bằng tokens/design system đã version, selectors có namespace và hạn chế global reset trong remote. Dùng Shadow DOM khi thực sự cần boundary style, nhưng kiểm tra cách theme, fonts, focus và overlays hoạt động qua boundary đó. Shadow DOM không phải security sandbox.
+
+Angular CDK overlay thường render vào container ở `document.body`, bên ngoài host catalog. Khi dùng overlays, phải quyết định ai sở hữu overlay container, style/theme nào áp dụng và cleanup khi unmount. Không tự xóa một container dùng chung vì catalog đóng; ưu tiên dispose đúng overlay/dialog instances, hoặc thiết kế container riêng khi phù hợp.
+
+Về UX, shell giữ focus policy cho navigation cấp trang, còn remote quản lý focus bên trong widget/dialog. Khi unmount một dialog đang mở, không trả focus về button cũng vừa bị xóa. Cần một đích còn tồn tại ở shell, đồng thời kiểm tra heading hierarchy, `aria-live`, keyboard navigation và reduced motion. Đọc [CSS isolation](/docs/ui-va-framework/css-isolation) và [Accessibility và UX xuyên ứng dụng](/docs/ui-va-framework/accessibility) cho phần này.
+
+## Kiểm thử boundary
+
+Unit test component chưa đủ: nó thường chạy trong một Angular environment được dựng sẵn, nên không lộ lỗi application/provider hoặc DOM ownership khi nhúng. Hãy kiểm thử adapter bằng container thật và thêm E2E trong shell mục tiêu.
+
+| Ca kiểm thử | Kết quả cần quan sát |
+| --- | --- |
+| Mount rồi update snapshot mới | Nội dung đổi mà không tạo application thứ hai |
+| Unmount hai lần | Không lỗi, không host/listener còn sống |
+| Update sau unmount | Báo lỗi contract như đã quy định |
+| Mount cùng container khi phiên cũ còn sống | Bị từ chối; phiên cũ không bị phá |
+| Hai container khác nhau | Vòng đời độc lập; nếu cho phép nhiều instance, ARIA IDs không trùng |
+| Cancel trước/trong mount | Không UI muộn; application đã tạo được cleanup |
+| Initializer hoặc render đầu thất bại | Container được trả lại; lần mount hợp lệ tiếp theo chạy được |
+| Promise thêm giỏ resolve sau unmount | Cart xử lý kết quả; không cập nhật UI đã destroy |
+| Capability reject | Hiện lỗi thao tác, nút không pending mãi |
+| Chuyển catalog/cart nhiều lần | Không tăng đều timer/listener/overlay còn giữ reference |
+| Deep link, reload và Back/Forward | Một lần điều hướng hợp lệ, đúng query và state |
+| Runtime/version matrix | Test shell với remote release hiện tại và release rollback dự kiến |
+
+Trong test zoneless, cho Angular xử lý notification và đợi stability/render thích hợp; đừng lạm dụng `detectChanges()` sau mọi thao tác rồi che lỗi thiếu notification trong production. So sánh memory bằng snapshot sau cleanup và kiểm tra retained references; không dùng số DOM node rỗng làm bằng chứng duy nhất rằng application đã bị hủy.
+
+Lab `ng serve` chỉ kiểm tra adapter Angular local. Trước production phải chạy thêm dưới shell thực, với loader, CSS và runtime sharing thật, vì đó mới là nơi boundary được kiểm chứng.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân nên kiểm tra | Hướng sửa |
+| --- | --- | --- |
+| Root render sai vùng hoặc nhiều catalog xuất hiện | Remote chạy entry standalone; chọn host bằng selector global | Expose adapter không side effect; truyền host element cụ thể |
+| `NullInjectorError` ở remote | Thiếu provider trong application riêng; token bị duplicate | Kiểm tra injector scope và token identity, không chỉ tên token |
+| Badge/cart mỗi vùng một giá trị | Mỗi root tạo service/store riêng | Đặt cart state ở một owner và truyền capability/query contract |
+| UI đầu tiên đúng nhưng update không render | View chưa attach; plain field đổi mà không notification | `attachView`, `setInput`, signal hoặc `markForCheck` đúng chỗ |
+| Zone.js bị nạp trùng hoặc UI phụ thuộc timing | Mỗi remote tự tải polyfill/mode khác dự kiến | Chính sách runtime chung và test zone-based/zoneless thực tế |
+| URL đổi hai lần, Back bị vòng lặp | Shell và remote cùng sở hữu history | Chọn routing owner, bỏ root router dư hoặc thiết kế adapter riêng |
+| Chuyển route rồi UI cũ xuất hiện lại | Promise phiên cũ vẫn được coi là active | Generation guard, abort và cleanup stale handle |
+| Modal còn trên trang sau unmount | Overlay ngoài host hoặc container ownership sai | Dispose overlay theo phiên, kiểm tra focus và listener |
+| Destroy catalog làm application khác hỏng | Gọi `destroyPlatform()` hoặc hủy tài nguyên dùng chung | Chỉ hủy application/tài nguyên thuộc phiên catalog |
+| Chạy standalone đúng, nhúng sai style | Global CSS/overlay theme phụ thuộc document gốc | Audit CSS global, tokens và overlay container |
+
+## Checklist trước production
+
+- [ ] Chọn rõ cùng application hay application riêng; không bootstrap cả hai mô hình cùng lúc.
+- [ ] Entry nhúng không tự chạy `main.ts`, router, polling hoặc sửa DOM global.
+- [ ] Contract có version, error semantics và quy tắc snapshot/capability.
+- [ ] Required inputs được đặt trước render đầu; component view được attach đúng application.
+- [ ] Providers, token identity và ma trận Angular/dependency version được kiểm thử.
+- [ ] Có đúng một chính sách URL/history; deep links và Back/Forward chạy trong shell thực.
+- [ ] Zone.js hoặc zoneless được cấu hình theo version và library thực tế, không nạp runtime dư.
+- [ ] Cancel/stale mount không tạo UI muộn; container chỉ được tái dùng sau cleanup.
+- [ ] Unmount dọn view, application, subscription, timer, listener và overlays thuộc phiên.
+- [ ] Auth/state nghiệp vụ có owner riêng, không bị nhân bản hoặc hủy theo UI catalog.
+- [ ] CSS, theme, focus, ARIA IDs và keyboard navigation được kiểm tra xuyên boundary.
+- [ ] Telemetry phân biệt remote version và mount generation; thử được fallback và rollback.
+
+Nếu bạn đang làm lab shop, bước tiếp theo là thay mock `addToCart` bằng cart controller, rồi lặp lại test “gửi command → unmount catalog → command hoàn tất”. Ca này giúp bạn xác nhận cart thật sự sở hữu nghiệp vụ, thay vì vô tình buộc nó sống theo component catalog.
+
+## Tài liệu tham khảo
+
+- [Angular — createApplication](https://angular.dev/api/platform-browser/createApplication): tạo application environment chưa bootstrap component.
+- [Angular — createComponent](https://angular.dev/api/core/createComponent): tạo component và attach view vào application.
+- [Angular — ApplicationRef](https://angular.dev/api/core/ApplicationRef): lifecycle và quản lý views của application.
+- [Angular — Hierarchical dependency injection](https://angular.dev/guide/di/hierarchical-dependency-injection): scope của providers và injector hierarchy.
+- [Angular — Zoneless](https://angular.dev/guide/zoneless): version, notification APIs và yêu cầu tương thích.
+- [Angular — Custom Elements](https://angular.dev/guide/elements): mapping inputs/outputs và giới hạn lifecycle của Angular Elements.
+- [Angular — withDisabledInitialNavigation](https://angular.dev/api/router/withDisabledInitialNavigation): kiểm soát thời điểm bắt đầu navigation.
+- [Angular — UrlHandlingStrategy](https://angular.dev/api/router/UrlHandlingStrategy): chọn phần URL Angular Router xử lý.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Tách chính sách runtime sharing khỏi DI và state ownership." />
+  <Card title="Routing" href="/docs/giao-tiep-va-trang-thai/routing" description="Phân quyền URL, deep links và Back/Forward giữa shell và remote." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Giữ state nghiệp vụ sống độc lập với lifecycle của một vùng UI." />
+  <Card title="CSS isolation" href="/docs/ui-va-framework/css-isolation" description="Kiểm soát global styles, Shadow DOM và style leakage." />
+</Cards>

@@ -1,18 +1,618 @@
 ---
 title: "Accessibility và UX xuyên ứng dụng"
-description: "Giữ focus, keyboard navigation, loading states và thông báo lỗi nhất quán."
+description: "Thiết kế focus, keyboard navigation, loading, thông báo lỗi và kiểm thử accessibility khi ghép shell với các micro-frontend."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn dùng bàn phím để mở Giỏ hàng từ catalog. URL đã đổi nhưng focus vẫn nằm trên một nút vừa bị unmount; screen reader không biết màn hình mới đã sẵn sàng. Sau đó cart tải xong, tự focus input số lượng đúng lúc bạn đang mở menu của shell. Từng ứng dụng có thể hoạt động ổn khi chạy riêng, nhưng trải nghiệm ghép lại vẫn hỏng.
+
+Người dùng không nhìn thấy ranh giới repository hay React root. Với họ, shop là một giao diện liên tục. **Accessibility phải được kiểm thử trên hành trình xuyên ứng dụng, không chỉ trên từng component của remote.** Bài này giúp bạn xác định ai quản lý focus, ai thông báo thay đổi và xử lý thế nào khi một phần tải chậm hoặc gặp lỗi.
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài dùng shop giả định gồm shell, catalog và cart, chủ yếu cho client-side composition. Các đoạn HTML, CSS và TypeScript là ví dụ cho lab riêng, không phải code ứng dụng đã tồn tại trong repository này. Quy tắc áp dụng cho React, Vue và Angular; phần iframe cần kiểm thử thêm vì có document riêng. Sơ đồ dùng ASCII, không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Đặt mục tiêu accessibility](#đặt-mục-tiêu-accessibility)
+- [Phân chia trách nhiệm giữa shell và remote](#phân-chia-trách-nhiệm-giữa-shell-và-remote)
+- [Semantics cho trang đã ghép](#semantics-cho-trang-đã-ghép)
+  - [Landmarks heading và skip link](#landmarks-heading-và-skip-link)
+  - [Accessible name và ID không va chạm](#accessible-name-và-id-không-va-chạm)
+- [Focus khi chuyển route](#focus-khi-chuyển-route)
+  - [Chốt policy theo loại thay đổi](#chốt-policy-theo-loại-thay-đổi)
+  - [Readiness contract thay cho timeout](#readiness-contract-thay-cho-timeout)
+  - [Chặn kết quả cũ và tránh giành focus](#chặn-kết-quả-cũ-và-tránh-giành-focus)
+- [Keyboard navigation và modal](#keyboard-navigation-và-modal)
+  - [Native controls và thứ tự Tab](#native-controls-và-thứ-tự-tab)
+  - [Dialog có một owner](#dialog-có-một-owner)
+- [Loading và thông báo thay đổi](#loading-và-thông-báo-thay-đổi)
+  - [Loading không làm mất ngữ cảnh](#loading-không-làm-mất-ngữ-cảnh)
+  - [Live region có chủ đích](#live-region-có-chủ-đích)
+- [Lỗi và phục hồi thao tác](#lỗi-và-phục-hồi-thao-tác)
+  - [Validation gần control](#validation-gần-control)
+  - [Remote lỗi và hành động thử lại](#remote-lỗi-và-hành-động-thử-lại)
+- [CSS theme và các boundary](#css-theme-và-các-boundary)
+  - [Focus ring contrast và reflow](#focus-ring-contrast-và-reflow)
+  - [Portal Shadow DOM và iframe](#portal-shadow-dom-và-iframe)
+- [Kiểm thử từng phần và màn hình đã ghép](#kiểm-thử-từng-phần-và-màn-hình-đã-ghép)
+  - [Ma trận hành trình](#ma-trận-hành-trình)
+  - [Ví dụ Playwright và axe](#ví-dụ-playwright-và-axe)
+  - [Kiểm thử thủ công với assistive technology](#kiểm-thử-thủ-công-với-assistive-technology)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Đặt mục tiêu accessibility
 
-Bài này sẽ giúp bạn: giữ focus, keyboard navigation, loading states và thông báo lỗi nhất quán.
+Accessibility là khả năng sử dụng giao diện với những cách tương tác khác nhau: bàn phím, screen reader, phóng đại màn hình, voice control hoặc thiết bị hỗ trợ khác. Nó cũng giúp người dùng khi thao tác trên điện thoại, có mạng chậm hoặc tạm thời không dùng được chuột. Nhưng đừng dùng lợi ích chung đó để bỏ qua nhu cầu cụ thể của người khuyết tật.
 
-[Xem các bài trong nhóm UI và framework](/docs/ui-va-framework).
+Mình lấy **WCAG 2.2 mức AA** làm mục tiêu kỹ thuật mặc định cho shop. Đây là mục tiêu đề xuất, không phải tuyên bố site đã đạt chuẩn hay tư vấn về nghĩa vụ pháp lý. Phạm vi đánh giá phải bao gồm trang hoàn chỉnh và các bước trong quy trình; một remote đạt các kiểm tra riêng không chứng minh trang đã ghép đạt conformance.
+
+Một số tiêu chí liên quan trực tiếp đến bài này:
+
+| Nhóm | Tiêu chí WCAG | Câu hỏi kiểm chứng trong shop |
+| --- | --- | --- |
+| Semantics | 1.3.1 Info and Relationships; 4.1.2 Name, Role, Value | Heading, label và trạng thái control có thể được phần mềm xác định không? |
+| Keyboard | 2.1.1 Keyboard; 2.1.2 No Keyboard Trap | Có thể thêm giỏ, đổi số lượng và thoát dialog mà không dùng chuột không? |
+| Focus | 2.4.3 Focus Order; 2.4.7 Focus Visible; 2.4.11 Focus Not Obscured (Minimum) | Focus đi theo thứ tự hợp lý, nhìn thấy được và không bị header/footer che hoàn toàn không? |
+| Phản hồi | 3.3.1 Error Identification; 3.3.2 Labels or Instructions; 4.1.3 Status Messages | Người dùng biết thao tác thành công hay cần sửa gì mà không phải đoán không? |
+| Hiển thị | 1.4.3 Contrast (Minimum); 1.4.10 Reflow; 1.4.11 Non-text Contrast | Theme và layout đã ghép có còn đọc, thao tác được khi zoom không? |
+| Pointer | 2.5.8 Target Size (Minimum) | Các nút tăng/giảm có đủ kích thước hoặc đáp ứng ngoại lệ hợp lệ không? |
+
+Bảng này chỉ là một phần của WCAG. Các yêu cầu như alternative text cho ảnh sản phẩm, nội dung hiện khi hover/focus và accessibility của authentication vẫn cần đánh giá nếu sản phẩm có những tính năng đó.
+
+<Callout type="warn" title="Thêm ARIA không đồng nghĩa với accessible">
+  `aria-label`, `aria-live` hay `aria-modal` mô tả semantics hoặc trạng thái; chúng không tự tạo keyboard handling, focus management hay cách phục hồi lỗi. Ưu tiên HTML native, rồi chỉ thêm ARIA khi cần bổ sung thông tin mà HTML chưa thể hiện.
+</Callout>
+
+## Phân chia trách nhiệm giữa shell và remote
+
+Shell nên điều phối những thay đổi ảnh hưởng toàn trang; remote sở hữu tương tác bên trong domain của mình. Design system cung cấp primitive có hành vi đúng, nhưng không biết người dùng đang chuyển route hay chỉ sửa số lượng.
+
+```text
+Shell: route, title, landmarks, policy focus và overlay
+  ├── Catalog: sản phẩm, nút thêm giỏ, feedback thao tác
+  └── Cart: số lượng, validation, focus sau khi xóa dòng
+
+Design system → native controls, dialog, focus styles, tokens
+```
+
+Sơ đồ mô tả quyền sở hữu, không bắt buộc dùng một framework hay một root chung. Nếu catalog dùng Vue và cart dùng React, shell vẫn có thể truyền capabilities qua contract không phụ thuộc framework.
+
+| Trách nhiệm | Owner mặc định | Remote cần phối hợp |
+| --- | --- | --- |
+| `document.title`, main landmark, navigation cấp trang | Shell | Cấp metadata của route, không tự ghi title cạnh tranh |
+| Focus khi đổi màn hình | Shell điều phối | Báo khi DOM đích sẵn sàng và cung cấp focus target |
+| Focus sau khi xóa một dòng cart | Cart | Giữ đích hợp lý trong domain hoặc fallback khi cart rỗng |
+| Validation và lỗi API của form | Remote chứa form | Có label, liên kết lỗi và hành động sửa/thử lại |
+| Overlay phủ toàn shop | Shell hoặc overlay service có owner duy nhất | Truyền nội dung, lifecycle và thông tin trả focus |
+| Thông báo thêm giỏ xuyên catalog–cart | Một owner đã chốt, ví dụ shell | Chỉ gửi một kết quả nghiệp vụ, không để cả ba vùng cùng announce |
+| Cleanup khi unmount | Remote và shell theo tài nguyên mình tạo | Hủy listener, timer, subscription, overlay và kết quả async cũ |
+
+Đừng để shell tìm `input:first-child` trong remote rồi focus. Đó là phụ thuộc vào DOM nội bộ; cart chỉ cần thêm ô tìm kiếm là hành vi đổi theo. Remote nên expose capability như `focusHeading()` hoặc cung cấp target đã thống nhất trong readiness contract.
+
+## Semantics cho trang đã ghép
+
+### Landmarks heading và skip link
+
+Khi cùng một document, shell tạo khung trang và main landmark chính. Remote dạng vùng nhúng không nên mang nguyên layout standalone gồm header, nav và main vào bên trong. Nếu trang có nhiều navigation landmarks, đặt accessible name phân biệt như “Điều hướng chính” và “Danh mục sản phẩm”.
+
+```html title="Khung trang do shell sở hữu"
+<html lang="vi">
+  <head>
+    <title>Danh mục sản phẩm | Shop</title>
+  </head>
+  <body>
+    <a class="shop-skip-link" href="#shop-main">Bỏ qua đến nội dung chính</a>
+
+    <header>
+      <nav aria-label="Điều hướng chính">
+        <a href="/catalog" aria-current="page">Catalog</a>
+        <a href="/cart">Giỏ hàng</a>
+      </nav>
+    </header>
+
+    <main id="shop-main" tabindex="-1">
+      <div id="route-slot">
+        <h1 tabindex="-1">Danh mục sản phẩm</h1>
+        <!-- Nội dung do catalog render -->
+      </div>
+    </main>
+
+    <p id="shop-status" class="shop-sr-only" role="status"
+       aria-atomic="true"></p>
+    <div id="shop-overlay-slot"></div>
+  </body>
+</html>
+```
+
+Đây là HTML của shop lab, không phải layout của site Fumadocs. Router client-side phải giữ semantics của link: chỉ intercept điều hướng cùng ứng dụng thích hợp, vẫn để mở tab mới và các thao tác mặc định khác hoạt động. Sau chuyển route, shell cập nhật `aria-current` ở navigation cùng với title.
+
+Mình chọn một `h1` cho tên màn hình, rồi dùng `h2`, `h3` theo cấu trúc nội dung. Đây là convention dễ review, không phải khẳng định WCAG luôn bắt buộc đúng một `h1`. Không chọn heading level chỉ để lấy kích thước font; CSS xử lý việc đó.
+
+Skip link phải xuất hiện rõ khi nhận focus. Trong tích hợp thực tế, kiểm tra kích hoạt link đưa focus tới main trên các browser hỗ trợ; nếu router intercept fragment, nó cần giữ hành vi tương đương. `tabindex="-1"` cho phép focus bằng code nhưng không thêm main vào thứ tự Tab thông thường.
+
+### Accessible name và ID không va chạm
+
+Nút chỉ có icon “+” không giúp người dùng phân biệt đang tăng số lượng sản phẩm nào. Bạn có thể dùng visible text hoặc accessible name như “Tăng số lượng Áo xanh”. Nếu control đã có chữ hiển thị, name nên chứa chữ đó để người dùng voice control gọi đúng; đừng tùy tiện thay bằng một `aria-label` không liên quan.
+
+Mỗi instance cần ID phù hợp cho `label`, `aria-labelledby` và `aria-describedby`. Prefix `cart-` chưa đủ nếu hai cart widgets cùng xuất hiện. Dùng namespace theo instance do shell cấp, chẳng hạn `cart-header-quantity-sku-a`, hoặc cơ chế sinh ID của framework đã cấu hình cho nhiều roots.
+
+Trong React nhiều roots, có thể cấp `identifierPrefix` khác nhau cho mỗi root dùng `useId`; nếu có SSR, prefix phải khớp giữa server và client. Khi ghép trong cùng document, ID trùng vẫn là lỗi dù component nằm trong repository khác.
+
+Với ảnh sản phẩm, viết alt theo thông tin cần truyền đạt. Nếu ảnh chỉ lặp lại tên sản phẩm đã nằm trong cùng link và không thêm ý nghĩa, alt rỗng có thể tránh đọc lặp. Đừng để tên file hoặc SKU tự động trở thành alt cho mọi ảnh.
+
+## Focus khi chuyển route
+
+### Chốt policy theo loại thay đổi
+
+Focus là vị trí nhận thao tác bàn phím; nó không đồng nhất với vị trí chuột, scroll hay con trỏ đọc của screen reader. Đổi URL trong SPA không tạo ra đầy đủ hành vi của một lần tải trang mới, nên bạn phải quyết định người dùng sẽ bắt đầu tương tác ở đâu.
+
+| Thay đổi | Policy mặc định mình chọn |
+| --- | --- |
+| Người dùng mở một route mới | Khi màn hình sẵn sàng, focus heading của màn hình nếu không có tương tác mới làm hủy ý định đó |
+| Tải trang trực tiếp và hydration ban đầu | Không tự focus lại mọi lần mount; tránh cướp focus của browser hoặc người dùng |
+| Cập nhật badge cart ở background | Không đổi focus; announce kết quả thao tác cần thiết |
+| Lọc hoặc tải thêm sản phẩm | Giữ focus ở control kích hoạt; thông báo số kết quả thay đổi khi có ý nghĩa |
+| Xóa dòng cart đang chứa focus | Focus control tương ứng ở dòng kế tiếp, rồi dòng trước; nếu cart rỗng, focus heading/empty state có thể nhận focus |
+| Back hoặc Forward | Chọn policy riêng: khôi phục scroll và focus đã lưu nếu đích còn hợp lệ, nếu không dùng heading |
+| Mở và đóng modal | Đưa focus vào modal; khi đóng, trả về invoker hoặc fallback hợp lý |
+
+Không phải route nào cũng cần focus cùng một loại phần tử. Với trang có nội dung dài, heading thường giúp người dùng biết mình đang ở đâu; với tác vụ chuyên biệt, control khởi đầu có thể phù hợp hơn. Điều cần thống nhất là policy, không phải một selector dùng cho mọi màn hình.
+
+### Readiness contract thay cho timeout
+
+`setTimeout(() => focus(), 300)` đo thời gian, không đo việc DOM đã sẵn sàng. Máy chậm, tải code hoặc hydrate trễ sẽ làm target chưa tồn tại; máy nhanh thì người dùng phải chờ vô ích.
+
+Một contract minh họa cho remote có root riêng:
+
+```ts title="Readiness contract không phụ thuộc framework"
+export type ReadyView = {
+  title: string;
+  focusHeading(): boolean;
+};
+
+export type MountedView = {
+  ready: Promise<ReadyView>;
+  unmount(): void;
+};
+
+export type MountOptions = {
+  instanceId: string;
+  signal: AbortSignal;
+};
+
+export type MountRemote = (
+  container: HTMLElement,
+  options: MountOptions,
+) => MountedView;
+```
+
+`ready` chỉ resolve sau khi route hiện tại đã render heading hoặc một error view có ý nghĩa. Nó không phải tín hiệu “đã tải toàn bộ ảnh” hay “mọi request background đã xong”. Remote giữ DOM ref của heading, gắn `tabindex="-1"`, rồi implement `focusHeading()`; shell không cần biết remote dùng framework nào.
+
+Nếu mount bị hủy trước readiness, promise nên reject có kiểm soát, ví dụ bằng lỗi `AbortError`, và shell phải xử lý rejection. `unmount()` cần idempotent, đồng thời thu hồi callbacks và tài nguyên của instance đó. `AbortSignal` là thông báo hủy: dynamic import hoặc thư viện bên dưới có thể không thực sự dừng, nên vẫn cần kiểm tra kết quả cũ.
+
+Với component trong tree chung, dùng ref/callback khi view đã commit có thể đơn giản hơn một promise. Đừng tạo adapter lifecycle riêng chỉ để áp dụng tên API trong ví dụ.
+
+### Chặn kết quả cũ và tránh giành focus
+
+Giả sử catalog đang tải, bạn chuyển sang cart. Catalog resolve muộn không được ghi title hoặc lấy focus của cart. Thêm một `navigationId` tăng dần cho mỗi lần điều hướng và đối chiếu trước khi áp dụng kết quả.
+
+Phần code dưới chỉ minh họa bước hoàn tất readiness phía shell; router, loader, loading/error UI và logic theo dõi tương tác vẫn phải được nối riêng:
+
+```ts title="Policy khi một view báo ready"
+import type { ReadyView } from './contracts';
+
+type NavigationTicket = {
+  id: number;
+  wantsRouteFocus: boolean;
+  userInteractedAfterStart: boolean;
+};
+
+type FocusPolicy = {
+  currentNavigationId(): number;
+  hasActiveModal(): boolean;
+};
+
+export function applyReadyView(
+  view: ReadyView,
+  ticket: NavigationTicket,
+  signal: AbortSignal,
+  policy: FocusPolicy,
+): void {
+  if (signal.aborted || ticket.id !== policy.currentNavigationId()) return;
+
+  document.title = view.title;
+
+  if (
+    !ticket.wantsRouteFocus ||
+    ticket.userInteractedAfterStart ||
+    policy.hasActiveModal()
+  ) return;
+
+  view.focusHeading();
+}
+```
+
+Shell đặt `wantsRouteFocus` theo loại điều hướng. Từ lúc navigation bắt đầu, shell theo dõi tương tác mới như `pointerdown`, `keydown` hoặc chuyển focus có chủ đích và cập nhật ticket; cần phân biệt chúng với focus mà chính shell thực hiện. Ví dụ, nếu người dùng đã Tab sang menu shell trong lúc cart tải, cart không được kéo họ về heading khi tải xong.
+
+Khi remote cũ chứa focused element bị unmount, shell có thể dùng một loading heading ổn định làm đích tạm nếu focus sắp mất. Đây là focus do coordinator điều khiển, không phải một tương tác người dùng mới. Khi view ready, coordinator chuyển tới đích cuối nếu policy vẫn cho phép. Error view phải đi qua cùng cơ chế, thay vì tự focus trong một effect không biết route nào đang active.
+
+`focusHeading()` chỉ thành công nếu đích còn connected, hiển thị, không inert và đúng view hiện tại. Nếu trả `false`, shell có thể thử main landmark hợp lệ; không focus `body` rồi coi như đã giải quyết. Trước khi gọi focus hoặc fallback, luôn xét modal đang mở để không đưa focus xuống nền.
+
+<Callout type="warn" title="Không dùng mount làm tín hiệu tự focus">
+  Một component có thể mount lại do conditional rendering, error recovery hoặc cơ chế development của framework. Nếu mỗi mount đều gọi `focus()`, cập nhật background cũng biến thành điều hướng. Gắn quyền đổi focus với một navigation ticket hoặc một hành động người dùng cụ thể.
+</Callout>
+
+## Keyboard navigation và modal
+
+### Native controls và thứ tự Tab
+
+Mình dùng `<button>` cho hành động, `<a href>` cho điều hướng, cùng native input/select khi phù hợp. `div` có `onClick` không tự trở thành button. Nếu thay bằng custom control, bạn phải tự triển khai name, role, trạng thái, keyboard và focus — nhiều việc hơn so với thêm styling cho element native.
+
+Thứ tự Tab nên theo cấu trúc DOM hợp lý. Không dùng `tabindex` dương để “sửa” thứ tự giữa các remote; những giá trị đó tranh thứ tự trên toàn document. Flex/grid `order` cũng có thể làm giao diện nhìn một thứ tự nhưng keyboard đi thứ tự khác.
+
+Menu, tabs, combobox và grid có keyboard pattern riêng. Nếu dùng roving tabindex hoặc arrow keys, làm theo pattern phù hợp trong ARIA Authoring Practices, không áp dụng arrow navigation cho mọi danh sách link. Handler nên nằm trong component; listener `keydown` toàn document của catalog có thể nuốt Escape mà cart dialog cần.
+
+Control `disabled` thường không nằm trong thứ tự Tab. `aria-disabled="true"` chỉ thông báo trạng thái, không tự chặn click hay keyboard activation. Nếu chọn `aria-disabled` để giữ control discoverable trong lúc pending, implementation phải chặn hành động lặp và giải thích trạng thái bằng feedback rõ ràng.
+
+### Dialog có một owner
+
+Một cart drawer phủ toàn trang cần được phân loại trước: nếu người dùng không thể tương tác với nền, đó là modal; nếu nền vẫn dùng được, đừng gắn `aria-modal="true"`. Với modal, focus đi vào khi mở, không truy cập nền qua keyboard, có cách đóng và trả focus khi đóng.
+
+Mình ưu tiên native `<dialog>` với `showModal()` hoặc primitive đã được kiểm thử của design system. Native dialog vào top layer và làm phần nền trong cùng document inert; nó không đồng nghĩa đã xử lý hết mọi vấn đề về tên, initial focus, iframe hoặc lifecycle.
+
+```html title="Một modal tối thiểu trong shell"
+<button id="open-cart" type="button">Mở giỏ hàng</button>
+
+<dialog id="cart-dialog" aria-labelledby="cart-dialog-title">
+  <h2 id="cart-dialog-title" tabindex="-1">Giỏ hàng</h2>
+  <p>Bạn có thể kiểm tra sản phẩm trước khi tiếp tục.</p>
+  <form method="dialog">
+    <button>Đóng giỏ hàng</button>
+  </form>
+</dialog>
+```
+
+```ts title="Mở modal và chọn initial focus"
+const opener = document.querySelector<HTMLButtonElement>('#open-cart');
+const dialog = document.querySelector<HTMLDialogElement>('#cart-dialog');
+const heading = document.querySelector<HTMLHeadingElement>('#cart-dialog-title');
+
+if (!opener || !dialog || !heading) throw new Error('Thiếu DOM của cart dialog');
+
+const openCart = () => {
+  if (dialog.open) return;
+  dialog.showModal();
+  heading.focus();
+};
+
+opener.addEventListener('click', openCart);
+
+// Khi hủy integration này:
+// opener.removeEventListener('click', openCart);
+// if (dialog.open) dialog.close();
+```
+
+Đây là ví dụ cho một document với invoker luôn tồn tại. Browser hỗ trợ native dialog thường khôi phục focus về invoker khi đóng; integration thật phải kiểm thử trường hợp invoker đã bị xóa hoặc route đã đổi. Nếu cần fallback do shell quản lý, chỉ trả focus tới element còn hợp lệ của route active, không giữ reference rồi focus bất chấp lifecycle.
+
+Heading trong ví dụ nhận focus để người dùng có ngữ cảnh trước khi Tab tới controls. Với confirmation phá hủy dữ liệu, initial focus thường nên ở hành động ít nguy hiểm hơn. Dialog nội dung phức tạp cũng không nên có `aria-describedby` trỏ vào toàn bộ danh sách/form dài khiến screen reader đọc thành một đoạn lớn.
+
+Nếu dùng custom modal, `aria-modal="true"` không tự trap focus hay làm nền inert. Cần primitive xử lý đầy đủ và kiểm thử trên browser/assistive technology mục tiêu. Không đặt `tabindex` lên chính native `<dialog>`; chọn heading hoặc control bên trong.
+
+Shell và remote không nên cùng bật hai focus traps độc lập cho một overlay. Khi đổi route, overlay owner đóng dialog và cleanup trước khi remote unmount; navigation coordinator quyết định đích focus mới. Giữ policy một modal active tại một thời điểm thường đơn giản hơn hỗ trợ stack modal giữa nhiều team.
+
+## Loading và thông báo thay đổi
+
+### Loading không làm mất ngữ cảnh
+
+Có hai loại loading khác nhau: chưa tải được màn hình, và đang cập nhật một vùng trên màn hình đã có. Loại thứ hai thường nên giữ nội dung và focused control ổn định thay vì thay cả subtree bằng spinner.
+
+| Tình huống | Cách hiển thị mặc định | Focus |
+| --- | --- | --- |
+| Tải code của route cart | Shell giữ khung, hiển thị loading text dễ hiểu | Giữ ở đích còn hợp lệ hoặc loading heading theo policy |
+| Đổi số lượng cart | Giữ dòng sản phẩm, hiện pending state tại dòng | Giữ trên control, tránh remount toàn danh sách |
+| Thêm sản phẩm từ catalog | Giữ nút và tên sản phẩm; chống submit lặp | Không tự chuyển sang cart |
+| Refresh dữ liệu background | Giữ dữ liệu cũ nếu phù hợp, chỉ rõ đang cập nhật | Không thay focus |
+| Không có sản phẩm/giỏ rỗng | Empty state giải thích và có hành động tiếp theo | Không coi là lỗi tải |
+
+`aria-busy="true"` trên vùng đang cập nhật báo rằng nội dung chưa hoàn tất; nó không chặn tương tác hoặc đảm bảo một loading announcement. Khi xong hoặc lỗi, trả về `false`. Live region thông báo tiến trình nên nằm ngoài vùng busy nếu bạn muốn nó được công bố ngay, vì assistive technology có thể trì hoãn thay đổi trong vùng busy.
+
+Skeleton trang trí nên có `aria-hidden="true"` và không chứa phần tử focusable. Một dòng chữ “Đang tải giỏ hàng…” hữu ích hơn việc screen reader đi qua nhiều ô skeleton vô nghĩa. Giảm layout shift bằng kích thước vùng hợp lý, nhưng đừng khóa chiều cao khiến nội dung bị cắt khi zoom hoặc dịch ngôn ngữ.
+
+### Live region có chủ đích
+
+Live region cho phép thông báo thay đổi mà không chuyển focus. Với kết quả thêm giỏ thông thường, `role="status"` có live behavior polite là lựa chọn tốt: thông báo không cố ngắt nội dung người dùng đang nghe. `role="alert"` có behavior assertive, dành cho thông tin đủ khẩn cấp; không dùng cho mọi request thành công hay spinner.
+
+Phần tử `shop-status` trong khung shell ở trên tồn tại trước thao tác. Owner cập nhật text sau khi có kết quả:
+
+```ts title="Thông báo một kết quả thêm giỏ"
+const status = document.querySelector<HTMLElement>('#shop-status');
+if (!status) throw new Error('Thiếu live region của shell');
+
+export function announceCartAdded(productName: string, totalItems: number): void {
+  status!.textContent =
+    `Đã thêm ${productName} vào giỏ. Giỏ hiện có ${totalItems} sản phẩm.`;
+}
+```
+
+Ví dụ này chưa xử lý queue, hủy request hay thông báo giống hệt nhau liên tiếp. Live regions không có bảo đảm phát âm chính xác một lần trên mọi tổ hợp browser/screen reader; thay đổi text giống hệt có thể không được đọc lại. Nếu thao tác lặp có cùng kết quả, notification service cần policy riêng, chẳng hạn nội dung phản ánh tổng số lượng mới hoặc queue có kiểm thử thực tế. Đừng thêm ký tự vô nghĩa chỉ để ép announcement.
+
+Cart domain phát kết quả nghiệp vụ; một owner announce nó. Catalog có thể hiển thị feedback nhìn thấy được, badge shell có thể cập nhật, nhưng không cần cả hai cùng tạo live announcement. Deduplicate theo action/request ID nếu cùng kết quả đi qua nhiều subscription; không announce lần hydrate state hay mỗi lần component render lại.
+
+Thông báo nên nói điều gì đã xảy ra và người dùng có thể làm gì. “Không thể thêm Áo xanh. Bạn có thể thử lại” rõ hơn “Error 500”. Với progress nhiều bước, announce các mốc có ý nghĩa thay vì mọi lần phần trăm thay đổi.
+
+Một live region chỉ dành cho screen reader không thay thế feedback thị giác. Nếu toast tự biến mất, thông tin lỗi quan trọng và hành động phục hồi vẫn nên tồn tại gần vùng thao tác. Toast có nút “Hoàn tác” cũng cần thời gian và cách truy cập phù hợp; đừng biến nó thành cơ hội phục hồi duy nhất trong vài giây.
+
+## Lỗi và phục hồi thao tác
+
+### Validation gần control
+
+Cart sở hữu quy tắc số lượng và lời hướng dẫn. Mỗi field cần label; khi lỗi, nội dung lỗi hiển thị gần field và được liên kết qua `aria-describedby`. `aria-invalid="true"` nói field đang invalid, nhưng không thay lời giải thích cần sửa gì.
+
+```html title="Một field số lượng đang có lỗi"
+<form>
+  <label for="cart-main-quantity-sku-a">Số lượng Áo xanh</label>
+  <input
+    id="cart-main-quantity-sku-a"
+    name="quantity"
+    type="number"
+    min="1"
+    max="99"
+    step="1"
+    value="0"
+    aria-invalid="true"
+    aria-describedby="cart-main-quantity-hint-sku-a cart-main-quantity-error-sku-a"
+  />
+  <p id="cart-main-quantity-hint-sku-a">Nhập số nguyên từ 1 đến 99.</p>
+  <p id="cart-main-quantity-error-sku-a">Số lượng phải ít nhất là 1.</p>
+  <button type="submit">Cập nhật số lượng</button>
+</form>
+```
+
+Giới hạn 1–99 chỉ là quy tắc minh họa, không phải dữ liệu tồn kho thật. Khi lỗi được sửa, remote cập nhật `aria-invalid` và bỏ liên kết lỗi không còn tồn tại. Hint hữu ích vẫn được giữ. Không gắn một ID lỗi cố định vào tất cả sản phẩm.
+
+Form dài có thể cần error summary với link tới từng field. Sau submit thất bại, chọn focus summary hoặc field invalid đầu tiên tùy pattern đã chốt; đừng vừa focus summary vừa announce toàn bộ summary bằng alert rồi focus field ngay sau đó. Với validation trong khi gõ, tránh giành focus và tránh đọc lỗi lại sau mỗi ký tự.
+
+Validation phía client không thay validation phía server. Nếu server từ chối số lượng do dữ liệu thay đổi, giữ giá trị người dùng đã nhập, chỉ rõ lỗi liên quan và cho họ sửa. Không clear toàn form chỉ vì request thất bại.
+
+### Remote lỗi và hành động thử lại
+
+Shell chịu lỗi tải code hoặc mount remote; remote chịu lỗi nghiệp vụ/data trong vùng mình quản lý. Một Error Boundary có thể ngăn màn hình trắng, nhưng fallback vẫn cần được thiết kế để người dùng tiếp tục thao tác.
+
+```html title="Fallback khi không tải được cart"
+<section aria-labelledby="cart-load-error-title">
+  <h1 id="cart-load-error-title" tabindex="-1">Không thể mở giỏ hàng</h1>
+  <p>Sản phẩm trong giỏ chưa được hiển thị. Bạn có thể thử tải lại phần này.</p>
+  <button type="button">Thử lại giỏ hàng</button>
+  <a href="/catalog">Quay lại catalog</a>
+</section>
+```
+
+Shell đặt fallback vào vùng route và áp dụng cùng title/focus policy như màn hình bình thường. Nút thử lại phải giữ được ngữ cảnh pending; nếu nó bị thay bằng loading view khi đang chứa focus, coordinator cần có đích thay thế hợp lệ. Một lỗi background trong cart đang mở thường chỉ cần feedback cục bộ, không kéo focus lên lỗi cấp trang.
+
+Thông báo phải trung thực với điều hệ thống biết. Timeout không chứng minh thao tác chưa được server xử lý, nên đừng luôn viết “chưa thêm vào giỏ” rồi tự retry. Với thao tác có side effect, cần reconcile state hoặc idempotency theo contract nghiệp vụ trước khi cho phép thử lại an toàn.
+
+Không hiển thị raw stack trace, token hay URL nội bộ cho người dùng. Nếu có mã hỗ trợ, đưa mã không nhạy cảm và hướng dẫn liên hệ; chi tiết kỹ thuật thuộc logging/observability. Với lỗi kéo dài, có đường quay lại hoặc hành động thay thế, không chỉ một spinner vô hạn.
+
+## CSS theme và các boundary
+
+### Focus ring contrast và reflow
+
+CSS isolation bảo vệ style giữa team, nhưng không tự bảo vệ accessibility. Remote vẫn có thể xóa outline, làm chữ thiếu contrast hoặc cắt focus ring bằng `overflow: hidden`.
+
+```css title="Styles nền tảng minh họa do shell quản lý"
+.shop-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.shop-skip-link {
+  position: fixed;
+  inset-block-start: 0.5rem;
+  inset-inline-start: 0.5rem;
+  transform: translateY(-200%);
+  padding: 0.75rem 1rem;
+  color: #111827;
+  background: #fff;
+  z-index: 100;
+}
+
+.shop-skip-link:focus {
+  transform: none;
+  outline: 3px solid #1d4ed8;
+}
+
+[data-shop-ui] :focus-visible {
+  outline: 3px solid var(--shop-focus-color, #1d4ed8);
+  outline-offset: 3px;
+}
+
+[data-shop-ui] [tabindex="-1"]:focus {
+  outline: 3px solid var(--shop-focus-color, #1d4ed8);
+  outline-offset: 3px;
+}
+
+@media (forced-colors: active) {
+  [data-shop-ui] :focus {
+    outline-color: Highlight;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-shop-ui] .shop-loading-placeholder {
+    animation: none;
+  }
+}
+```
+
+`data-shop-ui` và token trong snippet là convention minh họa, cần được gắn vào scope của lab; chúng không phải API của repository. `shop-sr-only` chỉ dùng cho nội dung cần giữ trong accessibility tree. Không dùng nó để giấu input còn focusable rồi để người dùng Tab vào một control vô hình.
+
+Theme phải được đo trong ngữ cảnh thực tế: text thông thường cần contrast ít nhất 4.5:1, large text ít nhất 3:1 theo định nghĩa WCAG; thông tin thị giác cần thiết để nhận biết controls/trạng thái có yêu cầu non-text contrast riêng. Focus color mặc định trong snippet không được coi là đạt trên mọi background. Kiểm tra light, dark, error states và forced colors thay vì chỉ screenshot theme mặc định.
+
+Với sticky header/footer, `scroll-padding` trên scroll container và `scroll-margin` trên đích focus có thể giúp tránh che nội dung, nhưng giá trị phải phù hợp layout. WCAG 2.4.11 mức AA yêu cầu focused component không bị che hoàn toàn bởi nội dung do tác giả tạo; mình đặt mục tiêu UX cao hơn là thấy rõ cả control và focus indicator.
+
+Kiểm tra text resize 200% và reflow ở chiều rộng tương đương 320 CSS px, thường đạt bằng zoom 400% từ viewport rộng 1280 CSS px. Đừng kết luận pass nếu chỉ đổi viewport: zoom có thể gây hành vi khác. Tránh scroll ngang cho nội dung thông thường; một số nội dung cần layout hai chiều có ngoại lệ riêng.
+
+Nút tăng/giảm cart nên có target đủ lớn. WCAG 2.5.8 mức AA dùng ngưỡng 24 × 24 CSS px với các ngoại lệ như spacing và inline text; không phải mọi target nhỏ hơn đều tự động fail. Khi thiết kế mới, mình ưu tiên target rộng rãi thay vì dựa vào ngoại lệ. Con số 44 × 44 thuộc tiêu chí enhanced mức AAA, không nên gọi đó là ngưỡng AA bắt buộc.
+
+### Portal Shadow DOM và iframe
+
+| Boundary | Cần kiểm tra ngoài component standalone |
+| --- | --- |
+| Nhiều framework roots trong cùng DOM | Thứ tự Tab, ID, heading, focus coordinator và title vẫn dùng chung document |
+| Portal ra overlay slot của shell | Token/theme theo cây DOM mới, tên dialog, đọc nội dung và cleanup khi remote unmount |
+| Shadow DOM | Forward focus, semantics của custom element, keyboard và tương thích browser/assistive technology |
+| iframe | `title` mô tả frame, document bên trong có title/lang riêng, keyboard vào/ra và messaging lifecycle |
+
+Portal có thể giữ context của framework nhưng thay đổi nơi DOM nằm; screen reader và CSS không đánh giá theo repository hay component tree. Kiểm tra vị trí đọc, tên của overlay và style ở target thật, không chỉ preview component.
+
+Shadow DOM không phải “hộp vô hình” với assistive technology. Tuy vậy, truy vấn focus và các liên kết ARIA qua boundary có giới hạn; đừng giả định `document.activeElement` luôn trả input sâu bên trong, hoặc một IDREF bên ngoài luôn label được element bên trong. Ưu tiên giữ label/control cùng scope, dùng API được browser hỗ trợ khi cần và kiểm thử custom element thật.
+
+Iframe tạo document riêng. `title="Giỏ hàng"` trên iframe giúp nhận diện frame, không sửa semantics bên trong. Parent thấy iframe là active element khi focus nằm trong child; với cross-origin iframe, parent không được truy cập DOM của child để tìm heading.
+
+Nếu cần chuyển focus qua iframe, dùng message contract có origin/source validation và readiness của document bên trong. Parent yêu cầu focus, child tự chọn đích hợp lệ; không truyền selector tùy ý để thực thi. Modal bên trong iframe chỉ làm nền của document con inert, **không khóa phần shell bên ngoài**. Vì vậy, modal phủ toàn shop nên do shell quản lý hoặc có phối hợp boundary rõ ràng; đừng xem dialog trong frame là modal toàn trang.
+
+## Kiểm thử từng phần và màn hình đã ghép
+
+### Ma trận hành trình
+
+Unit/component tests kiểm chứng primitive và domain interactions. Integration/E2E tests mới bắt được lỗi do hai remote cùng xử lý Escape, một global stylesheet xóa focus ring hay readiness của route cũ về muộn.
+
+| Ca kiểm thử | Kết quả mong đợi |
+| --- | --- |
+| Tab từ đầu trang, kích hoạt skip link | Link thấy được; focus tới main, không phải đi qua toàn bộ header |
+| Dùng keyboard mở cart | Title/current link đúng; focus tới heading khi view ready và policy cho phép |
+| Cart tải chậm, người dùng chuyển focus sang shell | Khi cart ready, không lấy lại focus |
+| Catalog đang tải rồi chuyển cart | Kết quả catalog cũ không ghi title, announce hoặc đổi focus |
+| Thêm giỏ thành công/thất bại | Focus giữ ở nút còn hợp lệ; feedback nhìn thấy và được announce theo policy |
+| Xóa dòng đang chứa focus | Focus sang đích hợp lý, không rơi về body |
+| Mở dialog, Tab/Shift+Tab rồi Escape | Không truy cập nền; đóng được; focus trở lại đích hợp lệ |
+| Đổi route trong lúc dialog mở | Overlay được cleanup; không còn inert/trap/listener trên route mới |
+| Hai instance của cùng remote | Labels, descriptions và IDs không bị gắn nhầm |
+| Remote lỗi rồi retry | Fallback thao tác được; pending/error/ready không làm mất focus |
+| Zoom, dark theme và forced colors | Nội dung không bị cắt, controls và focus vẫn nhìn thấy |
+
+Test cả standalone và integrated với ít nhất các tổ hợp version còn được hỗ trợ. Thay đổi internal DOM của dialog có thể là breaking behavior dù TypeScript props không đổi; release độc lập vẫn cần compatibility tests cho hành vi chung.
+
+### Ví dụ Playwright và axe
+
+Ví dụ sau dành cho shop lab đã có Playwright, `@axe-core/playwright`, browser binaries và `baseURL`. Repository tài liệu này chưa cung cấp fixture shop hay các test đó. Test giả định bắt đầu ở `/catalog`, không có autofocus lúc load và có một link “Giỏ hàng” trong navigation chính.
+
+```ts title="tests/shop-accessibility.spec.ts"
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test('chuyển sang cart bằng keyboard và kiểm tra trang đã ghép', async ({ page }) => {
+  await page.goto('/catalog');
+
+  const navigation = page.getByRole('navigation', { name: 'Điều hướng chính' });
+  const cartLink = navigation.getByRole('link', { name: 'Giỏ hàng', exact: true });
+
+  // Đi theo thứ tự Tab thực tế; không dùng click() hoặc focus() để bỏ qua nó.
+  let reachedCart = false;
+  for (let i = 0; i < 20; i += 1) {
+    await page.keyboard.press('Tab');
+    reachedCart = await cartLink.evaluate(
+      (element) => element === document.activeElement,
+    );
+    if (reachedCart) break;
+  }
+  expect(reachedCart).toBe(true);
+  await page.keyboard.press('Enter');
+
+  const heading = page.getByRole('heading', { name: 'Giỏ hàng', level: 1 });
+  await expect(heading).toBeVisible();
+  await expect(heading).toBeFocused();
+  await expect(page).toHaveTitle('Giỏ hàng | Shop');
+
+  // Chỉ scan sau khi state cần đánh giá đã sẵn sàng.
+  const report = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+
+  expect(report.violations).toEqual([]);
+});
+```
+
+Giới hạn 20 lần Tab là guard cho fixture nhỏ, không phải tiêu chuẩn accessibility. Fixture phải kiểm soát dữ liệu, loading và các overlay để kết quả không phụ thuộc mạng thật. Thêm test riêng cho slow readiness, stale navigation, lỗi và dialog; một test happy path không bao phủ chúng.
+
+Axe phát hiện được một phần lỗi có thể tự động kiểm tra. Report không có violations **không chứng minh WCAG conformance**, live announcement đúng hay focus order có ý nghĩa. Scope chỉ vào `#route-slot` có thể bỏ qua lỗi shell/overlay, nên cần cả scan toàn trang. Iframe cross-origin và một số boundary cần harness/test riêng; không suy diễn một scan parent đã đánh giá mọi nội dung.
+
+Assertion về `textContent` của live region chỉ chứng minh DOM đổi. Nó không chứng minh screen reader đã đọc thông báo đúng thời điểm hoặc không đọc trùng.
+
+### Kiểm thử thủ công với assistive technology
+
+Mình thực hiện một vòng keyboard-only trước, rồi chạy cùng hành trình với screen reader. Giữ chuột ngoài quy trình để không vô tình sửa focus khi test.
+
+1. Tab và Shift+Tab qua shell, catalog, cart; kiểm tra focus thấy được và thứ tự phù hợp nội dung.
+2. Dùng chức năng duyệt headings/landmarks của screen reader để hiểu cấu trúc trang mà không đọc từng dòng.
+3. Thêm sản phẩm, đổi số lượng, submit invalid và xóa dòng; nghe name, value, lỗi và feedback.
+4. Mở dialog, kiểm tra nội dung nền không còn truy cập được trong trạng thái modal, rồi đóng và xác nhận đích focus.
+5. Giả lập remote chậm/lỗi, chuyển route liên tục và retry; kiểm tra không có title/announcement từ view đã hủy.
+6. Lặp lại với zoom, reduced motion, forced colors hoặc công cụ phóng đại phù hợp.
+
+Chọn tổ hợp theo môi trường người dùng và năng lực hỗ trợ, chẳng hạn NVDA với browser được hỗ trợ trên Windows và VoiceOver với Safari trên macOS/iOS. Ghi rõ OS, browser và screen reader versions cùng các bước tái hiện; hành vi không giống nhau hoàn toàn giữa các tổ hợp.
+
+Screen reader có chế độ đọc và tương tác; phím Tab không phải cách duyệt duy nhất. Đừng kết luận dialog accessible chỉ vì Tab ở lại trong dialog: cần kiểm tra cả nội dung đọc, accessible name và khả năng thoát. Với luồng quan trọng, đánh giá cùng người dùng assistive technology giúp phát hiện vấn đề mà checklist kỹ thuật khó thấy.
+
+## Các lỗi thường gặp
+
+| Lỗi | Vì sao xảy ra khi ghép app | Cách sửa |
+| --- | --- | --- |
+| Ba thông báo “Đã thêm vào giỏ” | Catalog, cart và shell đều có live region cho cùng action | Chốt một announcement owner, deduplicate kết quả nghiệp vụ |
+| Focus nhảy sau mỗi update | Remote gọi focus trong effect mount/render | Chỉ focus theo navigation hoặc hành động cụ thể |
+| Tab vào vùng không nhìn thấy | Overlay chỉ dùng opacity/transform để giấu | Dùng state thực sự hidden/inert phù hợp; kiểm tra keyboard |
+| Có focus trap nhưng đọc được nền modal | Chỉ chặn Tab, chưa xử lý accessibility tree và nền | Dùng native dialog hoặc primitive đầy đủ, test screen reader |
+| Thử lại làm mất focused button | Pending UI thay nguyên fallback subtree | Giữ đích ổn định hoặc handoff focus theo coordinator |
+| Link label tới nhầm input | Nhiều remote dùng cùng ID cố định | Namespace theo instance và kiểm tra nhiều roots |
+| Outline biến mất sau khi cart load | Global reset của remote ghi `outline: none` | Sửa scope/styles; không xóa focus indicator nếu không có thay thế |
+| Route mới có title của route cũ | Async readiness không kiểm tra navigation ID | Hủy instance cũ và bỏ kết quả stale |
+| Dialog biến mất nhưng trang không thao tác được | Cleanup để lại inert, scroll lock hoặc global listener | Overlay owner thu hồi toàn bộ tài nguyên khi đóng/unmount |
+
+## Checklist trước production
+
+- [ ] Có mục tiêu accessibility và phạm vi trang/quy trình cần đánh giá, không chỉ danh sách component.
+- [ ] Shell và remote thống nhất owners cho landmarks, title, route focus, modal và live announcements.
+- [ ] Links/buttons/fields có semantics native phù hợp, accessible name và label đúng.
+- [ ] ID duy nhất theo instance; heading hierarchy và navigation landmarks có nghĩa khi ghép.
+- [ ] Skip link, Tab order và focus indicator hoạt động trên màn hình integrated.
+- [ ] Readiness không dựa vào timeout; stale navigation không đổi title, focus hoặc thông báo.
+- [ ] Pending/validation/retry không xóa ngữ cảnh hoặc làm focus rơi vào vùng không hợp lệ.
+- [ ] Modal có tên, initial focus, cách đóng, quản lý nền và fallback trả focus.
+- [ ] Unmount cleanup overlay, inert, listeners, timers và callbacks async.
+- [ ] Loading, empty và error states có nội dung, feedback thị giác và announcement phù hợp.
+- [ ] Theme, zoom/reflow, reduced motion, forced colors và kích thước target đã được kiểm tra.
+- [ ] Có automatic checks lẫn keyboard/screen reader tests cho các hành trình xuyên app.
+- [ ] Các tổ hợp shell/remote versions được hỗ trợ có regression tests cho accessibility behavior.
+
+Nếu bắt đầu từ shop lab, hãy làm một test chuyển catalog sang cart bằng keyboard, rồi cố tình trì hoãn cart readiness và chuyển focus về menu shell. Khi cả hai trường hợp đúng, tiếp tục thêm ca xóa dòng cart và lỗi tải remote. Những ca này kiểm chứng boundary thực tế tốt hơn việc chỉ thêm ARIA vào từng component.
+
+## Tài liệu tham khảo
+
+- [WCAG 2.2](https://www.w3.org/TR/WCAG22/) — tiêu chuẩn, các mức conformance và yêu cầu cho trang/quy trình hoàn chỉnh.
+- [ARIA Authoring Practices — Modal Dialog](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/) — keyboard, initial focus và trả focus cho modal.
+- [Understanding Status Messages](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html) — thông báo thay đổi mà không chuyển focus.
+- [Understanding Focus Not Obscured Minimum](https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum.html) — focused component và nội dung che phủ.
+- [Understanding Contrast Minimum](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html) — contrast cho text và định nghĩa large text.
+- [Understanding Target Size Minimum](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html) — kích thước target và các ngoại lệ.
+- [MDN — dialog](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog) — native dialog, `showModal()` và hành vi đóng.
+- [React — createRoot](https://react.dev/reference/react-dom/client/createRoot) — `identifierPrefix` cho nhiều roots.
+- [Playwright — Accessibility testing](https://playwright.dev/docs/accessibility-testing) — tích hợp axe và giới hạn automatic testing.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Design system dùng chung" href="/docs/ui-va-framework/design-system" description="Đưa semantics, keyboard và focus styles vào public UI contracts." />
+  <Card title="CSS isolation" href="/docs/ui-va-framework/css-isolation" description="Giữ focus styles và theme khỏi bị stylesheet của remote khác ghi đè." />
+  <Card title="Routing" href="/docs/giao-tiep-va-trang-thai/routing" description="Xác định owner điều hướng và lifecycle của view giữa shell với remote." />
+  <Card title="Tích hợp bằng iframe" href="/docs/cac-cach-tich-hop/iframe" description="Xử lý document boundary và messaging khi child không dùng chung DOM với shell." />
+</Cards>

@@ -1,18 +1,595 @@
 ---
 title: "CSS isolation"
-description: "So sánh CSS Modules, naming conventions, Shadow DOM và cách tránh style leakage."
+description: "Chọn CSS Modules, naming conventions hay Shadow DOM cho micro-frontend; kiểm soát style leakage, theme, portal và lifecycle của stylesheet."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop có nút giỏ hàng, còn catalog vừa deploy một stylesheet mới với rule `button { background: red; }`. Catalog chạy đúng khi mở standalone, nhưng khi ghép vào shell thì nút giỏ hàng cũng chuyển đỏ. Hai ứng dụng có React root khác nhau, thậm chí dùng framework khác nhau, vẫn có thể dùng chung một CSS cascade.
+
+CSS isolation giúp bạn giới hạn vùng ảnh hưởng của style. Nhưng **tránh trùng tên class, chặn selector đi qua boundary và kiểm soát giá trị kế thừa là ba việc khác nhau**. Nếu gom chúng thành một lời hứa “CSS đã scoped”, bạn dễ bỏ sót reset, theme hoặc modal render ra ngoài container.
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài này dành cho micro-frontend chạy trong trình duyệt, dùng shop với shell, catalog và cart làm ví dụ. Repository hiện tại là site tài liệu; các file code bên dưới thuộc lab riêng, không phải ứng dụng đã có trong repo. Ví dụ CSS Modules giả định bundler đã hỗ trợ `.module.css`; lab Shadow DOM dùng HTML và JavaScript thuần. Sơ đồ ASCII không cần thêm renderer.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Style leakage xảy ra ở đâu](#style-leakage-xảy-ra-ở-đâu)
+  - [Selector và cascade dùng chung](#selector-và-cascade-dùng-chung)
+  - [Inheritance và tài nguyên ngoài selector](#inheritance-và-tài-nguyên-ngoài-selector)
+- [Chọn mức isolation phù hợp](#chọn-mức-isolation-phù-hợp)
+- [CSS Modules làm mặc định](#css-modules-làm-mặc-định)
+  - [Ví dụ component catalog](#ví-dụ-component-catalog)
+  - [Tên class riêng không chặn CSS bên ngoài](#tên-class-riêng-không-chặn-css-bên-ngoài)
+- [Naming conventions và root namespace](#naming-conventions-và-root-namespace)
+  - [Prefix class và giới hạn selector](#prefix-class-và-giới-hạn-selector)
+  - [Giới hạn khi lồng nhiều ứng dụng](#giới-hạn-khi-lồng-nhiều-ứng-dụng)
+- [Cascade layers không phải isolation](#cascade-layers-không-phải-isolation)
+- [Shadow DOM tạo selector boundary](#shadow-dom-tạo-selector-boundary)
+  - [Những gì đi qua shadow boundary](#những-gì-đi-qua-shadow-boundary)
+  - [Lab mount và unmount](#lab-mount-và-unmount)
+  - [Đưa CSS của framework vào đúng root](#đưa-css-của-framework-vào-đúng-root)
+- [Theme và design tokens là contract](#theme-và-design-tokens-là-contract)
+- [Portal overlay và stacking context](#portal-overlay-và-stacking-context)
+- [CSS của thư viện và utility framework](#css-của-thư-viện-và-utility-framework)
+- [Tải stylesheet và cleanup theo lifecycle](#tải-stylesheet-và-cleanup-theo-lifecycle)
+- [Kiểm thử style leakage](#kiểm-thử-style-leakage)
+- [Chẩn đoán lỗi thường gặp](#chẩn-đoán-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Style leakage xảy ra ở đâu
 
-Bài này sẽ giúp bạn: so sánh CSS Modules, naming conventions, Shadow DOM và cách tránh style leakage.
+### Selector và cascade dùng chung
 
-[Xem các bài trong nhóm UI và framework](/docs/ui-va-framework).
+Trong light DOM, một stylesheet được gắn vào document không biết node nào thuộc shell hay remote. Nó chỉ tìm những element khớp selector rồi tham gia cascade.
+
+```text
+Document: một cascade cho light DOM
+├── Shell header → button giỏ hàng
+├── Catalog slot → button thêm sản phẩm
+└── Cart slot    → button thanh toán
+
+Catalog CSS: button { background: red; }
+                    └── có thể khớp cả ba button
+```
+
+Các rule dưới đây đều có thể làm hỏng vùng UI khác:
+
+```css title="Ví dụ CSS không nên export từ remote"
+button { border-radius: 0; }
+.card { padding: 2rem; }
+* { box-sizing: content-box; }
+body { overflow: hidden; }
+:root { --primary-color: red; }
+```
+
+`button` và `*` có phạm vi quá rộng; `.card` có tên quá phổ biến; `body` sửa cả document; còn `:root` ghi token mà mọi ứng dụng có thể đọc. Tải file bằng Module Federation, dynamic import hay một thẻ `link` không thay đổi phạm vi của các rule này.
+
+Cũng đừng quy mọi lỗi cho “CSS tải sau thắng”. Browser còn xét nguồn style, `!important`, cascade layer, specificity và những yếu tố khác trước khi dùng thứ tự xuất hiện để phân xử. Khi debug, hãy tìm declaration thực sự thắng trong DevTools thay vì liên tục đổi thứ tự import.
+
+### Inheritance và tài nguyên ngoài selector
+
+Ngay cả khi không có selector của shell khớp node bên trong remote, node đó vẫn có thể kế thừa `color`, `font-family`, `line-height` hoặc CSS custom properties từ ancestor. Đây có thể là theme bridge có chủ đích, không nhất thiết là lỗi.
+
+Một số ảnh hưởng khác không giải quyết được chỉ bằng đổi tên class:
+
+| Nguồn ảnh hưởng | Ví dụ trong shop | Cách kiểm soát |
+| --- | --- | --- |
+| Giá trị kế thừa | Catalog nhận font và text color của shell | Định nghĩa baseline hoặc chấp nhận chúng qua contract |
+| Đơn vị dựa vào document | `1rem` đổi khi shell sửa font-size của `html` | Chốt root font policy; kiểm tra cả khi dùng Shadow DOM |
+| Tên animation hoặc font dùng chung | Hai file global định nghĩa `@keyframes fade` hoặc font family `AppFont` | Namespace tài nguyên; kiểm tra CSS đầu ra của toolchain |
+| Vị trí render | Modal của catalog nằm trực tiếp dưới `body` | Có overlay contract và target rõ ràng |
+| Geometry của ancestor | Slot bị `overflow: hidden` hoặc nằm trong stacking context | Shell và remote cùng chốt layout boundary |
+
+Hãy coi boundary như vách ngăn giữa hai căn phòng: đổi nhãn đồ đạc tránh nhầm tên, nhưng không dựng lên vách ngăn. Với CSS, phép so sánh này chỉ giải thích phạm vi selector; inheritance và layout vẫn cần quy tắc riêng.
+
+## Chọn mức isolation phù hợp
+
+Mình mặc định chọn **CSS Modules cho component, baseline toàn trang do shell sở hữu, và design tokens có namespace** khi các team tin cậy nhau và cùng xây một sản phẩm. Cách này giữ composition đơn giản mà giảm phần lớn va chạm do tên class.
+
+| Cách làm | Giải quyết tốt | Không tự giải quyết | Khi mình chọn |
+| --- | --- | --- | --- |
+| Prefix và root namespace | Trùng tên class, rule remote vô tình phủ cả trang | Rule từ ngoài đi vào, inheritance, CSS legacy chưa xử lý | Migration hoặc codebase CSS thuần có lint/review tốt |
+| CSS Modules | Tên class và animation local qua build transform | Global selector, inheritance, portal và vendor CSS | Mặc định cho UI do team kiểm soát |
+| Shadow DOM | Selector thông thường không xuyên vào/ra shadow tree | Host, inheritance, slots, layout, JS isolation | Widget hoặc vùng UI cần chống CSS bên ngoài mạnh hơn |
+| iframe | Document và stylesheet riêng | Giao tiếp, theme bridge, focus, resize, routing | App legacy khó sửa hoặc cần đánh giá sandbox riêng |
+
+CSS-in-JS cũng có thể sinh class riêng, nhưng đó chưa phải một mức isolation độc lập: bạn vẫn phải kiểm tra global styles và nơi runtime inject stylesheet. Cascade layers chỉ quản lý độ ưu tiên; chúng không thay thế bất kỳ boundary nào trong bảng.
+
+Đừng đưa toàn bộ catalog vào Shadow DOM chỉ để sửa một class `.card` trùng tên. Ngược lại, nếu bạn phải nhúng widget vào những host page có CSS không thể kiểm soát, prefix đơn thuần thường không đủ.
+
+<Callout type="warn" title="CSS isolation không phải security isolation">
+  CSS Modules và Shadow DOM không sandbox JavaScript. Code remote chạy cùng môi trường vẫn có thể sửa document, chèn style global hoặc dùng tài nguyên của trang. `mode: 'closed'` cũng không biến Shadow DOM thành security boundary. Với nội dung không tin cậy, cần thiết kế [iframe và sandbox](/docs/cac-cach-tich-hop/iframe) phù hợp.
+</Callout>
+
+## CSS Modules làm mặc định
+
+CSS Modules transform tên class và animation local thành tên đầu ra, rồi export mapping để component sử dụng. Component viết `.button`, nhưng DOM nhận tên đã được transform thay vì dùng thẳng class global `button`.
+
+### Ví dụ component catalog
+
+```css title="src/catalog/ProductCard.module.css"
+.card {
+  padding: 1rem;
+  border: 1px solid var(--shop-color-border, #cbd5e1);
+  background: var(--shop-color-surface, #fff);
+  color: var(--shop-color-text, #172033);
+}
+
+.title {
+  margin: 0 0 0.75rem;
+  font-size: 1.125rem;
+}
+
+.button {
+  padding: 0.5rem 0.75rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: var(--shop-color-accent, #1d4ed8);
+  color: var(--shop-color-on-accent, #fff);
+  font: inherit;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--shop-color-focus, #9a3412);
+  outline-offset: 3px;
+}
+```
+
+```tsx title="src/catalog/ProductCard.tsx"
+import styles from './ProductCard.module.css';
+
+export function ProductCard({ onAdd }: { onAdd: () => void }) {
+  return (
+    <article className={styles.card}>
+      <h2 className={styles.title}>Áo thun</h2>
+      <button type="button" className={styles.button} onClick={onAdd}>
+        Thêm vào giỏ
+      </button>
+    </article>
+  );
+}
+```
+
+Cart có thể dùng `.button` trong file module của nó mà không cần thống nhất tên component với catalog. Tuy vậy, với nhiều build độc lập, hãy kiểm tra cấu hình tạo tên class. Nếu mọi remote dùng một template như `[local]` không có app identifier hay hash phù hợp, local scope ở source không còn giúp tránh va chạm lúc ghép trang.
+
+Một tên đầu ra như `catalog_ProductCard_button_a1b2` chỉ là minh họa, không phải format chuẩn mà mọi bundler đều sinh. Đừng để shell query hoặc viết selector dựa vào tên đó; nó là implementation detail, không phải public API.
+
+### Tên class riêng không chặn CSS bên ngoài
+
+Giả sử shell có CSS sau:
+
+```css title="Một rule shell có thể phá CSS Modules"
+button {
+  background: red !important;
+}
+```
+
+Button của catalog vẫn là một `button`, dù class đã có hash. Rule global này vẫn khớp và có thể thắng declaration normal trong module. CSS Modules tránh trùng tên, **không tạo selector boundary**.
+
+Ở chiều ngược lại, đưa `body`, `:root` hoặc selector element không gắn với local class vào `.module.css` không làm chúng thành private. Một số toolchain pure mode sẽ từ chối selector như vậy; một số khác có thể cho chúng đi ra global. Cú pháp `:global(...)` còn chủ động mở phạm vi global. Vì thế, “mọi file đều có đuôi `.module.css`” chưa đủ làm policy.
+
+Mình khuyên mỗi component dùng local class rõ ràng, hạn chế descendant selector quá rộng và review mọi global escape. Stylesheet của thư viện được import cạnh component cũng phải được kiểm tra riêng: nó không tự trở thành module chỉ vì component dùng CSS Modules.
+
+## Naming conventions và root namespace
+
+### Prefix class và giới hạn selector
+
+Nếu đang migration từ CSS global, bạn có thể bắt đầu bằng prefix theo ứng dụng, ví dụ `catalog-`, rồi đặt rule bên dưới một root do remote sở hữu.
+
+```html title="Markup trong light DOM"
+<section data-mfe="catalog">
+  <article class="catalog-product-card">
+    <h2 class="catalog-product-title">Áo thun</h2>
+    <button class="catalog-add-button" type="button">Thêm vào giỏ</button>
+  </article>
+</section>
+```
+
+```css title="catalog.css"
+:where([data-mfe="catalog"]) {
+  color: var(--shop-color-text, #172033);
+  font-family: var(--shop-font-body, system-ui, sans-serif);
+  line-height: 1.5;
+}
+
+:where([data-mfe="catalog"]) .catalog-product-title {
+  margin-block: 0 0.75rem;
+}
+
+:where([data-mfe="catalog"]) .catalog-add-button {
+  border-radius: 0.375rem;
+  font: inherit;
+}
+```
+
+`:where(...)` có specificity bằng zero, nên root namespace không cộng thêm specificity vào phần selector phía sau. Điều này giúp tránh cuộc đua selector ngày càng dài, nhưng không chặn một global rule từ shell có độ ưu tiên cao hơn.
+
+Prefix là convention, không phải enforcement. Với pipeline tự động thêm root prefix, hãy kiểm tra cả selector list, `html`, `body`, `:root`, keyframes và stylesheet import. Chỉ nối `[data-mfe="catalog"]` vào trước `body` sẽ tạo selector tìm một `body` nằm bên trong catalog — không phải ý nghĩa mà CSS ban đầu cần.
+
+### Giới hạn khi lồng nhiều ứng dụng
+
+Rule `[data-mfe="catalog"] button` vẫn khớp button của cart nếu cart được mount làm descendant bên trong catalog. Root namespace giới hạn cây con, chứ không hiểu quyền sở hữu của từng micro-frontend.
+
+Vì vậy, mình ưu tiên local class cho từng component thay vì reset mọi descendant bằng `[data-mfe="catalog"] *`. Nếu có nested remote, hãy xác định vùng DOM do nó sở hữu và tránh để CSS cha nhắm vào implementation bên trong.
+
+Portal còn tạo ra vấn đề ngược lại: modal của catalog render dưới `body` không còn là descendant của root catalog. Khi đó selector có root prefix không khớp nữa. Bạn cần đưa overlay vào cùng boundary hoặc cấp namespace riêng cho nó, không nên sửa bằng cách xóa mọi prefix.
+
+## Cascade layers không phải isolation
+
+Cascade layers hữu ích khi shell, design system và remote cần thống nhất độ ưu tiên của CSS normal. Shell nên khai báo thứ tự trước khi tải remote, thay vì để mạng quyết định layer nào được gặp đầu tiên.
+
+```css title="shell-cascade.css — tải trước remote"
+@layer reset, design-system, apps, shell-overrides;
+```
+
+```css title="catalog.css — ví dụ phối hợp layer và namespace"
+@layer apps {
+  :where([data-mfe="catalog"]) .catalog-add-button {
+    border-radius: 0.375rem;
+  }
+}
+```
+
+Các remote có thể cùng đóng góp vào layer `apps`. Tuy nhiên, rule trong cùng layer vẫn cần phân xử bằng specificity và thứ tự khi cần; layer không giúp hai class global `.button` trở thành hai class khác nhau.
+
+Có hai bẫy cần chốt thành policy:
+
+- Với declaration **normal trong cùng author origin**, CSS ngoài layer ưu tiên hơn CSS trong layer. Vendor CSS không được đưa vào layer có thể thắng app CSS dù selector đơn giản hơn.
+- Với `!important`, thứ tự ưu tiên layer đảo ngược. Đừng coi `shell-overrides` là nơi luôn thắng mọi rule.
+
+`@scope` cũng không phải Shadow DOM: nó giới hạn vùng mà rule được khai báo bên trong scope áp dụng, nhưng không ngăn rule bên ngoài tác động vào vùng đó. Nếu dùng, hãy kiểm tra browser support của sản phẩm và xem nó là công cụ scoping, không phải sandbox.
+
+## Shadow DOM tạo selector boundary
+
+Shadow DOM tạo một tree gắn với host element. Selector thông thường trong document không đi vào các node nội bộ của tree; selector nội bộ cũng không lan ra node bên ngoài.
+
+```text
+Document / light DOM
+├── Shell button ← shell CSS
+└── <div host>   ← shell có thể style host
+    └── #shadow-root
+        ├── <style> catalog CSS
+        └── Catalog button ← stylesheet trong shadow root
+```
+
+Điểm khác biệt so với CSS Modules là một rule global `button` của shell không tự khớp button nằm trong shadow tree. Bạn không cần đăng ký custom element chỉ để có Shadow DOM; một host element phù hợp có thể gọi `attachShadow()`.
+
+### Những gì đi qua shadow boundary
+
+Boundary này có các lối đi có chủ đích, không phải một hộp kín hoàn toàn:
+
+- **Host vẫn thuộc light DOM.** Shell có thể đặt width, display, overflow, font hoặc custom properties lên host.
+- **Inheritance vẫn đi từ host vào tree.** Các giá trị như font, color và nhiều custom properties có thể được kế thừa. Remote nên định nghĩa baseline cho những gì không muốn nhận ngầm.
+- **Slotted content vẫn là light DOM.** Nội dung được đưa qua `slot` không tự trở thành node nội bộ được cô lập giống phần template. Shell vẫn có thể style nội dung đó; `::slotted(...)` là một điểm nối có giới hạn.
+- **`::part(...)` mở styling API.** Nếu remote expose `part`, bên ngoài được style những phần đã công khai. Hãy version API đó như public contract, không expose mọi node theo mặc định.
+- **Layout vẫn phụ thuộc host và ancestor.** Shadow DOM không gỡ clipping, stacking context hoặc thay đổi ý nghĩa của `rem` thành “đơn vị theo shadow root”.
+
+Đặt `all: initial` trên host không phải nút “reset tất cả”: nó không reset custom properties, `direction` hay `unicode-bidi`, và cũng không xử lý toàn bộ layout bên ngoài. Mình ưu tiên baseline rõ ràng thay vì một reset khiến theme hoặc accessibility khó dự đoán.
+
+### Lab mount và unmount
+
+Lab sau chứng minh selector boundary bằng hai button dùng chung tên class. Mở `index.html` qua một HTTP server static để trình duyệt tải ES module, rồi quan sát màu hai button.
+
+```html title="index.html"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CSS isolation lab</title>
+    <style>
+      .button { background: #b91c1c; color: white; }
+      body { font-family: system-ui, sans-serif; }
+      #catalog-host { --shop-color-accent: #1d4ed8; }
+    </style>
+  </head>
+  <body>
+    <button class="button" type="button">Giỏ hàng của shell</button>
+    <div id="catalog-host"></div>
+    <button id="toggle-catalog" type="button">Ẩn catalog</button>
+
+    <script type="module">
+      import { mountCatalog } from './catalog.js';
+
+      const host = document.querySelector('#catalog-host');
+      const toggle = document.querySelector('#toggle-catalog');
+      let handle = mountCatalog(host);
+
+      toggle.addEventListener('click', () => {
+        if (handle) {
+          handle.unmount();
+          handle = null;
+          toggle.textContent = 'Hiện catalog';
+        } else {
+          handle = mountCatalog(host);
+          toggle.textContent = 'Ẩn catalog';
+        }
+      });
+    </script>
+  </body>
+</html>
+```
+
+```js title="catalog.js"
+const activeHosts = new WeakSet();
+
+export function mountCatalog(host) {
+  if (activeHosts.has(host)) {
+    throw new Error('Catalog đã mount trên host này');
+  }
+  if (host.childNodes.length > 0) {
+    throw new Error('Host của lab phải không có light DOM children');
+  }
+
+  // Host này được shell dành riêng cho catalog.
+  // Shadow root còn tồn tại sau unmount; lần sau tái sử dụng nó.
+  const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
+  if (root.childNodes.length > 0) {
+    throw new Error('Shadow root đang có nội dung của owner khác');
+  }
+
+  const style = document.createElement('style');
+  style.textContent = `
+    :host {
+      display: block;
+      font-family: var(--shop-font-body, system-ui, sans-serif);
+      line-height: 1.5;
+      color: var(--shop-color-text, #172033);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    .card {
+      margin-block: 1rem;
+      padding: 1rem;
+      border: 1px solid var(--shop-color-border, #cbd5e1);
+      background: var(--shop-color-surface, #fff);
+    }
+    .button {
+      padding: 0.5rem 0.75rem;
+      border: 0;
+      border-radius: 0.375rem;
+      background: var(--shop-color-accent, #1d4ed8);
+      color: var(--shop-color-on-accent, #fff);
+      font: inherit;
+    }
+    .button:focus-visible {
+      outline: 2px solid var(--shop-color-focus, #9a3412);
+      outline-offset: 3px;
+    }
+  `;
+
+  const card = document.createElement('section');
+  card.className = 'card';
+  card.setAttribute('aria-label', 'Catalog');
+
+  const title = document.createElement('h2');
+  title.textContent = 'Áo thun';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'button';
+  button.textContent = 'Thêm vào giỏ';
+
+  const status = document.createElement('p');
+  status.setAttribute('role', 'status');
+  const onAdd = () => { status.textContent = 'Đã gửi yêu cầu thêm sản phẩm'; };
+  button.addEventListener('click', onAdd);
+
+  card.append(title, button, status);
+  root.append(style, card);
+  activeHosts.add(host);
+
+  let disposed = false;
+  return {
+    unmount() {
+      if (disposed) return;
+      disposed = true;
+      button.removeEventListener('click', onAdd);
+      card.remove();
+      style.remove();
+      activeHosts.delete(host);
+    },
+  };
+}
+```
+
+Kết quả mong đợi: button của shell đỏ, button catalog xanh. Đổi `--shop-color-accent` trên host sang màu khác thì catalog đổi theo; đó là inheritance có chủ đích qua token, không phải selector leakage. Ẩn rồi hiện catalog phải tạo lại UI mà không nhân đôi event listener hay stylesheet.
+
+Lab chỉ nhận host rỗng dành riêng cho catalog. Nó không hydrate Declarative Shadow DOM, không hỗ trợ nhiều owner trên cùng root và không triển khai cart thật. Nội dung `style` là hằng số của lab; với CSP production, phải có chính sách cho style phù hợp, chẳng hạn nonce được shell cấp hoặc stylesheet ngoài được cho phép, chứ không bật `unsafe-inline` chỉ để ví dụ chạy.
+
+### Đưa CSS của framework vào đúng root
+
+Mount một React hoặc Vue app vào element bên trong shadow root không tự chuyển stylesheet của bundler vào đó. Nếu runtime vẫn inject style vào `document.head`, các rule ấy không tự khớp UI nội bộ của shadow tree.
+
+Khi chọn Shadow DOM, bạn cần một trong các chiến lược mà toolchain hỗ trợ:
+
+- Gắn `style` hoặc `link rel="stylesheet"` trực tiếp trong shadow root.
+- Dùng constructable stylesheet và `adoptedStyleSheets` sau khi kiểm tra browser support, cách tải và giới hạn của API.
+- Cấu hình style engine của UI library/CSS-in-JS để inject vào đúng shadow root, bao gồm cả SSR hoặc hydration nếu có.
+
+Với `link`, mount contract nên chờ stylesheet load thành công trước khi công bố UI ready. Với CSS text hoặc constructable stylesheet, kiểm tra đường dẫn `url(...)`: URL font và image phải resolve đúng sau build, không chỉ đúng trong môi trường standalone.
+
+Ngoài style injection, cần kiểm tra thư viện có giả định `document.querySelector`, `document.activeElement` hoặc overlay target mặc định là `body` hay không. Shadow DOM có event retargeting và focus behavior riêng; test tab order, focus trap, accessible labels và screen reader trên tổ hợp browser mà sản phẩm hỗ trợ.
+
+## Theme và design tokens là contract
+
+Isolation không có nghĩa mỗi app phải tự chọn một bộ màu khác nhau. Bạn có thể cô lập implementation CSS nhưng vẫn chia sẻ một vocabulary nhỏ: surface, text, accent, focus và font.
+
+```css title="shell-theme.css"
+:root {
+  --shop-color-surface: #fff;
+  --shop-color-text: #172033;
+  --shop-color-border: #cbd5e1;
+  --shop-color-accent: #1d4ed8;
+  --shop-color-on-accent: #fff;
+  --shop-color-focus: #9a3412;
+  --shop-font-body: system-ui, sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --shop-color-surface: #111827;
+  --shop-color-text: #f8fafc;
+  --shop-color-border: #475569;
+  --shop-color-accent: #93c5fd;
+  --shop-color-on-accent: #111827;
+  --shop-color-focus: #fdba74;
+}
+```
+
+Custom properties này có thể được kế thừa vào light DOM và qua shadow host. Trong iframe, chúng không tự đi vào document con; shell phải gửi theme bằng contract rồi phía nhúng áp dụng token của nó.
+
+| Quyết định cần chốt | Policy gợi ý |
+| --- | --- |
+| Ai ghi token public | Shell/theme provider; remote chỉ đọc |
+| Tên token | Prefix `--shop-` cho public tokens, `--catalog-` cho token riêng |
+| Giá trị fallback | Remote có fallback để chạy standalone |
+| Đổi tên hoặc đổi ý nghĩa token | Có giai đoạn tương thích; không xóa ngay khi remote cũ còn được phục vụ |
+| Root font và color scheme | Shell sở hữu; remote kiểm thử form controls, `rem` và dark mode |
+| Override theo vùng | Đặt lên slot hoặc host cụ thể, không sửa `:root` từ remote |
+
+Custom property “riêng” trong light DOM vẫn có thể kế thừa xuống descendant; prefix chỉ tránh nhầm tên, không làm nó private. Nếu overlay bị đưa ra ngoài slot có theme override, nó có thể nhận theme khác. Đây là một lý do nữa để thiết kế overlay target trước khi viết modal.
+
+## Portal overlay và stacking context
+
+Một component có thể thuộc React tree của catalog nhưng DOM của nó được portal vào `document.body`. Vue Teleport có thể tạo tình huống tương tự. CSS đi theo **cây DOM và stylesheet scope**, không đi theo framework component tree.
+
+| Overlay strategy | Lợi ích | Điều cần xử lý |
+| --- | --- | --- |
+| Render trong boundary của remote | Giữ scoped CSS và token inheritance | Ancestor có thể clip overlay; stacking context có thể hạn chế nó |
+| Shell cấp overlay service | Có thể tập trung z-index, focus và scroll lock | Contract chứa data/actions; shell sở hữu UI overlay |
+| Remote render vào overlay root của shell | Linh hoạt với portal/Teleport | Stylesheet, namespace, theme và cleanup phải theo overlay ra ngoài |
+
+Mình chọn shell overlay service cho những modal dùng chung như login hoặc xác nhận nghiệp vụ toàn trang. Với popup gắn chặt vào một vùng UI, giữ nó trong boundary thường đơn giản hơn, miễn là đã test geometry thực tế.
+
+Nếu portal ra light DOM, CSS Modules vẫn có thể style node bằng local class đã transform, nhưng stylesheet phải có mặt trong document và global CSS cũng có thể khớp nó. Root-prefixed CSS sẽ không khớp nếu target nằm ngoài root. Stylesheet chỉ nằm trong shadow root lại không style được node đã đưa ra light DOM.
+
+<Callout type="warn" title="z-index lớn không vượt mọi boundary">
+  `z-index: 999999` không giúp một node thoát khỏi stacking context của ancestor hoặc khỏi mọi clipping. Shadow DOM cũng không giải quyết điều đó. Native `dialog` mở bằng `showModal()` và Popover API có thể dùng top layer khi phù hợp, nhưng vẫn cần kiểm tra focus, styling và browser support; chúng không tự chuyển DOM hay stylesheet sang một root khác.
+</Callout>
+
+Scroll lock trên `body` là tài nguyên dùng chung. Nếu hai modal cùng mở, unmount một modal không được tùy tiện khôi phục scroll khi modal còn lại vẫn cần khóa. Hãy có một owner hoặc reference counting rõ ràng, đồng thời trả focus về nơi hợp lệ khi overlay đóng.
+
+## CSS của thư viện và utility framework
+
+Một micro-frontend có thể kiểm soát tốt CSS của mình nhưng import một UI kit với reset global. Isolation phải xét **toàn bộ CSS đầu ra**, không chỉ file team tự viết.
+
+| Nguồn CSS | Bẫy thường gặp | Hướng xử lý |
+| --- | --- | --- |
+| Reset/normalize của UI kit | Thay đổi heading, button hoặc box-sizing của cả trang | Shell sở hữu baseline; dùng bản không reset hoặc tích hợp trong boundary phù hợp |
+| Tailwind hoặc utility CSS | Preflight global; utility trùng tên nhưng build ra giá trị khác | Chốt version/config, prefix theo app khi cần và quyết định ai sở hữu Preflight |
+| CSS-in-JS | Class/cache hoặc injection order xung đột; global styles vẫn global | Cấu hình cache key/namespace và injection container theo thư viện |
+| Vendor CSS legacy | Có `body`, `:root`, generic selectors và keyframes | Audit/transform có kiểm thử; cân nhắc Shadow DOM hoặc iframe nếu không thể sửa |
+| Font/image assets | URL đúng standalone nhưng lỗi khi host tải remote | Kiểm tra asset base, CSP, CORS khi cần và đường dẫn build thực tế |
+
+Prefix utility classes không tự scope Preflight. Cú pháp prefix và cách bật/tắt Preflight của Tailwind khác giữa major versions, nên cấu hình theo version thực tế thay vì copy một config không ghi rõ phiên bản. Nếu toàn sản phẩm dùng chung một utility build, phải chấp nhận config đó là dependency contract chung.
+
+Với Vue, `<style scoped>` giới hạn selector bằng thuộc tính do compiler sinh; với Angular, chế độ Emulated cũng dựa trên selector transform. Chúng không tạo native selector boundary như Shadow DOM và không chặn global CSS bên ngoài. Global escapes, descendant rules và thư viện bên thứ ba vẫn cần audit; xem các bài [Vue](/docs/ui-va-framework/vue) và [Angular](/docs/ui-va-framework/angular) cho boundary framework.
+
+## Tải stylesheet và cleanup theo lifecycle
+
+Một UI có class riêng nhưng stylesheet chưa tải xong vẫn có thể xuất hiện không style, gây FOUC — flash of unstyled content. Tải JavaScript thành công không nhất thiết đồng nghĩa CSS đã sẵn sàng; hành vi phụ thuộc bundler và loader.
+
+Contract nên phân biệt `module loaded`, `styles ready` và `UI mounted`. Shell chỉ bỏ loading state theo readiness mà remote đã cam kết, và xử lý riêng lỗi tải CSS thay vì để một UI không dùng được xuất hiện.
+
+| Tài nguyên | Policy lifecycle |
+| --- | --- |
+| CSS chunk do bundler quản lý | Không tự xóa style tag của runtime; kiểm tra cách loader tải và cache |
+| Stylesheet private trong shadow root | Owner có thể gỡ khi unmount; tái mount không chèn trùng |
+| Stylesheet dùng chung nhiều instance | Deduplicate theo resource/version; chỉ gỡ khi không còn consumer nếu policy yêu cầu |
+| Inline style/theme do remote thêm vào host | Ghi rõ property do ai sở hữu; khôi phục đúng giá trị trước đó khi cần |
+| Overlay, scroll lock và style ngoài slot | Cleanup qua owner/service, không chỉ xóa container |
+
+Unmount framework root không tự gỡ mọi CSS global mà bundler từng inject. Với CSS Modules an toàn và assets bất biến, để stylesheet đã tải tiếp tục tồn tại có thể là lựa chọn hợp lý. Với một reset global gây leakage, gỡ sau unmount chỉ giảm triệu chứng: trong lúc hai app cùng mount, nó vẫn gây xung đột.
+
+Khi remote deploy độc lập, JS và CSS phải thuộc một release tương thích; asset có hash nên được giữ đủ lâu cho client đang mở trang. Nếu shell SSR markup từ release A nhưng client tải mapping class của release B, CSS Modules không cứu được mismatch. Shadow DOM phía client cũng không tự giải quyết SSR/hydration; cần chiến lược render riêng được framework và toolchain hỗ trợ.
+
+## Kiểm thử style leakage
+
+Test standalone chỉ cho biết remote có đủ CSS cho chính nó. Test isolation phải ghép remote với các consumer và stylesheet thực tế.
+
+Mình bắt đầu bằng một trang integration có shell header, catalog, cart và overlay target. Sau đó chạy cùng thao tác ở các thứ tự tải khác nhau, vì nhiều lỗi chỉ xuất hiện khi quay lại route đã từng mở.
+
+| Kịch bản | Điều cần xác nhận |
+| --- | --- |
+| Catalog tải trước cart và ngược lại | Header, typography và buttons không đổi ngoài contract |
+| Mount/unmount catalog nhiều lần | Không tích lũy style tag, overlay hoặc scroll lock do adapter sở hữu |
+| Hai catalog instances | CSS vẫn đúng; unmount một instance không làm instance kia mất style |
+| Light/dark và theme override theo slot | Remote và overlay nhận token đúng, có contrast/focus hợp lệ |
+| Host có rule `button` mạnh hoặc `!important` | Đo giới hạn light DOM; Shadow DOM chặn selector nhưng vẫn nhận token đã cho phép |
+| Thay root font-size và zoom | `rem`, text wrap và form controls vẫn dùng được |
+| Slot nằm trong overflow/transform ancestor | Popup không bị clip sai, focus không mất |
+| CSS tải chậm hoặc thất bại | Loading/fallback đúng; không công bố ready quá sớm |
+| Shell hiện tại với remote cũ còn được hỗ trợ | Token, class strategy và asset URLs vẫn tương thích |
+
+Visual regression hữu ích cho leakage không thể diễn đạt bằng một property duy nhất. Kết hợp nó với assertions cho những giá trị quan trọng, nhưng không dùng screenshot thay accessibility test.
+
+Ví dụ dưới giả định fixture integration có `data-testid="shell-cart-button"` và nút điều khiển mount catalog. Assertion chỉ kiểm tra một property của shell trước/sau thao tác, không chứng minh toàn bộ trang đã cô lập.
+
+```ts title="Phác thảo Playwright assertion trong lab"
+import { expect, test } from '@playwright/test';
+
+test('mount catalog không đổi màu nút cart của shell', async ({ page }) => {
+  await page.goto('/integration/css-isolation');
+  const button = page.getByTestId('shell-cart-button');
+  const readBackground = () => button.evaluate(
+    (node) => getComputedStyle(node).backgroundColor,
+  );
+
+  const before = await readBackground();
+  await page.getByRole('button', { name: 'Mount catalog', exact: true }).click();
+  await expect(page.getByTestId('catalog-ready')).toBeVisible();
+  expect(await readBackground()).toBe(before);
+});
+```
+
+Fixture nên chờ fonts, styles và UI ổn định trước khi chụp screenshot. Với shadow content, dùng công cụ test hỗ trợ shadow roots; đừng chuyển `mode` sang `closed` chỉ để tạo cảm giác isolation mạnh hơn rồi làm diagnostics khó hơn.
+
+## Chẩn đoán lỗi thường gặp
+
+Khi UI bị đổi style, chọn element trong DevTools, xem matched rules và computed values, rồi xác định declaration đến từ shell, remote hay vendor. Nếu không có rule trực tiếp, kiểm tra phần inherited styles và token trên ancestor/host.
+
+| Triệu chứng | Nguyên nhân cần kiểm tra | Hướng sửa |
+| --- | --- | --- |
+| Button shell đổi khi mở catalog | Generic selector/reset từ remote | Local class, bỏ global reset hoặc chọn boundary mạnh hơn |
+| CSS Modules vẫn bị override | Rule global khớp element, layer hoặc `!important` | Sửa CSS policy; không chỉ tăng hash hoặc specificity |
+| App trong Shadow DOM không có style | CSS inject vào `document.head` | Đưa stylesheet vào shadow root và đợi styles ready |
+| Modal không có style hoặc sai theme | Portal ra ngoài root/token scope | Overlay target/service và theme bridge rõ ràng |
+| Dark mode chỉ đổi một phần UI | Hardcoded colors hoặc token thiếu | Audit semantic tokens, form controls và fallback |
+| Popup bị che dù z-index lớn | Stacking context hoặc clipping | Đổi overlay strategy; kiểm tra ancestor và top layer khi phù hợp |
+| Route khác bị lỗi sau khi rời catalog | Global stylesheet/scroll lock còn tác dụng | Audit owner và cleanup, loại global side effect |
+| CSS chỉ lỗi sau deploy | JS/CSS khác release hoặc assets cũ bị xóa | Pin release tương thích và giữ immutable assets |
+
+Đừng chữa sự cố bằng `!important` hàng loạt. Nó khiến declaration thắng hôm nay nhưng che mất boundary sai, rồi làm bản release sau khó đoán hơn.
+
+## Checklist trước production
+
+- [ ] Shell sở hữu baseline toàn document; remote không tự sửa `html`, `body` hoặc `:root` ngoài contract.
+- [ ] Class/animation naming có chiến lược tránh va chạm giữa các build độc lập.
+- [ ] Đã audit global escapes, vendor CSS, reset, utility output và stylesheet injection.
+- [ ] Public tokens có namespace, fallback, owner và chính sách tương thích.
+- [ ] Nếu dùng Shadow DOM, CSS được tải vào đúng root; host, slots và parts có contract rõ.
+- [ ] Portal/Teleport, z-index, scroll lock và focus restoration có owner.
+- [ ] Readiness bao gồm CSS cần thiết; có fallback khi stylesheet không tải được.
+- [ ] Cleanup đúng cho nhiều instance, remount và tài nguyên dùng chung.
+- [ ] Integration tests bao phủ thứ tự tải, theme, root font, overlays và release cũ còn được hỗ trợ.
+
+Nếu chưa biết bắt đầu từ đâu, hãy tìm tất cả rule global trong CSS đầu ra của catalog trước. Với code do team kiểm soát, chuyển component sang CSS Modules và đưa reset về shell thường là bước đầu ít rủi ro hơn việc đổi cả rendering boundary.
+
+## Tài liệu tham khảo
+
+- [CSS Modules — local class và animation scope](https://github.com/css-modules/css-modules).
+- [MDN — Using Shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM).
+- [MDN — Cascade layers](https://developer.mozilla.org/en-US/docs/Web/CSS/@layer).
+- [MDN — CSS inheritance](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_cascade/Inheritance).
+- [MDN — CSS shadow parts](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_shadow_parts).
+- [MDN — ShadowRoot adoptedStyleSheets](https://developer.mozilla.org/en-US/docs/Web/API/ShadowRoot/adoptedStyleSheets).
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Design system dùng chung" href="/docs/ui-va-framework/design-system" description="Chốt tokens và UI packages mà không buộc mọi team release cùng lúc." />
+  <Card title="Web Components" href="/docs/cac-cach-tich-hop/web-components" description="Kết hợp DOM contract, custom elements và lifecycle." />
+  <Card title="iframe isolation" href="/docs/cac-cach-tich-hop/iframe" description="Khi cần document riêng thay vì chỉ giới hạn selector." />
+  <Card title="Accessibility" href="/docs/ui-va-framework/accessibility" description="Giữ focus, semantics và trải nghiệm dùng bàn phím qua các boundary." />
+</Cards>

@@ -1,18 +1,453 @@
 ---
 title: "Shared version mismatch"
-description: "Debug share scope, requiredVersion và host/remote có dependency versions lệch nhau."
+description: "Runbook chẩn đoán shared version mismatch trong Webpack 5: đối chiếu requiredVersion, singleton, share scope, load order và release host–remote thực sự đang chạy."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Catalog chạy standalone được, nhưng khi shell tải component thì Console báo `Unsatisfied version ... of shared singleton module react`. Cả hai artifact vẫn tải thành công. Vấn đề nằm ở bước consume dependency: React mà runtime chọn không đáp ứng range catalog yêu cầu, chứ không nhất thiết là URL remote sai.
+
+Bài này giúp bạn tìm **consumer nào yêu cầu version gì, provider nào cung cấp version gì và singleton nào đã được dùng** trước khi sửa cấu hình. Mình ưu tiên chọn lại release set tương thích hoặc sửa dependency policy có kiểm thử, không tắt version check để làm Console sạch.
+
+<Callout type="info" title="Phạm vi và nơi chạy ví dụ">
+  Ví dụ dùng `webpack.container.ModuleFederationPlugin` tích hợp trong Webpack 5, chạy client-side, với shell render component của catalog trong cùng React tree. Các đường dẫn `apps/shell`, `apps/catalog` và lệnh npm thuộc `shop-workspace` trong [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien), không phải repository Next.js + Fumadocs chứa tài liệu này.
+
+  Release IDs và versions trong worked example là tình huống minh họa, không phải inventory production hay yêu cầu nâng version của site docs. Với runtime enhanced, Rspack hoặc Vite federation, cần đối chiếu semantics của đúng plugin và version; không mặc định globals và thuật toán sharing giống Webpack 5 gốc.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Khoanh vùng nhanh theo triệu chứng](#khoanh-vùng-nhanh-theo-triệu-chứng)
+- [Ba giá trị version phải tách riêng](#ba-giá-trị-version-phải-tách-riêng)
+  - [Đọc range và thông báo lỗi](#đọc-range-và-thông-báo-lỗi)
+  - [Singleton không tìm một version vừa lòng mọi consumer](#singleton-không-tìm-một-version-vừa-lòng-mọi-consumer)
+  - [Strict version và local fallback](#strict-version-và-local-fallback)
+- [Giảm ảnh hưởng trước khi điều tra](#giảm-ảnh-hưởng-trước-khi-điều-tra)
+- [Quy trình chẩn đoán](#quy-trình-chẩn-đoán)
+  - [Bước 1 Ghi release và thứ tự tái hiện](#bước-1-ghi-release-và-thứ-tự-tái-hiện)
+  - [Bước 2 Đối chiếu manifests và dependency tree](#bước-2-đối-chiếu-manifests-và-dependency-tree)
+  - [Bước 3 Kiểm tra shared policy của từng consumer](#bước-3-kiểm-tra-shared-policy-của-từng-consumer)
+  - [Bước 4 Quan sát share scope sau luồng gây lỗi](#bước-4-quan-sát-share-scope-sau-luồng-gây-lỗi)
+  - [Bước 5 Kiểm tra loader và đường import thực tế](#bước-5-kiểm-tra-loader-và-đường-import-thực-tế)
+- [Worked example remote mới cần singleton mới hơn](#worked-example-remote-mới-cần-singleton-mới-hơn)
+  - [Tổ hợp gây lỗi](#tổ-hợp-gây-lỗi)
+  - [Vì sao standalone và đổi load order có thể chạy](#vì-sao-standalone-và-đổi-load-order-có-thể-chạy)
+  - [Chọn hướng phục hồi](#chọn-hướng-phục-hồi)
+- [Sửa theo nguyên nhân đã xác nhận](#sửa-theo-nguyên-nhân-đã-xác-nhận)
+  - [Đồng bộ runtime cho component cùng React tree](#đồng-bộ-runtime-cho-component-cùng-react-tree)
+  - [Sửa range khai báo sai mà không nói dối về API](#sửa-range-khai-báo-sai-mà-không-nói-dối-về-api)
+  - [Thiếu provider hoặc sai share scope](#thiếu-provider-hoặc-sai-share-scope)
+  - [Dependency không cần shared identity](#dependency-không-cần-shared-identity)
+  - [Framework major cần boundary hoặc migration riêng](#framework-major-cần-boundary-hoặc-migration-riêng)
+- [Những cách chữa dễ che mất lỗi](#những-cách-chữa-dễ-che-mất-lỗi)
+- [Kiểm chứng bản sửa trước khi promote](#kiểm-chứng-bản-sửa-trước-khi-promote)
+- [Checklist đóng sự cố và escalation](#checklist-đóng-sự-cố-và-escalation)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Khoanh vùng nhanh theo triệu chứng
 
-Bài này sẽ giúp bạn: debug share scope, requiredVersion và host/remote có dependency versions lệch nhau.
+Thông báo thay đổi theo Webpack/plugin version và build mode. Dùng bảng này để chọn bước điều tra, không coi một chuỗi lỗi là bằng chứng đủ về nguyên nhân.
 
-[Xem các bài trong nhóm Xử lý sự cố](/docs/troubleshooting).
+| Dấu hiệu | Kiểm tra trước | Không nên làm ngay |
+| --- | --- | --- |
+| `Unsatisfied version ... of shared singleton module ...` | Selected singleton, range của consumer và `strictVersion` | Đổi URL hoặc nới range thành `*` |
+| `No satisfying version ... of shared module ...` | Các providers trong scope, range, fallback và strict policy | Giả định runtime sẽ tự tải bản đúng từ npm |
+| Chỉ có warning version mismatch nhưng UI vẫn chạy | Consumer có `strictVersion: false` hoặc đang dùng default không strict không | Xem warning là bằng chứng tương thích |
+| `Shared module ... doesn't exist in shared scope ...` | Shared key, scope, provider và `import: false` | Chỉ nâng version package |
+| `Container initialization failed ... different share scope` | Cùng container bị init bằng hai scope objects khác nhau | Bắt và bỏ qua lỗi `init()` |
+| `Shared module is not available for eager consumption` | Async boundary và thời điểm initialization | Bật `eager: true` cho mọi dependency |
+| `Invalid hook call` dù version check không báo lỗi | Rules of Hooks, React–renderer và module identity | Kết luận range rộng hơn sẽ sửa Hooks |
+| Chỉ lỗi ở tab cũ hoặc một navigation order | Runtime đã consume, release selection và artifact/cache history | Xóa cache trước khi ghi lại release IDs |
+| Entry hoặc chunk trả `404`, HTML hay bị browser chặn | Network và asset graph | Tiếp tục sửa `requiredVersion` |
+
+Nếu lỗi là asset loading, chuyển sang [Remote không tải được](/docs/troubleshooting/remote-khong-tai). Nếu cần chứng minh React instance, dùng [Duplicate React](/docs/troubleshooting/duplicate-react). Một hệ thống có thể có cả version mismatch lẫn duplicate runtime; xử lý lỗi đầu tiên rồi kiểm chứng lại.
+
+## Ba giá trị version phải tách riêng
+
+| Giá trị | Nguồn kiểm tra | Ý nghĩa |
+| --- | --- | --- |
+| Version build cung cấp | Package thực sự resolve lúc build, lockfile, stats/artifact metadata | Code dependency có trong build và version provider đăng ký |
+| Range consumer chấp nhận | `requiredVersion` trong config đã dùng để build; hoặc manifest tại vị trí Webpack suy ra requirement | Cam kết consumer có thể dùng version nào |
+| Version runtime consume | Runtime diagnostics kết hợp stack và module graph | Dependency đang được dùng trong document cụ thể |
+
+Manifest khai báo `react: "^19.0.0"` không chứng minh build chứa đúng `19.0.0`; lockfile có thể resolve `19.2.0`. Ngược lại, catalog chứa fallback `19.2.0` cũng không chứng minh catalog đang dùng fallback đó: shared consumer có thể nhận React do shell cung cấp.
+
+```text
+Shell artifact ────► scope default ◄──── Catalog artifact
+                     key react
+                     versions + factories
+                            │
+                            ▼
+                 Consumer chọn theo policy
+                 và trạng thái đã load
+```
+
+Đây là registry runtime, không phải package registry của npm. Có thể hình dung các build mang linh kiện đến một quầy chung, còn consumer kiểm tra nhãn version trước khi nhận. Phép so sánh chỉ giúp hiểu negotiation: quầy không tải linh kiện mới và nhãn hợp lệ không chứng minh mọi behavior tương thích.
+
+### Đọc range và thông báo lỗi
+
+Các range sau minh họa SemVer, không phải khuyến nghị mở rộng policy hiện tại:
+
+| `requiredVersion` | Chấp nhận | Không chấp nhận |
+| --- | --- | --- |
+| `19.0.0` | Chính xác `19.0.0` | `19.0.1`, `19.2.0` |
+| `^19.0.0` | Ví dụ `19.0.0`, `19.2.0` | `18.3.1`, `20.0.0` |
+| `^19.2.0` | Ví dụ `19.2.0` và stable versions sau đó trong major 19 | `19.0.0`, `20.0.0` |
+| `~19.2.0` | Stable patches trong dòng `19.2.x` | `19.3.0` |
+| `false` | Bỏ kiểm tra required range | Không còn hàng rào range |
+
+Prerelease có quy tắc matching riêng; đừng suy ra `19.3.0-canary-...` thỏa một range stable chỉ vì số minor lớn hơn. Các trường hợp `0.x`, workspace protocols hoặc package aliases cũng cần đọc config đã được resolve, không tự suy từ cách viết trong manifest.
+
+Ví dụ thông báo minh họa:
+
+```text
+Unsatisfied version 19.0.0 from _shop_shell of shared singleton module react
+(required ^19.2.0)
+```
+
+Đọc thành: consumer đang yêu cầu React `^19.2.0`, nhưng singleton được chọn là `19.0.0`, đến từ provider có tên runtime `_shop_shell`. Phần `from` không phải release ID, và thông báo có thể không chỉ rõ consumer nào; dùng stack/sourcemap để tìm shared consumer bị lỗi.
+
+`shared.react.requiredVersion` chỉ kiểm tra dependency React. Nó không kiểm tra version của `catalog/CatalogPage`, props hay callback contract; phần đó thuộc [Version compatibility](/docs/module-federation/version-compatibility).
+
+### Singleton không tìm một version vừa lòng mọi consumer
+
+Với singleton trong Webpack 5 gốc, khi chưa có singleton đã load, runtime thường chọn version cao nhất đang có cho key đó. Nó không giải một bài toán lấy giao của mọi consumer ranges để tìm tổ hợp tối ưu. Một consumer với exact range thấp hơn vẫn có thể bị từ chối dù version thấp phù hợp cũng được đăng ký.
+
+Khi singleton đã load, runtime ưu tiên giữ version đó. Một remote được khởi tạo sau và mang dependency mới hơn không làm các imports cũ đổi module reference. Vì vậy, runtime có thể báo mismatch với remote mới ngay trong cùng major: shell đã consume `19.0.0`, còn remote yêu cầu tối thiểu `19.2.0`.
+
+**Singleton không có nghĩa shell luôn thắng, cũng không có nghĩa version mới nhất luôn thắng.** Provider availability và thời điểm consumption đều có ảnh hưởng. Phạm vi là từng shared key trong scope mà imports thực sự tham gia; code local, subpaths chưa share hoặc scopes khác vẫn có thể tạo instance khác.
+
+### Strict version và local fallback
+
+Đặt rõ `strictVersion` cho dependency quan trọng thay vì dựa vào default. Trong Webpack 5, default là `true` khi có local fallback và module không phải singleton; các trường hợp còn lại thường là `false`. Nếu không có required range thì strict check không có tác dụng.
+
+| Tình huống | Hành vi cần dự kiến |
+| --- | --- |
+| Singleton, có required range, `strictVersion: true`, candidate không thỏa | Throw tại consumption; không tự chọn React local khác để cứu cùng tree |
+| Singleton, `strictVersion: false`, candidate không thỏa | Warn và có thể tiếp tục dùng singleton không hợp range |
+| Non-singleton, strict, không tìm được version thỏa, có local fallback | Có thể dùng fallback local thay vì throw |
+| Non-singleton, strict, không có version thỏa và không có fallback | Throw |
+| Không có provider, có local fallback | Có thể dùng local; cần kiểm tra identity nếu dependency có state/context |
+| Không có provider, `import: false` | Không có fallback local; consumption thất bại |
+
+`import: false` bỏ việc cung cấp và fallback local của entry đó, không biến remote thành standalone tự đủ runtime. Còn `version` là metadata của provider, không phải range của consumer. Ghi đè `version: '19.2.0'` cho code React `19.0.0` chỉ làm registry nói sai; nó không thêm API mới.
+
+## Giảm ảnh hưởng trước khi điều tra
+
+Nếu production đang hỏng, giữ shell hoạt động và cô lập vùng remote lỗi bằng fallback/kill switch ở loader phù hợp. Chặn chọn release mới chưa tương thích cho document mới, hoặc chọn lại một release set đã kiểm chứng. Rollback riêng remote chỉ an toàn nếu target vẫn tương thích với shell, backend và shared runtime hiện tại.
+
+Lỗi consume có thể xảy ra khi import remote hoặc evaluate module, trước khi component render. React Error Boundary giúp bắt lỗi trong luồng render, chẳng hạn lỗi `React.lazy`; loader thủ công vẫn cần xử lý Promise rejection, còn lỗi ở bootstrap ngoài tree cần đường fallback riêng. Không trông chờ feature flag nằm bên trong remote cứu một lỗi xảy ra trước khi flag được đọc.
+
+<Callout type="warn" title="Không thay singleton đang chạy trong tab">
+  Không xóa entries của `__webpack_share_scopes__`, reset runtime cache hoặc gọi lại `container.init()` bằng scope mới để đổi React. Components, renderer và Context objects đã giữ references cũ. Đổi remote mapping cũng không unload code đã evaluate.
+
+  Kiểm tra recovery trên document mới và có policy riêng cho tab cũ: bảo vệ input/draft trước khi chuyển session hoặc yêu cầu reload. Quy trình chi tiết nằm ở [Rollout và rollback](/docs/trien-khai/rollout-rollback).
+</Callout>
+
+## Quy trình chẩn đoán
+
+<Steps>
+<Step>
+
+### Bước 1 Ghi release và thứ tự tái hiện
+
+Lưu bằng chứng trước khi reinstall, hard reload hoặc xóa cache:
+
+- Shell build ID, remote build IDs, config snapshot/revision và URL entry thực tế trong Network.
+- Thông báo đầu tiên, stack, shared key, provider `from`, selected version và required range nếu lỗi có ghi.
+- Webpack/plugin version cùng build mode; standalone hay tích hợp; tab mới hay tab mở trước deploy.
+- Navigation path và thứ tự tải catalog/cart; thời điểm lỗi nằm ở import, evaluate hay render.
+- Manifest, lockfile, build config, sourcemaps/stats tương ứng với artifacts đang chạy.
+
+Thử document mới riêng với session lỗi hiện tại. Nếu chỉ tab cũ lỗi, giữ tab đó để quan sát: đây có thể là singleton cũ gặp remote mới, không phải cache file bị hỏng. Khi chia sẻ HAR/log, bỏ tokens, cookies và dữ liệu người dùng.
+
+</Step>
+<Step>
+
+### Bước 2 Đối chiếu manifests và dependency tree
+
+Từ root `shop-workspace`, ở checkout/build record khớp với releases cần điều tra:
+
+```bash
+npm ls react react-dom --workspace=@shop/shell --workspace=@shop/catalog
+npm explain react
+npm explain react-dom
+```
+
+Nếu cart cũng tham gia scope, thêm workspace đó; nếu key lỗi là package khác, kiểm tra đúng package và peers của nó. Giữ cả lỗi `invalid`/peer conflict: `npm ls` có thể trả exit code khác `0` vì tree không hợp lệ.
+
+Lập bảng cho từng artifact, không chỉ cho branch mới nhất:
+
+| Build | Key | Resolved local version | Required range | Scope | Singleton / strict | Có fallback |
+| --- | --- | --- | --- | --- | --- | --- |
+| `shell-s41` minh họa | `react` | `19.0.0` | `^19.0.0` | `default` | `true / true` | Có |
+| `catalog-r18` minh họa | `react` | `19.2.0` | `^19.2.0` | `default` | `true / true` | Có |
+
+Với React, thêm các rows cho React DOM và renderer request thực tế. React–React DOM phải là một cặp tương thích; trong lab, giữ cùng version đã chốt.
+
+Dependency tree ở máy local chỉ chứng minh resolution của checkout đó. Nó không cho biết browser consume provider nào, và không phát hiện đầy đủ React đã bị nhúng trong prebuilt UI library. Dùng build records và module graph để nối source với artifact.
+
+</Step>
+<Step>
+
+### Bước 3 Kiểm tra shared policy của từng consumer
+
+Đọc `apps/shell/webpack.config.cjs`, `apps/catalog/webpack.config.cjs` và config cuối sau merge/env overrides. Với mỗi entry, đối chiếu:
+
+1. `requiredVersion` là explicit range hay được suy ra? Nếu suy ra, package description tại đường import nào tạo requirement?
+2. `singleton`, `strictVersion`, `import`, `eager` và `version` có khác giữa development và production không?
+3. Key, `shareKey`, `shareScope` và `packageName` có trỏ đúng module/package không?
+4. Có override, alias, symlink hoặc UI package làm request resolve theo đường khác không?
+
+Host strict không ép remote consumer strict, và sửa policy ở shell không sửa shared consumer đã sinh trong remote artifact cũ. Cả hai có thể vừa provide vừa consume cùng dependency.
+
+Exact range trong manifest có thể là lựa chọn chủ động của lab để dễ tái hiện. Nhưng nếu hai build dùng exact ranges khác nhau, thêm `singleton: true` không làm chúng tương thích. Đừng đổi range trước khi xác định code thật sự hỗ trợ version nào.
+
+</Step>
+<Step>
+
+### Bước 4 Quan sát share scope sau luồng gây lỗi
+
+Với Webpack 5, thêm tạm hàm dưới đây vào **module được Webpack bundle** của shell. Gọi sau bootstrap hoặc trong nhánh xử lý rejection của import đang điều tra, sau khi đã đi đúng navigation path gây lỗi.
+
+```js title="Snapshot debug-only trong shell bundle"
+export function logSharedScope(scopeName = 'default') {
+  const scope = __webpack_share_scopes__[scopeName] ?? {};
+  const rows = [];
+
+  for (const key of ['react', 'react-dom', 'react-dom/client']) {
+    for (const [version, entry] of Object.entries(scope[key] ?? {})) {
+      rows.push({
+        scope: scopeName,
+        key,
+        version,
+        from: entry.from,
+        loaded: entry.loaded,
+        eager: entry.eager,
+      });
+    }
+  }
+
+  console.table(rows);
+}
+```
+
+Thay key list bằng dependency lỗi và các entry liên quan. Snapshot minh họa sau khi shell đã consume React rồi catalog đăng ký provider:
+
+```text
+scope     key     version   from           loaded
+ default  react   19.0.0    _shop_shell    1
+ default  react   19.2.0    _shop_catalog  undefined
+```
+
+Globals này không được bảo đảm nằm trên `window`, nên không dán trực tiếp code vào browser console rồi kết luận scope không có vì `ReferenceError`. Metadata như `from`, `loaded`, `eager` là chi tiết implementation để debug, không phải application contract ổn định.
+
+Nhiều versions được đăng ký chưa có nghĩa nhiều versions đã consume. `loaded` cho biết entry được runtime đánh dấu đã dùng, nhưng không chứng minh mọi import trên trang đi qua entry đó hay React DOM đang dùng đúng React. Đối chiếu với lỗi, stack và module identity khi cần.
+
+Không gọi factory `get()` chỉ để quan sát; không khởi tạo thêm remote hoặc gọi `__webpack_init_sharing__` sớm từ diagnostic. Những thao tác ấy có thể thay provider availability/load order và làm lỗi biến mất trong lúc đo. Xóa instrumentation khi đã thu đủ evidence.
+
+</Step>
+<Step>
+
+### Bước 5 Kiểm tra loader và đường import thực tế
+
+Nếu có provider đúng version mà consumer vẫn không tìm thấy, xác nhận registry đang quan sát là registry consumer thực sự dùng. Với loader thủ công, sau khi entry đã tải và container đã tồn tại, thứ tự cơ bản là:
+
+```js title="Thứ tự khởi tạo — không thêm song song với plumbing remotes có sẵn"
+await __webpack_init_sharing__('default');
+await container.init(__webpack_share_scopes__.default);
+const factory = await container.get('./CatalogPage');
+const module = factory();
+```
+
+Đây là thứ tự API, không phải loader hoàn chỉnh. Cache lifecycle/init theo container thực tế và scope object, chờ init trước get; dùng cùng scope đã nối vào host. Không truyền `{}` mới mỗi lần hoặc nuốt lỗi init. Với `remotes` thông thường, Webpack sinh plumbing; không thêm đoạn trên vào mỗi render. Xem [Cơ chế Module Federation](/docs/module-federation/co-che).
+
+Trong stats/module graph, tìm import đã thành shared consumer, key/scope của nó và imports còn local. `react`, `react/jsx-runtime`, `react/jsx-dev-runtime` và `react-dom/client` là các requests khác nhau. Một row `react` hợp lệ không bảo đảm mọi subpath cũng hợp lệ.
+
+Kiểm tra `output.uniqueName` riêng cho mỗi build và tên container không va chạm. Network tải nhiều chunks có chữ `react`, hoặc fallback React có trong artifact, chưa đủ để kết luận duplicate. Nếu policy/range đã khớp mà Hooks vẫn lỗi, chuyển sang phép kiểm tra identity trong [Duplicate React](/docs/troubleshooting/duplicate-react).
+
+</Step>
+</Steps>
+
+## Worked example remote mới cần singleton mới hơn
+
+### Tổ hợp gây lỗi
+
+Giả sử shop có hai artifact đã build với policy sau. Đây là biến thể minh họa của lab; ranges được khai báo rõ, không phải mặc định exact ranges ở bài khởi tạo.
+
+```js title="Shared react của shell-s41 — local React 19.0.0"
+react: {
+  singleton: true,
+  requiredVersion: '^19.0.0',
+  strictVersion: true,
+  eager: false,
+}
+```
+
+```js title="Shared react của catalog-r18 — local React 19.2.0"
+react: {
+  singleton: true,
+  requiredVersion: '^19.2.0',
+  strictVersion: true,
+  eager: false,
+}
+```
+
+Giả sử loader chỉ khởi tạo catalog khi người dùng mở route, sau khi shell đã consume React `19.0.0` để render header. Khi catalog đăng ký `19.2.0`, singleton cũ vẫn giữ nguyên. Consumer của catalog không chấp nhận `19.0.0`, nên strict check throw.
+
+```text
+Shell consume React 19.0.0 → Header hoạt động
+                           → Mở catalog
+                           → Catalog đăng ký React 19.2.0
+                           → Catalog yêu cầu ^19.2.0
+                           → Singleton 19.0.0 không thỏa → throw
+```
+
+Một remote có bản local đúng requirement không đồng nghĩa nó được fallback sang bản đó trong strict singleton. Nếu fallback sang React khác rồi đưa component vào renderer của shell, bạn còn có thể tạo lỗi identity mà singleton policy đang cố tránh.
+
+### Vì sao standalone và đổi load order có thể chạy
+
+Standalone chỉ thấy provider của catalog, nên chọn `19.2.0` và thỏa requirement. Nó chưa kiểm tra tổ hợp với singleton cũ của shell.
+
+Nếu trong một thử nghiệm, cả providers đều được đăng ký trước consumption đầu tiên, React `19.2.0` có thể được chọn; cả hai React ranges ở ví dụ đều chấp nhận nó. Tuy nhiên, còn phải kiểm tra React DOM, subpaths và behavior của shell trên runtime đó. React range pass không chứng minh toàn bộ React–renderer graph tương thích.
+
+Load order khác làm kết quả khác là **bằng chứng chẩn đoán**, không phải cách chữa lâu dài. Với `remotes` được Webpack quản lý, initialization có thể đăng ký providers sớm hơn thời điểm route import; hãy đo thứ tự thật thay vì giả định mọi remote đều tham gia muộn như loader của ví dụ.
+
+### Chọn hướng phục hồi
+
+Nếu đang có incident, chọn catalog release cũ đã được kiểm chứng với `shell-s41`, và ngừng cho shell này chọn `catalog-r18`. Nếu không có target phù hợp, disable vùng catalog bằng shell fallback trong lúc chuẩn bị bản sửa.
+
+Để hỗ trợ catalog mới, build một shell release dùng React–React DOM mới đã chốt, kiểm thử release set rồi chỉ admit các tổ hợp hợp lệ. Tabs của `shell-s41` vẫn cần mapping/policy riêng; publish shell mới không cập nhật renderer trong tab cũ.
+
+Chỉ giảm requirement của catalog nếu audit xác nhận `^19.2.0` là khai báo quá chặt và code thực sự hỗ trợ runtime cũ. Nếu requirement phản ánh API mới hoặc peer requirement có thật, rollback/migration mới là hướng đúng. Không dùng `strictVersion: false` để bỏ qua bằng chứng đó.
+
+## Sửa theo nguyên nhân đã xác nhận
+
+### Đồng bộ runtime cho component cùng React tree
+
+Với shell render component catalog trong cùng tree, mình mặc định chọn một React–React DOM version đã kiểm chứng cho release set và policy rõ ở cả hai builds. Không nhất thiết đồng bộ mọi dependency; đây là boundary có yêu cầu identity và renderer compatibility.
+
+Object dưới được tạo **trong `webpack.config.cjs` của từng app**, rồi truyền vào options của `ModuleFederationPlugin` đang có. Giữ các options `name`, `remotes`, `exposes` và output hiện tại.
+
+```js title="Shared policy trong apps/shell và apps/catalog"
+const deps = require('./package.json').dependencies;
+
+function singletonPolicy(requiredVersion, packageName) {
+  return {
+    singleton: true,
+    requiredVersion,
+    strictVersion: true,
+    eager: false,
+    packageName,
+  };
+}
+
+const shared = {
+  react: singletonPolicy(deps.react, 'react'),
+  'react-dom': singletonPolicy(deps['react-dom'], 'react-dom'),
+  'react-dom/client': singletonPolicy(deps['react-dom'], 'react-dom'),
+  'react/jsx-runtime': singletonPolicy(deps.react, 'react'),
+  'react/jsx-dev-runtime': singletonPolicy(deps.react, 'react'),
+};
+
+// Truyền `shared` vào ModuleFederationPlugin hiện có của app.
+```
+
+Lab classic JSX không dùng JSX runtime subpaths; giữ hoặc điều chỉnh entries theo requests thật của build development/production. Không gộp `react/jsx-runtime` vào `shareKey: 'react'`: chúng có exports khác nhau. Nếu shared entry đã có `shareScope` tùy chỉnh, giữ scope nhất quán với loader thay vì vô tình đưa nó về `default`.
+
+Code này đọc range của từng app, nên **không tự đồng bộ manifests hoặc lockfile**. Chốt target version/ranges có evidence, cập nhật dependencies của các app liên quan, rebuild artifacts rồi kiểm tra stats. Một `npm dedupe` trong workspace local không thay được React trong remote artifact đã deploy.
+
+### Sửa range khai báo sai mà không nói dối về API
+
+Một consumer có thể hardcode requirement cao hơn code thực sự cần, hoặc build config đọc nhầm manifest. Sửa đúng nguồn khai báo, rồi test với version thấp nhất và các provider versions thực tế trong window hỗ trợ trước khi mở range.
+
+Nếu đổi từ exact range sang caret range, bạn mở quyền consume các stable versions khác trong cùng major. Đó là thay đổi compatibility policy, không chỉ đổi cú pháp. Với package version `0.x`, không áp dụng trực giác “caret chấp nhận mọi minor”.
+
+Không sửa `version` để làm provider trông mới hơn và không dùng npm `overrides` làm bằng chứng tương thích. Overrides thay resolution trong build; requirements của code, peers và behavior vẫn cần kiểm chứng. Nếu fix chỉ ở config, artifact vẫn phải được rebuild vì shared consumer đã sinh từ config cũ.
+
+### Thiếu provider hoặc sai share scope
+
+Nếu remote dùng `import: false`, kiểm tra host/provider có cung cấp đúng key vào đúng scope trước consumption hay không. Đồng thời chốt remote có cần standalone mode: nếu có, nó cần provider/entry policy riêng đã test, hoặc giữ fallback local theo thiết kế.
+
+Nếu scope có đủ version nhưng consumer dùng scope khác, sửa plumbing/config và rebuild các builds bị ảnh hưởng. Không nhân bản registry bằng tay hoặc đổi scope object giữa vòng đời của một container để “tìm” provider.
+
+`shareScope` riêng có thể cần cho runtime boundary độc lập, nhưng không tự tạo DOM/security isolation. Không chuyển component của một React runtime sang renderer thuộc scope khác rồi coi đó là cách tránh version mismatch.
+
+### Dependency không cần shared identity
+
+Với utility thuần không truyền stateful objects qua boundary, giữ local hoặc dùng non-singleton có thể hợp lý hơn singleton. Đổi lại, browser có thể tải nhiều versions. Mình chọn local nếu package nhỏ và chỉ một remote cần nó, vì bỏ một điểm negotiation thường đơn giản hơn duy trì policy chung.
+
+Không áp dụng cách này tùy tiện cho React cùng tree, module định nghĩa Context, store shared hay thư viện có runtime state mà các apps cần dùng chung. Trước khi bỏ singleton, chứng minh boundary chỉ trao đổi plain data/API ổn định và instances riêng không làm đổi semantics.
+
+### Framework major cần boundary hoặc migration riêng
+
+Nếu shell và remote thực sự cần hai major framework không tương thích, không khai báo `>=18 <20` rồi mong singleton điều hòa khác biệt. Chọn một runtime migration wave có release admission rõ, hoặc thiết kế widget với root/lifecycle độc lập; dùng iframe khi cần realm isolation mạnh hơn.
+
+Root riêng chưa bảo đảm dependency độc lập nếu vẫn consume singleton scope chung. Ngược lại, scope riêng cũng chưa ngăn việc dùng chéo component, element hoặc Context object. Cần thiết kế loader, resolution và public boundary cùng nhau. Xem [Tích hợp React](/docs/ui-va-framework/react) và [Dependency governance](/docs/production/dependency-governance).
+
+Với SSR, kiểm tra riêng server runtime, client runtime và hydration; một client snapshot đúng không chứng minh graph phía server tương thích.
+
+## Những cách chữa dễ che mất lỗi
+
+| Cách làm | Vì sao chưa sửa nguyên nhân | Hướng thay thế |
+| --- | --- | --- |
+| `requiredVersion: false` hoặc range `*` | Bỏ hàng rào requirement, không bổ sung API thiếu | Chốt requirement thật và chọn provider/release tương thích |
+| Tắt `strictVersion` cho singleton | Có thể đổi throw thành warning trong khi vẫn chạy runtime sai | Rollback hoặc migration; ngoại lệ phải có test, owner và hạn gỡ |
+| Ghi đè provider `version` | Đổi nhãn, không đổi implementation | Sửa dependencies và rebuild artifact |
+| Bật `eager: true` | Thay bundling/availability, không làm hai versions tương thích | Giữ async bootstrap; chỉ dùng eager khi có lý do và đo trade-off |
+| Preload remote mới trước shell | Có thể đổi singleton được chọn nhưng không kiểm soát tab cũ hoặc consumer khác | Test load-order matrix và admit release sets hợp lệ |
+| Bỏ singleton cho React cùng tree | Có thể hết version check rồi chuyển sang duplicate React | Giữ runtime compatible cùng identity hoặc đổi boundary |
+| Chỉ reinstall/dedupe host | Không thay bytes của remote đang deploy hoặc module đã evaluate | Đối chiếu artifact, rebuild đúng bên và dùng document mới |
+| Xóa cache/CDN ngay | Mất evidence, không unload JavaScript đang chạy | Ghi release history; chỉ invalidation khi xác nhận mapping/cache sai |
+| Bắt lỗi rồi init lại bằng scope mới | Tạo scope split hoặc che initialization failure | Sửa lifecycle một container–một scope object |
+
+## Kiểm chứng bản sửa trước khi promote
+
+Chạy trên production artifacts được host ở môi trường production-like, không chỉ hai dev servers cùng checkout. Gắn kết quả với shell/remote build IDs, artifact digests và policy/config revision để không promote một bản rebuild chưa được test.
+
+| Case | Cần chứng minh |
+| --- | --- |
+| Shell candidate + remotes active | Import, render và các journeys chính hoạt động với runtime policy dự kiến |
+| Shell cũ còn hỗ trợ + remote candidate | Thật sự chạy được, hoặc bị admission gate chặn trước load và có fallback |
+| Shell candidate + rollback remote | Target rollback còn hợp với runtime, public contract và backend |
+| Mở catalog trước rồi cart, và ngược lại | Không phụ thuộc một load order may mắn; providers/keys cần thiết đều đúng |
+| Document mới và tab mở trước deploy | Không trộn releases ngoài window; tab cũ có đường phục hồi bảo vệ input |
+| Remote standalone nếu được hỗ trợ | Có provider/fallback đúng, không chỉ chạy được nhờ scope của shell |
+| Tổ hợp cố ý không tương thích | Gate chặn hoặc strict consumer reject có kiểm soát; telemetry/fallback nhận đúng lỗi |
+
+Trong case được hỗ trợ, kiểm tra selected dependency và React–renderer identity ngoài việc Console không báo mismatch. Dùng các requests/subpaths thực tế của production transform; automatic JSX runtime có graph khác lab classic JSX.
+
+Nếu test negative bằng cách đổi một dependency trong lab, không đưa artifact đó vào production selection. Test cần xác nhận rejection được bắt đúng phase và không phá toàn bộ shell. Với lazy import đã reject, không mặc định retry trong cùng tab sẽ dùng dependency mới; module/load caches và singleton đã dùng cần được tính trong recovery design.
+
+Theo dõi mismatch warnings/errors theo release set cùng outcomes như mở catalog hoặc thêm hàng thành công. Không dùng raw stack, URLs tùy ý hoặc mọi version combinations làm metrics labels có cardinality không kiểm soát; lưu chi tiết đã sanitize trong event/log phục vụ điều tra.
+
+## Checklist đóng sự cố và escalation
+
+- [ ] Đã xác định shared key, scope, consumer requirement và provider version gây lỗi.
+- [ ] Có artifact/build IDs, config revision, stack và navigation order cho lần lỗi ban đầu.
+- [ ] Đã phân biệt dependency tree lúc build với version runtime thực sự consume.
+- [ ] Root cause là range, release set, provider, scope hay import path đã được chứng minh.
+- [ ] Không dùng range giả, provider metadata giả hoặc reset runtime để che mismatch.
+- [ ] Artifacts mới và các tổ hợp active/old/rollback đã qua gate phù hợp.
+- [ ] Có negative test cho tổ hợp không hỗ trợ, cùng fallback và telemetry đúng phase.
+- [ ] Tab cũ có policy bảo vệ input, chuyển phiên/reload khi cần; assets cũ còn đủ retention.
+- [ ] Diagnostic code đã gỡ và dependency/release owners nhận follow-up rõ ràng.
+
+Khi escalation, gửi bảng build–key–local version–required range–scope–policy, snapshot scope, lỗi đầu tiên và đường tái hiện. Ghi mitigation đã áp dụng, target rollback đã verify và ai quyết định compatibility window. Không chỉ gửi ảnh `npm ls` của máy mới nhất: người nhận cần tái hiện đúng tổ hợp artifact đã lỗi.
+
+## Tài liệu tham khảo
+
+- [Webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): `requiredVersion`, `singleton`, `strictVersion`, `import`, `version` và sharing hints.
+- [Webpack — Module Federation](https://webpack.js.org/concepts/module-federation/): share scopes, container initialization, dynamic loading và async bootstrap.
+- [npm node-semver — Ranges](https://github.com/npm/node-semver#ranges): exact/caret/tilde ranges và prerelease matching.
+- [npm — npm ls](https://docs.npmjs.com/cli/v11/commands/npm-ls/): quan sát dependency tree và các dependencies không hợp lệ.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Cơ chế provider, consumer, fallback và chính sách shared." />
+  <Card title="Duplicate React" href="/docs/troubleshooting/duplicate-react" description="Kiểm tra module identity và React–renderer khi version check đã pass." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Admission và compatibility window cho các tổ hợp host–remote." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Chọn lại release set và xử lý documents đã load runtime cũ." />
+</Cards>

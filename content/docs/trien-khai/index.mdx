@@ -1,24 +1,338 @@
 ---
 title: "Triển khai"
-description: "Release độc lập và giữ khả năng kiểm soát các phiên bản đang chạy."
+description: "Release micro-frontend độc lập bằng artifact bất biến, runtime selection có kiểm soát và rollback đúng tổ hợp đang chạy."
 ---
 
-Đây là trang khung cho nhóm **Triển khai**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử catalog vừa deploy bộ lọc mới, còn shell và cart không đổi. Người dùng mở tab mới thấy giao diện đúng, nhưng người đang giữ tab cũ chuyển sang một route khác lại gặp lỗi tải chunk. Pipeline catalog vẫn xanh: code mới không nhất thiết sai, nhưng quy trình deploy đã xóa assets mà code cũ còn cần.
+
+Triển khai micro-frontend không chỉ là đưa từng app lên hosting riêng. Bạn cần biết **browser đang chạy tổ hợp nào, vì sao tổ hợp đó được chọn và có thể quay về đâu khi có lỗi**. Nhóm này nối CI/CD, hosting, runtime configuration, cache và rollout thành một đường release có thể kiểm chứng.
+
+<Callout type="info" title="Phạm vi trang này">
+  Đây là trang định hướng cho nhóm **Triển khai**, không phải hướng dẫn deploy site Fumadocs hiện tại. Ví dụ dùng shop giả định gồm shell, catalog và cart; cart là phần mở rộng của lab shell/catalog. Mô hình chính là shell CSR tải webpack classic script remotes qua runtime config. JSON, release IDs và domain bên dưới chỉ minh họa, không phải hạ tầng có sẵn trong repository. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Độc lập ở release chứ không chỉ ở repository](#độc-lập-ở-release-chứ-không-chỉ-ở-repository)
+- [Mô hình triển khai cần giữ trong đầu](#mô-hình-triển-khai-cần-giữ-trong-đầu)
+  - [Artifact selection và runtime đang sống](#artifact-selection-và-runtime-đang-sống)
+  - [Đường tải của một document mới](#đường-tải-của-một-document-mới)
+- [Định danh thứ được build và thứ đang chạy](#định-danh-thứ-được-build-và-thứ-đang-chạy)
+- [Luồng release mặc định](#luồng-release-mặc-định)
+  - [Build candidate và giữ đúng bytes](#build-candidate-và-giữ-đúng-bytes)
+  - [Publish đầy đủ graph trước khi đổi selection](#publish-đầy-đủ-graph-trước-khi-đổi-selection)
+  - [Kiểm thử đúng tổ hợp trước promotion](#kiểm-thử-đúng-tổ-hợp-trước-promotion)
+  - [Promote có kiểm soát và theo dõi hành vi](#promote-có-kiểm-soát-và-theo-dõi-hành-vi)
+- [Một lần release catalog và rollback](#một-lần-release-catalog-và-rollback)
+  - [Snapshot public mà shell nhận](#snapshot-public-mà-shell-nhận)
+  - [Rollback trên trạng thái hiện tại](#rollback-trên-trạng-thái-hiện-tại)
+- [Cache và retention là một phần của release](#cache-và-retention-là-một-phần-của-release)
+- [Tương thích đặt giới hạn cho tính độc lập](#tương-thích-đặt-giới-hạn-cho-tính-độc-lập)
+- [Phân chia quyền sở hữu và quyền publish](#phân-chia-quyền-sở-hữu-và-quyền-publish)
+- [Điều gì thay đổi với cách tích hợp khác](#điều-gì-thay-đổi-với-cách-tích-hợp-khác)
+- [Chọn bài đọc theo vấn đề đang gặp](#chọn-bài-đọc-theo-vấn-đề-đang-gặp)
+- [Bài tập kiểm chứng đường release](#bài-tập-kiểm-chứng-đường-release)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 - [Các bài trong nhóm](#các-bài-trong-nhóm)
 
-## Phạm vi dự kiến
+## Độc lập ở release chứ không chỉ ở repository
 
-Release độc lập và giữ khả năng kiểm soát các phiên bản đang chạy.
+Catalog có một repository và một workflow riêng chưa có nghĩa là catalog release độc lập. Nếu mỗi lần đổi bộ lọc đều phải build lại shell, đợi cart merge hoặc nhờ một team chung ghép tất cả source ở HEAD, quyền release vẫn bị buộc vào phần còn lại.
+
+Một thay đổi tương thích của catalog nên có thể đi qua pipeline riêng, ghép với shell và cart đã được hỗ trợ, rồi tiếp cận người dùng mà không cần rebuild hai app đó. Nhưng **độc lập không có nghĩa là không cần kiểm tra tích hợp**. Catalog vẫn phải giữ public module, props, callbacks, routing và backend contract mà consumers đang dựa vào.
+
+Tách hai hành động để tránh nhầm:
+
+| Hành động | Bạn thay đổi gì? | Ví dụ |
+| --- | --- | --- |
+| Deploy artifact | Làm bytes của candidate có thể được tải ở môi trường đích | Publish catalog r19 lên release prefix riêng, chưa chọn cho người dùng |
+| Release hoặc promote | Cho một nhóm người dùng nhận candidate đã deploy | Runtime selection chọn catalog r19 thay r18 |
+| Mở feature | Cho phép hành vi trong artifact đang chạy | Bật bộ lọc mới bằng flag đã có cả nhánh on/off |
+
+Ba hành động có thể xảy ra gần nhau, nhưng không nên gộp thành một nút không phân biệt outcome. Publish thành công chưa chứng minh candidate đã được chọn; chọn candidate chưa chứng minh người dùng hoàn thành journey; tắt flag không sửa được entry bị lỗi trước khi app đọc flag.
+
+Mặc định mình bắt đầu bằng **artifact bất biến và promotion tách khỏi build**. Chưa cần một hệ thống canary phức tạp ngay từ đầu. Một đường release đơn giản, có owner và rollback đã diễn tập đáng tin hơn nhiều tầng automation không xác định được release thực chạy.
+
+## Mô hình triển khai cần giữ trong đầu
+
+### Artifact selection và runtime đang sống
+
+Có ba lớp trạng thái khác nhau:
+
+| Lớp | Chứa gì? | Có thể đổi khi nào? |
+| --- | --- | --- |
+| Artifact store | Entry, chunks, CSS, fonts và các files của một release | Thêm release mới; không overwrite bytes của release cũ |
+| Selection hoặc control plane | Release được chọn theo môi trường/cohort, config revision và policy | Publisher cập nhật có validation, concurrency control và audit |
+| Runtime trong document | Snapshot đã pin, module cache và remote instances | Theo lifecycle của document; không tự thay bằng code mới chỉ vì config đổi |
+
+Mình hình dung artifact store như kho hàng, selection như phiếu xuất kho. Đổi phiếu quyết định lần lấy hàng tiếp theo, không thay món hàng người dùng đã cầm. Điểm mà phép so sánh này dừng lại là browser còn giữ module trong bộ nhớ và có thể tải thêm lazy chunks của release đã chọn, kể cả sau khi selection đổi.
+
+Vì vậy, rollback pointer và khôi phục toàn bộ người dùng là hai việc khác nhau. Document mới có thể chọn r18 trong khi tab đã chạy r19 vẫn tiếp tục ở r19. Reload có kiểm soát hoặc operational-control channel cần được thiết kế riêng; không mặc định hot-swap remote trong runtime đang sống.
+
+### Đường tải của một document mới
+
+Với shop CSR trong ví dụ, shell là nơi resolve remotes:
+
+```text
+Browser ──► Shell HTML + shell assets
+       ──► Runtime config: một snapshot được validate và pin
+       ──► Catalog entry + chunks theo snapshot đó
+       ──► Cart entry + chunks theo cùng snapshot
+```
+
+Các dòng thể hiện quan hệ tải, không yêu cầu catalog và cart luôn tải tuần tự. Shell có thể lazy-load từng remote khi vào route, nhưng descriptor dùng để resolve vẫn thuộc snapshot của document.
+
+Shell kiểm tra schema, môi trường và URL policy trước khi đưa descriptor cho loader. Nếu config lỗi, chọn failure policy đã công bố: chặn bootstrap hoặc chạy một fallback giới hạn. Đừng âm thầm dùng một snapshot cũ bất kỳ rồi gọi đó là khôi phục thành công.
+
+Remote code chạy cùng trang có thể tiếp cận tài nguyên trong trang theo quyền của JavaScript tại đó. Bởi vậy, quyền sửa remote URL là quyền chọn code được thực thi, không chỉ là quyền sửa một chuỗi cấu hình. Validation URL, HTTPS, CSP và quyền publish cần cùng bảo vệ boundary này; CORS không phải sandbox cho remote.
+
+## Định danh thứ được build và thứ đang chạy
+
+Khi có lỗi, “catalog vừa deploy” là thông tin quá mơ hồ. Bạn cần phân biệt ít nhất những định danh sau:
+
+| Định danh | Trả lời câu hỏi | Không thay thế được |
+| --- | --- | --- |
+| Commit SHA | Artifact bắt nguồn từ source nào? | Bytes cuối cùng của artifact |
+| Release ID | Lần tạo candidate nào đang được tham chiếu? | Bằng chứng artifact chưa bị overwrite |
+| Artifact digest | Archive hoặc image cụ thể có bytes nào? | Bằng chứng các apps tương thích |
+| Config revision | Lần publish selection nào shell nhận? | Release thực sự đã load/mount |
+| Contract version | Consumer hiểu cam kết public nào? | Version framework hoặc release ID |
+| Release set | Shell, remotes và cấu hình nào được ghép trong một lần kiểm chứng? | Mọi tổ hợp có thể tồn tại trong production |
+
+Cùng commit chưa chắc sinh cùng artifact nếu toolchain, dependencies hoặc build environment thay đổi. Approval và test evidence nên gắn với digest của candidate; khi promote, dùng đúng bytes đó thay vì build lại từ commit.
+
+Release set dùng ở pipeline có thể chứa digests, test IDs và metadata nội bộ. Runtime config public chỉ chứa dữ liệu cần cho browser. Hai tài liệu này phục vụ hai boundary khác nhau, không cần ép chúng thành một JSON duy nhất.
+
+Ở runtime, telemetry nên ghi shell release, config revision, selected releases và **loaded releases** theo phase. Config chọn r19 nhưng entry chưa tải được là một outcome khác với r19 đã mount rồi throw. Giữ metadata release trong artifact giúp đối chiếu điều browser thực sự nhận, thay vì chỉ tin nhãn của publisher.
+
+## Luồng release mặc định
+
+Luồng dưới áp dụng cho một thay đổi catalog tương thích:
+
+```text
+Build candidate → Publish artifacts → Verify release set → Promote → Observe
+```
+
+Nếu một gate fail, giữ candidate ở trạng thái chưa được chọn. Việc artifact tồn tại trên storage không buộc bạn phải release nó.
+
+### Build candidate và giữ đúng bytes
+
+Pipeline catalog chạy typecheck, tests thuộc phạm vi app, contract verification và production build. Sau đó đóng gói artifact graph, ghi release ID, digest, source SHA và bằng chứng nguồn gốc. Release ID không được tái sử dụng cho bytes khác.
+
+Build once rồi promote qua nhiều môi trường là lựa chọn mặc định **khi artifact không nhúng cấu hình môi trường khác nhau**. Nếu API URL, public path hoặc server configuration bị đóng vào bundle lúc build, bạn phải gỡ dependency đó hoặc thừa nhận mỗi build theo môi trường là một candidate khác cần kiểm chứng. Đổi biến môi trường ở hosting không tự sửa JavaScript đã build.
+
+### Publish đầy đủ graph trước khi đổi selection
+
+Upload vào prefix riêng, ví dụ `https://assets.example.com/catalog/r19/`. Prefix phải chứa entry và mọi file mà release tham chiếu, không chỉ `remoteEntry.js`.
+
+Trước promotion, kiểm tra inventory/digests rồi tải qua CDN và browser ở topology đích. Route lazy, CSS và fonts cần được chạm tới, vì entry trả 200 vẫn có thể dẫn tới chunk sai public path, MIME sai hoặc response HTML từ SPA fallback.
+
+Không cần storage hỗ trợ upload atomic cả thư mục để giữ an toàn cho selection: có thể upload dần trong prefix chưa được chọn, rồi đánh dấu ready sau khi inventory và public-path checks đạt. Chỉ đổi selection khi graph đã đầy đủ; không dùng browser của người dùng làm bước kiểm tra upload cuối cùng.
+
+### Kiểm thử đúng tổ hợp trước promotion
+
+Candidate catalog r19 cần được ghép với shell đang phục vụ và cart baseline, không chỉ các app mới nhất trên HEAD. Nếu có nhiều consumer releases còn hỗ trợ, chọn ma trận test theo contract và mức rủi ro; ghi rõ phạm vi được kiểm chứng.
+
+Một gate hợp lý gồm kiểm tra loader/public module, contract, một journey chính và fallback khi catalog lỗi. Test phải dùng artifact sẽ promote. Nếu suite intercept remote bằng component giả, nó không cung cấp bằng chứng cho remote loading.
+
+Preview environment hữu ích ở bước này: candidate catalog ghép với baseline đã pin, URL riêng và backend/dữ liệu test được kiểm soát. Preview không thay production verification, vì CDN rules, auth, cache và dữ liệu ở hai môi trường có thể khác.
+
+### Promote có kiểm soát và theo dõi hành vi
+
+Publisher tạo một config revision mới trên trạng thái hiện tại, validate rồi commit snapshot nhất quán. Atomic commit tránh đọc nửa JSON; compare-and-swap hoặc transaction tránh một publisher ghi đè promotion của publisher khác. Hai thuộc tính này không thay thế nhau.
+
+Nếu rollout theo cohort, chọn release ở boundary bootstrap, giữ assignment ổn định và pin snapshot trong document. Không chia canary ngẫu nhiên cho từng request entry/chunk: browser có thể nhận graph trộn release. Config được cá nhân hóa cũng không được shared cache phát nhầm cohort.
+
+Sau promotion, kiểm tra document mới từ origin công khai, đối chiếu releases thực load và theo dõi journey outcomes. Gate nên có error/fallback rate, latency, denominator và policy khi thiếu telemetry. “Không thấy exception” không đủ nếu shell đang nuốt lỗi bằng fallback và người dùng không mua được hàng.
+
+Quy trình, workflow và release evidence chi tiết nằm trong [CI/CD độc lập](/docs/trien-khai/ci-cd); cohort, guardrails và quyết định dừng nằm trong [Rollout và rollback](/docs/trien-khai/rollout-rollback).
+
+## Một lần release catalog và rollback
+
+### Snapshot public mà shell nhận
+
+Giả sử shell s17 đang dùng catalog r18 và cart r7. Candidate catalog r19 giữ contract major 1, đã được kiểm chứng với s17 và r7. Sau promotion, endpoint `/runtime/config.json` có thể trả snapshot dưới đây, khớp schema của bài [Runtime configuration](/docs/trien-khai/runtime-configuration):
+
+```json title="Snapshot minh họa sau promotion catalog"
+{
+  "schemaVersion": 1,
+  "revision": "demo-config-43",
+  "environment": "production",
+  "apiBasePath": "/api",
+  "flags": {
+    "newCartSummary": false
+  },
+  "remotes": {
+    "catalog": {
+      "enabled": true,
+      "scope": "catalog_app",
+      "entry": "https://assets.example.com/catalog/r19/remoteEntry.js",
+      "release": "r19",
+      "contractVersion": 1
+    },
+    "cart": {
+      "enabled": true,
+      "scope": "cart_app",
+      "entry": "https://assets.example.com/cart/r7/remoteEntry.js",
+      "release": "r7",
+      "contractVersion": 1
+    }
+  }
+}
+```
+
+Đây là application runtime config do team thiết kế, không phải `mf-manifest.json` chuẩn của enhanced runtime. Loader classic script trong ví dụ nhận JavaScript entry; không thể đưa một JSON federation manifest vào vị trí đó rồi mong mọi loader tự hiểu.
+
+Shell s17 được nhận diện trong deployment record và telemetry, không nằm trong JSON này. Nếu cần rollback shell, bạn phải dùng cơ chế chọn shell deployment riêng. Đổi `schemaVersion`, `contractVersion` hoặc label `release` cũng không sửa được bytes bên trong artifact.
+
+### Rollback trên trạng thái hiện tại
+
+Giả sử cart đã release r8 độc lập trước khi catalog r19 lộ regression. Lịch sử selection có thể là:
+
+| Config revision | Shell deployment | Catalog | Cart | Hành động |
+| --- | --- | --- | --- | --- |
+| demo-config-42 | s17 | r18 | r7 | Baseline |
+| demo-config-43 | s17 | r19 | r7 | Promote catalog |
+| demo-config-44 | s17 | r19 | r8 | Promote cart sau khi verify tổ hợp |
+| demo-config-45 | s17 | r18 | r8 | Rollback catalog sau khi verify target |
+
+Revert toàn bộ config về revision 42 sẽ rollback nhầm cart. Mặc định tạo revision mới từ **snapshot hiện tại**, chỉ thay descriptor catalog và giữ thay đổi cart hợp lệ. Tổ hợp s17 + r18 + r8 phải được kiểm chứng; giữ cart r8 không phải một quyết định đúng tự động chỉ vì nó mới hơn.
+
+Nếu publisher khác vừa đổi config, commit rollback phải conflict thay vì force-write snapshot cũ. Đọc lại base, tạo candidate mới và revalidate phần chịu tác động. Audit ghi previous/new release set, actor, lý do và bằng chứng kiểm chứng.
+
+<Callout type="warn" title="Đổi selection không thay code trong tab cũ">
+  Tab đã pin revision 43 có thể tiếp tục chạy catalog r19 và cart r7 sau khi revision 45 được publish. Rollback phải xác minh document mới, đồng thời có kế hoạch cho tab cũ. Với thao tác nhạy cảm, backend cần chặn rủi ro; disable remote hoặc tắt flag phía client không thay authorization và không đảo ngược giao dịch đã commit.
+</Callout>
+
+## Cache và retention là một phần của release
+
+Policy cache phụ thuộc **vai trò của URL**, không chỉ phần mở rộng `.json` hay `.js`:
+
+| Loại URL | Hướng mặc định | Điều cần giữ đúng |
+| --- | --- | --- |
+| Shell HTML chọn deployment hiện hành | Revalidate hoặc freshness budget ngắn, có chủ đích | HTML và shell assets phải cùng build |
+| Runtime selection mutable | `no-cache` cho snapshot public dùng chung; cân nhắc `no-store` và policy private cho selection cá nhân hóa | Không phát nhầm môi trường/cohort; các cache layers thực sự tuân policy |
+| Entry dưới release prefix bất biến | Cache dài với `immutable` | Không overwrite bytes tại URL cũ |
+| Chunks/CSS/fonts bất biến | Cache dài, URL chứa hash hoặc release ID | Origin còn giữ files mà documents được hỗ trợ có thể cần |
+
+`no-cache` cho phép lưu response nhưng yêu cầu validate trước reuse. `no-store` yêu cầu cache không lưu response; nó không tự xóa một response đã được lưu trước đó. Còn `immutable` là cam kết nội dung không đổi trong thời gian fresh, không phải công tắc để browser tự phát hiện version mới.
+
+Tên `remoteEntry.js` không buộc entry phải cache ngắn. `/catalog/r19/remoteEntry.js` có thể immutable nếu cả release r19 không bị overwrite; `/catalog/latest/remoteEntry.js` là mutable nếu mỗi lần deploy lại thay bytes. Mặc định chọn release prefix bất biến thay vì trông chờ purge toàn CDN sau mỗi lần release.
+
+Cache đúng vẫn không cứu được tab cũ nếu origin đã xóa lazy chunks. Retention phải bảo vệ active releases, rollback targets và releases thuộc document support window. CDN cache không phải backup: một edge chưa warm hoặc đã evict vẫn cần lấy được file từ origin.
+
+Nếu dùng service worker, thêm lifecycle và cache routing của nó vào quy trình kiểm chứng. `curl` thấy config mới chưa chứng minh browser đang dùng config mới, và HTTP TTL hết hạn không tự thay snapshot hay module trong bộ nhớ. Chi tiết ở [Caching và cache invalidation](/docs/trien-khai/caching).
+
+## Tương thích đặt giới hạn cho tính độc lập
+
+Giả sử shell s18 cần export chỉ tồn tại ở catalog r19. Bạn không còn được rollback riêng catalog về r18 khi s18 đang phục vụ. Khi đó cần coordinated recovery đã kiểm chứng hoặc fix-forward; “release trước đó” không mặc nhiên là rollback target hợp lệ.
+
+| Boundary | Điều cần bảo vệ | Ví dụ breaking change |
+| --- | --- | --- |
+| Shell và remote | Public module, props/capabilities, callbacks, lifecycle và routing | Xóa export shell cũ đang import |
+| Remote và remote qua contract chung | Schema và semantics của events/commands | Đổi quantity thành số dòng hàng nhưng giữ field `count` |
+| Runtime config và shell | Schema, defaults và URL/loader policy | Đổi boolean thành string mà vẫn giữ schema major |
+| Frontend và backend | API/data semantics cho clients còn hỗ trợ | Xóa field mà tab cũ hoặc rollback target vẫn đọc |
+| Shared runtime dependencies | Version range, singleton policy và initialization | Ép dependency mới không tương thích với consumer cũ |
+
+Mặc định dùng expand–migrate–contract: thêm khả năng mới nhưng giữ contract cũ, chuyển consumers dần, rồi mới bỏ phần cũ khi support window và rollback policy cho phép. Rollout đạt 100% selection không chứng minh mọi tab cũ đã biến mất.
+
+Không cần hỗ trợ mọi release trong lịch sử. Cần một support policy rõ: consumers nào còn được phục vụ, document sống tối đa theo chính sách nào, rollback targets nào được duy trì và xử lý tab hết hạn ra sao. Policy đó quyết định ma trận kiểm thử và retention, không chỉ là ghi chú vận hành.
+
+Với thay đổi backend đã ghi dữ liệu theo semantics mới, rollback frontend có thể gây lỗi thêm. Xử lý dữ liệu và side effects thuộc runbook domain; không chạy migration ngược chỉ vì bạn đã đổi remote mapping.
+
+## Phân chia quyền sở hữu và quyền publish
+
+Các team có thể release riêng nhưng vẫn cần một giao diện promotion chung. Điều này không đòi một team platform duyệt thủ công mọi commit; nó đòi policy và quyền được thực thi tại đúng boundary.
+
+| Owner | Trách nhiệm chính |
+| --- | --- |
+| Team shell | Bootstrap, remote resolution, routing boundary, fallback và metadata document |
+| Team remote | Artifact graph, public contract, release metadata và regression tests của app |
+| Platform hoặc release tooling | Artifact storage, CDN policies, publisher, audit và concurrency control |
+| Backend/domain owner | Tương thích API/dữ liệu, policy thao tác nhạy cảm và phục hồi side effects |
+| Release owner/on-call | Guardrails, quyết định pause/rollback, verification và đóng incident |
+
+Pipeline build cho PR không tin cậy không được có production credentials. Promotion nhận artifact đã được xác thực và quyền publish giới hạn; không nhận remote URL tùy ý từ query string hay PR metadata rồi chạy trên production.
+
+Runtime config là dữ liệu public. Không đưa API secrets, storage credentials hoặc token deploy vào đó. Với preview, cô lập auth và dữ liệu test, chặn production writes, đồng thời có owner và TTL để dọn tài nguyên. Một remote candidate chạy trong shell preview vẫn là code đang thực thi, không phải file vô hại để reviewer mở bằng session production.
+
+## Điều gì thay đổi với cách tích hợp khác
+
+Nguyên tắc định danh artifact, kiểm chứng boundary và giữ rollback targets vẫn dùng được ngoài Module Federation. Nhưng đơn vị promotion không giống nhau:
+
+| Cách tích hợp | Đơn vị thường được chọn/promote | Khác biệt cần nhớ |
+| --- | --- | --- |
+| Build-time package | Build của consumer chứa package | Release package chưa đổi code của shell; consumer phải rebuild để nhận bản mới |
+| Runtime federation hoặc ESM | Remote artifact và mapping phù hợp loader | Pin release set; import maps và loader có semantics riêng, không mặc định hot-swap |
+| iframe | Deployment/document của app con | Parent và iframe có lifecycle riêng; bảo vệ URL selection và `postMessage` contract |
+| Server-side composition hoặc SSR | Server deployment cùng browser artifacts tương thích | Server render và hydration phải dùng release set nhất quán |
+
+Nếu dùng SSR, chỉ ghi browser remote URL chưa mô tả đủ hệ thống. Cần pin server artifact, browser artifact và dữ liệu config liên quan để tránh server render một version nhưng client hydrate bằng version khác. Không áp dụng nguyên mẫu CSR ở trên như một cấu hình SSR dùng ngay.
+
+Nếu mỗi thay đổi hiện đều cần coordinated release vì public contract đổi liên tục, hãy xem lại boundary trước khi bổ sung automation. Với một nhóm nhỏ và ít nhu cầu release độc lập, modular frontend build chung có thể đơn giản hơn vận hành runtime composition.
+
+## Chọn bài đọc theo vấn đề đang gặp
+
+Bạn không cần đọc hết nhóm trước khi xử lý một lỗi cụ thể:
+
+| Vấn đề hoặc mục tiêu | Bắt đầu ở đâu? | Kết quả cần mang về |
+| --- | --- | --- |
+| Mỗi app có workflow nhưng vẫn chờ nhau release | [CI/CD độc lập](/docs/trien-khai/ci-cd) | Tách candidate, artifact evidence và promotion đúng release set |
+| Entry 200 nhưng chunk/CSS lỗi hoặc tải nhầm origin | [Hosting, CDN và assets](/docs/trien-khai/cdn-assets) | Layout artifact, public path, MIME, CORS/CSP và public-path smoke |
+| Muốn đổi remote/API theo môi trường mà không build lại | [Runtime configuration](/docs/trien-khai/runtime-configuration) | Schema public, validation, bootstrap boundary và snapshot theo document |
+| Người dùng nhận code cũ hoặc lazy route lỗi sau deploy | [Caching và cache invalidation](/docs/trien-khai/caching) | Policy theo vai trò URL, cache layers và retention cho tab cũ |
+| Cần rollout dần và rollback không ảnh hưởng app khác | [Rollout và rollback](/docs/trien-khai/rollout-rollback) | Cohort ổn định, guardrails, target tương thích và runbook |
+| Muốn review PR trong shell thay vì standalone | [Preview environments](/docs/trien-khai/preview-environments) | Candidate + baseline đã pin, auth/data isolation và cleanup |
+
+Nếu bắt đầu từ con số không, đọc theo thứ tự CI/CD → hosting → runtime config → caching → rollout/rollback → preview. Đọc thêm [Kiểm thử và tooling](/docs/kiem-thu-va-tooling) để chọn bằng chứng ở mỗi gate, và [Observability](/docs/kiem-thu-va-tooling/observability) để quyết định dựa trên journey thực thay vì chỉ pipeline status.
+
+## Bài tập kiểm chứng đường release
+
+Thực hiện trong lab hoặc preview, không chủ động gây lỗi trên production. Nếu lab chưa có cart, dùng shell và catalog trước; bài kiểm tra concurrent release của cart chỉ áp dụng khi app đó đã tồn tại.
+
+1. Chuẩn bị shell s17, catalog r18/r19 và cart r7/r8 nếu có. Ghi digests và pin baseline bằng runtime snapshot hợp lệ.
+2. Mở tab A ở catalog r18, nhưng chưa mở một route lazy. Giữ tab đó sống trong suốt bài thử.
+3. Publish r19 vào prefix mới, verify inventory và lazy route qua browser/CDN, rồi promote bằng config revision mới.
+4. Mở tab B, xác nhận config revision và loaded release là r19; tab A vẫn báo r18. Cho tab A mở route lazy để kiểm tra retention.
+5. Nếu có cart, promote r8 độc lập. Tạo rollback catalog trên snapshot hiện tại và verify tổ hợp r18 + r8.
+6. Publish rollback bằng concurrency check. Mở tab C để xác nhận target; tab B vẫn ở r19, không được coi là đã tự rollback.
+7. Thử fallback khi chặn entry/chunk trong browser context test. Đối chiếu loader error, fallback và journey outcome, không chỉ screenshot.
+8. Ghi lại selection history, headers, loaded release set và test evidence. Nếu dùng service worker, lặp lại với các lifecycle cache liên quan.
+
+Bài thử đạt khi bạn chỉ ra được mỗi tab đang chạy release nào, lazy assets của tab cũ còn tải được và rollback không ghi đè một release độc lập hợp lệ. Với concurrent publishers, bổ sung test hai yêu cầu cùng expected version: chỉ một yêu cầu commit, yêu cầu còn lại phải conflict mà không ghi.
+
+## Checklist trước production
+
+- [ ] Đơn vị build, deploy và release cùng owner của từng boundary đã rõ.
+- [ ] Candidate có release ID, digest và test evidence; promotion không âm thầm build lại.
+- [ ] Release prefix bất biến, graph đầy đủ và được verify qua đường tải công khai trước selection.
+- [ ] Runtime config không chứa secrets; schema, môi trường và URLs được validate trước bootstrap.
+- [ ] Document pin một snapshot; selected và loaded releases có telemetry phân biệt.
+- [ ] Gate kiểm chứng artifact thật với consumers và backend còn được hỗ trợ.
+- [ ] Publisher có atomic commit, concurrency control, quyền giới hạn và audit.
+- [ ] Cache policy không phát nhầm cohort; HTML, service worker và bfcache đã được xét theo lifecycle thực tế.
+- [ ] Retention bảo vệ active documents và rollback targets, không dựa vào CDN làm backup.
+- [ ] Rollout có guardrails, denominator, missing-data policy và release owner.
+- [ ] Rollback target còn tương thích, giữ thay đổi độc lập hợp lệ và có kế hoạch cho tab cũ.
+- [ ] Preview cô lập auth/dữ liệu, có TTL và không cho PR không tin cậy dùng production credentials.
+
+Trước lần release độc lập đầu tiên, ưu tiên làm bài thử tab cũ → promote → rollback ở trên. Nếu chưa tái hiện được release set và đường tải của ba tab, hãy bổ sung metadata và verification trước khi tự động hóa canary.
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Martin Fowler, Cam Jackson](https://martinfowler.com/articles/micro-frontends.html) — independent deployment và cách ghép frontend thành một sản phẩm.
+- [Cache-Control — MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) — semantics của revalidation, `no-store` và `immutable`.
+- [Canary Release — Martin Fowler](https://martinfowler.com/bliki/CanaryRelease.html) — release dần và thu hẹp phạm vi ảnh hưởng.
 
 ## Các bài trong nhóm
 
-- [CI/CD độc lập](/docs/trien-khai/ci-cd) — Thiết kế pipeline build, test và deploy riêng cho shell cùng từng remote.
-- [Hosting, CDN và assets](/docs/trien-khai/cdn-assets) — Phân phối artifacts, public paths, CORS và đường dẫn assets đúng môi trường.
-- [Runtime configuration](/docs/trien-khai/runtime-configuration) — Quản lý manifests, remote URLs và cấu hình môi trường không chứa secrets.
-- [Caching và cache invalidation](/docs/trien-khai/caching) — Tách caching của entry/manifest và assets có hash để tránh tải sai phiên bản.
-- [Rollout và rollback](/docs/trien-khai/rollout-rollback) — Release bằng canary hoặc feature flags và rollback cả mapping lẫn artifacts.
-- [Preview environments](/docs/trien-khai/preview-environments) — Ghép shell và các remote theo nhánh để review mà không ảnh hưởng production.
+<Cards>
+  <Card title="CI/CD độc lập" href="/docs/trien-khai/ci-cd" description="Pipeline riêng, artifact evidence và promotion không build lại." />
+  <Card title="Hosting, CDN và assets" href="/docs/trien-khai/cdn-assets" description="Release prefixes, public paths và kiểm chứng toàn bộ artifact graph." />
+  <Card title="Runtime configuration" href="/docs/trien-khai/runtime-configuration" description="Schema public, validation và snapshot nhất quán cho mỗi document." />
+  <Card title="Caching và cache invalidation" href="/docs/trien-khai/caching" description="Policy cho selection và assets, cache layers và retention." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Cohort, guardrails và phục hồi đúng release set." />
+  <Card title="Preview environments" href="/docs/trien-khai/preview-environments" description="Ghép candidate với baseline đã pin để review an toàn." />
+</Cards>

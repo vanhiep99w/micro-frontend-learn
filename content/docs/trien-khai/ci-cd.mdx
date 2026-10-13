@@ -1,18 +1,583 @@
 ---
 title: "CI/CD độc lập"
-description: "Thiết kế pipeline build, test và deploy riêng cho shell cùng từng remote."
+description: "Thiết kế pipeline build, test và promote riêng cho shell cùng từng remote, kiểm tra tương thích và giữ artifact để rollback."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog vừa sửa bộ lọc sản phẩm, nhưng pipeline buộc bạn build lại shell, chờ test của cart rồi deploy cả shop. Source đã chia thành nhiều app, còn release vẫn là một khối. Ngược lại, nếu chỉ upload catalog mới và bỏ qua shell đang chạy, bạn có thể phát hành một remote mà consumer không dùng được.
+
+**CI/CD độc lập cho phép một thay đổi tương thích được release mà không buộc app khác rebuild hoặc redeploy.** Nó không có nghĩa mỗi team bỏ qua integration tests. Bài này thiết kế đường đi từ source đến artifact đã kiểm thử, rồi cập nhật riêng release được môi trường chọn.
+
+<Callout type="info" title="Phạm vi và điều kiện bắt đầu">
+  Ví dụ dùng `shop-workspace` với npm workspaces, webpack 5 và ba app `@shop/shell`, `@shop/catalog`, `@shop/cart`. Workflow bên dưới dành cho workspace ứng dụng đó, **không phải repository Next.js + Fumadocs chứa tài liệu này**.
+
+  Lab đầu tiên mới nối shell với catalog và dùng URL local cố định. Để promote remote không rebuild shell, bạn cần thêm runtime selection như trong [Dynamic remotes](/docs/module-federation/dynamic-remotes). Cart chỉ tham gia integration gate khi đã có boundary và implementation tương ứng. Các script test ở ví dụ là yêu cầu cần bổ sung, không phải script đã có sẵn trong lab.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Độc lập ở release chứ không chỉ ở workflow](#độc-lập-ở-release-chứ-không-chỉ-ở-workflow)
+- [Tách CI artifact và promotion](#tách-ci-artifact-và-promotion)
+  - [Luồng cho một catalog candidate](#luồng-cho-một-catalog-candidate)
+  - [Phân chia quyền sở hữu](#phân-chia-quyền-sở-hữu)
+- [Chọn app cần kiểm tra](#chọn-app-cần-kiểm-tra)
+  - [Monorepo và affected graph](#monorepo-và-affected-graph)
+  - [Multi-repo và integration inventory](#multi-repo-và-integration-inventory)
+- [Định danh artifact và release set](#định-danh-artifact-và-release-set)
+  - [Artifact phải bất biến](#artifact-phải-bất-biến)
+  - [Release set pin các build thật](#release-set-pin-các-build-thật)
+- [Workflow CI cho từng app](#workflow-ci-cho-từng-app)
+  - [Chuẩn hóa script trước khi thêm workflow](#chuẩn-hóa-script-trước-khi-thêm-workflow)
+  - [Build và đóng gói candidate](#build-và-đóng-gói-candidate)
+  - [Giới hạn của workflow mẫu](#giới-hạn-của-workflow-mẫu)
+- [Release gate kiểm tra đúng tổ hợp](#release-gate-kiểm-tra-đúng-tổ-hợp)
+  - [Ma trận tương thích tối thiểu](#ma-trận-tương-thích-tối-thiểu)
+  - [Kiểm thử artifact qua đường tải thật](#kiểm-thử-artifact-qua-đường-tải-thật)
+  - [Lưu bằng chứng gắn với digest](#lưu-bằng-chứng-gắn-với-digest)
+- [Promotion không build lại](#promotion-không-build-lại)
+  - [Đường chạy CD và giao diện adapter](#đường-chạy-cd-và-giao-diện-adapter)
+  - [Cập nhật atomic và chống ghi đè](#cập-nhật-atomic-và-chống-ghi-đè)
+  - [Runtime configuration và giới hạn build once](#runtime-configuration-và-giới-hạn-build-once)
+- [Bảo vệ pipeline và quyền deploy](#bảo-vệ-pipeline-và-quyền-deploy)
+- [Cache và thời gian chạy CI](#cache-và-thời-gian-chạy-ci)
+- [Rollback và thay đổi breaking](#rollback-và-thay-đổi-breaking)
+- [Chẩn đoán pipeline thất bại](#chẩn-đoán-pipeline-thất-bại)
+- [Checklist trước production](#checklist-trước-production)
+- [Bài tập kiểm chứng deploy độc lập](#bài-tập-kiểm-chứng-deploy-độc-lập)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Độc lập ở release chứ không chỉ ở workflow
 
-Bài này sẽ giúp bạn: thiết kế pipeline build, test và deploy riêng cho shell cùng từng remote.
+Ba file workflow không chứng minh ba app release độc lập. Nếu workflow catalog sửa URL hardcode trong shell rồi build lại shell, catalog vẫn phụ thuộc một lần release của host. Nếu shell import source catalog vào bundle, deploy một artifact catalog riêng cũng không đổi phần code mà shell đã đóng gói.
 
-[Xem các bài trong nhóm Triển khai](/docs/trien-khai).
+Với runtime composition, mình kiểm tra bốn điều kiện trước khi gọi pipeline là độc lập:
+
+| Điều kiện | Cách kiểm chứng trong shop |
+| --- | --- |
+| Artifact riêng | Catalog có entry, chunks và assets riêng; không cần build shell để tạo chúng |
+| Public contract ổn định | Catalog candidate dùng được với các shell còn trong cửa sổ hỗ trợ |
+| Selection riêng | Runtime mapping có thể chọn catalog mới mà giữ nguyên shell và cart |
+| Quyền release riêng | Owner catalog có thể yêu cầu promote và rollback trong policy đã thống nhất |
+
+Một shared package ở build time vẫn làm consumer cần build lại khi muốn dùng version package mới. Đây không phải lỗi của CI: package ấy không phải remote được chọn ở runtime. Phân biệt hai loại dependency trước khi tối ưu workflow; xem [Monorepo và multi-repo](/docs/kiem-thu-va-tooling/monorepo-multi-repo).
+
+Nếu team luôn muốn deploy toàn bộ giao diện cùng lúc và chưa cần boundary release, một pipeline frontend chung có thể đơn giản hơn. Đừng tạo thêm promotion service chỉ để mỗi thư mục có một nút deploy.
+
+## Tách CI artifact và promotion
+
+CI trả lời “source này có đủ điều kiện tạo candidate không?”. CD trả lời “artifact đã được kiểm thử này có được môi trường đích chọn không?”. Tách hai câu hỏi giúp bạn không rebuild code sau approval và không cấp quyền production cho job chạy test từ PR.
+
+### Luồng cho một catalog candidate
+
+```text
+Source catalog
+      │ CI: install, lint, unit, source contracts, build
+      ▼
+Artifact catalog bất biến
+      │ CD: publish candidate, test với release set đã pin
+      ▼
+Bằng chứng gate cho candidate và tổ hợp đích
+      │ Approval, kiểm tra revision, đổi selection
+      ▼
+Môi trường chọn catalog mới; shell và cart giữ nguyên
+```
+
+Publish và promote là hai thao tác khác nhau. Publish đưa toàn bộ bytes lên storage/CDN dưới URL chưa được production chọn. Promote đổi mapping hoặc routing để document mới nhận release đó. Upload thành công chưa có nghĩa người dùng đang chạy bản mới; promote thành công cũng chưa có nghĩa mọi tab cũ đã đổi code.
+
+Với shell, đường deploy có thể là đổi route tới HTML tĩnh hoặc rollout một server image, không phải thay trường remote trong manifest. Vẫn giữ nguyên nguyên tắc: test đúng artifact/server image sẽ chạy và không kéo theo một lần rebuild remote.
+
+### Phân chia quyền sở hữu
+
+| Owner | Trách nhiệm |
+| --- | --- |
+| Domain team | Source, public contract, test suite, release notes và rollback candidate của app mình |
+| Shell hoặc composition owner | Consumer expectations, support window, tổ hợp release được chấp nhận |
+| Platform | Workflow dùng chung, artifact store, quyền publish/promote, audit và isolation |
+| Release approver theo policy | Chấp nhận thay đổi cho môi trường đích và xử lý rủi ro còn lại |
+
+Workflow có thể dùng chung template mà vẫn có release ownership riêng. Ngược lại, việc platform duy trì pipeline không nên biến platform thành người duy nhất biết catalog có tương thích với shell hay không.
+
+## Chọn app cần kiểm tra
+
+Có hai danh sách khác nhau: **app cần chạy CI** vì đầu vào build/test thay đổi, và **tổ hợp runtime cần verify** vì public boundary có thể bị ảnh hưởng. Không suy danh sách thứ hai chỉ từ đường dẫn Git.
+
+### Monorepo và affected graph
+
+Với shop nhỏ, mình bắt đầu bằng CI cho cả ba app nhưng promote từng app riêng. Cách này tốn thêm checks, đổi lại dễ audit và ít bỏ sót dependency. Khi thời gian CI thực sự thành vấn đề, mới thay bằng affected graph.
+
+| Thay đổi | CI cần xem xét | Runtime gate trước release |
+| --- | --- | --- |
+| Nội bộ catalog | Catalog và consumers build-time nếu có | Catalog candidate với shell được hỗ trợ; journey qua cart nếu liên quan |
+| Public contract catalog | Provider và consumer contract suites | Các cặp consumer/provider theo support policy |
+| `packages/contracts` | Package và consumers bị tác động | Các boundary dùng contract đổi, kể cả artifacts đã release |
+| `packages/ui` | Package và app consume nó ở build time | Render, accessibility và shared framework nếu liên quan |
+| Lockfile hoặc build tooling | Mặc định kiểm tra rộng; thu hẹp khi có graph đáng tin | App có artifact mới và các runtime edges liên quan |
+| Workflow hoặc release policy | Kiểm tra pipeline và những job dùng cấu hình đó | Không tự coi đây là thay đổi không ảnh hưởng production |
+
+Một filter chỉ gồm `apps/catalog/**` sẽ bỏ sót shared config, lockfile và package dùng chung. Nx/Turborepo hỗ trợ dependency graph và task cache, nhưng bạn vẫn phải khai báo đủ inputs và runtime integration policy.
+
+<Callout type="warn" title="Path filter có thể làm required checks bị treo">
+  GitHub Actions có thể không khởi chạy workflow khi branch/path filter không khớp; required check tương ứng có thể giữ trạng thái pending. Với affected CI, dùng một workflow điều phối luôn chạy, công bố app bị ảnh hưởng và một check tổng hợp ổn định.
+
+  Check tổng hợp chỉ pass khi mọi job bắt buộc đã pass hoặc có quyết định không bị ảnh hưởng rõ ràng. Không chuyển lỗi tính graph thành “không có app nào cần test”.
+</Callout>
+
+### Multi-repo và integration inventory
+
+Multi-repo không có một checkout chung để suy toàn bộ graph. Mỗi repository build candidate của mình; integration inventory lưu app nào đang ở môi trường nào, artifact digest, public contract và những consumers còn được hỗ trợ.
+
+Khi catalog có candidate, pipeline lấy shell/cart từ inventory bằng release ID và digest. Không checkout branch `main` của mọi repo rồi gọi đó là test với production: source mới nhất và artifact đang phục vụ người dùng có thể khác nhau.
+
+Một registry tập trung có thể hỗ trợ truy vấn compatibility và gửi thông báo. Nó không nên rebuild tất cả app mỗi khi một provider có candidate; nhiệm vụ của nó là xác định cần verify với ai và giữ bằng chứng cho quyết định promote.
+
+## Định danh artifact và release set
+
+Trước khi viết YAML, chốt cách nhận diện thứ bạn sẽ deploy. Commit SHA, package version và release ID không phải cùng một khái niệm.
+
+### Artifact phải bất biến
+
+| Trường | Mục đích |
+| --- | --- |
+| `app` | Đơn vị build/deploy, ví dụ `catalog` |
+| `sourceSha` | Commit được checkout để build |
+| `releaseId` | Một lần tạo candidate; không tái sử dụng cho bytes khác |
+| `artifactDigest` | Định danh bytes của archive hoặc image thực tế |
+| Toolchain và lockfile | Truy nguồn đầu vào và tái lập build |
+| Public contract | Khả năng mà consumer có thể dựa vào; cần được verify |
+| CI run và provenance | Nơi tạo artifact, workflow identity và bằng chứng nguồn gốc |
+
+Cùng một commit có thể tạo hai artifact khác nhau nếu toolchain, environment hoặc dependency resolution khác nhau. Vì vậy, approval và test evidence cần gắn với digest, không chỉ với SHA.
+
+Với static remote, publish theo prefix riêng cho mỗi release:
+
+```text
+https://assets.example.com/catalog/releases/<release-id>/remoteEntry.js
+https://assets.example.com/catalog/releases/<release-id>/<chunk-co-hash>.js
+```
+
+Các URL trên là mẫu, không phải endpoint để chạy thử. Giữ bất biến cả graph: entry, chunks, CSS, fonts và các assets mà build tham chiếu. Entry chưa có content hash vẫn có thể cache immutable nếu đường dẫn chứa release ID và bạn không overwrite release đó.
+
+Không chạy đồng bộ kiểu `--delete` lên thư mục đang chứa mọi release. Tab cũ có thể cần tải lazy chunk của bản cũ sau khi manifest đã chọn bản mới.
+
+### Release set pin các build thật
+
+Ví dụ dưới đây là **schema nội bộ minh họa**, không phải manifest chuẩn của webpack hoặc Module Federation. Các digest dạng placeholder phải được thay bằng giá trị thật do pipeline ghi nhận.
+
+```json title="integration-release-set.json"
+{
+  "schemaVersion": 1,
+  "revision": "prod-104",
+  "shell": {
+    "releaseId": "shell-s17",
+    "artifactDigest": "sha256:<shell-digest>",
+    "entry": "https://assets.example.com/shell/releases/s17/index.html"
+  },
+  "remotes": {
+    "catalog": {
+      "releaseId": "catalog-c42",
+      "artifactDigest": "sha256:<catalog-digest>",
+      "entry": "https://assets.example.com/catalog/releases/c42/remoteEntry.js"
+    },
+    "cart": {
+      "releaseId": "cart-k09",
+      "artifactDigest": "sha256:<cart-digest>",
+      "entry": "https://assets.example.com/cart/releases/k09/remoteEntry.js"
+    }
+  }
+}
+```
+
+Candidate set được tạo bằng cách thay **một app** trong snapshot đích. Ví dụ thay catalog `c42` bằng `c43`, giữ shell `s17` và cart `k09`. Snapshot có thể chứa thông tin phục vụ gate nhiều hơn manifest mà browser nhận; runtime endpoint chỉ cần công bố cấu hình public cần thiết, không credentials hoặc dữ liệu nội bộ.
+
+Với SSR, release set phải nhận diện cả server artifact và browser artifact tương thích. Một URL remote browser không mô tả đủ tổ hợp đang render trên server.
+
+## Workflow CI cho từng app
+
+Workflow sau tạo candidate riêng cho từng app trong một monorepo. Nó cố ý không deploy và không dùng path filter. Một PR chỉ sửa catalog vẫn có thể chạy checks của ba app; **kiểm tra rộng không đồng nghĩa phải release rộng**.
+
+### Chuẩn hóa script trước khi thêm workflow
+
+Mỗi workspace được chọn cần các script sau, chạy một lần rồi kết thúc với exit code khác `0` khi lỗi:
+
+| Script | Cam kết |
+| --- | --- |
+| `lint` | Kiểm tra source và quy tắc boundary đã cấu hình |
+| `test:unit` | Unit/component suite ở chế độ CI, không watch |
+| `test:contract` | Public provider/consumer checks ở source; chưa thay artifact integration gate |
+| `build` | Production build ghi ra `apps/<app>/dist` |
+
+Thêm `typecheck` khi app hoặc public contract dùng TypeScript; lab JavaScript ban đầu không tự có bước này. Không dùng `--if-present` cho check bắt buộc vì thiếu script phải làm pipeline fail, không phải trở thành một ô xanh.
+
+Workflow giả định shared packages không cần compile trước, hoặc script `build` của app đã chạy đúng prerequisites. Nếu package như `@shop/ui` xuất ra `dist`, bổ sung task graph build package trước consumer. `npm run build --workspace=@shop/catalog` không tự suy topological order cho bạn.
+
+### Build và đóng gói candidate
+
+```yaml title="shop-workspace/.github/workflows/ci-apps.yml"
+name: CI apps
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+  # PR cũ có thể bị hủy. Run main tạo candidate thì không hủy giữa chừng.
+concurrency:
+  group: ci-apps-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  candidate:
+    name: CI ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [shell, catalog, cart]
+    env:
+      CI: 'true'
+      APP: ${{ matrix.app }}
+      SOURCE_SHA: ${{ github.sha }}
+      RELEASE_ID: ${{ matrix.app }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+      - run: npm run lint --workspace=@shop/${APP}
+      - run: npm run test:unit --workspace=@shop/${APP}
+      - run: npm run test:contract --workspace=@shop/${APP}
+      - run: npm run build --workspace=@shop/${APP}
+
+      - name: Package exact build output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "apps/${APP}/dist/index.html"
+          if [ "$APP" != "shell" ]; then
+            test -s "apps/${APP}/dist/remoteEntry.js"
+          fi
+          mkdir -p candidate
+          tar -czf candidate/site.tar.gz -C "apps/${APP}/dist" .
+          (cd candidate && sha256sum site.tar.gz > site.tar.gz.sha256)
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const hashFile = (path) => createHash('sha256')
+            .update(readFileSync(path)).digest('hex');
+          const record = {
+            app: process.env.APP,
+            releaseId: process.env.RELEASE_ID,
+            sourceSha: process.env.SOURCE_SHA,
+            artifactDigest: `sha256:${hashFile('candidate/site.tar.gz')}`,
+            lockfileDigest: `sha256:${hashFile('package-lock.json')}`,
+            nodeVersion: process.version,
+            npmVersion: execFileSync('npm', ['--version'], {
+              encoding: 'utf8',
+            }).trim(),
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+          };
+          writeFileSync('candidate/release.json', JSON.stringify(record, null, 2));
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE_ID }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 14
+```
+
+`14` ngày chỉ là retention minh họa cho artifact của CI, không phải policy giữ release trên CDN. Artifact store dành cho rollback/tab cũ phải có retention riêng và không phụ thuộc việc GitHub xóa artifact của một workflow run.
+
+Major tags trong ví dụ giúp YAML dễ đọc; khi áp dụng cho production, pin actions vào commit SHA đã review và dùng cơ chế update có kiểm soát. Ví dụ này không tuyên bố các major trên là version mới nhất. Với self-hosted runners, kiểm tra yêu cầu runtime của action và giữ runner được cập nhật.
+
+### Giới hạn của workflow mẫu
+
+Workflow này giả định mỗi app có standalone `index.html`, và cả catalog/cart đã expose `remoteEntry.js`. Trong lab đầu tiên cart chưa phải remote; hãy chỉ chọn `shell, catalog` cho đến khi cart được triển khai. Với ESM remote, SSR hoặc server app, đổi assertion và cách đóng gói theo artifact thật, không tạo file giả để check pass.
+
+Ở sự kiện PR, `github.sha` thường là commit merge thử của PR; candidate này phục vụ review, **không được mặc định promote lên production**. Đường CD chỉ nhận candidate từ run được xác minh là của workflow tin cậy, trên ref/event được phép, với status thành công. Một run fail ở app bắt buộc không được âm thầm coi là thành công toàn bộ.
+
+File `release.json` và checksum hỗ trợ đối chiếu bytes, nhưng không phải chữ ký chứng minh nguồn gốc. Kẻ thay được archive có thể thay cả checksum. Release registry hoặc attestation đáng tin phải ghi digest và identity của builder; CD đối chiếu với nguồn đó, không chỉ đọc lời khai bên trong artifact.
+
+Cuối cùng, source contracts xanh chưa chứng minh webpack expose đúng module, runtime sharing đúng hoặc browser tải được chunks. Candidate còn phải đi qua gate sau đây.
+
+## Release gate kiểm tra đúng tổ hợp
+
+Gate được thiết kế theo rủi ro và cửa sổ hỗ trợ, không theo “latest của mọi thứ”. Test cùng HEAD chỉ cho biết thay đổi có phối hợp trong source chạy được; production vẫn có thể ghép app mới với app cũ.
+
+### Ma trận tương thích tối thiểu
+
+Giả sử `H1` là shell đang chạy, `H2` là shell candidate, `C1` là catalog hiện tại/rollback target và `C2` là catalog candidate. Đây là IDs minh họa.
+
+| Cặp | Quyết định được bảo vệ |
+| --- | --- |
+| `H1 + C1` | Baseline vẫn chạy; môi trường test không hỏng từ trước |
+| `H1 + C2` | Catalog được release trước shell |
+| `H2 + C1` | Shell được release trước catalog hoặc catalog rollback |
+| `H2 + C2` | Tổ hợp mới sau migration |
+
+Release catalog không nhất thiết phải đợi có `H2`. Nó cần pass với các consumer đã công bố còn được hỗ trợ, trong đó có `H1` và có thể nhiều shell cũ hơn. Khi release shell, kiểm tra chiều consumer candidate với remotes hiện tại và rollback targets.
+
+Cart thêm các runtime edges thật, không mặc định nhân tất cả version thành tích Descartes. Ví dụ thay đổi callback “thêm vào giỏ” cần gate xuyên catalog → cart và shell badge; sửa layout nội bộ catalog có thể chỉ cần artifact render smoke cùng các regression checks đã chọn.
+
+Support inventory không chỉ gồm release đang được endpoint chọn. Tab shell cũ còn sống có thể tải một remote lần đầu sau deploy. Policy phải bao quát các consumer đó hoặc quy định rõ thời điểm hết hỗ trợ và trải nghiệm reload.
+
+### Kiểm thử artifact qua đường tải thật
+
+Publish candidate vào prefix immutable, rồi dựng preview/harness chọn đúng release set. Mình dùng production build, không dùng dev server làm bằng chứng cho URL chunk và cache của production.
+
+Gate nên có các lớp sau:
+
+1. **Contract verification:** provider candidate đáp ứng expectations của consumer còn được hỗ trợ; giữ fixtures/version cũ thay vì cập nhật tất cả cùng HEAD.
+2. **Artifact smoke:** browser tải đúng entry, resolve public module và render/mount được. Kiểm tra shared React khi boundary dùng React chung.
+3. **Journey quan trọng:** đi qua các frontend và backend cần thiết, với dữ liệu test được cô lập. Mock API có kiểm soát được, nhưng không mock remote đang cần verify.
+4. **Failure path:** entry/chunk lỗi hoặc timeout thì shell giữ navigation và fallback đúng; cleanup không để subscription/timer tồn tại sai.
+5. **Rollback path:** tổ hợp sau rollback vẫn tương thích, kể cả consumer mới và tab cũ còn được hỗ trợ.
+
+HTTP `200` của `remoteEntry.js` chỉ là một kiểm tra transport. Origin có thể trả HTML fallback với `200`, module key có thể thiếu, hoặc chunk lazy vẫn `404`. Dùng browser test và quan sát release ID/URL thực tế, không chỉ assert một dòng text xuất hiện giống nhau giữa hai release.
+
+Nếu test đi qua preview origin nhưng production dùng CSP, CDN hoặc base path khác, bổ sung smoke trên delivery path tương đương production và post-promote smoke cho chính URL production. Không tuyên bố test staging đã kiểm chứng mọi response header của production.
+
+### Lưu bằng chứng gắn với digest
+
+Một verification record nên chứa:
+
+| Nhóm thông tin | Nội dung cần lưu |
+| --- | --- |
+| Candidate | App, release ID, artifact digest, CI provenance |
+| Tổ hợp | Digest của release set, consumer/provider builds và base revision |
+| Suite | Contract expectations, harness version và browser/toolchain cần tái lập |
+| Kết quả | Trạng thái từng check bắt buộc, test run URL, thời điểm chạy |
+| Môi trường | Runtime config, backend/fixtures và policy version liên quan |
+
+Gate fail-closed khi thiếu bằng chứng, candidate digest đổi hoặc release set không còn đúng. Artifact test reports, traces và screenshots hữu ích để điều tra, nhưng cần retention và access control vì chúng có thể chứa account, tokens hoặc payload API.
+
+Chi tiết viết suites nằm ở [Contract tests](/docs/kiem-thu-va-tooling/contract-tests) và [Integration và E2E tests](/docs/kiem-thu-va-tooling/integration-e2e). Trang này tập trung vào cách pipeline dùng kết quả đó để quyết định release.
+
+## Promotion không build lại
+
+Promotion nhận artifact đã được CI tạo, không nhận một branch rồi chạy `npm run build` lần nữa. Build mới có digest mới thì phải là candidate mới và đi lại gate tương ứng.
+
+### Đường chạy CD và giao diện adapter
+
+CD nên tách job theo quyền: lấy/xác minh artifact, publish candidate, chạy gate không có quyền production, rồi promote với approval và quyền hẹp. Job publish không thực thi JavaScript hay lifecycle scripts nằm trong candidate. Browser gate thực thi remote trong môi trường cô lập, không mang credentials của production.
+
+Đoạn dưới là **pseudocode cho release runner tin cậy**. `releasectl` là tên adapter nội bộ minh họa, không phải CLI có sẵn trong repo hoặc lệnh cần cài từ npm. Mỗi thao tác cần implementation theo artifact store, CDN và config service bạn chọn.
+
+```bash title="Giao diện CD tham khảo — không phải script chạy sẵn"
+  # Đầu vào: app, CI run/artifact, môi trường; không nhận URL remote tùy ý.
+releasectl fetch-candidate \
+  --app catalog --ci-run "$CI_RUN_ID" \
+  --artifact "$ARTIFACT_NAME" --output candidate/
+
+releasectl verify-candidate \
+  --candidate candidate/ --policy trusted-main-builds
+
+  # Publish đủ graph, không overwrite release ID đã tồn tại với bytes khác.
+releasectl publish-immutable --candidate candidate/
+
+  # Lấy snapshot đích và tạo candidate set chỉ thay catalog.
+releasectl snapshot --environment production --output base-set.json
+releasectl compose \
+  --base base-set.json --candidate candidate/release.json \
+  --output candidate-set.json
+
+  # Test artifacts thật; ghi evidence vào registry tin cậy.
+releasectl verify-release-set \
+  --set candidate-set.json --policy shop-support-window \
+  --output verification.json
+
+  # Chạy sau approval, đối chiếu lại evidence và revision trước khi ghi.
+releasectl promote \
+  --environment production --set candidate-set.json \
+  --evidence verification.json --expected-base base-set.json
+
+releasectl smoke --environment production --expect-set candidate-set.json
+```
+
+Các lệnh trên mô tả các stage, không có nghĩa chạy tất cả trong cùng một job có quyền production. Approval và authentication nằm ở orchestration của CD; adapter `promote` cũng phải kiểm tra authorization và evidence từ registry.
+
+| Thao tác | Yêu cầu của implementation |
+| --- | --- |
+| `fetch-candidate` | Lấy đúng artifact/run/repo; thiếu hoặc hết retention thì fail, không lấy “latest” thay thế |
+| `verify-candidate` | Xác minh workflow/ref/event/status, provenance và digest; kiểm tra archive paths/symlinks trước khi extract |
+| `publish-immutable` | Chỉ ghi prefix được phép; reject overwrite khác digest; kiểm tra đủ assets qua delivery path |
+| `snapshot` và `compose` | Pin snapshot/digest; validate schema và chỉ thay app được owner phép release |
+| `verify-release-set` | Chạy đủ checks theo policy; thiếu test bắt buộc không được xem là pass |
+| `promote` | Xác minh evidence còn áp dụng; compare-and-swap revision; ghi audit và previous set |
+| `smoke` | Xác nhận app/release được chọn qua đường production và kiểm tra chức năng thiết yếu |
+
+Nếu lấy artifact GitHub Actions từ run khác, cấu hình đúng run ID và token có quyền đọc artifacts của repository đích. Không dùng artifact name làm bằng chứng trust. Digest của archive `site.tar.gz` trong ví dụ cũng khác digest của wrapper artifact do `upload-artifact` tạo; chỉ so các digest cùng loại.
+
+<Callout type="warn" title="Checksum mismatch phải chặn deploy">
+  GitHub Actions có digest validation khi tải workflow artifact, nhưng tài liệu của GitHub mô tả mismatch như một warning. Đường release của bạn cần kiểm tra riêng và fail khi digest không khớp nguồn tin cậy; không coi log warning là release gate.
+</Callout>
+
+### Cập nhật atomic và chống ghi đè
+
+Giả sử pipeline catalog và pipeline cart cùng đọc revision `prod-104`. Catalog tạo set với `c43`, cart tạo set với `k10`. Nếu cả hai ghi toàn bộ JSON mà không kiểm tra revision, lượt ghi cuối có thể trả app còn lại về release cũ.
+
+**Atomic write chưa đủ; còn cần kiểm soát lost update.** Mỗi snapshot phải tự nhất quán, đồng thời promotion chỉ thành công nếu base revision vẫn đúng. Dùng config store có compare-and-swap/transaction, hoặc dịch vụ promotion serialize cập nhật và merge có kiểm chứng.
+
+Một thiết kế an toàn là:
+
+1. Gate kiểm thử candidate set trên base revision xác định.
+2. Sau approval, đọc và đối chiếu revision môi trường đích.
+3. Nếu revision đổi, tạo lại candidate set trên base mới và chạy lại checks chịu tác động; không tự ghi đè bằng set cũ.
+4. Nếu revision đúng, commit snapshot hoàn chỉnh bằng compare-and-swap và ghi previous set.
+5. Chạy smoke và theo dõi theo release ID; khi lỗi, dùng policy rollback đã verify.
+
+GitHub Actions concurrency giúp giảm cạnh tranh trong một repository, ví dụ group `promote-shop-production`. Không thêm tên workflow/app vào group nếu chúng cùng ghi một manifest tổng: như vậy chúng lại chạy đồng thời. Nếu mỗi app có pointer riêng, vẫn phải kiểm soát tương thích khi nhiều pointers đổi.
+
+Concurrency group của hai repository khác nhau không tạo distributed lock. Nó cũng không đảm bảo FIFO hoặc biến workflow cancel thành một transaction. Đặt `cancel-in-progress: false` cho promotion; một write đang chạy không nên bị hủy bởi candidate mới. Nếu cần mọi yêu cầu đều được xử lý, dùng release queue rõ ràng thay vì mặc định GitHub giữ mọi pending run.
+
+Approval có thể đợi lâu, nên kiểm tra revision/evidence lại **sau approval**. Khóa từ lúc bắt đầu E2E đến khi reviewer bấm duyệt thường giữ môi trường quá lâu; optimistic concurrency với revalidation là mặc định mình chọn.
+
+### Runtime configuration và giới hạn build once
+
+Build một lần rồi promote qua staging/production chỉ đúng khi cùng bytes chạy được ở cả hai nơi. API URL, remote mapping và feature flags có thể đi qua runtime config public; secrets phải ở backend hoặc release infrastructure.
+
+Với webpack, `publicPath: 'auto'` có thể giúp chunks đi theo URL entry, nhưng phải test CSS/assets, base path và plugin-specific output thực tế. Biến được bundler inline vào bundle không trở thành runtime config chỉ vì bạn đặt tên có chữ `RUNTIME`.
+
+Nếu staging và production bắt buộc có bundle khác nhau, coi chúng là hai artifacts có digest khác và test từng artifact sẽ deploy. Đừng giữ test evidence staging rồi tuyên bố nó xác minh production bundle mới build.
+
+Khi đổi mapping, publish toàn bộ artifact trước, kiểm tra delivery path, rồi mới promote. Mapping có thể dùng TTL ngắn hoặc revalidation; release artifact immutable có policy cache dài. Thay config không phải lý do purge hoặc overwrite mọi chunk cũ.
+
+## Bảo vệ pipeline và quyền deploy
+
+Remote JavaScript chạy trong document của shell có quyền của document đó. Quyền publish remote vì thế gần với quyền đưa code vào ứng dụng, không chỉ là quyền upload file lên bucket.
+
+| Stage | Quyền mặc định nên có |
+| --- | --- |
+| PR CI | Read source, install/build/test; không có quyền publish production |
+| Candidate publish | Ghi đúng namespace artifact của app; không được đổi production mapping |
+| Integration gate | Đọc artifacts và môi trường test riêng; không có quyền promote |
+| Production promotion | Chỉ đổi selection được cho phép, sau protection rules và gate |
+| Retention cleanup | Job riêng với policy xóa; không trao quyền xóa mọi release cho publisher |
+
+Dùng OIDC khi nền tảng hỗ trợ để lấy credentials ngắn hạn. `id-token: write` chỉ cho phép yêu cầu OIDC token; quyền cloud đến từ role/trust policy. Giới hạn trust theo repository, workflow/ref hoặc environment identity thực tế, và giới hạn resource/action trong cloud policy. Một role chấp nhận mọi token của organization vẫn quá rộng dù credential hết hạn nhanh.
+
+Environment protection rules có thể kiểm soát reviewer và branch được deploy; cấu hình chúng thật trong repository, không chỉ thêm `environment: production` vào YAML. Với reusable workflow, caller gọi ở cấp job và environment cho deployment job cần đặt đúng trong workflow được gọi. Kiểm tra cách truyền inputs, permissions và secrets thay vì mặc định `secrets: inherit` là lựa chọn an toàn.
+
+Các điểm cần giữ riêng:
+
+- Không dùng `pull_request_target` để checkout rồi chạy source của PR với token/secrets đặc quyền.
+- Không dùng `workflow_run` hoặc manual dispatch làm bằng chứng candidate đáng tin; luôn xác minh run/artifact nguồn.
+- Fork PR trên persistent self-hosted runner có thể để lại process hoặc files cho job sau. Ưu tiên runner cô lập, tạm thời cho code chưa tin cậy.
+- Pin third-party actions và workflow templates; review thay đổi dưới `.github`, build tooling và release policy.
+- Dùng allowlist app/environment và đường dẫn publish. Không cho input từ PR chọn tùy ý bucket, role, script hoặc remote URL production.
+- Source maps, test traces và build logs không được chứa secrets. Nếu gửi source maps tới error tracker, dùng kênh private phù hợp thay vì mặc định public trên CDN.
+
+Checksum bảo vệ integrity khi so với một digest tin cậy. Attestation/provenance bổ sung ai tạo artifact và từ đâu; nó không chứng minh contract hay tính đúng của nghiệp vụ. Cần cả supply-chain checks và runtime gate.
+
+## Cache và thời gian chạy CI
+
+Cache giúp tránh lặp công việc, không thay release evidence. Có ba loại cần phân biệt:
+
+| Loại | Cách dùng | Giới hạn |
+| --- | --- | --- |
+| Package download cache | Giữ npm package tarballs để `npm ci` nhanh hơn | Vẫn install theo lockfile; không chứng minh build đúng |
+| Task/build cache | Tái sử dụng output khi đầy đủ inputs trùng | Inputs thiếu có thể trả artifact stale |
+| Release artifact store | Giữ bytes đã test theo digest/release ID | Đây là đầu vào deploy, không phải cache tùy ý có thể bị thay |
+
+`setup-node` với `cache: npm` cache dữ liệu package manager, không tự biến `node_modules` thành kết quả install dùng lại. Vẫn chạy `npm ci` từ root với lockfile đã commit.
+
+Build cache key cần xét source, dependency graph, lockfile, config bundler, version toolchain, build-time environment và output thực tế. Integration cache/evidence còn phụ thuộc các consumer/provider digests, config, fixtures/backend và test harness. Chỉ dùng commit SHA của catalog là chưa đủ cho gate ghép catalog với shell khác.
+
+Không cho cache từ code chưa tin cậy trở thành đầu vào đặc quyền mà không có isolation/policy phù hợp. Với shared packages đã build, đảm bảo restored outputs đầy đủ và đúng consumer graph. Đo thời gian install, build và tests riêng trước khi thêm cache; cache không sửa được E2E chờ trạng thái sai hoặc backend test thiếu isolation.
+
+## Rollback và thay đổi breaking
+
+Rollback thông thường chọn lại artifact cũ đã tồn tại và được verify với tổ hợp hiện tại. Không checkout tag cũ rồi build lại dưới cùng release ID: toolchain hoặc dependencies có thể đổi, và URL immutable không được nhận bytes mới.
+
+Trước khi cho phép rollback catalog, hỏi: shell đã promote sau đó còn dùng được catalog cũ không? Nếu shell mới bắt buộc một export chỉ catalog mới có, rollback riêng catalog không còn an toàn. Gate phải chặn tổ hợp ấy hoặc migration phải có fallback/dual support.
+
+Với thay đổi breaking, mình dùng expand–migrate–contract:
+
+1. Provider thêm API/event mới nhưng giữ contract cũ.
+2. Consumers nâng cấp riêng, vẫn tương thích với provider trong cửa sổ hỗ trợ.
+3. Theo dõi inventory và các client cũ theo policy đã công bố.
+4. Chỉ bỏ contract cũ sau khi kết thúc cửa sổ hỗ trợ và đã kiểm tra rollback targets.
+
+Pointer rollback ảnh hưởng các document chọn release sau đó. Tab đã tải container có thể tiếp tục dùng module cache và references của release lỗi; đổi JSON không hot-unload remote. Cần fallback, reload ở thời điểm an toàn hoặc backend control cho thao tác nhạy cảm tùy incident.
+
+Artifact retention phải bao quát rollback window và lazy chunks của tab cũ còn được hỗ trợ. Nếu có service worker, kiểm tra lifecycle/cache riêng; xóa cache CDN không reset service worker hoặc runtime đang sống.
+
+Canary cũng cần giữ một release selection nhất quán theo cohort/document. Theo dõi lỗi theo candidate và tổ hợp release, không chỉ một tỷ lệ lỗi gộp của toàn shop. Chi tiết rollout nằm ở [Rollout và rollback](/docs/trien-khai/rollout-rollback).
+
+## Chẩn đoán pipeline thất bại
+
+| Dấu hiệu | Kiểm tra trước | Cách xử lý |
+| --- | --- | --- |
+| `npm ci` fail | Manifest/lockfile, registry auth, Node/npm | Sửa dependency inputs có review; không xóa lockfile để CI resolve lại |
+| Source tests xanh, artifact gate đỏ | Exposed key, chunk URL, shared dependencies, production output | Verify đúng production artifact và consumer builds; không chỉ chạy lại dev server |
+| Required check luôn pending | Workflow branch/path filters | Dùng orchestrator/check tổng hợp luôn chạy và affected result rõ ràng |
+| Artifact không tìm thấy | Run ID, name, retention, quyền đọc | Fail rõ ràng; không fallback sang candidate khác |
+| Digest mismatch | Archive thực tế, digest nguồn, loại digest đang so | Chặn deploy và điều tra, không bỏ qua warning |
+| Gate pass nhưng revision conflict | App khác vừa promote trong thời gian test/approval | Tạo lại candidate set và revalidate trước khi ghi |
+| Promote làm mất release mới của app khác | Whole-document write thiếu CAS | Sửa promotion transaction; concurrency local không đủ |
+| Entry tốt nhưng tab cũ lỗi chunk | Retention, overwrite release, public path, service worker | Giữ/khôi phục graph cũ cần thiết; purge entry không giải quyết root cause |
+| Rollback không đổi UI tab đang mở | Container/module cache và snapshot trong document | Áp dụng policy fallback/reload; không chèn hai release cùng scope để thử |
+
+Một deployment record nên chứa app, previous/new release set, digests, environment, revision, người/workflow yêu cầu và verification IDs. Telemetry runtime cần release context tương ứng để bạn biết lỗi đến từ tổ hợp nào; xem [Observability cho frontend phân tán](/docs/kiem-thu-va-tooling/observability).
+
+## Checklist trước production
+
+- [ ] Mỗi app có artifact riêng; consumer không import implementation source của remote vào bundle.
+- [ ] Một thay đổi tương thích ở catalog không buộc shell/cart rebuild hoặc redeploy.
+- [ ] App selection/affected graph xét shared packages, lockfile, tooling và workflow config.
+- [ ] Checks bắt buộc không dùng `--if-present`, không pass khi thiếu evidence hoặc suite bị skip sai.
+- [ ] Candidate có release ID, digest và provenance; production không nhận artifact PR chưa được policy cho phép.
+- [ ] Entry, chunks và assets publish bất biến trước khi đổi selection.
+- [ ] Integration pin artifacts thật, consumer expectations và runtime config; không dùng “latest” có thể đổi giữa test.
+- [ ] Gate bảo vệ provider mới/consumer cũ, consumer mới/rollback target theo support window.
+- [ ] Promotion dùng đúng bytes đã test, revalidate sau approval và cập nhật bằng CAS/transaction.
+- [ ] Job test không có quyền production; OIDC trust và cloud permissions được giới hạn theo stage/app.
+- [ ] Rollback đã test, release cũ còn đủ chunks cho tab sống và không phụ thuộc retention artifact CI.
+- [ ] Có deployment audit, post-promote smoke và telemetry phân biệt release/cohort.
+
+## Bài tập kiểm chứng deploy độc lập
+
+Thử với hai catalog releases tương thích sau khi workspace đã có runtime selection:
+
+1. Ghi lại digest của shell đang chạy và snapshot release set ban đầu.
+2. Sửa một phần nội bộ catalog, chạy CI để tạo candidate mới. Không sửa public contract.
+3. Publish catalog vào prefix mới, chạy gate với **shell artifact cũ**, rồi promote riêng catalog.
+4. Mở document mới: xác nhận entry catalog đổi và shell digest vẫn giữ nguyên. Cart selection không đổi.
+5. Giữ một tab ở catalog cũ, mở route lazy sau promotion: chunk cũ vẫn phải tải được.
+6. Rollback catalog bằng selection, không build lại. Document mới chọn release cũ; tab đang dùng release mới không được giả định tự đổi.
+7. Tạo thêm một candidate cố ý bỏ expose mà shell cũ cần. Gate phải reject trước promotion.
+8. Cho hai pipeline cùng đọc một base revision rồi lần lượt promote. Lượt thứ hai phải nhận conflict/revalidation, không âm thầm ghi đè app vừa release.
+
+Lưu run URLs, release sets và digests cho từng bước. Bằng chứng rõ nhất của deploy độc lập là catalog thay đổi được, shell/cart không cần release lại, và những tổ hợp không tương thích bị chặn trước khi người dùng nhận chúng.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Hosting, CDN và assets" href="/docs/trien-khai/cdn-assets" description="Thiết kế URL artifact, public paths và delivery path cho entry cùng chunks." />
+  <Card title="Runtime configuration" href="/docs/trien-khai/runtime-configuration" description="Đổi selection và cấu hình public mà không đóng secrets vào bundle." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Canary, rollback targets và hành vi của các tab đang sống." />
+  <Card title="Preview environments" href="/docs/trien-khai/preview-environments" description="Dựng môi trường gate riêng với release set có thể tái lập." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [GitHub Actions — Workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax): workflow permissions, events, expressions và giới hạn path filters.
+- [GitHub Actions — Store and share data](https://docs.github.com/en/actions/tutorials/store-and-share-data): workflow artifacts, retention và digest validation.
+- [GitHub Actions — Reuse workflows](https://docs.github.com/en/actions/how-tos/sharing-automations/reuse-workflows): `workflow_call`, inputs, secrets và permissions khi dùng workflow chung.
+- [GitHub Actions — Control concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency): phạm vi concurrency group, cancellation và thứ tự xử lý.
+- [GitHub Actions — OIDC với AWS](https://docs.github.com/en/actions/how-tos/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services): identity token, trust policy và environment restrictions.
+- [npm — npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci): install theo lockfile cho CI.
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/): separate builds, runtime containers và dynamic remotes.

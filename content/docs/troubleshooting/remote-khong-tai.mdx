@@ -1,18 +1,425 @@
 ---
 title: "Remote không tải được"
-description: "Kiểm tra URL, network, CORS, public path và remote entry khi loading thất bại."
+description: "Runbook khoanh vùng lỗi tải remote: kiểm tra URL, remote entry, CORS, CSP, container, publicPath và chunks sau deploy."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Shell vẫn hiện header nhưng vùng catalog chỉ báo lỗi loading. Bạn mở `remoteEntry.js` thấy HTTP `200`, vậy vì sao remote vẫn không chạy? Entry mới là một bước: browser còn phải thực thi script, tìm đúng container, khởi tạo shared dependencies và tải chunk chứa module được expose.
+
+Bài này giúp bạn tìm **bước đầu tiên bị lỗi** trước khi sửa config. Mặc định mình kiểm tra Network và Console trước, không bắt đầu bằng xóa cache hay thêm CORS vào mọi response.
+
+<Callout type="info" title="Phạm vi ví dụ">
+  Phần cấu hình dùng webpack 5 với `ModuleFederationPlugin` tích hợp, remote dạng classic script trong browser. Ví dụ tiếp nối [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien): shell ở `http://localhost:3000`, catalog ở `http://localhost:3001`, container `shop_catalog`, public key `./CatalogPage`.
+
+  Các đường dẫn `shop-workspace/...` thuộc workspace thực hành riêng, không phải repo Next.js + Fumadocs này. URL `assets.example.com` và release `r18` chỉ là minh họa production. Với Vite/ESM hoặc runtime enhanced, cần đối chiếu đúng plugin và remote format; không áp dụng cách kiểm tra global của webpack script cho mọi runtime.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Khoanh vùng nhanh theo triệu chứng](#khoanh-vùng-nhanh-theo-triệu-chứng)
+- [Đường tải remote cần kiểm tra](#đường-tải-remote-cần-kiểm-tra)
+- [Thu thập bằng chứng trước khi sửa](#thu-thập-bằng-chứng-trước-khi-sửa)
+  - [Ghi lại lần lỗi ban đầu](#ghi-lại-lần-lỗi-ban-đầu)
+  - [Tìm request thất bại đầu tiên](#tìm-request-thất-bại-đầu-tiên)
+- [Kiểm tra URL và response của entry](#kiểm-tra-url-và-response-của-entry)
+  - [Đối chiếu URL thực tế với config](#đối-chiếu-url-thực-tế-với-config)
+  - [Dùng curl để kiểm tra HTTP](#dùng-curl-để-kiểm-tra-http)
+  - [HTTP 200 nhưng nội dung không phải JavaScript](#http-200-nhưng-nội-dung-không-phải-javascript)
+- [Phân biệt CORS và các policy của browser](#phân-biệt-cors-và-các-policy-của-browser)
+  - [CORS phụ thuộc cách tải remote](#cors-phụ-thuộc-cách-tải-remote)
+  - [CSP mixed content và CORP](#csp-mixed-content-và-corp)
+- [Entry tải được nhưng container không dùng được](#entry-tải-được-nhưng-container-không-dùng-được)
+  - [Kiểm tra tên và format container](#kiểm-tra-tên-và-format-container)
+  - [Kiểm tra public key và bước initialize](#kiểm-tra-public-key-và-bước-initialize)
+- [Entry thành công nhưng chunk thất bại](#entry-thành-công-nhưng-chunk-thất-bại)
+  - [Chunk tải nhầm origin hoặc prefix](#chunk-tải-nhầm-origin-hoặc-prefix)
+  - [Chunk đúng URL nhưng không còn tồn tại](#chunk-đúng-url-nhưng-không-còn-tồn-tại)
+- [Worked example sửa publicPath](#worked-example-sửa-publicpath)
+- [Giảm ảnh hưởng và phục hồi an toàn](#giảm-ảnh-hưởng-và-phục-hồi-an-toàn)
+- [Checklist xác nhận đã sửa](#checklist-xác-nhận-đã-sửa)
+- [Thông tin cần gửi khi escalation](#thông-tin-cần-gửi-khi-escalation)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Khoanh vùng nhanh theo triệu chứng
 
-Bài này sẽ giúp bạn: kiểm tra URL, network, CORS, public path và remote entry khi loading thất bại.
+Thông báo của runtime khác nhau theo plugin và version. Bảng này là hướng kiểm tra đầu tiên, không phải ánh xạ chắc chắn từ một error string sang một nguyên nhân.
 
-[Xem các bài trong nhóm Xử lý sự cố](/docs/troubleshooting).
+| Dấu hiệu | Kiểm tra trước | Hướng xử lý khi có bằng chứng |
+| --- | --- | --- |
+| Không có request entry | Route có chạy tới import không; config có resolve/validate xong không | Sửa bootstrap, alias hoặc config; kiểm tra request có bị browser chặn trước khi gửi |
+| `ERR_CONNECTION_REFUSED`, DNS/TLS error | Hostname, port, dev server, VPN và certificate | Khởi động đúng server hoặc sửa endpoint/network |
+| Entry `404` | Đường dẫn deploy, prefix release, artifact upload | Sửa mapping URL hoặc publish artifact bị thiếu |
+| Entry `301/302`, `401/403` | Redirect đăng nhập, quyền object storage/CDN, WAF | Sửa policy truy cập asset; không đưa token vào URL để lách lỗi |
+| Entry `200`, response là HTML | SPA fallback, trang login hoặc error page của proxy | Tách asset route khỏi fallback; asset thiếu phải trả lỗi đúng nghĩa |
+| Console báo CORS | Request dùng `fetch`, ESM hoặc script có `crossorigin` | Kiểm tra CORS trên response thực tế và toàn bộ module/chunk cần tải |
+| Console báo CSP, mixed content hoặc CORP | Policy của shell và headers trên assets | Sửa policy đúng lớp, không tắt bảo vệ của browser |
+| `ScriptExternalLoadError` hoặc container bị thiếu | Entry response, lỗi execute, tên container và format | Khớp container name, sửa script lỗi hoặc integration format |
+| `Module "./CatalogPage" does not exist in container` | Public key trong release thực được tải | Sửa `exposes`/import hoặc chọn lại release tương thích |
+| `ChunkLoadError`, `Loading chunk ... failed` | URL chunk, status, response body và release prefix | Phân biệt sai `publicPath`, asset bị xóa, policy chặn và request treo |
+| Shared version mismatch, `Invalid hook call` | Share scope, versions và React identity | Chuyển sang bài shared dependencies; không tiếp tục đổi URL |
+| Module đã tải nhưng UI/API lỗi | Export contract, render/mount hoặc API request | Điều tra đúng boundary; đây không còn chỉ là lỗi tải entry |
+
+Nếu người dùng đang bị ảnh hưởng trên production, giữ fallback của shell hoạt động và cân nhắc rollback release đã xác định lỗi trong lúc điều tra. Không cần chờ tìm được mọi chi tiết mới giảm ảnh hưởng.
+
+## Đường tải remote cần kiểm tra
+
+```text
+Route của shell → resolve URL → tải và chạy remoteEntry.js
+                                        │
+                                        ▼
+                         container → init/get → tải chunk
+                                                      │
+                                                      ▼
+                                             evaluate → render
+```
+
+Với webpack, các bước initialize, `get` và tải shared chunks có thể xen kẽ; sơ đồ dùng để khoanh vùng, không mô tả đầy đủ thứ tự nội bộ của runtime.
+
+`remoteEntry.js` giống mục lục chỉ tới những phần code khác của remote. Nhận được mục lục không chứng minh các phần đó còn tồn tại. Phép so sánh chỉ giúp nhớ hai lớp entry–chunk; entry thực tế là JavaScript có logic runtime, không phải một danh sách URL tĩnh.
+
+Standalone catalog chạy được cũng chưa chứng minh shell consume được catalog. Standalone có HTML/entry riêng và có thể dùng đường tải khác; cần kiểm tra chính federated import `catalog/CatalogPage` từ shell.
+
+## Thu thập bằng chứng trước khi sửa
+
+### Ghi lại lần lỗi ban đầu
+
+Trước khi reload, ghi lại URL trang, route, thời điểm kèm timezone, shell release, config revision, remote release được chọn và lỗi Console đầu tiên. Nếu runtime chưa tải thành công remote, gọi đó là **release được chọn**, không khẳng định đây là release đã chạy.
+
+Trong DevTools, bật **Preserve log** ở Network và Console trước lần tái hiện tiếp theo. Ghi lại request entry/chunk, status, headers, response body liên quan và cột Initiator. Chú ý response đến từ network, memory/disk cache hay service worker.
+
+Sau khi đã giữ bằng chứng, thử với **Disable cache** khi DevTools mở và mở một document mới để đối chiếu. Thao tác này kiểm tra HTTP cache của browser, không tự purge CDN, xóa module đã evaluate hoặc bypass mọi service worker. Nếu site có service worker, dùng chế độ bypass network của công cụ browser cho một lần kiểm chứng có kiểm soát; chưa cần unregister hay xóa storage người dùng.
+
+<Callout type="warn" title="Không gửi nguyên HAR hoặc Copy as cURL vào ticket công khai">
+  HAR và lệnh sao chép từ DevTools có thể chứa cookie, Authorization, signed URL, query nhạy cảm hoặc dữ liệu response. Loại bỏ các phần đó và chỉ chia sẻ qua kênh nội bộ được phép. Đừng xóa storage hàng loạt để chẩn đoán vì có thể mất session hoặc thao tác chưa lưu.
+</Callout>
+
+### Tìm request thất bại đầu tiên
+
+Lọc Network theo `remoteEntry`, rồi theo tên chunk trong lỗi. Nếu không thấy entry, bỏ bộ lọc và kiểm tra config/manifest cùng toàn bộ request thất bại.
+
+1. **Không gọi tới import:** kiểm tra route, feature flag, lazy boundary và lỗi shell xảy ra trước đó. Một route chưa được mở không nhất thiết phải tải remote.
+2. **URL chưa resolve:** kiểm tra config schema, allowlist, alias và network request của config. Runtime enhanced có thể tải manifest trước entry; lỗi manifest cũng dừng đường tải này.
+3. **URL đã resolve nhưng request bị chặn:** xem Console và lý do blocked trong DevTools, chẳng hạn CSP hoặc mixed content.
+4. **Entry thành công:** chuyển sang container và chunk; đừng chỉ nhìn status của entry.
+
+Nếu chỉ một máy lỗi với `ERR_BLOCKED_BY_CLIENT`, kiểm tra extension/content blocker trong profile sạch được phép dùng. Nếu nhiều người cùng lỗi, ưu tiên bằng chứng từ deploy/config/CDN thay vì kết luận lỗi browser cá nhân.
+
+## Kiểm tra URL và response của entry
+
+### Đối chiếu URL thực tế với config
+
+Với lab webpack, mối nối phải là:
+
+```js title="Các giá trị cần đối chiếu, không phải config đầy đủ"
+// apps/shell/webpack.config.cjs: ModuleFederationPlugin
+remotes: {
+  catalog: 'shop_catalog@http://localhost:3001/remoteEntry.js',
+}
+
+// apps/catalog/webpack.config.cjs: ModuleFederationPlugin
+name: 'shop_catalog',
+filename: 'remoteEntry.js',
+exposes: {
+  './CatalogPage': './src/CatalogPage.jsx',
+}
+
+// Code trong shell
+import('catalog/CatalogPage');
+```
+
+`catalog` là alias host; `shop_catalog` là container name; `./CatalogPage` là public module key. Tên npm package và tên thư mục không thay thế các giá trị này.
+
+Lấy URL trong **Request URL** làm bằng chứng chính, rồi so với config mà document đang dùng. Config trong repository có thể đã đổi nhưng shell bundle chưa rebuild, hoặc document đang giữ runtime snapshot cũ. Với `remotes` tĩnh trong webpack config, sửa URL cần build/deploy lại shell; với runtime config, cần xác nhận loader thực sự consume revision mới.
+
+Trong production, `localhost` là máy của người dùng, không phải server deploy. Trong container/SSR, nó lại là môi trường thực hiện request phía server. Vì vậy, “curl trên server được” và “browser người dùng tải được” là hai phép kiểm tra khác nhau.
+
+### Dùng curl để kiểm tra HTTP
+
+Chạy từ máy có thể truy cập endpoint. Với lab, mở dev server catalog trước; với production, thay URL bằng endpoint được phép kiểm tra.
+
+```bash title="Kiểm tra GET thật, lưu kết quả vào thư mục tạm"
+ENTRY_URL='http://localhost:3001/remoteEntry.js'
+CHECK_DIR="$(mktemp -d)"
+
+curl --silent --show-error \
+  --connect-timeout 5 --max-time 15 \
+  --dump-header "$CHECK_DIR/headers.txt" \
+  --output "$CHECK_DIR/body.txt" \
+  --write-out 'status=%{http_code}\nurl=%{url_effective}\n' \
+  "$ENTRY_URL"
+
+cat "$CHECK_DIR/headers.txt"
+head -c 300 "$CHECK_DIR/body.txt"
+printf '\nKết quả lưu tại: %s\n' "$CHECK_DIR"
+```
+
+Hai timeout là giá trị minh họa cho thao tác chẩn đoán, không phải SLO của ứng dụng. Lệnh cố ý không dùng `--location` để lộ redirect đầu tiên, và không dùng `--fail` để giữ body của response `4xx/5xx`. **Curl thoát thành công không đồng nghĩa HTTP thành công**; đọc status được in ra.
+
+Kết quả mong đợi cho GET mới là HTTP `200`, MIME JavaScript phù hợp như `text/javascript` hoặc `application/javascript`, và body là artifact JavaScript chứ không phải HTML. Browser dùng cache có thể thấy `304`; khi đó phải xét cả response đã cache, không coi `304` là file rỗng.
+
+Nếu gặp redirect, kiểm tra `Location` và lý do redirect trước khi follow. Không follow redirect kèm credentials tới một origin chưa kiểm chứng. Với `401/403`, xác định policy asset public/private đã thiết kế, thay vì tự thêm cookie hoặc token production vào lệnh.
+
+`curl` không áp dụng CORS/CSP như browser, không dùng cache/service worker của tab, và chưa thực thi JavaScript. Kết quả tốt chỉ xác nhận một phần đường HTTP từ môi trường chạy lệnh.
+
+### HTTP 200 nhưng nội dung không phải JavaScript
+
+Các dấu hiệu như `Content-Type: text/html`, body bắt đầu bằng `<!doctype html>`, lỗi `Unexpected token '<'` hoặc MIME rejection thường dẫn tới một trong các nguồn sau:
+
+- SPA fallback chuyển asset không tồn tại sang `index.html`.
+- Reverse proxy redirect tới login rồi trả trang đăng nhập.
+- CDN/origin trả error page nhưng giữ status `200`.
+- URL trỏ vào trang standalone thay vì container entry.
+
+Kiểm tra body trước, rồi sửa hosting route. Asset route phải trả file đúng hoặc `404`, không rơi vào fallback dành cho navigation. Ví dụ prefix `/catalog/r18/` cần serve artifact graph của release đó; `/catalog/r18/missing.js` phải trả `404`, trong khi deep link của shell có thể có HTML fallback riêng.
+
+Đổi MIME thành JavaScript không sửa được body HTML. `X-Content-Type-Options: nosniff` giúp browser từ chối nội dung sai kiểu; đừng bỏ header này để che hosting bug. Nếu error HTML đã được CDN cache ở URL entry/chunk, sửa origin rồi invalidation đúng URL bị ảnh hưởng theo policy triển khai.
+
+## Phân biệt CORS và các policy của browser
+
+### CORS phụ thuộc cách tải remote
+
+Khác port đã là khác origin: `localhost:3000` và `localhost:3001` không cùng origin. Nhưng khác origin không có nghĩa mọi script đều cần cùng một cấu hình CORS.
+
+| Cách tải | CORS liên quan thế nào | Bằng chứng cần kiểm tra |
+| --- | --- | --- |
+| Classic script không có `crossorigin` | Thường tải theo `no-cors`; thiếu `Access-Control-Allow-Origin` tự nó không chứng minh lỗi | Script element, Console, CORP/COEP và lỗi execute |
+| Classic script có `crossorigin="anonymous"` | Dùng CORS, không gửi credentials khác origin | Header CORS trên response entry/chunk |
+| Cross-origin ESM hoặc `import()` native tới URL | Module loading dùng CORS | Entry và các module imports phụ thuộc, MIME và URL của chúng |
+| `fetch()` config/manifest khác origin | Response phải qua CORS để JavaScript đọc được | Request Origin, response headers, credentials mode và preflight nếu có |
+
+Webpack federated `import('catalog/CatalogPage')` được runtime xử lý; nó không mặc nhiên là native ESM `import()` tới URL. Kiểm tra loader thực tế trước khi chọn cách sửa.
+
+Để xem response CORS cho lab:
+
+```bash
+curl --silent --show-error \
+  --connect-timeout 5 --max-time 15 \
+  --dump-header - --output /dev/null \
+  -H 'Origin: http://localhost:3000' \
+  'http://localhost:3001/remoteEntry.js'
+```
+
+Origin header trong lệnh chỉ giúp quan sát response; curl vẫn không thực thi CORS enforcement. Nếu browser cần CORS, response hợp lệ cho origin lab có thể có `Access-Control-Allow-Origin: http://localhost:3000`. Khi server chọn giá trị theo Origin từ một allowlist, cần `Vary: Origin` và cache key phù hợp; không phản chiếu mọi Origin chưa validate.
+
+Chỉ khi xác định loader lab cần CORS, có thể merge phần này vào `devServer` của **catalog**, giữ các options hiện có:
+
+```js title="shop-workspace/apps/catalog/webpack.config.cjs — phần devServer"
+devServer: {
+  host: 'localhost',
+  static: false,
+  headers: {
+    'Access-Control-Allow-Origin': 'http://localhost:3000',
+  },
+},
+```
+
+Restart dev server sau khi đổi config. `devServer.headers` không đi theo artifact production: hosting/CDN production phải cấu hình riêng. CORS phải đúng trên các chunk/module liên quan, không chỉ entry.
+
+Nếu dùng credentials cross-origin, cần origin cụ thể và `Access-Control-Allow-Credentials: true`; wildcard `*` không đáp ứng credentialed CORS. Đừng bật credentials chỉ để chữa lỗi một asset vốn không cần auth. Preflight `OPTIONS` chỉ xuất hiện khi request yêu cầu nó, chẳng hạn custom headers không safelisted; không mặc định mọi GET script đều có preflight.
+
+<Callout type="warn" title="Không dùng no-cors hoặc tắt browser security làm bản sửa">
+  `fetch(..., { mode: 'no-cors' })` không biến response cross-origin thành dữ liệu JavaScript đọc được; response opaque không dùng để parse manifest. Extension bypass CORS hay browser chạy với security bị tắt cũng không đại diện cho môi trường người dùng. CORS không phải cơ chế sandbox cho code remote đã được shell thực thi.
+</Callout>
+
+### CSP mixed content và CORP
+
+**CSP:** đọc lỗi `Refused to load the script ...` và directive bị vi phạm. Policy của document shell cần cho phép đúng đường thực thi: `script-src`/`script-src-elem` cho scripts, `connect-src` cho fetch config/manifest, và các directives tương ứng nếu remote tải CSS/font/image. Với nonce hoặc `strict-dynamic`, kiểm tra cách loader truyền trust/nonce theo policy thực tế; chỉ thêm domain vào một danh sách chưa chắc đủ.
+
+**Mixed content và TLS:** shell HTTPS không nên trỏ tới remote HTTP. Dùng endpoint HTTPS có certificate hợp lệ và thay config đã publish; không dựa vào exception cho localhost hoặc bỏ qua certificate trên máy dev để kết luận production ổn.
+
+**CORP/COEP:** response có `Cross-Origin-Resource-Policy: same-origin` có thể chặn classic script `no-cors` khác origin dù file trả `200`. Shell có `Cross-Origin-Embedder-Policy: require-corp` còn yêu cầu cross-origin resources đáp ứng policy embedding phù hợp. Header CORS không tự chữa một request vẫn đang ở `no-cors`; cần thống nhất loading mode và policy của cả shell lẫn assets.
+
+Phối hợp với owner bảo mật để sửa phạm vi chính xác. Không thêm `*`, `unsafe-eval` hoặc xóa toàn bộ CSP/CORP chỉ vì một remote bị chặn. Nếu build dev cần `eval` nhưng production policy không cho phép, dùng kiểu source map/build phù hợp thay vì nới production policy cho dev tooling.
+
+## Entry tải được nhưng container không dùng được
+
+### Kiểm tra tên và format container
+
+Sau khi shell đã thử tải entry, chọn đúng execution context của trang shell trong DevTools Console và kiểm tra:
+
+```js title="Chỉ dành cho webpack classic script trong ví dụ lab"
+const container = window.shop_catalog;
+({
+  present: Boolean(container),
+  get: typeof container?.get,
+  init: typeof container?.init,
+});
+```
+
+Kết quả kỳ vọng: `present: true`, `get: 'function'`, `init: 'function'`. Không chạy snippet này trên tab standalone rồi suy ra tab shell cũng có container.
+
+Nếu container không có, kiểm tra:
+
+1. `shop_catalog` trước `@` trong host có khớp `name` của remote release đang serve không?
+2. Entry có thực sự được execute, hay bị MIME/CSP/policy chặn?
+3. Console có syntax error hoặc top-level throw trước khi container được công bố không?
+4. Host đang mong classic script nhưng remote phát ESM, hay URL là manifest JSON thay vì entry?
+5. Có hai release cùng container/global bị nạp vào một document không?
+
+ESM remote có thể export container qua module namespace mà không tạo `window.shop_catalog`; không có global lúc đó là bình thường. Manifest enhanced cũng không phải JavaScript container. Đối chiếu integration ở [Cấu hình exposes và remotes](/docs/module-federation/exposes-remotes) thay vì thêm một script tag thủ công để ép format.
+
+Đặt `output.uniqueName` khác nhau cho shell/catalog/cart giúp tránh collision webpack runtime. Đây là kiểm tra riêng, không thay được việc khớp container name. Với lab, shell dùng `_shop_shell`, catalog dùng `_shop_catalog`.
+
+### Kiểm tra public key và bước initialize
+
+Nếu có container nhưng runtime báo module không tồn tại, đối chiếu `./CatalogPage` với `exposes` **trong artifact được tải**, không chỉ source mới nhất. Entry cũ có thể không biết key vừa thêm; alias khác cũng có thể resolve nhầm remote. Import trong shell là `catalog/CatalogPage`, không phải đường dẫn source `catalog/src/CatalogPage.jsx`.
+
+Nếu shared version mismatch hoặc lỗi initialize xuất hiện sau khi entry/chunks tải thành công, dừng chỉnh network config. Kiểm tra async boundary, share scope và dependency versions theo [Shared dependencies](/docs/module-federation/shared-dependencies) và [Shared version mismatch](/docs/troubleshooting/shared-version-mismatch).
+
+Không tự gọi `container.init({})`, đổi share scope hoặc `get()` từ Console để “reset” container. Các thao tác đó có thể thay trạng thái runtime của document và tạo thêm lỗi initialize. Nếu cần probe sâu, dùng harness/document riêng với cùng integration contract.
+
+Một module tải thành công nhưng thiếu default export mà `React.lazy` cần là contract error, không phải entry URL error. Đối chiếu export của remote trước khi điều tra render.
+
+## Entry thành công nhưng chunk thất bại
+
+### Chunk tải nhầm origin hoặc prefix
+
+Nhìn **Request URL của chunk thất bại**, không đoán từ tên file. Ví dụ entry tải từ `http://localhost:3001/remoteEntry.js` nhưng component chunk lại được yêu cầu ở `http://localhost:3000/abc123.js`: chunk đang đi vào shell thay vì catalog.
+
+Với webpack, `output.publicPath` trong **build tạo chunk** quyết định base URL của assets runtime đó. Sửa `publicPath` của shell không tự sửa đường tải chunk thuộc catalog.
+
+Mặc định mình giữ cách của lab:
+
+```js title="Phần output của webpack config catalog; giữ các options còn lại"
+output: {
+  publicPath: 'auto',
+  uniqueName: '_shop_catalog',
+},
+```
+
+`'auto'` để runtime suy ra base từ script URL hoặc thông tin môi trường phù hợp. Nếu entry ở `/catalog/r18/remoteEntry.js`, các chunk cùng thư mục có thể tải từ `/catalog/r18/`. Đây không phải lời hứa mọi hosting topology đều dùng được: redirect, proxy mount, loader tùy biến hoặc assets nằm ở base khác cần được kiểm chứng.
+
+Nếu topology đòi base tường minh, cấu hình **catalog** theo đúng nơi publish:
+
+```js title="Phương án production khi base asset cố định cho release"
+output: {
+  publicPath: 'https://assets.example.com/catalog/r18/',
+  uniqueName: '_shop_catalog',
+},
+```
+
+Dấu `/` cuối base là cần thiết. Base tường minh được ghi vào build này; không promote nguyên artifact sang prefix khác rồi giả định nó tự thay URL. `output.path` là thư mục trên filesystem lúc build, không phải URL browser cần.
+
+Nếu hệ thống dùng `__webpack_public_path__`, kiểm tra nơi và thời điểm assignment trong chính runtime remote. Set biến trong bootstrap standalone không chứng minh đường container entry cũng chạy assignment đó trước chunk loading. Không copy một helper public path của shell rồi kỳ vọng nó đổi mọi runtime trên trang.
+
+### Chunk đúng URL nhưng không còn tồn tại
+
+Giả sử tab cũ giữ entry r18, sau deploy pipeline xóa chunks r18 và chỉ còn r19. Khi tab đó mở catalog lần đầu, runtime vẫn yêu cầu chunk r18 và nhận `404`. Hard reload có thể làm tab này hết lỗi, nhưng không sửa retention policy cho những tab cũ khác.
+
+Đối chiếu ba lớp:
+
+- Config/document chọn release nào, và có pin snapshot theo document không?
+- Entry response/cache thuộc release nào; URL/chunk graph có khớp release đó không?
+- Chunk tồn tại ở origin và truy cập được qua CDN không?
+
+Nếu chunk đúng prefix nhưng thiếu cả ở origin, kiểm tra upload thiếu hoặc cleanup quá sớm. Nếu origin có nhưng CDN trả `404`, kiểm tra routing, quyền truy cập và negative caching; purge đúng URL chỉ khi đã sửa nguồn lỗi. Nếu file có HTTP `200` nhưng timeout, MIME rejection hoặc policy blocked, quay lại kiểm tra response và browser policy của **chunk đó**.
+
+Bản sửa bền vững là upload đầy đủ asset graph trước khi promote entry/config, giữ release URL bất biến và retention cho document cũ/rollback. Không ghi đè một chunk có URL được coi là immutable bằng nội dung khác, và không chữa bằng cách tắt cache toàn bộ assets. Chi tiết nằm ở [Cache lỗi thời và chunk errors](/docs/troubleshooting/stale-cache) và [Caching và cache invalidation](/docs/trien-khai/caching).
+
+## Worked example sửa publicPath
+
+Giả sử trong lab, catalog vô tình đổi `publicPath` từ `'auto'` thành `'/'`. Shell tải entry ở port `3001`, nhưng chunk được resolve theo origin document shell ở port `3000`. Tên chunk dưới đây chỉ là minh họa; tên thật phụ thuộc build.
+
+```text
+GET http://localhost:3001/remoteEntry.js          → 200 JavaScript
+GET http://localhost:3000/src_CatalogPage_jsx.js  → 404 hoặc HTML fallback
+Console                                         → ChunkLoadError
+```
+
+<Steps>
+<Step>
+
+**Xác nhận entry đúng.** Kiểm tra body của `remoteEntry.js` là JavaScript, container `window.shop_catalog` có `get`/`init`, và Console không báo lỗi execute trước đó.
+
+</Step>
+<Step>
+
+**Xác nhận chunk đang đi sai nơi.** Mở request chunk trong Network, đọc Request URL và Initiator. Trong bài lab, chunk của catalog phải được serve từ catalog ở port `3001`, không phải shell ở `3000`.
+
+</Step>
+<Step>
+
+**Sửa phía catalog.** Trong `shop-workspace/apps/catalog/webpack.config.cjs`, đổi `output.publicPath` về `'auto'`, giữ các output options khác. Restart `npm run dev:catalog` từ root `shop-workspace`. Với artifact production, build/deploy lại remote; sửa config trên source không đổi artifact đang serve.
+
+</Step>
+<Step>
+
+**Kiểm tra document mới và luồng thật.** Sau khi lưu log cũ, mở lại shell và vào catalog. Kỳ vọng chunk tải từ port `3001`, import resolve và component render. Chỉ mở URL entry trực tiếp không đủ để xác nhận bản sửa.
+
+</Step>
+</Steps>
+
+Trong ca này, thêm CORS vào shell hay đổi shared React không sửa được nguyên nhân: browser đã yêu cầu sai server. Nếu sau khi sửa URL đúng mà browser mới báo CORS, đó là lớp lỗi tiếp theo cần xử lý riêng.
+
+## Giảm ảnh hưởng và phục hồi an toàn
+
+Giữ loading/error UI trong artifact shell, đặt boundary theo route hoặc vùng remote. Với React, `Suspense` xử lý trạng thái chờ; Error Boundary phù hợp xử lý lỗi render và rejection của lazy import. Lỗi API/event handler cần handling riêng. Đừng tải component fallback từ chính remote đang lỗi.
+
+Chỉ retry có giới hạn khi có bằng chứng lỗi transient như kết nối tạm thời gián đoạn. Sai container name, HTML thay JavaScript, public key thiếu hoặc CSP deny sẽ không tự hết nhờ backoff. HTTP `404` sau deploy cũng cần kiểm tra release graph, không mặc định retryable.
+
+Reset Error Boundary không tự xóa cache rejected Promise của `React.lazy`, cache loader hay webpack module state. Tải script lại cũng không unload code đã chạy. Không gỡ global container và nạp release khác trong cùng document như một rollback mặc định; có thể trộn share scope và side effects từ hai release.
+
+Nếu release mới gây lỗi diện rộng, publish revision mới trỏ về release đã kiểm chứng theo cơ chế rollback của hệ thống. Config mới thường chỉ áp dụng cho lượt resolve/document mới; document cũ vẫn cần assets và failure policy của nó. Nếu cần reload có kiểm soát, bảo vệ thao tác chưa lưu và không tạo reload loop.
+
+Khi cart lỗi, thông báo “giỏ hàng tạm không khả dụng”, không hiển thị badge `0` hoặc xác nhận thêm hàng thành công giả. Xem [Resilience khi remote lỗi](/docs/production/resilience) cho deadline, retry budget và fallback theo nghiệp vụ.
+
+## Checklist xác nhận đã sửa
+
+- [ ] Browser tải đúng config revision và URL entry của môi trường mục tiêu.
+- [ ] Entry trả đúng status, MIME và JavaScript, không có redirect login/SPA fallback.
+- [ ] Browser thực thi entry; container format/name khớp integration của host.
+- [ ] Public key và export contract đúng với release thực tế.
+- [ ] Shared initialization thành công, không có mismatch bị che bởi fallback.
+- [ ] Chunks/CSS/assets cần thiết tải từ đúng base và đủ graph của cùng release.
+- [ ] Không có CORS/CSP/CORP/mixed-content error trên entry lẫn dependencies.
+- [ ] Federated import resolve, UI render và thao tác chính của route hoạt động.
+- [ ] Document mới nhận bản sửa; document cũ vẫn dùng được assets đã pin trong cửa sổ hỗ trợ.
+- [ ] Với deploy production, kiểm tra qua domain/CDN thật, không chỉ localhost hoặc origin trực tiếp.
+- [ ] Ca entry/chunk lỗi vẫn hiển thị fallback shell và không chờ/reload vô hạn.
+
+Nếu nguyên nhân liên quan rollout/cache, test với một tab mở trước deploy rồi mới vào route remote sau deploy. Ca này phát hiện thiếu retention tốt hơn việc luôn test bằng tab mới.
+
+## Thông tin cần gửi khi escalation
+
+Một ticket hữu ích phải giúp người nhận tái hiện đúng document/release, không chỉ có ảnh “loading failed”. Gửi thông tin đã loại bỏ secrets:
+
+```text
+Environment / shell origin:
+Thời điểm lỗi + timezone:
+Route và các bước tái hiện:
+Shell release / config revision:
+Remote alias / container format / public key:
+Remote release được chọn / release đã xác nhận nếu có:
+Entry URL đã bỏ query nhạy cảm:
+Request thất bại đầu tiên: URL, status hoặc blocked reason
+Content-Type / Cache-Control / Age / ETag nếu có:
+Nguồn response: network, HTTP cache hay service worker
+Console error đầu tiên + stack liên quan:
+Phạm vi ảnh hưởng và thay đổi deploy/config gần nhất:
+Kết quả document mới so với tab cũ:
+Mitigation đã thử và kết quả:
+```
+
+Headers cache là bằng chứng hỗ trợ, không tự xác nhận release; `Age` không mô tả tất cả lớp cache và `ETag` không mặc nhiên là release ID. Nếu hệ thống có metadata release trong artifact, dùng nó để đối chiếu candidate với code thực tải.
+
+Chuyển cho đúng owner dựa trên bước lỗi: config/allowlist thuộc shell/platform; artifact graph/public key thuộc remote team; routing/CDN headers thuộc deployment owner; CSP/CORP cần phối hợp security owner. Kèm request/response cụ thể để tránh mỗi team kiểm tra một URL hoặc release khác nhau.
+
+## Tài liệu tham khảo
+
+- [webpack — Public Path](https://webpack.js.org/guides/public-path/) — base URL cho chunks/assets và automatic public path.
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/) — container, shared initialization và các lỗi tích hợp thường gặp.
+- [MDN — JavaScript modules](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules) — module loading, CORS và MIME.
+- [MDN — HTMLScriptElement.crossOrigin](https://developer.mozilla.org/en-US/docs/Web/API/HTMLScriptElement/crossOrigin) — loading mode của script theo thuộc tính `crossorigin`.
+- [MDN — Cross-Origin Resource Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Cross-Origin_Resource_Policy) — CORP và quan hệ với COEP.
+- [MDN — Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP) — policy kiểm soát nguồn tài nguyên và thực thi script.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cấu hình exposes và remotes" href="/docs/module-federation/exposes-remotes" description="Đối chiếu alias, container name, public key và format theo đúng plugin." />
+  <Card title="Cache lỗi thời và chunk errors" href="/docs/troubleshooting/stale-cache" description="Điều tra entry cũ, chunk bị xóa và lỗi sau deploy." />
+  <Card title="CDN và asset hosting" href="/docs/trien-khai/cdn-assets" description="Serve đầy đủ artifact graph, headers và release prefixes." />
+  <Card title="Resilience khi remote lỗi" href="/docs/production/resilience" description="Giữ shell hoạt động bằng boundary, deadline và retry có giới hạn." />
+</Cards>

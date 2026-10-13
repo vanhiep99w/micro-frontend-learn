@@ -1,18 +1,529 @@
 ---
 title: "Preview environments"
-description: "Ghép shell và các remote theo nhánh để review mà không ảnh hưởng production."
+description: "Ghép shell và remote theo PR bằng release set bất biến, cô lập auth và dữ liệu, kiểm thử đúng artifact và dọn tài nguyên sau review."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử PR của catalog sửa bộ lọc sản phẩm. Link standalone cho thấy giao diện mới, nhưng reviewer cần biết bộ lọc có giữ query khi đổi route trong shell không, và thêm hàng có cập nhật cart không. Nếu đưa catalog candidate vào môi trường staging dùng chung, một PR khác có thể đổi mapping giữa lúc bạn đang review.
+
+Preview environment giải quyết việc này bằng một URL riêng cho **một tổ hợp shell, remote và cấu hình đã được pin**. Nó không chỉ là hosting theo branch: link phải chỉ ra browser đang chạy artifact nào, backend nào và dữ liệu nào. Mặc định mình chọn candidate của app thay đổi, ghép với các artifact baseline đã biết tốt; chỉ dựng cả backend riêng khi thay đổi thực sự cần đến nó.
+
+<Callout type="info" title="Phạm vi và điều kiện bắt đầu">
+  Bài dùng shop giả định gồm shell, catalog và cart, với shell CSR tải webpack 5 classic script remotes. Các manifest, đường dẫn và tests là mẫu thiết kế cho workspace ứng dụng, **không phải implementation có sẵn trong repository Next.js + Fumadocs này**.
+
+  Bạn cần shell có runtime selection như trong [Dynamic remotes](/docs/module-federation/dynamic-remotes), artifact graph đầy đủ và hạ tầng phục vụ HTTPS. Sơ đồ text hiển thị trực tiếp, không cần Mermaid. Với ESM, enhanced runtime hoặc SSR, giữ nguyên nguyên tắc pin tổ hợp nhưng dùng loader và deployment phù hợp.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Preview cần chứng minh điều gì](#preview-cần-chứng-minh-điều-gì)
+  - [Standalone khác integrated preview](#standalone-khác-integrated-preview)
+  - [Chọn mức cô lập phù hợp](#chọn-mức-cô-lập-phù-hợp)
+- [Định danh PR deployment và release set](#định-danh-pr-deployment-và-release-set)
+  - [Link ổn định nhưng deployment bất biến](#link-ổn-định-nhưng-deployment-bất-biến)
+  - [Pin baseline thay vì đọc latest](#pin-baseline-thay-vì-đọc-latest)
+  - [Ghép thay đổi từ nhiều repository](#ghép-thay-đổi-từ-nhiều-repository)
+- [Thiết kế đường tải của preview](#thiết-kế-đường-tải-của-preview)
+  - [Một origin cho một deployment](#một-origin-cho-một-deployment)
+  - [Tách inventory và runtime config](#tách-inventory-và-runtime-config)
+  - [Bootstrap và policy cho preview](#bootstrap-và-policy-cho-preview)
+- [Pipeline tạo và cập nhật preview](#pipeline-tạo-và-cập-nhật-preview)
+  - [Build không có quyền deploy](#build-không-có-quyền-deploy)
+  - [Publish candidate và kiểm tra readiness](#publish-candidate-và-kiểm-tra-readiness)
+  - [Đổi alias mà không bị job cũ ghi đè](#đổi-alias-mà-không-bị-job-cũ-ghi-đè)
+- [Cô lập code auth và dữ liệu](#cô-lập-code-auth-và-dữ-liệu)
+  - [Không cho PR code chạm production](#không-cho-pr-code-chạm-production)
+  - [Cookie OAuth và bảo vệ đường tải](#cookie-oauth-và-bảo-vệ-đường-tải)
+  - [Backend sandbox và test fixtures](#backend-sandbox-và-test-fixtures)
+- [Kiểm thử đúng deployment](#kiểm-thử-đúng-deployment)
+  - [Các gates trước khi gửi link review](#các-gates-trước-khi-gửi-link-review)
+  - [Ví dụ Playwright kiểm tra composition](#ví-dụ-playwright-kiểm-tra-composition)
+  - [Giới hạn của kết quả preview](#giới-hạn-của-kết-quả-preview)
+- [Review và chẩn đoán](#review-và-chẩn-đoán)
+- [Vòng đời cleanup và chi phí](#vòng-đời-cleanup-và-chi-phí)
+  - [Đóng PR và hết hạn](#đóng-pr-và-hết-hạn)
+  - [Thu hồi tài nguyên an toàn](#thu-hồi-tài-nguyên-an-toàn)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist cho preview đầu tiên](#checklist-cho-preview-đầu-tiên)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Preview cần chứng minh điều gì
 
-Bài này sẽ giúp bạn: ghép shell và các remote theo nhánh để review mà không ảnh hưởng production.
+### Standalone khác integrated preview
 
-[Xem các bài trong nhóm Triển khai](/docs/trien-khai).
+Một remote render được ở standalone mới chứng minh đường khởi động riêng của nó. Khi shell mount remote, context khác đi: router, shared dependencies, CSS, auth, event listeners và lifecycle đều có thể khác. Để reviewer đánh giá hành vi thật, integrated preview phải giữ đường tải remote thật, không source-import candidate vào bundle shell.
+
+| Môi trường | Câu hỏi trả lời tốt | Điều chưa chứng minh |
+| --- | --- | --- |
+| Remote standalone | UI và logic nội bộ của candidate có đúng không? | Contract và lifecycle khi chạy trong shell |
+| Integrated frontend preview | Shell tải candidate, routing và giao tiếp giữa app có đúng không? | Backend persistence nếu API bị mock |
+| Preview với backend sandbox | Journey đi qua API, auth test và dữ liệu riêng có đúng không? | Production credentials, traffic và mọi policy của production |
+| Staging dùng chung | Tổ hợp đang được staging chọn có hoạt động không? | Tổ hợp của một PR vẫn giữ nguyên suốt lượt review |
+
+Mình vẫn giữ standalone link nếu nó giúp debug nhanh, nhưng link chính gửi reviewer là integrated preview. Một label rõ như “catalog candidate + shell/cart baseline + API sandbox” hữu ích hơn tên gọi “full preview” không nói phạm vi.
+
+### Chọn mức cô lập phù hợp
+
+Không phải PR nào cũng cần một database và cả cụm backend. Tách nhu cầu chạy giao diện khỏi nhu cầu cô lập dữ liệu giúp preview rẻ hơn mà không đánh đổi những boundary cần kiểm thử.
+
+| Thay đổi | Mặc định chọn | Khi cần tăng mức cô lập |
+| --- | --- | --- |
+| CSS hoặc UI catalog | Frontend preview, dữ liệu fixture | UI phụ thuộc auth/permissions hoặc API behavior mới |
+| Event thêm giỏ, router hoặc shared runtime | Shell + catalog + cart thật, API được kiểm soát | Cần chứng minh persistence và auth end-to-end |
+| API contract hoặc backend migration | Frontend preview + backend candidate + dữ liệu riêng | Không dùng shared backend nếu schema thay đổi ảnh hưởng PR khác |
+| Luồng thanh toán hoặc email | Sandbox của nhà cung cấp hoặc stub có contract | Kiểm thử tích hợp sandbox nếu stub không đủ cho rủi ro thay đổi |
+
+Với một sửa lỗi nội bộ chỉ cần unit/component tests, có thể không tự tạo preview; cho phép owner yêu cầu bằng label hoặc thao tác trong CI. Ngược lại, thay đổi tại boundary cần preview hoặc harness tương đương, dù diff chỉ có vài dòng.
+
+Preview không thay thế [contract tests](/docs/kiem-thu-va-tooling/contract-tests). Nó kiểm tra một tổ hợp cụ thể, không tự chứng minh candidate tương thích với mọi consumer còn được hỗ trợ.
+
+## Định danh PR deployment và release set
+
+### Link ổn định nhưng deployment bất biến
+
+Một PR thường có nhiều commit và mỗi commit có thể có nhiều lần build. Nếu mọi lần đều ghi đè `/pr-142/remoteEntry.js`, tab đang mở có thể giữ entry cũ nhưng tải chunk mới. Hash tên chunk không cứu được release nếu assets cũ đã bị xóa hoặc runtime entry bị trộn.
+
+Mình dùng ba ID khác nhau:
+
+| ID | Ý nghĩa | Ví dụ minh họa |
+| --- | --- | --- |
+| Preview ID | Định danh logical environment theo repository và PR | `catalog-pr-142` |
+| Deployment ID | Một lần publish với release set và config bất biến | `dep-5831` |
+| Artifact release ID | Một build cụ thể của một app | `r19` cho catalog |
+
+```text
+Link trên PR: catalog-pr-142.preview.example.net
+                       │ redirect, không serve assets ở alias
+                       ▼
+Deployment: dep-5831.preview.example.net
+                       │ snapshot đã pin
+                       ├── shell r12
+                       ├── catalog r19
+                       └── cart r7
+```
+
+Alias trên PR có thể chuyển sang deployment mới; URL deployment dùng cho tests và tái hiện lỗi thì không đổi nội dung. Trong thiết kế này, alias redirect tới origin deployment bằng redirect tạm thời, chẳng hạn `302`, với `Cache-Control: no-store`. Không dùng `301` cho pointer dự kiến thay đổi.
+
+Tách origin theo deployment còn tránh trường hợp HTML cũ trên alias fetch config mới sau một đợt cập nhật. Nếu nền tảng chỉ có một hostname ổn định, phải pin cả HTML và config/assets theo deployment path hoặc snapshot được nhúng trong HTML; không để HTML cũ đọc `/config.json` vừa bị ghi đè.
+
+Số PR chỉ duy nhất trong phạm vi repository. Branch name có thể chứa `/`, trùng tên giữa repositories hoặc bị đổi; dùng metadata từ hệ thống SCM để sinh ID, không đưa raw branch name vào hostname, shell command hay storage path.
+
+### Pin baseline thay vì đọc latest
+
+Giả sử catalog r19 là candidate. Shell r12 và cart r7 được lấy từ một release set đã biết tốt tại thời điểm tạo preview. Sau đó staging đổi cart sang r8, preview này vẫn dùng r7.
+
+“Baseline production” ở đây nghĩa là **version artifact đang được production chọn**, không phải API production hay session production. Các bytes baseline có thể được phục vụ lại trên hạ tầng preview, nếu artifact portable và licensing/policy cho phép.
+
+Lưu cả release ID, digest và provenance của artifact trong inventory phía deployment. Release ID giúp đọc log; digest giúp đối chiếu bytes với artifact registry. Preview còn cần pin public config, feature flags, fixture version và backend version nếu chúng ảnh hưởng hành vi.
+
+Khi baseline quá cũ, tạo deployment mới với baseline mới và chạy lại tests. Đừng tự động refresh baseline trong deployment cũ rồi vẫn giữ nguyên link tái hiện lỗi. Reviewer cần phân biệt “candidate đổi” và “baseline đổi”.
+
+### Ghép thay đổi từ nhiều repository
+
+Trong multi-repo, PR 142 của catalog không liên quan mặc nhiên đến PR 142 của cart. Không tìm remote bằng tên branch giống nhau rồi gọi đó là một release set.
+
+Nếu catalog và cart cùng thay contract, composition owner tạo một integration request chọn rõ hai artifact candidates và shell baseline. Ví dụ:
+
+```json title="Integration request minh họa, được resolve qua artifact registry"
+{
+  "previewId": "shop-integration-28",
+  "baselineRevision": "shop-baseline-42",
+  "candidates": [
+    { "repository": "shop/catalog", "pullRequest": 142, "buildId": "build-5831" },
+    { "repository": "shop/cart", "pullRequest": 88, "buildId": "build-6110" }
+  ]
+}
+```
+
+Resolver phía deploy xác minh build thuộc repository, commit và PR được yêu cầu, rồi tạo release set chứa URL/digest đã đăng ký. Không tin một file PR tự khai báo artifact của repository khác. Với support window rộng, cần thêm preview/harness cho các cặp consumer/provider liên quan, không chỉ tổ hợp tất cả candidates mới nhất.
+
+## Thiết kế đường tải của preview
+
+### Một origin cho một deployment
+
+Để bắt đầu, mình ưu tiên frontend assets và public runtime config được phục vụ qua cùng origin deployment. Route `/api` đi qua gateway tới sandbox đã gán cho deployment. Cách này giảm cấu hình CORS và tránh bắt browser đăng nhập riêng vào nhiều hostname chỉ để tải chunks.
+
+```text
+Browser → dep-5831.preview.example.net
+                  ├─ /                         → shell r12
+                  ├─ /runtime/config.json       → snapshot dep-5831
+                  ├─ /artifacts/catalog/r19/*   → catalog graph
+                  ├─ /artifacts/cart/r7/*        → cart graph
+                  └─ /api/*                     → backend sandbox
+```
+
+Hạ tầng có thể copy artifacts hoặc route tới artifact store; mục tiêu là giữ nguyên bytes và cấu trúc thư mục, không rebuild các app baseline. Mỗi graph phải gồm entry, lazy chunks, CSS, font và public assets được app sử dụng.
+
+Điều kiện quan trọng là asset base của remote phải hoạt động ở prefix mới. Với webpack, `publicPath: 'auto'` có thể suy base từ script entry trong cách tải phù hợp, nhưng vẫn phải thử lazy imports và asset URLs do code tự ghép. Một artifact hardcode CDN production hoặc API production chưa portable. Xem [Deploy lên CDN](/docs/trien-khai/cdn-assets) trước khi gọi đây là “build once”.
+
+Không bật SPA fallback cho `/artifacts/*`, `/runtime/*` hoặc API. Asset thiếu phải trả lỗi thật, không trả HTML shell với `200`. Deep link của shell có thể cần HTML fallback, nhưng đó là rule ở nhóm route riêng.
+
+### Tách inventory và runtime config
+
+Inventory là hồ sơ deploy phía control plane: provenance, digest, owner, lifecycle, shell artifact, backend assignment và kết quả kiểm thử. Browser không cần nhận toàn bộ hồ sơ này. Public runtime config chỉ chứa những field shell cần để bootstrap.
+
+Ví dụ config cho deployment ở sơ đồ trên:
+
+```json title="GET https://dep-5831.preview.example.net/runtime/config.json"
+{
+  "schemaVersion": 1,
+  "revision": "dep-5831-config-1",
+  "environment": "preview",
+  "previewId": "catalog-pr-142",
+  "deploymentId": "dep-5831",
+  "apiBasePath": "/api",
+  "flags": {
+    "newCartSummary": false
+  },
+  "remotes": {
+    "catalog": {
+      "enabled": true,
+      "scope": "catalog_app",
+      "entry": "https://dep-5831.preview.example.net/artifacts/catalog/r19/remoteEntry.js",
+      "release": "r19",
+      "contractVersion": 1
+    },
+    "cart": {
+      "enabled": true,
+      "scope": "cart_app",
+      "entry": "https://dep-5831.preview.example.net/artifacts/cart/r7/remoteEntry.js",
+      "release": "r7",
+      "contractVersion": 1
+    }
+  }
+}
+```
+
+<Callout type="warn" title="Cần reader và policy hỗ trợ preview trước">
+  JSON này mở rộng ví dụ trong [Runtime configuration](/docs/trien-khai/runtime-configuration). Validator ở bài đó chỉ chấp nhận staging/production và một layout URL khác, nên **sẽ reject config này**. Shell baseline phải hỗ trợ preview environment, fields và URL policy tương ứng trước khi được dùng ở đây; không copy JSON rồi tắt validation để chạy được.
+
+  Schema major `1` chỉ phù hợp nếu contract thực tế của bạn coi đây là mở rộng tương thích với reader đã hỗ trợ. Nếu đổi semantics hoặc cấu trúc mà reader không hiểu, version schema và deploy reader theo kế hoạch migration.
+</Callout>
+
+Config không chứa deploy token, secret của backend hay OAuth client secret. `previewId` chỉ là metadata công khai; backend không được tin nó như bằng chứng user có quyền vào tenant đó.
+
+### Bootstrap và policy cho preview
+
+Shell fetch config một lần trước khi tải remote, validate rồi giữ snapshot theo document. Không cho mỗi remote fetch alias riêng, vì chúng có thể chọn các deployment khác nhau. Registry và policy do hệ thống deploy kiểm soát, không do JSON PR tự khai báo.
+
+Trong topology same-origin này, validation cần kiểm tra:
+
+- Deployment origin đã được gateway đăng ký, có HTTPS và khớp deployment đang phục vụ shell.
+- `environment`, `deploymentId` và revision khớp metadata deployment đáng tin mà shell nhận từ bootstrap/gateway.
+- Từng entry có exact origin bằng origin deployment, không credentials, query, hash; pathname khớp app và release đã đăng ký.
+- Scope, remote format, contract version và flags thuộc contract shell hiểu; không thêm remote tùy ý bằng một field JSON.
+- `/api` được gateway gán sandbox đúng deployment; config không được chọn backend production.
+
+Exact origin chặn URL ra ngoài, nhưng chưa đủ nếu bất kỳ người dùng nào cũng upload executable code vào prefix `/artifacts/`. Quyền publish và mapping prefix vẫn phải thuộc deployer tin cậy. Không allowlist mọi hostname của một hosting platform đa tenant chỉ vì domain suffix trông quen.
+
+Một trang lỗi bootstrap cần nêu preview không sẵn sàng và đưa deployment ID để báo lỗi. **Không fallback sang remote hoặc API production** khi preview thiếu artifact. Nếu optional cart bị tắt theo policy, hiển thị rõ phần journey nào không còn kiểm thử được.
+
+Với SSR, server và browser phải dùng cùng release set cho request/hydration, còn module/container cache phải được partition theo deployment hoặc chạy trong process riêng. Một global mutable map chọn remote cho mọi request có thể làm PR này render bằng code của PR khác. Static hosting frontend không đủ cho remote yêu cầu server runtime.
+
+## Pipeline tạo và cập nhật preview
+
+### Build không có quyền deploy
+
+Tách job chạy source PR khỏi job có quyền publish và route preview. Build có thể chạy install hooks, test scripts và bundler plugins từ code chưa review; coi toàn bộ bước này là chạy code không đáng tin.
+
+Luồng tối thiểu:
+
+1. Nhận event PR, resolve repository, head commit và trạng thái PR từ SCM.
+2. Build/test source trong runner tạm thời không có credentials production, không có quyền control plane preview.
+3. Lưu artifact cùng metadata gắn với workflow run và commit; deployment job xác minh nguồn gốc và tính toàn vẹn.
+4. Deployment job dùng implementation từ nhánh tin cậy để resolve baseline, provision và publish.
+5. Chạy browser gate bằng tài khoản sandbox; không dùng quyền deploy cho browser đang thực thi candidate.
+
+Trên GitHub Actions, không checkout rồi chạy PR head trong `pull_request_target` có secrets hoặc write token. `workflow_run` có thể giúp tách quyền, nhưng việc nhận artifact từ workflow trước không làm artifact hay nội dung nó chứa tự đáng tin. Kiểm tra run/repository/commit, hạn chế quyền và không chạy script lấy từ artifact trong privileged job.
+
+<Callout type="warn" title="Cả bước giải nén cũng là boundary">
+  Artifact có thể chứa pathname traversal, symlink hoặc dung lượng vượt giới hạn. Dùng công cụ unpack có kiểm soát, chặn ghi ra ngoài thư mục staging và giới hạn kích thước. Job publish chỉ xử lý dữ liệu/artifact theo contract; không `source` file env, chạy install hay thực thi build script từ candidate.
+
+  Không dùng runner self-hosted dùng chung với production jobs để chạy PR code chưa tin cậy. Tách network, storage và cache theo trust level; approval không xóa code độc hại đã lưu trên một runner tồn tại lâu dài.
+</Callout>
+
+### Publish candidate và kiểm tra readiness
+
+Sau khi xác minh artifact, deployer tạo deployment ID mới. Thứ tự dưới đây là giao diện vận hành cần hiện thực bằng adapter cho hosting của bạn, không phải lệnh có sẵn trong repository:
+
+| Bước | Thao tác | Điều kiện để đi tiếp |
+| --- | --- | --- |
+| Resolve | Chốt candidates, baseline, config và sandbox | Inventory hợp lệ, artifacts còn tồn tại, contract có thể ghép |
+| Provision | Tạo routing, origin và sandbox/tenant | TLS và access policy sẵn sàng; tài nguyên gắn owner/expiry |
+| Publish graphs | Đưa shell và toàn bộ remote graphs vào prefix bất biến | Digest đối chiếu được, không ghi đè release, không thiếu file |
+| Publish snapshot | Tạo config bằng JSON serializer, đăng ký mapping deployment | Reader validate được; config không chọn quyền ngoài preview |
+| Verify transport | GET config, entry và assets thật qua edge | Status, MIME, body, cache và access policy đúng |
+| Verify browser | Tải shell, remote, lazy route và journey cần thiết | Tests chạy đúng deployment và lưu bằng chứng |
+| Publish review link | Cập nhật alias và PR comment | Deployment vẫn là candidate hiện hành của PR |
+
+Đừng chuyển alias sang candidate rồi mới upload chunks. Nếu deployment mới fail, giữ link tới deployment đã biết tốt và báo trạng thái candidate mới thất bại; không âm thầm khiến reviewer tưởng link cũ chứa commit mới.
+
+Readiness cần polling có deadline, không chỉ `sleep 30`. Có thể origin đã nhận bytes nhưng edge còn giữ negative cache hoặc DNS/TLS chưa sẵn sàng. Probe phải đi qua URL reviewer sẽ dùng, và browser test vẫn cần thiết vì HTTP checks không thực thi CSP, CORS hoặc federation runtime.
+
+Với preview được bảo vệ, HTML/config/API nên tránh shared-cache leakage, thường dùng `Cache-Control: no-store` cho các response nhạy cảm hoặc phụ thuộc user. Assets bất biến có thể dùng browser cache dài nếu policy cho phép, nhưng **không mặc định `public` cho tài nguyên cần kiểm soát truy cập**. Thiết kế edge cache chỉ sau khi xác định auth được kiểm tra ở đâu, cache hit có bypass auth không, và key có partition đúng không.
+
+### Đổi alias mà không bị job cũ ghi đè
+
+Hai commit A và B trên cùng PR có thể build song song. B hoàn tất trước, A hoàn tất sau. Nếu “job nào xong thì cập nhật link”, reviewer sẽ quay lại commit A dù PR head là B.
+
+Dùng compare-and-swap hoặc transaction ở control plane: chỉ chuyển alias khi desired generation/head vẫn khớp candidate. Một mô hình đơn giản giữ `desiredGeneration` trong record PR; mỗi yêu cầu deploy mới tăng generation, kể cả khi rerun cùng commit.
+
+```text
+Request A → generation 7 → dep-A hoàn tất chậm
+Request B → generation 8 → dep-B hoàn tất trước
+
+Publish dep-B: desired generation = 8 → chấp nhận
+Publish dep-A: desired generation ≠ 7 → không đổi alias
+Close PR: trạng thái không còn active → mọi publish còn chạy bị từ chối
+```
+
+Kiểm tra head bằng một API call rồi ghi alias bằng API call khác vẫn có race. Quyết định “còn active, generation đúng, đổi pointer” phải được bảo vệ trong cùng thao tác conditional ở control plane. Cancel job cũ chỉ tiết kiệm compute; nó không bảo đảm upload hoặc update alias cũ đã dừng.
+
+PR comment cũng cần phản ánh current generation. Dùng một comment do bot sở hữu, hiển thị commit, deployment và trạng thái của candidate hiện hành; job cũ chỉ ghi evidence của nó, không ghi đè link hiện tại.
+
+## Cô lập code auth và dữ liệu
+
+### Không cho PR code chạm production
+
+Remote chạy cùng window với shell có thể đọc dữ liệu mà JavaScript trong window đọc được và gọi API bằng quyền session của người review. Một URL được bảo vệ bằng login chỉ giới hạn ai vào được preview; nó không làm code trong PR an toàn hơn.
+
+Vì vậy preview cần một trust zone khác production:
+
+- Domain preview tách khỏi domain session production, ưu tiên một registrable domain khác khi chạy code chưa review.
+- Test accounts và auth issuer/client riêng, token chỉ có quyền sandbox và thời hạn phù hợp.
+- Gateway/egress policy không cho workload preview dùng network credentials production; đây không chỉ là một field trong config.
+- Deploy role chỉ được ghi prefix, route và tài nguyên preview đã gán; không có quyền production promotion.
+- Telemetry không gửi session/token/PII test ra kênh diagnostics công khai.
+
+Không coi việc “app không hiển thị nút production” là isolation. Backend production vẫn phải thực thi auth, authorization và CSRF policy của nó; các API cần bảo vệ không được dựa vào UI hay CORS như một hàng rào quyền truy cập đầy đủ.
+
+Preview từ fork hoặc contributor chưa được tin cậy có thể chỉ chạy static frontend với fixtures, hoặc cần approval trước khi tạo sandbox. Approval là quyết định cho phép thử nghiệm trong trust zone giới hạn, không phải cấp quyền production cho code đó.
+
+### Cookie OAuth và bảo vệ đường tải
+
+Cookie đặt `Domain=example.com` có thể được gửi tới các subdomain bên dưới. Đặt preview ở `pr-142.example.com` rồi reuse cookie production là một lỗi boundary. Ưu tiên host-only session cookie và, nơi browser hỗ trợ, prefix `__Host-` với `Secure`, `Path=/` và không có `Domain`; thêm `HttpOnly` cho session cookie.
+
+`HttpOnly` ngăn JavaScript đọc cookie, không ngăn code PR gọi API bằng session mà browser gửi. `SameSite` cũng không đồng nghĩa same-origin: hai HTTPS subdomain của cùng site có thể vẫn được xem là same-site. Tách registrable domain và session sandbox giúp giảm rủi ro này, nhưng không thay auth/CSRF checks phía API.
+
+Với OAuth, dùng client riêng cho preview. Nếu provider không phù hợp với callback hostname động, dùng một callback broker có URL cố định. Broker phải validate `state`, PKCE theo flow sử dụng và deployment đích theo registry; không nhận `returnTo` tùy ý rồi redirect hoặc chuyển token ra domain bất kỳ. Khi PR đóng, thu hồi callback/assignment theo policy.
+
+Deployment protection cần được kiểm tra cho **toàn bộ đường tải**, không chỉ trang HTML. Một entry được bảo vệ có thể redirect tới trang login, khiến loader nhận HTML; một chunk không được bảo vệ có thể làm source lộ dù trang chủ yêu cầu login.
+
+Topology same-origin đơn giản hóa session khi tải assets. Nếu remotes nằm trên nhiều origins, phải thiết kế lại cách protection hoạt động với classic script, ESM, manifest fetch và chunks; chúng không có cùng credential/CORS semantics. Đừng chữa lỗi login bằng cách đưa bypass token vào entry URL hoặc runtime config. Token trong browser và URL có thể lộ qua log, traces hoặc source inspection.
+
+### Backend sandbox và test fixtures
+
+Một backend sandbox dùng chung vẫn cần dữ liệu riêng. Hai PR cùng sửa cart của một user test sẽ làm E2E thất bại ngẫu nhiên và làm reviewer thấy trạng thái từ PR khác.
+
+Mình tách dữ liệu theo preview tenant và, cho automation, thêm namespace theo test run. Tenant assignment được gateway/backend resolve từ deployment và identity đã xác thực; backend phải kiểm tra quyền, không tin header/query `tenantId` do browser tự chọn.
+
+| Tài nguyên | Policy gợi ý |
+| --- | --- |
+| Catalog fixtures | Seed theo fixture revision, có thể tái tạo |
+| Cart/order test data | Namespace theo preview và test run; không dùng user chung cho tất cả PR |
+| Payment/email | Sandbox hoặc stub; không gửi giao dịch hay email thật |
+| Database/schema | Tenant isolation khi contract ổn định; database/namespace riêng khi thử migration |
+| Test-support API | Chỉ có trong sandbox, xác thực theo scope và không public trên production |
+| Logs/traces | Gắn deployment/run ID, redact secrets và giới hạn retention |
+
+Đừng clone dữ liệu production có PII vào preview chỉ để màn hình “trông thật”. Dùng dữ liệu tổng hợp hoặc quy trình anonymization được phê duyệt. Nếu fixture tạo side effects, cleanup phải gồm queue, storage và downstream test records, không chỉ bảng database.
+
+## Kiểm thử đúng deployment
+
+### Các gates trước khi gửi link review
+
+Tests dùng URL deployment bất biến, không alias PR có thể đổi giữa suite. Để kiểm tra alias, chạy một smoke riêng xác nhận nó redirect tới deployment hiện hành.
+
+Bộ gate khởi đầu nên có:
+
+1. **Identity:** config revision, shell release và remote releases khớp release set đã chốt.
+2. **Transport:** entry/chunks/CSS có MIME và bytes đúng; không có redirect login hoặc HTML fallback cho assets.
+3. **Composition:** mount remote bằng loader thật; routing, shared runtime và giao tiếp giữa apps hoạt động.
+4. **Lazy loading:** vào route tải chunk sau bootstrap và kiểm tra chunk ở đúng deployment prefix.
+5. **Journey:** hành trình liên quan thay đổi, ví dụ catalog thêm hàng và cart cập nhật.
+6. **Isolation:** dữ liệu của test run khác không thấy được; role test không truy cập tenant ngoài scope.
+7. **Failure path:** remote optional lỗi thì shell còn dùng được; thiếu config không fallback sang production.
+
+Không cần mọi PR chạy toàn bộ E2E của shop. Chọn suite theo boundary bị ảnh hưởng, nhưng giữ identity và loading smoke cho mọi deployment gửi reviewer. Cần xác nhận qua Network/telemetry release **thực sự được tải**, không chỉ release được JSON chọn.
+
+### Ví dụ Playwright kiểm tra composition
+
+Ví dụ sau là contract test UI cho một lab đã có route `/catalog`, nút thêm sản phẩm, cart badge và panel diagnostics. Panel này phải báo release từ build metadata của code đã mount, không chỉ in lại config. Nó không chứa secrets và có thể được giới hạn trong preview.
+
+Runner đã được cấp quyền vào deployment bằng test identity sandbox. Không copy session production vào `storageState`. File mẫu không tự provision auth, backend hay fixtures.
+
+```ts title="tests/preview-composition.spec.ts"
+import { expect, test } from '@playwright/test';
+
+const previewUrl = process.env.PREVIEW_URL;
+if (!previewUrl) throw new Error('PREVIEW_URL_REQUIRED');
+
+const deployment = new URL(previewUrl);
+if (
+  deployment.protocol !== 'https:' ||
+  !/^dep-[0-9]+\.preview\.example\.net$/.test(deployment.hostname) ||
+  deployment.port || deployment.username || deployment.password ||
+  deployment.pathname !== '/' || deployment.search || deployment.hash
+) {
+  throw new Error('PREVIEW_URL_MUST_BE_AN_IMMUTABLE_DEPLOYMENT');
+}
+
+// Giá trị từ release set đã chốt cho run này, không đọc expected từ UI.
+const expected = {
+  deploymentId: 'dep-5831',
+  configRevision: 'dep-5831-config-1',
+  shell: 'r12',
+  catalog: 'r19',
+  cart: 'r7',
+};
+
+test('candidate chạy trong shell và cập nhật cart', async ({ page }) => {
+  await page.goto(new URL('/catalog', deployment).href);
+
+  await expect(page.getByTestId('deployment-id'))
+    .toHaveText(expected.deploymentId);
+  await expect(page.getByTestId('config-revision'))
+    .toHaveText(expected.configRevision);
+  await expect(page.getByTestId('loaded-shell-release'))
+    .toHaveText(expected.shell);
+  await expect(page.getByTestId('loaded-catalog-release'))
+    .toHaveText(expected.catalog);
+
+  const product = page.getByTestId('product-sku-demo-1');
+  await expect(product).toBeVisible();
+  await product.getByRole('button', { name: 'Thêm vào giỏ', exact: true }).click();
+  await expect(page.getByTestId('cart-count')).toHaveText('1');
+
+  await page.getByRole('link', { name: 'Giỏ hàng', exact: true }).click();
+  await expect(page).toHaveURL(new URL('/cart', deployment).href);
+  await expect(page.getByTestId('loaded-cart-release'))
+    .toHaveText(expected.cart);
+  await expect(page.getByTestId('cart-item-sku-demo-1')).toBeVisible();
+});
+```
+
+Hostname và releases trong snippet là minh họa: thay bằng policy domain của bạn và metadata đã xác minh của run. Regex trong test chỉ giúp tránh chạy nhầm URL; nó không thay deployment registry hay access control. Mỗi test cần cart rỗng và SKU fixture riêng/ổn định trước khi chạy. Không thêm thao tác reset global backend để test pass.
+
+Lưu Playwright trace, screenshot lỗi và logs theo deployment ID. Nếu có response chứa secrets hoặc dữ liệu nhạy cảm, redact hoặc giới hạn quyền đọc artifact diagnostics; không tự upload mọi trace lên PR public. Cách dựng runner, fixtures và network assertions đầy đủ hơn nằm ở [Integration và E2E tests](/docs/kiem-thu-va-tooling/integration-e2e).
+
+### Giới hạn của kết quả preview
+
+“Preview pass” nghĩa là tổ hợp và điều kiện đã ghi trong evidence pass. Nếu preview dùng API mock, kết quả không chứng minh auth cookie hoặc backend persistence. Nếu candidate test trên shell r12, không mặc nhiên chứng minh shell r11 còn đang sống trong tab production dùng được candidate đó.
+
+Khi delivery path production khác preview — CDN riêng, CSP khác, server rendering hoặc base path khác — bổ sung gate trên đường tải tương đương production và post-promote smoke. Copy artifacts vào same-origin preview hữu ích cho review, nhưng không chứng minh CORS trên CDN production.
+
+Sau merge, nếu pipeline build lại từ merge commit, artifact mới không phải artifact PR đã test. Dựng gate cho artifact mới trước promotion. Chỉ promote lại artifact đã test khi provenance, source policy và tính portable cho phép; không coi việc có cùng version string là bằng chứng bytes giống nhau.
+
+## Review và chẩn đoán
+
+PR comment nên đủ để reviewer biết link nào phản ánh thay đổi hiện tại. Một format gợi ý:
+
+```text
+Preview: READY
+Candidate: shop/catalog PR 142, commit <full-commit-sha>
+Deployment: dep-5831
+Review alias: https://catalog-pr-142.preview.example.net
+Reproduce URL: https://dep-5831.preview.example.net
+Composition: shell r12 + catalog r19 + cart r7
+Backend: sandbox-v5; fixtures: shop-fixtures-3
+Coverage: browser smoke + add-to-cart journey; payment stubbed
+Expires: <timestamp từ deployment record>
+Evidence: <link CI có kiểm soát truy cập>
+```
+
+Nếu push mới đang build, comment cần nói link hiện tại vẫn là commit trước. Hiển thị banner trong preview với deployment ID, release set và sandbox label để người dùng không nhầm đây là production. Banner chỉ lấy metadata công khai; không in tokens hoặc raw config có thể chứa field ngoài allowlist.
+
+Khi báo lỗi, gửi reproduce URL, thời điểm, route và trace ID. Telemetry nên gắn preview/deployment/config revision, app release, failure phase như fetch/init/mount và test run ID nếu có. Không dùng ID theo PR làm metric label không giới hạn; logs/traces phù hợp hơn cho chiều có cardinality cao.
+
+Có thể giữ lại deployment lỗi cho điều tra theo retention policy. Nếu tài nguyên đã hết hạn, thông báo rõ preview expired; không tự chuyển reproduce URL sang deployment khác vì sẽ làm bằng chứng mất ý nghĩa.
+
+## Vòng đời cleanup và chi phí
+
+### Đóng PR và hết hạn
+
+Cleanup không thể chỉ phụ thuộc event đóng PR. Webhook có thể bị bỏ lỡ, job thất bại giữa provisioning hoặc PR mở nhiều tuần không còn cần preview. Dùng cả event-driven teardown và sweeper định kỳ đối chiếu inventory với SCM/expiry.
+
+Vòng đời logical preview có thể là:
+
+```text
+PR active → provisioning → verifying → ready
+                 │            │
+                 └── failed ──┘ → cleanup theo retention
+
+PR closed hoặc TTL hết → retiring → deleted
+```
+
+PR active có thể tạo nhiều deployment; chỉ một deployment là current alias target. Deployment cũ giữ bất biến trong cửa sổ retention để tái hiện lỗi, còn sandbox đắt tiền có thể có TTL ngắn hơn nếu reviewer biết rõ giới hạn đó.
+
+Mọi tài nguyên cần tag owner, preview ID, deployment ID, repository, creation/expiry time và generation. Ghi allocation vào inventory ngay khi provision; nếu chỉ ghi sau bước cuối cùng, tài nguyên của job fail giữa chừng sẽ thành orphan.
+
+Các giá trị TTL như “vài ngày sau khi PR đóng” là lựa chọn policy, không có số đúng cho mọi team. Chọn theo tốc độ review, nhu cầu diagnostics, chi phí backend và yêu cầu dữ liệu; cho phép gia hạn có audit thay vì giữ mọi preview vô thời hạn.
+
+### Thu hồi tài nguyên an toàn
+
+Thứ tự cleanup gợi ý:
+
+1. Mark preview không còn active, tăng generation/tombstone để các job đang chạy không publish lại.
+2. Thu hồi alias review hoặc trả trang expired, chặn phiên test mới và thu hồi credentials/sandbox grants.
+3. Sau grace period theo policy, xóa sandbox data, compute, queues và storage riêng.
+4. Xóa routing/deployment artifacts không còn được giữ; cập nhật inventory và xác nhận kết quả.
+5. Giữ audit/evidence theo retention riêng, với quyền đọc phù hợp.
+
+Cleanup phải idempotent: tài nguyên đã thiếu được coi là đã xóa, nhưng lỗi quyền/network phải được retry và báo cáo. Job chỉ được xóa tài nguyên thuộc đúng owner/deployment record, không ghép wildcard từ raw branch name rồi chạy lệnh xóa.
+
+Nếu artifact store dùng chung, không xóa shell/cart baseline khi xóa một preview. Garbage collector chỉ xóa artifact không còn reference từ production, staging, preview còn sống hoặc evidence được giữ, và đã qua retention window. Với copy riêng theo deployment, việc xóa namespace đơn giản hơn nhưng tốn thêm storage.
+
+Không thể thu hồi JavaScript đã tải khỏi tab của reviewer. Có thể chặn API/auth và làm lần tải mới thất bại; assets còn trong browser cache có thể vẫn đọc được. Đây là một lý do không đưa secrets hoặc dữ liệu production vào preview ngay từ đầu.
+
+Giới hạn số preview active theo repository/team, đặt quota cho backend compute và tự hủy build obsolete. Theo dõi thời gian đến trạng thái ready, tỷ lệ provisioning fail, số orphan resources và chi phí theo preview; tối ưu từ số đo của hệ thống, không từ một lời hứa preview sẽ luôn rẻ.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân nên kiểm tra | Hành động đầu tiên |
+| --- | --- | --- |
+| Standalone đúng, integrated preview lỗi | Contract, share scope, router hoặc CSS khác | Xác nhận loaded releases và xem lỗi init/mount trong shell |
+| Link PR quay về commit cũ | Job cũ ghi đè alias/comment | Đối chiếu desired generation, head commit và lịch sử conditional update |
+| Entry `200`, lazy route `404` | Thiếu graph hoặc asset base trỏ sai prefix | Xem URL chunk và Initiator; kiểm tra output/layout đã publish |
+| `Unexpected token '<'` | Login redirect hoặc SPA fallback trả HTML | Xem response body/redirect chain của entry và chunks |
+| Config bị reject | Shell baseline chưa hỗ trợ preview policy/schema | Kiểm tra reader compatibility; không bỏ validation |
+| Preview thay đổi dù PR không push | Baseline hoặc backend shared đang dùng pointer động | Chốt lại release set và dependency scope; tạo deployment mới |
+| Test cart thỉnh thoảng fail | Test data/user bị dùng chung | Tách tenant/run namespace và seed fixtures có kiểm soát |
+| Login xong nhưng remote không tải | Protection hoặc credentials khác giữa origins | Kiểm tra từng request; ưu tiên delivery same-origin cho preview |
+| Candidate gọi API production | Build-time URL, proxy hoặc config fallback sai | Chặn request, thu hồi quyền test rồi sửa policy; không chỉ sửa banner |
+| PR đóng nhưng tài nguyên lại xuất hiện | Job đang chạy không kiểm tra tombstone/generation | Chặn publish mới, reconcile inventory và chạy cleanup lại |
+| Preview pass nhưng production fail | Khác bytes, baseline hoặc delivery/runtime policy | Đối chiếu digest và evidence; chạy gate cho artifact/path production |
+
+## Checklist cho preview đầu tiên
+
+- [ ] Có integrated preview qua loader thật, không chỉ standalone remote.
+- [ ] Preview ID chứa phạm vi repository; deployment ID và URLs bất biến.
+- [ ] Baseline, candidate, public config, backend và fixture revisions được pin.
+- [ ] Shell baseline hỗ trợ preview reader/policy; artifact portable tới delivery path mới.
+- [ ] Entry, chunks, CSS và assets đầy đủ; asset thiếu không nhận HTML fallback.
+- [ ] Job chạy PR source không có quyền production hoặc quyền publish control plane.
+- [ ] Deployer xác minh provenance và unpack artifact an toàn, không thực thi PR scripts.
+- [ ] Alias/comment cập nhật có generation check; đóng PR chặn mọi publish còn chạy.
+- [ ] Domain, session, OAuth và backend sandbox tách khỏi production.
+- [ ] Protection được thử trên HTML, config, entry, chunks và API, kể cả cache hits.
+- [ ] Browser gate dùng deployment URL, expected release set độc lập và dữ liệu riêng.
+- [ ] Evidence nói rõ phần mock/stub và giới hạn so với production.
+- [ ] Preview có owner/expiry, cleanup idempotent và sweeper xử lý orphan resources.
+- [ ] Shared artifacts không bị xóa chỉ vì một preview hết hạn.
+
+Bắt đầu với một PR catalog: ghép candidate với shell/cart baseline, mở một lazy route và hoàn tất luồng thêm giỏ trên sandbox. Sau đó push hai commit liên tiếp, cố tình để build cũ hoàn tất sau build mới, rồi đóng PR khi một job còn chạy. Nếu link luôn trỏ đúng generation và không có tài nguyên bị tạo lại sau cleanup, bạn đã kiểm chứng cả đường review lẫn những race quan trọng của preview.
+
+## Tài liệu tham khảo
+
+- [GitHub Actions — Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use): rủi ro code PR, privileged triggers, artifacts và runners.
+- [MDN — Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie): host-only cookies, Domain, SameSite và cookie prefixes.
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control): policy cho response được bảo vệ và cache qua nhiều lớp.
+- [webpack — Public Path](https://webpack.js.org/guides/public-path/): asset base và `publicPath: 'auto'` khi phục vụ remote từ prefix deployment.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Runtime configuration" href="/docs/trien-khai/runtime-configuration" description="Validate cấu hình, giữ snapshot và thiết kế policy chọn remote." />
+  <Card title="CI/CD độc lập" href="/docs/trien-khai/ci-cd" description="Tách build, artifact provenance, release gate và promotion." />
+  <Card title="Deploy lên CDN" href="/docs/trien-khai/cdn-assets" description="Publish đủ artifact graph và kiểm tra đường tải entry cùng lazy chunks." />
+  <Card title="Integration và E2E tests" href="/docs/kiem-thu-va-tooling/integration-e2e" description="Kiểm thử composition thật, fixtures và journeys xuyên micro-frontend." />
+</Cards>

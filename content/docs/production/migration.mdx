@@ -1,18 +1,497 @@
 ---
 title: "Migration từ frontend monolith"
-description: "Tách từng domain theo hướng tăng dần và xác định tiêu chí dừng hoặc quay lại."
+description: "Tách từng domain khỏi frontend monolith bằng migration tăng dần: tạo seam, vận hành legacy và remote song song, kiểm chứng deploy độc lập và giữ đường quay lại."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog cần release hàng tuần, nhưng mỗi lần sửa một bộ lọc đều phải chờ cart và các phần khác kiểm thử cả shop. Bạn muốn tách catalog ra, nhưng monolith đang phục vụ người dùng thật: URL cũ phải mở được, giỏ hàng không được mất và team vẫn phải giao tính năng trong lúc migration.
+
+Mình sẽ không bắt đầu bằng một repository mới hay một lần rewrite toàn bộ. **Bắt đầu bằng một domain có owner rõ, tạo đường chuyển qua lại giữa implementation cũ và mới, rồi chứng minh một release độc lập hoạt động ngoài production happy path.** Khi pilot chưa chứng minh được lợi ích, chưa nên tách tiếp domain thứ hai.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Bài dùng shop giả định gồm shell, catalog và cart. Pilot tách catalog; cart vẫn ở legacy và cung cấp capability qua adapter. Repository này chỉ là site tài liệu, không có ứng dụng shop hay pipeline migration sẵn có. Snippet TypeScript và policy bên dưới dành cho lab riêng, không phụ thuộc một federation runtime cụ thể. Sơ đồ text hiển thị trực tiếp, không cần cấu hình Mermaid. Auth, backend và dữ liệu bền vững là các điều kiện production bổ sung, không phải tính năng đã có trong shop mẫu tối thiểu.
 </Callout>
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chốt mục tiêu trước khi tách code](#chốt-mục-tiêu-trước-khi-tách-code)
+  - [Đo vấn đề hiện tại](#đo-vấn-đề-hiện-tại)
+  - [Khi nào giữ modular monolith](#khi-nào-giữ-modular-monolith)
+- [Lập bản đồ monolith](#lập-bản-đồ-monolith)
+- [Chọn domain đầu tiên](#chọn-domain-đầu-tiên)
+- [Thiết kế giai đoạn cùng tồn tại](#thiết-kế-giai-đoạn-cùng-tồn-tại)
+  - [Strangler theo route](#strangler-theo-route)
+  - [Chọn điểm ghép phù hợp với legacy](#chọn-điểm-ghép-phù-hợp-với-legacy)
+- [Tạo seam và adapter trước khi chuyển implementation](#tạo-seam-và-adapter-trước-khi-chuyển-implementation)
+  - [Contract theo capability thay vì internal store](#contract-theo-capability-thay-vì-internal-store)
+  - [Giới hạn tuổi thọ của legacy bridge](#giới-hạn-tuổi-thọ-của-legacy-bridge)
+- [Giữ URL và quyết định route nhất quán](#giữ-url-và-quyết-định-route-nhất-quán)
+  - [Một route chỉ có một owner đang active](#một-route-chỉ-có-một-owner-đang-active)
+  - [Ví dụ chọn implementation từ snapshot](#ví-dụ-chọn-implementation-từ-snapshot)
+- [Giữ state auth và dữ liệu đúng trong lúc migration](#giữ-state-auth-và-dữ-liệu-đúng-trong-lúc-migration)
+  - [Một authority cho mỗi đường ghi](#một-authority-cho-mỗi-đường-ghi)
+  - [State trong browser và tab cũ](#state-trong-browser-và-tab-cũ)
+  - [Auth CSS và trải nghiệm thống nhất](#auth-css-và-trải-nghiệm-thống-nhất)
+- [Lộ trình pilot với gate từng giai đoạn](#lộ-trình-pilot-với-gate-từng-giai-đoạn)
+  - [Giai đoạn 0 chốt baseline và trách nhiệm](#giai-đoạn-0-chốt-baseline-và-trách-nhiệm)
+  - [Giai đoạn 1 chạy legacy qua seam](#giai-đoạn-1-chạy-legacy-qua-seam)
+  - [Giai đoạn 2 kiểm thử remote trong composition thật](#giai-đoạn-2-kiểm-thử-remote-trong-composition-thật)
+  - [Giai đoạn 3 mở cohort nhỏ và diễn tập rollback](#giai-đoạn-3-mở-cohort-nhỏ-và-diễn-tập-rollback)
+  - [Giai đoạn 4 chứng minh độc lập trước khi mở rộng](#giai-đoạn-4-chứng-minh-độc-lập-trước-khi-mở-rộng)
+- [Kiểm thử và đánh giá kết quả pilot](#kiểm-thử-và-đánh-giá-kết-quả-pilot)
+  - [Ma trận kiểm thử migration](#ma-trận-kiểm-thử-migration)
+  - [Tiêu chí tiếp tục tạm dừng hoặc quay lại](#tiêu-chí-tiếp-tục-tạm-dừng-hoặc-quay-lại)
+- [Runbook quay lại legacy](#runbook-quay-lại-legacy)
+- [Gỡ phần legacy khi đủ điều kiện](#gỡ-phần-legacy-khi-đủ-điều-kiện)
+- [Những cách migration dễ tạo distributed monolith](#những-cách-migration-dễ-tạo-distributed-monolith)
+- [Checklist và bài tập pilot](#checklist-và-bài-tập-pilot)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chốt mục tiêu trước khi tách code
 
-Bài này sẽ giúp bạn: tách từng domain theo hướng tăng dần và xác định tiêu chí dừng hoặc quay lại.
+Migration là thay cách tổ chức, release và vận hành frontend, không chỉ thay cách import component. Nếu catalog có bundle riêng nhưng mỗi release vẫn phải rebuild shell và chờ toàn bộ team ký duyệt, bạn đã trả thêm chi phí composition mà chưa đạt mục tiêu độc lập.
 
-[Xem các bài trong nhóm Production](/docs/production).
+### Đo vấn đề hiện tại
+
+Chọn một giả thuyết có thể kiểm chứng, chẳng hạn: “Một thay đổi chỉ thuộc catalog có thể đi từ merge đến production mà không rebuild cart hoặc sửa shell, miễn là public contract còn tương thích”. Đây là mục tiêu cụ thể hơn “chuyển sang kiến trúc hiện đại”.
+
+Ghi baseline từ các thay đổi có phạm vi tương đương, không so một bản sửa text với một feature checkout:
+
+| Nhóm | Cần ghi trước migration | Dùng để quyết định điều gì |
+| --- | --- | --- |
+| Delivery | Thời gian từ merge đến production; phần chờ build, review và phối hợp release | Tách domain có giảm phần chờ thực sự không? |
+| Coupling | Một feature catalog thường sửa những modules nào, cần những team nào | Ranh giới dự kiến có đúng với nhịp thay đổi không? |
+| Reliability | Journey success, lỗi thêm hàng, fallback, incident và thời gian phục hồi | Độc lập release có làm tăng rủi ro cho người dùng không? |
+| Performance | Route ready, Core Web Vitals, JavaScript tải và CPU trong journey | Composition có vượt budget đã chốt không? |
+| Chi phí vận hành | Pipeline, preview, contract tests, on-call và công bảo trì adapter | Team có chịu được chi phí lâu dài không? |
+
+Đừng mặc định build chậm là lý do đủ để thêm runtime composition. Cache build, chia package, giảm test thừa hoặc sửa pipeline có thể giải quyết vấn đề với ít failure modes hơn. Xem [Performance và bundle budget](/docs/production/performance) để đặt phép đo ở trải nghiệm đã ghép, không chỉ ở bundle catalog.
+
+### Khi nào giữ modular monolith
+
+Mình giữ frontend chung nhưng chia module rõ ràng nếu các domain vẫn cùng một team, cùng lịch release và phần lớn thay đổi đi xuyên qua chúng. Tạo seam vẫn có ích: nó giảm dependency trực tiếp và giúp kiểm thử mà chưa cần thêm CDN, remote loader hay selection service.
+
+Nếu team không có người sở hữu release và incident của domain mới, chưa nên tách runtime. Ownership không thể bù bằng công cụ. Một pilot kết luận “module hóa đã đủ” là kết quả tốt, không phải migration thất bại.
+
+Cũng tránh gộp migration kiến trúc, đổi framework, redesign UX và đổi backend contract thành một đợt. Khi outcome thay đổi, bạn khó biết nguyên nhân; đường quay lại cũng phức tạp hơn. Mặc định giữ nghiệp vụ và framework ổn định trong pilot, rồi nâng cấp riêng khi đã có boundary được kiểm chứng.
+
+## Lập bản đồ monolith
+
+Trước khi chuyển file, theo một user journey từ URL đến tác động nghiệp vụ. Với shop: mở catalog, đổi filter, thêm SKU, nhìn badge, mở cart, đổi số lượng rồi Back về catalog. Dependency map phải chỉ ra cả điều không xuất hiện trong import graph.
+
+| Khu vực | Câu hỏi cần trả lời | Bằng chứng nên lưu |
+| --- | --- | --- |
+| Routing | Ai sửa URL, đăng ký history listener và quyết định route match? | Route table, deep links, redirects, query semantics |
+| State | Cart, filter và session nằm ở đâu; ai ghi và ai subscribe? | Sơ đồ authority và danh sách storage keys |
+| Side effects | Import module có tự chạy analytics, fetch, timer hoặc listener không? | Trace lúc bootstrap, mount, unmount và remount |
+| UI | Catalog đang dựa vào reset CSS, font, portal root hay modal manager nào? | Screenshot và kiểm thử khi bỏ CSS legacy |
+| Backend | API nào là contract công khai, API nào chỉ ngầm phục vụ legacy? | Schema, auth, error semantics và compatibility window |
+| Delivery | Artifact nào luôn release cùng nhau và vì sao? | Pipeline graph, artifact inventory và rollback procedure |
+
+Ghi owner cho từng dependency, không chỉ tên thư viện. “Dùng Redux” chưa nói ai có quyền sửa schema; “cart team sở hữu write commands, catalog chỉ dùng capability thêm hàng” mới là thông tin giúp tách.
+
+Đặc biệt kiểm tra import side effects. Một module legacy có thể tự đăng ký `popstate` khi import; tải nó như fallback sẽ làm hai router cùng hoạt động dù bạn chưa render UI cũ. Nếu legacy không thể mount/unmount sạch, đừng ép nó sống cùng document với remote: route sang một document riêng có thể là bước chuyển an toàn hơn.
+
+## Chọn domain đầu tiên
+
+Mình ưu tiên một lát cắt người dùng hoàn thành được việc, có route rõ và team có nhu cầu release riêng. Trong ví dụ, catalog là ứng viên hợp lý nếu nó chỉ cần capability thêm hàng, thay vì biết toàn bộ state cart. Đây không phải quy tắc rằng mọi hệ thống phải tách catalog trước.
+
+| Ứng viên trong shop giả định | Lợi ích học được | Rủi ro | Quyết định pilot |
+| --- | --- | --- | --- |
+| Catalog route | Kiểm chứng URL, loader, data, thêm hàng và release độc lập | CSS legacy, SEO nếu có, dependency với cart | Ưu tiên nếu boundary có thể thu gọn |
+| Widget gợi ý | Thử pipeline và remote loading với blast radius nhỏ | Có thể không kiểm chứng được một domain tự chủ | Dùng làm spike kỹ thuật, chưa coi là bằng chứng đầy đủ |
+| Cart | Kiểm chứng state và write authority | Giỏ hàng, pending writes và đồng bộ badge | Làm sau khi capability và phục hồi đã rõ |
+| Checkout nếu shop mở rộng | Có business value lớn | Giao dịch, duplicate submission và dữ liệu nhạy cảm | Không chọn đầu tiên trừ khi có lý do và nền tảng kiểm soát rủi ro |
+| Header hoặc nút dùng chung | Dễ thấy kết quả nhanh | Shared UI không có năng lực nghiệp vụ độc lập | Thường là design-system package, không phải domain pilot |
+
+Đặt phạm vi bao gồm và loại trừ bằng văn bản. Ví dụ: catalog mới sở hữu danh sách, filter và trạng thái tải catalog; cart controller, badge và đường ghi giỏ vẫn ở owner hiện tại. Một tính năng đòi đổi cả cart schema lẫn catalog implementation nằm ngoài pilot, hoặc phải được review như thay đổi contract riêng.
+
+Nếu mọi feature của ứng viên vẫn phải sửa nhiều domain, quay lại [Chia theo domain](/docs/kien-truc/chia-domain). Thêm remote không sửa được một boundary sai.
+
+## Thiết kế giai đoạn cùng tồn tại
+
+### Strangler theo route
+
+Strangler là thay dần từng phần của hệ thống đang chạy, giữ phần còn lại phục vụ người dùng. Với frontend, một cách dễ kiểm soát là giữ public URL và thay implementation phía sau một route boundary.
+
+```text
+Trước migration:
+/catalog và /cart → Legacy app
+
+Trong pilot:
+                         ┌── /catalog → Legacy catalog hoặc Catalog remote
+URL → Shell / route seam ┤              (chỉ một implementation active)
+                         └── /cart    → Legacy cart
+
+Sau khi đạt gate:
+/catalog → Catalog remote; /cart → Legacy cart
+```
+
+Shell ở đây có thể là một lớp composition mỏng trong monolith hiện tại, chưa cần rewrite thành app mới. Nó nắm route ownership, selection snapshot, loader, fallback và telemetry; logic catalog không chuyển vào shell.
+
+Giữ phần catalog cũ trong rollback window, nhưng không chạy hai implementation trên cùng slot để “dự phòng”. Hai UI có thể cùng fetch, đăng ký analytics hoặc gửi write commands. Deploy song song khác với thực thi song song.
+
+Không bắt buộc kết thúc bằng việc tách mọi phần của monolith. Một số domain ít thay đổi có thể ở lại legacy lâu dài nếu chúng còn được hỗ trợ và không khóa release của domain đã tách.
+
+### Chọn điểm ghép phù hợp với legacy
+
+| Cách chuyển dần | Chọn khi | Điều phải giải quyết |
+| --- | --- | --- |
+| Ghép runtime trong document hiện tại | Legacy có thể nhường một route/slot và lifecycle có kiểm soát | Router, CSS, shared dependencies, cleanup và loader failure |
+| Route sang document/app riêng qua edge hoặc server | Legacy khó unmount hoặc cần tách deployment boundary trước | Full navigation, auth continuity, durable state và public URL mapping |
+| Iframe cho một vùng legacy | Cần document boundary khi app cũ chưa thể refactor | Sandbox, origin checks, focus, resize, deep links và giao tiếp |
+| Package build-time trong monolith | Mục tiêu trước mắt là module hóa và tạo seam | Vẫn release theo host build; không gọi đó là deploy độc lập |
+
+Mặc định pilot theo route, không cắt một màn hình thành hàng chục remote nhỏ. Nếu legacy hỗ trợ lifecycle tốt, ghép trong document giúp giữ SPA journey; nếu không, ưu tiên navigation qua document boundary thay vì sửa cả framework legacy chỉ để nhúng nó.
+
+Module Federation là một lựa chọn loading/composition, không phải kế hoạch migration. Xem [So sánh cách tích hợp](/docs/cac-cach-tich-hop/so-sanh) trước khi chọn runtime. Với Next.js SSR hoặc server-side composition, server và client phải dùng cùng selection cho response đó; không thay server-rendered legacy bằng remote khác ngay trước hydration.
+
+## Tạo seam và adapter trước khi chuyển implementation
+
+Seam là điểm bạn có thể thay implementation mà bên gọi vẫn dùng một contract ổn định. Branch by abstraction đặt lớp contract này trước implementation cũ, rồi đưa implementation mới vào sau nó; bạn không phải giữ một nhánh rewrite dài ngày và merge tất cả một lần.
+
+### Contract theo capability thay vì internal store
+
+Nếu catalog gọi `legacyStore.dispatch(cartSlice.actions.add(...))`, đưa catalog sang remote chỉ chuyển dependency nội bộ thành dependency xuyên deployment. Trước khi tách, thay lời gọi đó bằng capability có semantics rõ.
+
+Ví dụ contract cho lab production có backend hỗ trợ idempotency:
+
+```ts title="Public contract minh họa giữa catalog và cart owner"
+export type AddItemCommand = Readonly<{
+  skuId: string;
+  quantity: number;
+  idempotencyKey: string;
+}>;
+
+export type CartSnapshot = Readonly<{
+  revision: string;
+  itemCount: number;
+}>;
+
+export type AddItemOutcome =
+  | { status: 'confirmed'; snapshot: CartSnapshot }
+  | { status: 'rejected'; code: 'UNAVAILABLE' | 'INVALID_QUANTITY' }
+  | { status: 'unknown'; operationId: string };
+
+export interface CartCapabilityV1 {
+  addItem(command: AddItemCommand): Promise<AddItemOutcome>;
+  subscribe(listener: (snapshot: CartSnapshot) => void): () => void;
+}
+```
+
+`unknown` nghĩa là chưa biết server đã ghi hay chưa, không có nghĩa thêm hàng thất bại. UI cần đối soát outcome bằng cơ chế của cart owner; không tự gửi thêm một command mới. Cùng một thao tác retry phải giữ key theo contract của backend, không sinh key mới sau mỗi timeout.
+
+<Callout type="warn" title="Một field trong TypeScript không tạo ra idempotency">
+  Backend phải định nghĩa scope, thời hạn lưu key, kiểm tra payload và trả lại kết quả cho request lặp. Nếu API legacy chưa hỗ trợ, adapter không thể biến nó thành exactly-once bằng cách thêm `idempotencyKey`. Trong giai đoạn đó, không tự retry write không rõ outcome; bổ sung hỗ trợ backend hoặc dùng quy trình đối soát phù hợp trước khi mở rộng pilot.
+</Callout>
+
+Legacy adapter chuyển contract công khai sang service hiện tại. Nó không expose reducer, store instance hay mutable product object. Catalog truyền SKU và quantity; cart/backend kiểm tra quyền, dữ liệu hiện hành và quy tắc giá. Contract cũng cần quy định lỗi auth, lỗi network và Promise rejection; union minh họa không phải schema đầy đủ cho mọi nghiệp vụ.
+
+Chạy cả catalog cũ qua capability này trước. Khi remote mới xuất hiện, khác biệt chính là implementation UI và cơ chế delivery, không phải đồng thời đổi đường ghi giỏ. Các bài [Contracts](/docs/giao-tiep-va-trang-thai/contracts) và [Contract tests](/docs/kiem-thu-va-tooling/contract-tests) trình bày cách kiểm chứng provider/consumer.
+
+### Giới hạn tuổi thọ của legacy bridge
+
+Adapter là một anti-corruption layer: nó ngăn schema và cách gọi của legacy lan ra bên mới. Nhưng nếu mọi remote đều gọi một “legacy utils” package chứa hàng trăm helpers, bạn chỉ đổi tên global dependency.
+
+Với mỗi bridge, ghi:
+
+- Owner hỗ trợ và on-call; consumers nào đang dùng.
+- Contract version, legacy dependencies và compatibility window.
+- Đường thay thế dài hạn; điều kiện nào cho phép xóa bridge.
+- Mốc review lại phạm vi và chi phí bảo trì.
+
+Cart bridge có thể cần controller legacy nhưng không nên kéo toàn bộ legacy UI và router vào startup. Nếu chưa tách được controller khỏi UI, ghi dependency này trong release set và gate; chưa tuyên bố catalog đã độc lập hoàn toàn. Mục tiêu là làm dependency rõ và thu hẹp nó, không giấu nó sau một interface đẹp.
+
+## Giữ URL và quyết định route nhất quán
+
+### Một route chỉ có một owner đang active
+
+Shell hoặc routing layer quyết định catalog dùng legacy hay remote. Sau khi chọn, implementation đó sở hữu subtree được cấp; shell vẫn nắm navigation chung. Legacy router phải ngừng match route đã nhường, không chỉ ngừng render một component.
+
+Kiểm tra cả navigation qua link và mở URL trực tiếp. Nếu server/CDN vẫn trả HTML của monolith cho `/catalog`, remote chỉ chạy khi click từ homepage thì migration chưa hoàn tất đường vào. Asset requests và API requests phải có route riêng, không rơi vào catch-all HTML.
+
+Giữ semantics của query, hash, Back/Forward, redirects, focus sau navigation và scroll restoration. Nếu URL thay đổi vì lý do sản phẩm, lên kế hoạch redirect tương ứng; không tạo URL mới chỉ vì implementation chuyển sang repository khác. Nếu có SEO, kiểm tra thêm status code, canonical, metadata và nội dung SSR, không chỉ client route.
+
+### Ví dụ chọn implementation từ snapshot
+
+Ví dụ dưới đây chạy được như module TypeScript thuần. Nó chỉ chọn owner, không tải module hay publish config. Snapshot đã được validate và chọn cohort ở upstream; cả legacy lẫn remote đều được định danh bằng release cụ thể.
+
+```ts title="route-selection.ts trong lab"
+export type Implementation = Readonly<{
+  kind: 'legacy' | 'remote';
+  release: string;
+}>;
+
+export type MigrationSnapshot = Readonly<{
+  revision: string;
+  catalog: Implementation;
+  legacy: Readonly<{ kind: 'legacy'; release: string }>;
+}>;
+
+export function chooseOwner(
+  pathname: string,
+  snapshot: MigrationSnapshot,
+): Implementation {
+  const isCatalog = pathname === '/catalog'
+    || pathname.startsWith('/catalog/');
+
+  return isCatalog ? snapshot.catalog : snapshot.legacy;
+}
+```
+
+Shell gọi với `new URL(location.href).pathname`, không truyền cả query vào hàm. Hàm giả định app phục vụ từ root và upstream đã thống nhất URL normalization; nếu có base path, locale prefix hoặc encoded path, xử lý chúng theo route contract trước bước này. Nó chỉ chạy sau khi đã loại API và asset requests.
+
+Test tối thiểu cho route seam, dùng `node:assert/strict` trong môi trường hỗ trợ TypeScript hoặc test runner của lab:
+
+```ts title="route-selection.test.ts trong lab"
+import assert from 'node:assert/strict';
+import { chooseOwner, type MigrationSnapshot } from './route-selection.ts';
+
+const candidate: MigrationSnapshot = {
+  revision: 'demo-migration-7',
+  catalog: { kind: 'remote', release: 'catalog-r18' },
+  legacy: { kind: 'legacy', release: 'legacy-m42' },
+};
+
+assert.deepEqual(chooseOwner('/catalog', candidate), candidate.catalog);
+assert.deepEqual(chooseOwner('/catalog/', candidate), candidate.catalog);
+assert.deepEqual(chooseOwner('/catalog/sku-1', candidate), candidate.catalog);
+assert.deepEqual(chooseOwner('/catalogue', candidate), candidate.legacy);
+assert.deepEqual(chooseOwner('/cart', candidate), candidate.legacy);
+assert.deepEqual(
+  chooseOwner(new URL('https://shop.example.com/catalog?q=shoe').pathname, candidate),
+  candidate.catalog,
+);
+
+const rollback: MigrationSnapshot = {
+  ...candidate,
+  revision: 'demo-migration-8',
+  catalog: candidate.legacy,
+};
+assert.deepEqual(chooseOwner('/catalog', rollback), candidate.legacy);
+// Snapshot cũ vẫn chọn candidate cho document đã pin nó.
+assert.deepEqual(chooseOwner('/catalog', candidate), candidate.catalog);
+```
+
+`/catalog/sku-1` là deep link minh họa nếu shop mở rộng, không phải route đã có sẵn trong repository. Test classifier không thay kiểm thử routing thật, mount/unmount hay URL handling phía server.
+
+Pin một immutable snapshot cho mỗi document để chuyển route không ngẫu nhiên đổi implementation hoặc release. Cohort assignment phải ổn định theo đơn vị đã chốt, như session; đừng dùng `Math.random()` mỗi lần render. SSR cần đưa cùng quyết định vào bootstrap client, và HTML/config cache không được phát nhầm cohort.
+
+Runtime config thông thường quyết định document mới dùng implementation nào. Emergency control cho tab đang sống là một contract riêng, cần thiết kế và kiểm thử; đừng kỳ vọng sửa JSON sẽ tự gỡ module đã evaluate. Xem [Runtime configuration](/docs/trien-khai/runtime-configuration).
+
+## Giữ state auth và dữ liệu đúng trong lúc migration
+
+### Một authority cho mỗi đường ghi
+
+Catalog mới và catalog cũ có thể cùng tồn tại trong hệ thống, nhưng một document chỉ chạy một implementation catalog. Cả hai dùng cùng cart capability và backend authority. Nếu mỗi bên tự giữ bản giỏ hàng có thể ghi, bạn sẽ phải giải quyết conflict mà migration UI vốn không cần tạo ra.
+
+| Loại state | Owner trong pilot | Cách đi qua boundary |
+| --- | --- | --- |
+| Filter catalog | Catalog active; URL nếu cần share/deep link | Query contract, không copy cả store |
+| UI tạm như modal đang mở | Implementation đang mount | Không cần đồng bộ sang implementation khác |
+| Cart đã xác nhận | Cart domain/backend; legacy controller làm adapter trong pilot | Commands, snapshots và subscription có cleanup |
+| Optimistic cart state | Cart command owner | Không để catalog và badge tự cộng độc lập |
+| Auth/session | Auth integration hiện tại và server | Capability/session signals theo policy |
+| Release/cohort context | Shell/control plane | Snapshot nhất quán và telemetry context |
+
+Nếu backend phải đổi schema, dùng expand–migrate–contract: thêm khả năng mới nhưng giữ client cũ hoạt động; chuyển consumers; chỉ bỏ contract cũ khi hết support và rollback window. UI rollback không tự rollback dữ liệu đã ghi. Với semantics mới mà legacy không hiểu, phải fix-forward hoặc phối hợp phục hồi đã kiểm chứng.
+
+Không chạy write ở cả hai implementation để so sánh kết quả. Shadow comparison chỉ phù hợp với đường thực sự read-only và được đánh giá về tải, privacy cùng analytics side effects. Một HTTP `GET` cũng chưa đủ chứng minh code xung quanh không có side effects.
+
+### State trong browser và tab cũ
+
+Nếu giỏ đang nằm trong `localStorage`, migration UI chưa tự làm nó thành server-backed state. Hai tabs dùng hai implementation vẫn có thể cùng ghi một key. Bạn cần protocol đồng bộ/conflict phù hợp, hoặc chuyển durable authority trước trong một thay đổi riêng; một biến “active catalog” trong mỗi tab không giải quyết concurrency giữa tabs.
+
+Không nâng version rồi overwrite storage schema cũ nếu đó là nơi legacy rollback đọc giỏ. Ưu tiên representation tương thích trong pilot. Nếu buộc chuyển schema, giữ đường đọc cũ có chủ đích, backup/khả năng phục hồi và chính sách concurrent writers; không dual-write tùy tiện vào hai keys rồi hy vọng chúng khớp nhau. Kiểm thử quota, corrupt data, tab cũ và crash giữa quá trình chuyển.
+
+Trước full navigation, unmount hoặc reload, xử lý dữ liệu chưa lưu và operations đang pending theo domain policy. Timeout chỉ nói client ngừng chờ; không chứng minh server chưa ghi. Đừng phục hồi bằng cách gửi lại giỏ hoặc replay thao tác chưa rõ outcome.
+
+Document cũ có thể chạy legacy hoặc candidate lâu sau khi rollout đổi. Giữ APIs và immutable assets mà chúng còn cần trong support window, gồm lazy chunks chưa tải. Việc không thấy request gần đây không chứng minh mọi tab cũ đã đóng.
+
+### Auth CSS và trải nghiệm thống nhất
+
+Giữ một auth integration có semantics rõ về expiry, logout và refresh. Khi cùng document, remote không nên tự tạo refresh loop cạnh tranh với legacy. Với apps khác origin, phải đánh giá cookie scope, CORS, CSRF và luồng login thực tế; không giải quyết bằng cách gửi bearer token rộng rãi qua URL hoặc event bus. Backend luôn kiểm tra authorization, kể cả khi route flag chọn remote.
+
+Nếu logout xảy ra khi remote đang fetch, implementation phải dừng hiển thị dữ liệu nhạy cảm và xử lý response đến muộn. Kiểm thử cả tab legacy và tab candidate, không chỉ tab mới sau reload.
+
+Với UI, tách dependency CSS ngầm trước khi bỏ legacy stylesheet. Scope selectors, kiểm tra font/reset, z-index, portal targets và focus trap. Unmount phải dọn subscriptions, listeners, timers và DOM ngoài root; import side effects ở module scope không tự được dọn khi component unmount.
+
+Runtime boundary không phải security sandbox. Code legacy và remote cùng window có thể tác động globals, CSS và main thread. Xem [CSS isolation](/docs/ui-va-framework/css-isolation) và [Accessibility](/docs/ui-va-framework/accessibility) để tránh một pilot nhìn đúng nhưng làm hỏng keyboard journey.
+
+## Lộ trình pilot với gate từng giai đoạn
+
+Các giai đoạn sau là trình tự đề xuất, không phải lịch cố định theo tuần. Mỗi gate cần evidence, owner chấp nhận và đường quay lại; không promote chỉ vì đã đến ngày trong kế hoạch.
+
+<Steps>
+<Step>
+
+### Giai đoạn 0 chốt baseline và trách nhiệm
+
+Chốt scope catalog, các journeys cần giữ, delivery hypothesis và performance/reliability budgets. Gán catalog owner, shell/platform owner, legacy/cart owner và incident decision owner. Người quyết định rollout cần quyền thực hiện rollback hoặc một publisher trực có quyền tương ứng.
+
+**Gate:** dependency map và baseline đã có; legacy target, compatibility window, test matrix và rollback procedure đã được thống nhất. Nếu chưa đo được outcome hoặc không có owner support, dừng ở modularization.
+
+</Step>
+<Step>
+
+### Giai đoạn 1 chạy legacy qua seam
+
+Đưa routing và cart capability qua contract mới, nhưng toàn bộ người dùng vẫn dùng legacy catalog. Loại import nội bộ và side effects ngăn cleanup. Đây là thay đổi behavior-preserving có test, không phải chỉ đổi tên modules.
+
+**Gate:** journeys cũ giữ nguyên; Back/Forward và direct URL hoạt động; không có double writes, double analytics hoặc listener tích lũy khi remount. Seam có thể chọn legacy bằng snapshot xác định.
+
+</Step>
+<Step>
+
+### Giai đoạn 2 kiểm thử remote trong composition thật
+
+Tạo catalog artifact độc lập, public metadata và pipeline kiểm thử contract. Mount nó trong shell cùng legacy cart và CSS/auth integration thực; standalone remote chỉ là một lớp test bổ sung. Publish assets trước selection, giữ release URLs bất biến.
+
+Chạy preview bằng release set cụ thể: shell, legacy/cart provider, catalog candidate và backend version/contract. Nếu catalog còn kéo controller từ legacy release, ghi rõ dependency đó.
+
+**Gate:** contract và integration tests đạt; candidate dùng đúng capability; chunks tải qua hosting thật; remote lỗi có fallback không phụ thuộc remote đó; budgets đạt trong journey đã ghép.
+
+</Step>
+<Step>
+
+### Giai đoạn 3 mở cohort nhỏ và diễn tập rollback
+
+Cho cohort được duyệt nhận candidate bằng targeting ổn định; selection cũ vẫn phục vụ phần còn lại. Chuẩn bị telemetry tách assignment, implementation thực chạy và journey outcome. Quy mô cohort và thời gian quan sát lấy từ rủi ro cùng nhu cầu bằng chứng của hệ thống, không lấy một tỷ lệ mẫu làm chuẩn chung.
+
+Diễn tập quay lại legacy trong lab trước, rồi kiểm chứng operational path của production theo change policy. Giữ một tab candidate để thấy selection rollback không tự đổi code trong tab đó.
+
+**Gate:** đủ bằng chứng so với control; không thiếu telemetry; rollback cho document mới đã verify, tab cũ có policy xử lý và pending writes không bị replay. Nếu sai dữ liệu hoặc authorization, containment ngay, không chờ đủ mẫu.
+
+</Step>
+<Step>
+
+### Giai đoạn 4 chứng minh độc lập trước khi mở rộng
+
+Release một thay đổi tương thích tiếp theo của catalog mà không rebuild shell/cart. Sau đó kiểm chứng provider hoặc shell release tương thích vẫn giữ catalog hoạt động. Những lần đổi contract phá vỡ tương thích có thể cần phối hợp, nhưng không được trở thành yêu cầu cho mọi release.
+
+**Gate:** lợi ích delivery xuất hiện trong dữ liệu thực, chi phí vận hành chấp nhận được, regression không vượt guardrails và rollback không làm mất release độc lập khác. Chỉ lúc đó tăng cohort hoặc xem xét domain thứ hai.
+
+</Step>
+</Steps>
+
+## Kiểm thử và đánh giá kết quả pilot
+
+### Ma trận kiểm thử migration
+
+Kiểm thử cả implementation cũ và mới trên các tổ hợp được hỗ trợ. Tests ở HEAD của mọi repository không chứng minh artifact đang rollout hoặc rollback target còn tương thích.
+
+| Tình huống | Điều cần chứng minh |
+| --- | --- |
+| Direct URL, query, hash, Back/Forward, refresh | Cùng public route contract, đúng owner, không loop hoặc mất filter |
+| Legacy → candidate qua document mới và quay lại | State bền vững còn đúng; UI tạm được xử lý theo policy |
+| Catalog mới + cart legacy hiện tại | Command, subscription, badge và cart khớp dữ liệu đã xác nhận |
+| Candidate + provider rollback target | Contract support window thực sự bảo vệ đường quay lại |
+| Entry/chunk chậm, 404, top-level throw, render lỗi | Shell còn dùng được; fallback có telemetry và không báo thành công giả |
+| API timeout sau write, mất mạng, click lặp | Không ghi trùng; outcome unknown có đối soát phù hợp |
+| Unmount/remount nhiều lần, response đến muộn | Không leak listeners hoặc render vào root đã nhường |
+| Tab cũ, logout, expiry và multi-tab state | Không lộ dữ liệu hoặc ghi đè state theo schema không tương thích |
+| Legacy CSS bị bỏ hoặc remote stylesheet đến muộn | Layout, modal, keyboard navigation và focus vẫn đúng |
+| SSR nếu có, HTML cache và service worker | Server/client cùng selection; không hydrate bằng implementation khác |
+| Promote domain khác rồi rollback catalog | Giữ release độc lập hợp lệ, không revert cả snapshot cũ |
+
+Đừng chỉ so screenshot. Legacy có thể đang chứa quirks hoặc lỗi; phân loại hành vi nào là contract phải giữ, hành vi nào là bug sẽ sửa riêng. Nếu pilot vừa sửa bug vừa đổi kiến trúc, ghi rõ thay đổi và cập nhật test expectation có review.
+
+### Tiêu chí tiếp tục tạm dừng hoặc quay lại
+
+Đặt trước định nghĩa của từng outcome, denominator, minimum evidence và người quyết định. Các threshold phải xuất phát từ SLO/budget và baseline của bạn; không có con số phổ quát cho mọi migration.
+
+| Quyết định | Điều kiện điển hình | Hành động |
+| --- | --- | --- |
+| Tiếp tục | Journey outcomes và budgets đạt; contract độc lập; đủ coverage; rollback có bằng chứng | Tăng cohort theo policy, giữ quan sát và compatibility window |
+| Tạm dừng | Thiếu mẫu, telemetry mất, dependency chưa rõ hoặc chi phí adapter tăng | Không mở rộng; bổ sung evidence hoặc sửa seam |
+| Quay lại legacy | Regression gắn với candidate và target legacy còn tương thích | Ngừng selection candidate, publish rollback và kiểm chứng recovery |
+| Containment hoặc fix-forward | Sai dữ liệu/security, legacy cũng lỗi hoặc target cũ không hiểu dữ liệu mới | Chặn rủi ro bằng domain/backend control; không force UI rollback |
+| Kết thúc pilot không tách tiếp | Không có lợi ích độc lập đáng kể so với chi phí | Giữ modular monolith, thu gọn hạ tầng thử nghiệm có kiểm soát |
+
+Telemetry tối thiểu cần nối `migrationRevision`, cohort, shell/legacy/catalog releases thực chạy, route, phase và journey outcome. Đừng gắn access token, raw cart payload hoặc user identifiers không cần thiết vào logs.
+
+Một catalog remote lỗi rồi fallback sang legacy không được tính là “remote thành công”. Ghi selection intended, implementation thực tế và degraded outcome riêng; nếu không, tỷ lệ thành công tổng có thể che một candidate hoàn toàn không usable. Tương tự, chỉ đo lượt ready thành công sẽ bỏ qua người dùng thoát trong lúc tải.
+
+Khi đánh giá delivery, xem nhiều thay đổi tương đương và ghi các yếu tố khác như pipeline được tối ưu cùng kỳ. Cohort kỹ thuật không tự là A/B experiment có thiết kế thống kê đầy đủ; đừng gán mọi thay đổi conversion cho micro-frontend.
+
+## Runbook quay lại legacy
+
+Runbook này quay lại **implementation catalog**, khác với rollback một remote release sang remote release trước. Chỉ dùng khi legacy target đã verify với backend, dữ liệu và các providers hiện tại. Quy trình publish selection chi tiết nằm ở [Rollout và rollback](/docs/trien-khai/rollout-rollback).
+
+1. **Dừng mở rộng.** Pause automation liên quan, ghi incident ID, affected journeys, snapshot revision và releases thực chạy. Pause chưa ngăn selection mới; nếu ảnh hưởng rõ, thực hiện bước ngừng candidate ngay.
+2. **Kiểm tra target và containment.** Xác nhận legacy catalog, cart capability, assets và API còn hoạt động. Nếu có nguy cơ sai write hoặc security, chặn thao tác nguy hiểm bằng control có hiệu lực phù hợp, ưu tiên backend; flag UI không đủ cho tab cũ.
+3. **Tạo revision mới trên snapshot hiện tại.** Đổi catalog owner về legacy; giữ releases độc lập khác đã verify. Dùng transaction hoặc compare-and-swap của publisher để không ghi đè promotion đồng thời. Không restore mù toàn bộ config từ đầu pilot.
+4. **Kiểm chứng document mới từ public URL.** Mở catalog trực tiếp trong các browser contexts/cohorts cần kiểm tra, xác nhận revision và implementation thực chạy, rồi làm journey đến cart. Kiểm tra CDN, HTML và service worker cache nếu selection không khớp.
+5. **Xử lý documents đang chạy candidate.** Không assume chúng đã chuyển sang legacy. Nếu có operational control đã thiết kế, dùng nó để ngừng thao tác mới. Reload/navigation tại boundary an toàn sau khi bảo vệ dữ liệu chưa lưu và đối soát operations đang pending.
+6. **Đánh giá recovery và tác động dữ liệu riêng.** Tách document mới với tab cũ, outcome với fallback. Nếu có ghi sai, mở quy trình đối soát/bù nghiệp vụ; đổi owner frontend không undo dữ liệu. Lưu evidence và regression tests trước khi thử candidate tiếp theo.
+
+<Callout type="warn" title="Không tự chuyển implementation sau một write không rõ outcome">
+  Nếu người dùng đã bấm thêm hàng và mất response, chuyển sang catalog legacy rồi tự gửi lại thao tác có thể ghi trùng. Giữ operation identity, đối soát với cart/backend và chỉ retry theo idempotency contract. Nếu candidate chỉ lỗi tải trước mount, fallback cũng phải bảo đảm việc khởi tạo đến muộn không mount thêm UI thứ hai; timeout không tự hủy import hoặc side effects.
+</Callout>
+
+Không coi unmount là “unload JavaScript”. Federation scope, module cache, globals và stylesheet có thể còn trong document. Nếu legacy fallback không an toàn khi candidate đã evaluate, chọn error UI local hoặc chuyển sang document mới có kiểm soát, thay vì hot-swap bằng mọi giá. Giữ artifact candidate để điều tra và phục vụ tab còn được hỗ trợ.
+
+## Gỡ phần legacy khi đủ điều kiện
+
+Rollout 100% cho document mới chưa phải thời điểm xóa catalog legacy. Có thể còn tabs cũ, deep links cache cũ và rollback targets đang cần implementation đó.
+
+Chỉ bắt đầu contract/removal khi:
+
+- Support window cho documents cũ và rollback window đã kết thúc theo policy; có cách xử lý document quá hạn.
+- Không còn consumer được hỗ trợ cần legacy catalog hoặc contract định bỏ; evidence bao gồm inventory, compatibility tests và telemetry coverage, không chỉ access logs.
+- Team chấp nhận rằng bước xóa làm mất một rollback option, và đã verify remote stable/fallback thay thế.
+- Public URLs, assets, backend contracts và storage migrations còn hỗ trợ các clients nằm trong support window.
+
+Gỡ theo dependency, không xóa nguyên thư mục vì tên có chữ `legacy`. Catalog UI cũ có thể không còn dùng nhưng cart bridge vẫn cần controller/service ở đó. Xóa route branch, component và CSS chỉ dùng cho catalog; giữ provider còn được hỗ trợ; chạy lại import graph, bundle analysis và integration tests.
+
+Sau đó gỡ migration flags, cohort overrides, temporary dashboards và tests cho nhánh không còn hỗ trợ bằng một change riêng có review. Giữ audit và evidence cần cho điều tra. Adapter chỉ được bỏ khi capability owner mới đã phục vụ tất cả consumers tương ứng, không phải khi UI đầu tiên đã chuyển.
+
+Nếu không có lý do tách cart, cho cart ở lại modular legacy với ownership và lifecycle rõ. Một hệ thống lai có chủ đích tốt hơn kế hoạch “phải tách hết” kéo dài mà không còn mục tiêu đo được.
+
+## Những cách migration dễ tạo distributed monolith
+
+| Cách làm | Vì sao mắc kẹt | Hướng sửa |
+| --- | --- | --- |
+| Tách repository trước, giữ imports nội bộ | Mỗi release vẫn phải sửa hoặc pin implementation của bên khác | Tạo capability contract và provider/consumer tests trước |
+| Share một global store cho tất cả remotes | Schema và mutation semantics trở thành release lock | Chốt authority, commands và read snapshots theo domain |
+| Đưa mọi business rule vào shell | Shell trở thành monolith mới và team platform thành bottleneck | Shell giữ composition; domain owner giữ nghiệp vụ |
+| Copy legacy code rồi phát triển hai bản vô thời hạn | Bug fixes và behavior diverge; rollback target mất độ tin cậy | Giới hạn coexistence, quy định fix propagation và retirement gates |
+| Viết lại framework và backend cùng pilot | Không tách được nguyên nhân regression, rollback phức tạp | Tách các trục thay đổi, giữ contract ổn định trước |
+| Chỉ test remote standalone | Bỏ sót CSS, auth, routing và lifecycle của composition thật | Preview đúng artifact set và journeys xuyên boundary |
+| Chạy cả hai implementation để so write outcomes | Duplicate commands, analytics và race conditions | Một active owner; comparison chỉ trên đường read-only đã đánh giá |
+| Dùng remote entry trả 200 làm gate | Chưa chứng minh chunks, mount, UI ready hay thao tác nghiệp vụ | Gate theo journey outcome và telemetry thực chạy |
+| Bỏ legacy ngay sau rollout 100% | Không còn target cho rollback và tab cũ thiếu assets/contracts | Giữ support/rollback windows, removal theo dependency inventory |
+
+## Checklist và bài tập pilot
+
+- [ ] Có vấn đề delivery cụ thể, baseline và điều kiện giữ modular monolith.
+- [ ] Pilot là một domain có owner/on-call, scope và business journeys rõ.
+- [ ] Legacy chạy qua seam trước; contract không expose store hoặc mutable internals.
+- [ ] Mỗi route có một active owner; direct URL và Back/Forward được kiểm thử.
+- [ ] Selection/cohort được pin nhất quán; SSR và cache không phát nhầm implementation nếu có.
+- [ ] Mỗi write có authority rõ; không dual-write; outcome unknown có policy đối soát.
+- [ ] Auth, storage, multi-tab, CSS và cleanup đã kiểm tra với legacy thật.
+- [ ] Preview và CI dùng release set cụ thể, gồm targets được hỗ trợ và rollback targets.
+- [ ] Guardrails ghi cả fallback/degraded; thiếu telemetry không được coi là đạt gate.
+- [ ] Rollback có quyền thực hiện, concurrency control và kế hoạch cho tab cũ.
+- [ ] Release catalog tương thích đã chạy mà không rebuild shell/cart.
+- [ ] Có retirement criteria cho UI legacy, bridge, flags và contracts cũ.
+
+Trong lab, dựng catalog legacy và candidate cùng dùng một cart capability. Mở tab A chạy legacy, tab B chạy candidate; làm journey thêm hàng rồi để B pending một request. Rollback selection trên base config mới nhất sau khi một domain khác vừa promote. Tab C mới phải chạy legacy catalog, giữ release độc lập kia và đọc đúng giỏ đã xác nhận; B không tự đổi implementation hay replay command.
+
+Cuối bài tập, lưu bằng chứng từng tab dùng revision/release nào, có bao nhiêu listeners sau remount và pending operation được xử lý ra sao. Nếu chưa trả lời được ba câu đó, sửa seam và phục hồi trước khi tách domain tiếp theo.
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, Martin Fowler](https://martinfowler.com/articles/micro-frontends.html) — incremental upgrades, independent deployment, vertical ownership và chi phí của composition. Bài giải thích cách thay dần frontend cũ thay vì rewrite toàn bộ; các ví dụ công cụ là bối cảnh của bài, không phải cấu hình mặc định cho mọi framework hiện tại.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Chia theo domain" href="/docs/kien-truc/chia-domain" description="Đánh giá cohesion, coupling và boundary trước khi chọn phần để tách." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm chứng providers, consumers và compatibility window bằng release thực." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Cohort, snapshot, concurrency control và xử lý document cũ khi phục hồi." />
+  <Card title="Resilience khi remote lỗi" href="/docs/production/resilience" description="Deadline, cleanup, fallback và giới hạn của việc hot-swap trong cùng document." />
+</Cards>

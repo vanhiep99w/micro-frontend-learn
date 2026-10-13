@@ -1,23 +1,302 @@
 ---
 title: "Production"
-description: "Cân bằng tính độc lập với hiệu năng, an toàn và độ tin cậy."
+description: "Đưa micro-frontend vào production với budget cho trải nghiệm đã ghép, failure policy, trust boundaries và compatibility windows có owner rõ ràng."
 ---
 
-Đây là trang khung cho nhóm **Production**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử catalog vừa release bộ lọc mới, shell và cart không đổi. Pipeline từng app đều xanh, nhưng người dùng mở shop thấy trang chậm hơn, một tab cũ không tải được chunk, còn fallback cart khiến họ tưởng giỏ hàng đang rỗng. Tách deployment đã giúp team giao code riêng; nó chưa tự giải quyết những gì xảy ra khi các phần gặp nhau trong browser.
+
+Nhóm **Production** giúp bạn trả lời một câu hỏi thực tế: **mỗi team có thể release độc lập đến mức nào mà trải nghiệm chung vẫn nhanh, đúng và có đường phục hồi?** Mình mặc định giữ quyền tự chủ bên trong domain, nhưng đặt cam kết rõ tại boundary: budget, contract, quyền thực thi và trách nhiệm khi có lỗi.
+
+<Callout type="info" title="Phạm vi trang này">
+  Đây là trang định hướng, không phải hướng dẫn deploy site Fumadocs hiện tại. Ví dụ dùng shop giả định gồm shell, catalog và cart, chủ yếu theo mô hình client-side runtime composition. Repository này chỉ chứa tài liệu; release IDs, policy và bài tập bên dưới không phải hạ tầng đã có sẵn. Với SSR, cần đánh giá thêm performance, failure và quyền thực thi phía server. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Production readiness thuộc về trải nghiệm đã ghép](#production-readiness-thuộc-về-trải-nghiệm-đã-ghép)
+- [Năm câu hỏi cần trả lời trước khi mở traffic](#năm-câu-hỏi-cần-trả-lời-trước-khi-mở-traffic)
+- [Đặt budget theo user journey](#đặt-budget-theo-user-journey)
+  - [Đo outcome thay vì chỉ đếm lỗi](#đo-outcome-thay-vì-chỉ-đếm-lỗi)
+  - [Performance là chi phí của cả đường tải](#performance-là-chi-phí-của-cả-đường-tải)
+- [Thiết kế failure policy theo nghiệp vụ](#thiết-kế-failure-policy-theo-nghiệp-vụ)
+- [Trust boundary không trùng với deployment boundary](#trust-boundary-không-trùng-với-deployment-boundary)
+- [Giữ compatibility window cho release độc lập](#giữ-compatibility-window-cho-release-độc-lập)
+- [Phân chia ownership tại điểm ghép](#phân-chia-ownership-tại-điểm-ghép)
+- [Release gate cần bằng chứng gì](#release-gate-cần-bằng-chứng-gì)
+  - [Trước khi promote candidate](#trước-khi-promote-candidate)
+  - [Trong rollout và sau khi rollback](#trong-rollout-và-sau-khi-rollback)
+- [Ví dụ một release catalog đi qua các gate](#ví-dụ-một-release-catalog-đi-qua-các-gate)
+- [Khi production có lỗi](#khi-production-có-lỗi)
+- [Khi nào chưa nên tách thêm micro-frontend](#khi-nào-chưa-nên-tách-thêm-micro-frontend)
+- [Chọn bài đọc theo vấn đề](#chọn-bài-đọc-theo-vấn-đề)
+- [Bài tập kiểm chứng một domain](#bài-tập-kiểm-chứng-một-domain)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 - [Các bài trong nhóm](#các-bài-trong-nhóm)
 
-## Phạm vi dự kiến
+## Production readiness thuộc về trải nghiệm đã ghép
 
-Cân bằng tính độc lập với hiệu năng, an toàn và độ tin cậy.
+Một remote render được ở chế độ standalone mới chứng minh một phần của hệ thống. Khi ghép vào shell, nó phải dùng được contract của consumer, chia sẻ main thread với phần khác, tải assets theo topology thực và xử lý state có thể tồn tại từ trước lần deploy.
+
+Vì vậy, đơn vị kiểm chứng không chỉ là “catalog r19”. Nó là **journey chạy trên một tổ hợp release và môi trường xác định**. Trong shop giả định, journey tối thiểu có thể là mở catalog, chọn sản phẩm, thêm hàng, thấy badge cập nhật rồi mở cart. Nếu catalog hiện nhanh nhưng thao tác thêm hàng mất kết quả, journey vẫn thất bại.
+
+```text
+Người dùng → Shell → Catalog → Cart capability / API
+                 └─────────→ Cart UI và badge
+```
+
+Sơ đồ thể hiện dependency nghiệp vụ, không bắt buộc các phần tải tuần tự. Cart capability có thể là service/adapter tách khỏi cart UI; nếu cả hai nằm trong cùng remote, lỗi tải remote đó có thể ảnh hưởng cả thao tác thêm hàng lẫn hiển thị giỏ.
+
+Có ba phạm vi cần giữ riêng:
+
+| Phạm vi | Cần chứng minh | Bằng chứng không đủ |
+| --- | --- | --- |
+| Một app | Logic, UI và lifecycle đúng trong phạm vi owner | Build thành công nhưng không test cleanup |
+| Điểm ghép | Public module, callbacks, events và dependency identity tương thích | Typecheck từng repository riêng |
+| Trải nghiệm đã ghép | Tải được, usable, thao tác đúng và phục hồi an toàn | Remote entry trả HTTP 200 |
+
+Độc lập release không có nghĩa là bỏ hai phạm vi sau. Nó có nghĩa là một thay đổi tương thích có thể được kiểm chứng và promote mà không bắt mọi app rebuild hoặc mọi team release cùng lúc.
+
+## Năm câu hỏi cần trả lời trước khi mở traffic
+
+Đừng bắt đầu bằng một danh sách công cụ. Bắt đầu bằng điều phải đúng với người dùng, rồi chọn phép đo và cơ chế kiểm soát phù hợp.
+
+| Mặt cần kiểm soát | Câu hỏi production | Cam kết tối thiểu |
+| --- | --- | --- |
+| Performance | Journey có còn nhanh trên thiết bị và mạng mục tiêu không? | Budget cho loading, tương tác và JavaScript của composition |
+| Resilience | Remote chậm hoặc lỗi thì phần nào còn dùng được? | Deadline, fallback đúng nghiệp vụ, retry có giới hạn và đường phục hồi |
+| Security | Ai có thể đưa code vào môi trường của shell, và code đó có quyền gì? | Trust model, kiểm soát publish/config và authorization phía server |
+| Dependency governance | Candidate phải tương thích với những consumer nào? | Inventory, compatibility window, owner cho shared dependencies và deprecation |
+| Migration | Tách domain có tạo lợi ích đủ bù chi phí vận hành không? | Pilot đo được, seam rõ và đường quay lại legacy |
+
+Các mặt này tác động lẫn nhau. Preload mọi remote có thể giảm một bước chờ nhưng tăng JavaScript tải sớm. Retry có thể giúp qua lỗi mạng thoáng qua nhưng làm tăng tải lúc CDN đang gặp sự cố. Share framework có thể giảm bytes nhưng thêm ràng buộc version và runtime identity.
+
+Mình chọn tối ưu có giới hạn: nêu rõ lợi ích cần đạt, rủi ro đi kèm và điều kiện dừng. “Tối ưu performance” không phải lý do đủ để bỏ integrity check; “giữ availability” không phải lý do để báo thao tác thành công khi chưa biết kết quả.
+
+## Đặt budget theo user journey
+
+### Đo outcome thay vì chỉ đếm lỗi
+
+Chọn một số journey quan trọng rồi định nghĩa điểm bắt đầu, điều kiện usable và kết quả nghiệp vụ. Với “thêm hàng”, điều kiện thành công phải theo contract của cart: chẳng hạn server xác nhận cập nhật và UI phản ánh kết quả đó. Chỉ thấy nút hết trạng thái loading chưa đủ.
+
+Các chỉ số hữu ích trả lời những câu hỏi khác nhau:
+
+| Tín hiệu | Trả lời điều gì? | Cần tránh |
+| --- | --- | --- |
+| Journey success | Người dùng có hoàn thành việc cần làm không? | Bỏ các attempt thất bại khỏi denominator |
+| Route ready | Bao lâu từ navigation đến UI usable đã thống nhất? | Đồng nhất module loaded với data/UI ready |
+| Core Web Vitals | Loading, responsiveness và visual stability của trang ra sao? | Coi một lần đo lab là trải nghiệm của mọi người dùng |
+| Remote load/mount failure | Lỗi xuất hiện ở phase nào? | Gộp config, network, contract và render thành một lỗi chung |
+| Fallback hoặc degraded rate | Có bao nhiêu lần trải nghiệm bị suy giảm? | Gọi fallback là thành công chỉ vì shell không crash |
+
+Nếu dùng SLO, ghi rõ mục tiêu, khoảng thời gian đánh giá, tập người dùng và công thức đo. Error budget là phần thất bại được chấp nhận trong khoảng đó, không phải bundle budget hay quota retry. Mức cụ thể phụ thuộc yêu cầu sản phẩm; trang này không đặt một SLA mặc định cho mọi shop.
+
+Telemetry cần phân biệt attempt, retry và outcome cuối. Một journey có hai lần tải module không nên bị đếm thành hai người dùng thành công. Khi thiếu dữ liệu hoặc mẫu chưa đủ, giữ trạng thái “chưa đủ bằng chứng”, không tự chuyển thành “không có regression”.
+
+### Performance là chi phí của cả đường tải
+
+Shell nhẹ và catalog nhẹ vẫn có thể ghép thành trang chậm nếu shell chờ config, config mới chỉ ra entry, entry mới chỉ ra chunk, rồi chunk mới bắt đầu fetch dữ liệu. Đây là loading waterfall: chi phí đến từ quan hệ phụ thuộc, không chỉ từ tổng dung lượng.
+
+Đặt budget ở cả hai mức. Budget từng remote giúp owner giữ phần mình gọn; budget composition bắt duplicated dependencies, request nối tiếp và main-thread contention. Đo cold load, warm load và chuyển route riêng vì cache và lifecycle khác nhau.
+
+Core Web Vitals là baseline hữu ích nhưng không thay metric nghiệp vụ. Ví dụ, trang có thể đạt LCP tốt nhờ header hiện sớm trong khi catalog chưa usable. Hãy đọc waterfall và đo ready signal của đúng vùng chức năng trước khi quyết định preload, prefetch hay share dependency.
+
+Chi tiết phép đo, đơn vị budget và regression gate nằm trong [Performance và bundle budget](/docs/production/performance).
+
+## Thiết kế failure policy theo nghiệp vụ
+
+Không phải remote nào cũng được phép biến mất. Widget gợi ý lỗi có thể bỏ qua; cart lỗi phải nói rõ không tải được giỏ, không hiển thị giỏ rỗng như một dữ kiện đã xác nhận. Auth/config bắt buộc lỗi có thể buộc chức năng được bảo vệ dừng an toàn.
+
+| Tình huống | Hành vi nên có | Vì sao |
+| --- | --- | --- |
+| Remote không thiết yếu hết deadline | Fallback local hoặc bỏ vùng phụ; phần chính tiếp tục hoạt động | Không để optional dependency chặn bootstrap |
+| Cart UI lỗi | Giữ navigation, hiển thị trạng thái không khả dụng | Không làm người dùng hiểu nhầm dữ liệu cart |
+| Contract không tương thích | Không mount; report đúng releases và contract | Retry cùng bytes không sửa được contract |
+| Response thêm hàng bị mất | Kiểm tra outcome hoặc retry theo contract idempotency | Server có thể đã ghi dù browser chưa nhận response |
+| Config chọn URL không hợp lệ | Reject theo policy trước khi load | Không chạy code chỉ vì chuỗi URL có vẻ hợp lệ |
+
+Shell phải sở hữu fallback cho slot mà nó ghép. Nếu fallback cũng import từ remote đang lỗi, đường phục hồi vẫn phụ thuộc đúng thứ vừa hỏng. Loading state, load deadline và deadline đến usable cũng cần tách biệt để không chờ vô hạn sau khi module đã tải xong.
+
+<Callout type="warn" title="Timeout và Error Boundary có giới hạn">
+  Timeout không tự hủy script đang tải hoặc code đã bắt đầu evaluate. React Error Boundary không phải sandbox, không bắt mọi lỗi async/event handler và không cứu được main thread bị khóa bởi vòng lặp đồng bộ. Muốn isolation mạnh hơn, phải đánh giá boundary khác thay vì chỉ thêm một component bọc ngoài.
+</Callout>
+
+Mình mặc định retry ít, có owner và chỉ khi có khả năng phục hồi. Lỗi transient có thể thử lại trong budget; MIME sai, export thiếu hoặc dependency không tương thích cần sửa release/config. Xem [Resilience khi remote lỗi](/docs/production/resilience) để thiết kế deadline, cleanup, retry và fallback accessible.
+
+## Trust boundary không trùng với deployment boundary
+
+Remote tải từ CDN khác vẫn có thể chạy trong cùng JavaScript realm với shell. Khi được nạp vào document đó, code có thể tiếp cận DOM, storage và browser APIs theo quyền của môi trường trang. Tách repository, đặt namespace hay share scope không tự giảm quyền thực thi.
+
+Vì vậy, quyền sửa runtime config hoặc publish remote artifact là quyền tác động đến code người dùng chạy. Threat model cần bao gồm source review, dependency graph, CI credentials, artifact storage, CDN và hệ thống chọn release; không chỉ kiểm tra XSS trong component.
+
+CSP giới hạn nguồn và một số dạng thực thi; SRI kiểm tra bytes khớp digest. Chúng không chứng minh code được duyệt là vô hại, cũng không phân quyền catalog khác cart trong cùng document. Kiểm tra entry cũng chưa chứng minh toàn bộ lazy chunks có integrity nếu loader không bao phủ graph đó.
+
+Mình chỉ nạp remote cùng document khi nó thuộc mức tin cậy chấp nhận được cho sản phẩm. Nếu cần chạy nội dung không cùng mức tin cậy, đánh giá iframe với origin, sandbox và message policy phù hợp. Shadow DOM và CSS Modules giải quyết đóng gói/style, không phải security isolation.
+
+Và dù chọn boundary nào, frontend không phải authority cho quyền nghiệp vụ. Backend phải kiểm tra session, authorization và dữ liệu đầu vào. Ẩn nút hay disable remote không chặn một request ngoài UI. Nếu remote chạy khi SSR, cần đánh giá quyền trong tiến trình server riêng; browser CSP không bảo vệ bước đó.
+
+Các kiểm soát và giới hạn cụ thể nằm trong [Security và trust boundaries](/docs/production/security).
+
+## Giữ compatibility window cho release độc lập
+
+Trong production, “bản đang chạy” không chỉ là selection mới nhất. Tab cũ có thể giữ shell cũ, module đã evaluate và state đã tạo từ trước. Tab đó vẫn có thể tải thêm lazy chunks sau khi bạn promote candidate mới.
+
+Compatibility window xác định những consumer/provider releases còn phải hoạt động cùng nhau. Nó liên quan đến public contract, shared runtime, API và thời gian giữ artifacts; không thể rút gọn thành “mọi app dùng cùng package version”.
+
+| Loại thay đổi | Hướng mặc định |
+| --- | --- |
+| Dependency private, không đi qua boundary | Remote owner nâng độc lập, giữ budget và kiểm thử thuộc phạm vi |
+| Public callback hoặc event payload | Giữ semantics cũ; thêm khả năng mới theo cách consumer cũ còn hiểu được |
+| Shared dependency cần cùng identity | Platform owner quản lý constraints và kiểm chứng tổ hợp còn hỗ trợ |
+| Breaking contract | Expand hỗ trợ cũ/mới, migrate consumers, rồi mới bỏ contract cũ khi window đóng |
+| Xóa release assets | Chỉ xóa khi hết cả nhu cầu tab cũ và rollback theo retention policy |
+
+`singleton` là ràng buộc resolution/identity, không phải bằng chứng rằng mọi major version đều tương thích. Cũng đừng share tất cả dependencies chỉ để giảm bytes: một thư viện private có thể nên giữ local để owner nâng mà không kéo cả platform vào migration.
+
+Rollback chỉ khả dụng nếu target còn tải được, còn tương thích và vẫn hiểu dữ liệu/API hiện tại. Thay đổi schema không backward-compatible có thể khiến code cũ không dùng được dù artifact vẫn còn. Vì thế, review đường quay lại cùng lúc với review candidate, không chờ incident mới hỏi.
+
+Xem [Dependency governance](/docs/production/dependency-governance) cho inventory, compatibility matrix, deprecation và nâng framework major; xem [Caching và cache invalidation](/docs/trien-khai/caching) cho policy giữ đường tải của tab cũ.
+
+## Phân chia ownership tại điểm ghép
+
+Owner của source không nhất thiết là owner của quyền publish hoặc response headers. Nếu catalog team không có quyền sửa CDN rule, runbook phải chỉ ra người có quyền đó. “Mỗi team chịu trách nhiệm app mình” vẫn để trống nhiều điểm ghép.
+
+| Boundary | Owner chính gợi ý | Trách nhiệm phối hợp |
+| --- | --- | --- |
+| Shell bootstrap, route slot, loader và local fallback | Shell/platform | Domain công bố contract, readiness và failure semantics |
+| Catalog/cart logic, state và side effects | Domain team | Cleanup lifecycle; báo lỗi và outcome theo schema chung |
+| Config publisher, artifact store và CDN | Platform/deploy owner | Domain cung cấp inventory; security review quyền chọn code |
+| Shared runtime và compatibility policy | Platform cùng consumer/provider owners | Lập ma trận được hỗ trợ và kế hoạch nâng cấp |
+| Authorization và dữ liệu bền vững | Backend/domain API owner | Frontend xử lý pending, error và retry đúng API contract |
+| Journey xuyên domain | Một owner điều phối được chỉ định | Các team cung cấp tín hiệu và xử lý boundary thuộc phạm vi mình |
+
+Bảng là mô hình gợi ý, không buộc bạn tạo sáu team. Một team nhỏ có thể giữ nhiều vai trò, nhưng vẫn phải có người nhận alert, quyền dừng rollout và người xác nhận phục hồi. Ownership cần cả quyền hành động, không chỉ tên trong file metadata.
+
+Đặt metrics theo trải nghiệm chung rồi dùng phase/app/release để tìm nguyên nhân. Tránh để mỗi team khởi tạo một bộ collector Web Vitals hoặc analytics toàn trang riêng, vì duplicate events làm sai phép đo và tăng overhead. Schema, privacy và telemetry routing cần policy chung; chi tiết ở [Observability](/docs/kiem-thu-va-tooling/observability).
+
+## Release gate cần bằng chứng gì
+
+Trang [Triển khai](/docs/trien-khai) giải thích artifact, selection, cache và promotion. Ở đây, trọng tâm là bằng chứng giúp quyết định có cho candidate tiếp cận người dùng hay không.
+
+### Trước khi promote candidate
+
+Một gate hữu ích gắn kết quả với đúng artifact và consumer baseline. Test catalog trên HEAD cùng shell trên HEAD có thể bỏ sót tổ hợp sẽ chạy ngoài production.
+
+| Gate | Bằng chứng cần lưu |
+| --- | --- |
+| Identity và nguồn gốc | Release ID, artifact digest, source/build metadata và quyền publish |
+| Compatibility | Public entry/contract verification với releases trong phạm vi hỗ trợ |
+| Journey | Integration/E2E qua shell và remote artifacts thật; công bố phần nào đang mock |
+| Performance | Budget theo route/journey, môi trường đo, baseline và cách so regression |
+| Resilience | Remote chậm, entry/chunk lỗi, contract mismatch và cleanup khi unmount |
+| Security | Trust review, config/URL policy, headers và kiểm soát artifact graph phù hợp loader |
+| Recovery | Target rollback, compatibility, retention và cách xử lý tab đã chạy candidate |
+
+Không cần chạy toàn bộ ma trận version có thể tưởng tượng cho mọi sửa text. Chọn phạm vi theo rủi ro và contract, nhưng phải ghi rõ điều chưa được kiểm chứng. Policy có thể cho phép ngoại lệ khẩn cấp với owner và thời hạn; ngoại lệ không biến test bị bỏ qua thành test đã pass.
+
+### Trong rollout và sau khi rollback
+
+Mở cohort giới hạn khi rủi ro cần nó, giữ assignment ổn định và theo dõi outcome so với baseline. Decision rule phải có cả điều kiện dừng lẫn điều kiện đủ dữ liệu để tiếp tục. Không thấy exception có thể chỉ vì shell đã thay remote bằng fallback.
+
+Telemetry nên phân biệt release được chọn, release đã load và release đã ready. Config chọn r19 nhưng loader fail là một outcome khác với r19 đã render rồi lỗi khi thêm hàng. Dùng những tín hiệu này để liên hệ regression với candidate, không chỉ dựa vào thời điểm deploy.
+
+<Callout type="warn" title="Rollback selection không thay code đã chạy">
+  Đổi selection chủ yếu ảnh hưởng những lần resolution tiếp theo theo thiết kế của hệ thống. Tab đã pin snapshot hoặc đã evaluate module có thể vẫn chạy candidate lỗi. Kế hoạch phục hồi cần xử lý cả document mới lẫn tab cũ; không mặc định hot-swap remote hoặc ép reload khi còn pending writes.
+</Callout>
+
+Sau rollback, kiểm tra releases thực load, journey success và degraded rate. Nếu client đang chạy code nghi bị compromise, đó là security incident: quay về một release cũ chưa đủ để kết luận session, dữ liệu hay publish credentials vẫn an toàn.
+
+## Ví dụ một release catalog đi qua các gate
+
+Giả sử baseline là shell s17, catalog r18 và cart r7. Catalog r19 chỉ thêm bộ lọc, không đổi contract thêm hàng. Đây là ví dụ để luyện quyết định, không phải release record thật của repository.
+
+| Giai đoạn | Quyết định cần đưa ra | Điều phải quan sát |
+| --- | --- | --- |
+| Candidate | r19 có nằm trong compatibility window của s17/r7 không? | Contract và shared dependency verification |
+| Preview | Journey chính và fallback có đúng trên artifact r19 không? | Tải entry/chunks thật, filter, thêm hàng, badge và cart |
+| Budget | Lợi ích filter có làm tăng critical-path bytes/CPU quá mức không? | Waterfall, route ready và composition budget |
+| Rollout | Có đủ bằng chứng để mở rộng không? | Outcome của cohort, fallback, latency và chất lượng telemetry |
+| Recovery | Quay về r18 trên trạng thái hiện tại có an toàn không? | Compatibility của target và kế hoạch cho tab đang dùng r19 |
+
+Giả sử cart r8 được promote độc lập trong lúc r19 đang rollout, rồi catalog lộ regression. Revert toàn bộ snapshot về baseline s17/r18/r7 có thể rollback nhầm cart. Hướng mặc định là tạo selection revision mới từ trạng thái hiện tại, thay catalog về r18 và kiểm chứng tổ hợp s17/r18/r8. Nếu tổ hợp đó chưa được hỗ trợ, phải chọn target khác có bằng chứng; không giữ r8 chỉ vì nó mới hơn.
+
+Tab đã chạy r19 vẫn có thể ở r19 sau khi pointer đổi. Giữ assets cần thiết, ngăn thao tác không an toàn theo policy và chỉ đề nghị reload khi state/pending actions đã được xử lý. Đường rollback này được triển khai chi tiết trong [Rollout và rollback](/docs/trien-khai/rollout-rollback).
+
+## Khi production có lỗi
+
+Ưu tiên giảm tác động và giữ kết quả nghiệp vụ đúng. Đừng bắt đầu bằng retry hàng loạt hoặc xóa cache, vì cả hai có thể tăng tải và phá bằng chứng về tổ hợp đang chạy.
+
+1. **Xác định phạm vi.** Journey nào hỏng, cohort nào bị ảnh hưởng, shell/remote releases nào đã load? Phân biệt config, tải assets, evaluate, mount và domain action.
+2. **Dừng mở rộng.** Pause rollout của candidate liên quan; lưu selection revision, release set, phase và correlation ID theo policy dữ liệu.
+3. **Giảm tác động theo failure policy.** Tắt vùng optional, hiển thị fallback rõ ràng hoặc dừng thao tác chưa an toàn. Với write chưa rõ kết quả, kiểm tra outcome trước khi thử lại.
+4. **Chọn đường phục hồi đã kiểm chứng.** Rollback đúng phần trên snapshot hiện tại hoặc sửa config; kiểm tra target còn tương thích và artifacts còn tồn tại. Không đổi URL sang một release bất kỳ.
+5. **Xác minh cả document mới và tab cũ.** Kiểm tra journey outcome, release thực load và trạng thái degraded. Lập kế hoạch riêng cho runtime đã evaluate candidate.
+6. **Giao việc theo boundary.** Loader, CDN, contract và API failures có owner khác nhau; bổ sung regression test và sửa policy tại nơi lỗi phát sinh.
+
+Nếu có dấu hiệu code hoặc publish credentials bị compromise, chuyển sang security incident response: cô lập nguồn phát code, xử lý credentials/session theo mức ảnh hưởng và xác minh trust chain. Runbook resilience không thay runbook security.
+
+## Khi nào chưa nên tách thêm micro-frontend
+
+Nếu mọi feature vẫn phải sửa shell, catalog và cart cùng lúc, boundary chưa khớp cách nghiệp vụ thay đổi. Thêm remote có thể chỉ chuyển coupling từ import graph sang runtime contract, trong khi bạn phải vận hành thêm pipelines và failure modes.
+
+Mình giữ modular monolith hoặc dừng pilot khi các domain cùng team/cùng nhịp release, chưa có owner vận hành, chưa đo được lợi ích delivery hoặc chưa có đường phục hồi tin cậy. Module hóa, build cache và sửa pipeline có thể giải quyết vấn đề trước khi cần runtime composition.
+
+Chỉ tách tiếp sau khi một domain đã chứng minh thay đổi tương thích có thể release riêng, journey vẫn đạt budget và rollback không cần một đợt phối hợp toàn hệ thống. Đọc [Migration từ frontend monolith](/docs/production/migration) để chọn pilot, tạo seam và đặt tiêu chí tiếp tục hoặc quay lại.
+
+## Chọn bài đọc theo vấn đề
+
+| Bạn đang gặp | Bắt đầu ở đâu | Đọc kèm khi cần |
+| --- | --- | --- |
+| Mỗi remote nhỏ nhưng shop vẫn chậm | [Performance](/docs/production/performance) | [CDN và static assets](/docs/trien-khai/cdn-assets) |
+| Remote lỗi làm trắng trang hoặc UI báo sai state | [Resilience](/docs/production/resilience) | [Integration và E2E](/docs/kiem-thu-va-tooling/integration-e2e) |
+| Muốn biết remote khác origin có bị giới hạn quyền không | [Security](/docs/production/security) | [iframe](/docs/cac-cach-tich-hop/iframe) |
+| Framework upgrade hoặc bỏ contract làm hỏng consumer cũ | [Dependency governance](/docs/production/dependency-governance) | [Contract tests](/docs/kiem-thu-va-tooling/contract-tests) |
+| Muốn tách monolith mà vẫn phục vụ người dùng | [Migration](/docs/production/migration) | [Preview environments](/docs/trien-khai/preview-environments) |
+| Không biết browser đang chạy release nào | [Observability](/docs/kiem-thu-va-tooling/observability) | [Runtime configuration](/docs/trien-khai/runtime-configuration) |
+
+Nếu chuẩn bị production lần đầu, đọc performance, resilience và security trước để biết giới hạn trải nghiệm và trust; sau đó chốt governance cùng đường release. Migration dành cho tình huống đang có legacy, không phải bước bắt buộc của mọi hệ thống mới.
+
+## Bài tập kiểm chứng một domain
+
+Chọn một domain trong workspace ứng dụng riêng, chẳng hạn catalog. Không cần bắt đầu bằng một hệ thống canary lớn; cần một candidate, một baseline và khả năng tái hiện các tình huống dưới đây.
+
+1. Ghi journey, owner, supported release set, budget và target rollback trước khi build candidate.
+2. Ghép candidate artifact với shell/cart baseline; mở deep link, thêm hàng, kiểm tra badge rồi unmount/remount catalog.
+3. Làm entry không tải được, một lazy chunk lỗi và API trả chậm theo từng lần chạy riêng. Kiểm tra shell vẫn điều hướng được, fallback không nói sai state và retry dừng đúng policy.
+4. Giữ một tab cũ, promote candidate cho document mới rồi rollback. Ghi release mỗi tab thực dùng; kiểm tra route lazy của tab cũ vẫn tải được và pending actions không bị mất do reload tự động.
+5. Đối chiếu evidence với gate. Nếu thiếu metric, owner hoặc đường phục hồi, ghi đó là phần chưa đạt thay vì đánh dấu production-ready.
+
+Đầu ra nên là một readiness record ngắn: artifact identities, test evidence, budget result, failure policy, compatibility window và recovery target. Record phải đủ để một người không tham gia build có thể kiểm tra lại quyết định release.
+
+## Checklist trước production
+
+- [ ] Có journey chính, định nghĩa usable/success và denominator rõ ràng.
+- [ ] Có baseline và budget cho cả remote lẫn composition, bao gồm network và CPU.
+- [ ] Shell render được frame/fallback mà không phụ thuộc remote optional đang lỗi.
+- [ ] Deadline, retry, cleanup và fallback phản ánh đúng mức suy giảm nghiệp vụ.
+- [ ] Thao tác write có cách xác định outcome; retry tuân contract idempotency.
+- [ ] Trust model bao phủ source, dependencies, CI, publisher, config và CDN.
+- [ ] Backend kiểm tra authorization; UI flags không được coi là security boundary.
+- [ ] Shared dependencies, public contracts và supported releases có owner và compatibility window.
+- [ ] Assets được giữ đủ cho tab cũ và target rollback; URL bất biến không bị overwrite.
+- [ ] Test/gate gắn với artifact thật và consumer baseline, không chỉ source trên HEAD.
+- [ ] Telemetry phân biệt selected, loaded, ready, failed và degraded theo release/phase.
+- [ ] Có quyền dừng rollout, runbook theo boundary và kế hoạch phục hồi tab cũ.
+- [ ] Nếu đang migration, pilot có tiêu chí đo lợi ích, điều kiện dừng và đường về legacy.
+
+## Tài liệu tham khảo
+
+- [web.dev — Web Vitals](https://web.dev/articles/vitals): định nghĩa Core Web Vitals và cách đánh giá trải nghiệm người dùng; dùng làm baseline cùng metrics của journey.
+- [MDN — Subresource Integrity](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Subresource_Integrity): kiểm tra integrity của tài nguyên và yêu cầu khi dùng cross-origin.
+- [Google SRE Workbook — Canarying Releases](https://sre.google/workbook/canarying-releases/): rollout giới hạn, đánh giá candidate và giảm tác động của release lỗi.
+- [Google SRE Workbook — Error Budget Policy](https://sre.google/workbook/error-budget-policy/): ví dụ liên hệ reliability với quyết định release; không phải SLA mặc định cho ứng dụng của bạn.
 
 ## Các bài trong nhóm
 
-- [Performance và bundle budget](/docs/production/performance) — Đo loading waterfalls, duplicated dependencies, Core Web Vitals và kích thước bundles.
-- [Resilience khi remote lỗi](/docs/production/resilience) — Thiết kế timeout, error boundaries, fallback UI và giới hạn retry.
-- [Security và trust boundaries](/docs/production/security) — Đánh giá remote code, CSP, supply chain và giới hạn isolation trong cùng JavaScript realm.
-- [Dependency governance](/docs/production/dependency-governance) — Đặt quy tắc ownership, dependency upgrades, deprecation và compatibility windows.
-- [Migration từ frontend monolith](/docs/production/migration) — Tách từng domain theo hướng tăng dần và xác định tiêu chí dừng hoặc quay lại.
+<Cards>
+  <Card title="Performance và bundle budget" href="/docs/production/performance" description="Đo critical path và đặt giới hạn cho trải nghiệm đã ghép." />
+  <Card title="Resilience khi remote lỗi" href="/docs/production/resilience" description="Deadline, fallback, retry và phục hồi đúng nghiệp vụ." />
+  <Card title="Security và trust boundaries" href="/docs/production/security" description="Quyền của remote code, CSP, integrity và supply chain." />
+  <Card title="Dependency governance" href="/docs/production/dependency-governance" description="Ownership, compatibility windows, upgrades và deprecation." />
+  <Card title="Migration từ frontend monolith" href="/docs/production/migration" description="Tách domain tăng dần, kiểm chứng lợi ích và giữ đường quay lại." />
+</Cards>

@@ -1,18 +1,527 @@
 ---
 title: "Design system dùng chung"
-description: "Version tokens và UI packages để nhất quán giao diện mà không khóa release của các team."
+description: "Thiết kế tokens, UI packages và theme contracts để nhất quán giao diện mà vẫn giữ release độc lập giữa các micro-frontend."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell, catalog và cart của shop do ba team deploy riêng. Cùng một nút “Thêm vào giỏ” nhưng catalog dùng màu khác cart, focus ring biến mất ở một màn hình, còn đổi theme trong shell không tác động đến remote. Copy component giữa các repository có thể sửa sự lệch nhau hôm nay, nhưng lần cập nhật tiếp theo lại tạo thêm ba implementation.
+
+Design system giải quyết phần giao diện và hành vi cần thống nhất. Tuy nhiên, nếu mỗi lần sửa `Button` đều buộc ba team deploy cùng lúc, bạn vừa chuyển từ copy-paste sang một điểm coupling mới. **Dùng chung quy tắc thiết kế không có nghĩa phải dùng chung một version code tại runtime.**
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài dùng shop giả định gồm shell, catalog và cart; tập trung vào tokens, UI packages, theme và quy trình nâng cấp. Code minh họa dành cho một lab riêng với bundler hỗ trợ CSS imports và TypeScript/TSX, không phải package đã tồn tại trong repository tài liệu này. Sơ đồ dùng ASCII nên không cần cấu hình Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Design system chia sẻ những gì](#design-system-chia-sẻ-những-gì)
+  - [Tách foundations components và patterns](#tách-foundations-components-và-patterns)
+  - [Ranh giới với domain logic](#ranh-giới-với-domain-logic)
+- [Chọn cách phân phối](#chọn-cách-phân-phối)
+- [Kiến trúc packages và quyền sở hữu](#kiến-trúc-packages-và-quyền-sở-hữu)
+- [Thiết kế token contract](#thiết-kế-token-contract)
+  - [Primitive semantic và component tokens](#primitive-semantic-và-component-tokens)
+  - [Scope và namespace theo contract](#scope-và-namespace-theo-contract)
+- [Ví dụ theme bằng CSS custom properties](#ví-dụ-theme-bằng-css-custom-properties)
+  - [Token stylesheet](#token-stylesheet)
+  - [Shell cấp scope và cập nhật theme](#shell-cấp-scope-và-cập-nhật-theme)
+- [Ví dụ UI package cho React](#ví-dụ-ui-package-cho-react)
+  - [Public component và stylesheet](#public-component-và-stylesheet)
+  - [Package exports và peer dependencies](#package-exports-và-peer-dependencies)
+  - [Consumer dùng entry công khai](#consumer-dùng-entry-công-khai)
+- [Theme qua các boundary](#theme-qua-các-boundary)
+  - [React Context không thay thế theme contract](#react-context-không-thay-thế-theme-contract)
+  - [Portal Shadow DOM và iframe](#portal-shadow-dom-và-iframe)
+  - [SSR và lần render đầu tiên](#ssr-và-lần-render-đầu-tiên)
+- [Versioning cho cả API và giao diện](#versioning-cho-cả-api-và-giao-diện)
+  - [Chốt public contract trước SemVer](#chốt-public-contract-trước-semver)
+  - [Package version khác token contract version](#package-version-khác-token-contract-version)
+- [Nâng cấp mà không khóa release](#nâng-cấp-mà-không-khóa-release)
+- [Nếu chia sẻ UI package qua Module Federation](#nếu-chia-sẻ-ui-package-qua-module-federation)
+- [Kiểm thử design system và consumer](#kiểm-thử-design-system-và-consumer)
+- [Governance vừa đủ](#governance-vừa-đủ)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Design system chia sẻ những gì
 
-Bài này sẽ giúp bạn: version tokens và UI packages để nhất quán giao diện mà không khóa release của các team.
+Một UI library có thể chỉ là tập hợp component. Design system rộng hơn: nó nói rõ màu nào biểu thị lỗi, spacing dùng thế nào, control nào phù hợp với hành động nào, và keyboard/focus phải hoạt động ra sao. Component code là một cách thực thi các quy tắc đó, không phải toàn bộ hệ thống.
 
-[Xem các bài trong nhóm UI và framework](/docs/ui-va-framework).
+Mình bắt đầu từ phần thực sự lặp lại giữa shell, catalog và cart: tokens, typography, buttons, form controls và feedback states. Chưa nên xây một thư viện bao phủ mọi màn hình nếu các team còn chưa thống nhất cách dùng những phần cơ bản này.
+
+### Tách foundations components và patterns
+
+| Lớp | Ví dụ trong shop | Phần cần thống nhất |
+| --- | --- | --- |
+| Foundations | Color, spacing, typography, motion, focus ring | Tên token, ý nghĩa, theme mapping và giới hạn sử dụng |
+| Components | `Button`, `TextField`, `Dialog`, `Alert` | Public props, states, semantics, keyboard và styling hooks |
+| Patterns | Hiển thị lỗi form, empty state, loading một vùng | Cách kết hợp components và nội dung hướng dẫn |
+| Tài liệu và quy trình | Component catalog, changelog, migration guide | Ai sở hữu, ai review, version nào đang được hỗ trợ |
+
+Một pattern không nhất thiết phải là package code. Ví dụ, quy tắc “lỗi validation nằm gần input và được liên kết bằng `aria-describedby`” có thể áp dụng trong React, Vue và Angular bằng implementation khác nhau.
+
+### Ranh giới với domain logic
+
+`Button` không biết cart store, SKU hay endpoint đặt hàng. Nó nhận `onClick`, trạng thái disabled và nội dung hiển thị. `AddToCartButton` có logic kiểm tra tồn kho nên thuộc catalog/cart hoặc một domain package có owner riêng.
+
+Nếu nhét API client, authentication và business state vào UI package, mọi consumer sẽ kéo theo dependency không cần thiết. Quan trọng hơn, một lần sửa nghiệp vụ có thể trở thành “nâng cấp design system” bắt buộc toàn bộ ứng dụng.
+
+<Callout type="warn" title="Đừng chia sẻ bằng cách import nội bộ của remote">
+  Shell không nên import `catalog/src/components/Button` để lấy nút dùng chung. Tách public package hoặc contract rõ ràng; deep import vào implementation của một team làm mất boundary và khiến refactor nội bộ trở thành breaking change ngoài ý muốn.
+</Callout>
+
+## Chọn cách phân phối
+
+Với các micro-frontend do những team nội bộ tin cậy nhau phát triển, mình mặc định chọn **packages được pin và build vào từng consumer**. Mỗi team chủ động nâng cấp, preview và deploy; bundle có thể chứa code trùng, nhưng dependency resolution không đổi bất ngờ giữa các phiên người dùng.
+
+| Cách phân phối | Khi phù hợp | Trade-off cần chấp nhận |
+| --- | --- | --- |
+| Package dùng lúc build | Phần lớn tokens và UI components | Có thể tải trùng code; cần automation để tránh version drift |
+| Package dùng lúc build, theme do shell cấp | Cần đổi light/dark thống nhất trong cùng document | Theme contract phải tương thích với các remote còn chạy version cũ |
+| Shared package qua federation runtime | Có nhu cầu module identity hoặc lợi ích bundle đã đo được | Thêm negotiation, version coupling và ảnh hưởng thứ tự tải |
+| Stylesheet tải từ CDN | Cần phân phối CSS riêng với JS | URL mutable có thể đổi giao diện mà không deploy consumer; cần pin, cache và rollback rõ |
+| Web Components dùng chung | Consumer khác framework, cần DOM API thống nhất | Cần properties/events contract; quản lý tag registration, styles và accessibility |
+
+Một workspace monorepo không tự quyết định cách phân phối. Nếu app build bằng workspace link tới source hiện tại, bạn vẫn cần xác định mỗi artifact đã dùng revision nào và liệu nó có tự động nhận thay đổi chưa được release hay không.
+
+Với một frontend nhỏ, một team và một lịch release, shared local components thường đủ. Không cần registry, compatibility matrix hay federation chỉ để tái sử dụng một nút.
+
+## Kiến trúc packages và quyền sở hữu
+
+Tách phần độc lập framework khỏi adapter cho từng framework:
+
+```text
+@shop/tokens ──► @shop/ui-react ──► shell React, cart React
+      │
+      └───────► @shop/ui-vue   ──► catalog Vue
+```
+
+Sơ đồ thể hiện quan hệ phụ thuộc lúc build, không có nghĩa `ui-react` và `ui-vue` dùng chung instance tại runtime. Angular adapter có thể theo cùng cách tổ chức nếu hệ thống thật sự cần.
+
+| Package hoặc contract | Owner | Không nên chứa |
+| --- | --- | --- |
+| `@shop/tokens` | Design system maintainers phối hợp với design | React/Vue runtime, business state |
+| `@shop/ui-react`, `@shop/ui-vue` | Maintainers có năng lực framework tương ứng | Router của shop, API client và cart store |
+| Theme integration contract | Shell owner và design system maintainers | Framework provider bắt mọi remote phải tham gia cùng tree |
+| Domain components | Team sở hữu domain | Global CSS thay đổi UI của các team khác |
+
+Mặc định mình cho các package version độc lập, kèm danh sách tổ hợp tương thích đã kiểm thử. Nếu chúng luôn phải đổi cùng nhau, release đồng bộ package suite có thể đơn giản hơn; nhưng release một suite không đồng nghĩa bắt tất cả consumer deploy trong cùng ngày.
+
+## Thiết kế token contract
+
+### Primitive semantic và component tokens
+
+Đừng để mọi remote chọn trực tiếp `blue-700` rồi gọi đó là thống nhất design system. Tên đó nói về màu, không nói nút đang làm gì. Khi đổi brand hoặc dark theme, bạn phải tìm từng nơi đã dùng màu trực tiếp.
+
+| Loại token | Ví dụ | Consumer nên hiểu gì |
+| --- | --- | --- |
+| Primitive | `blue-700`, `space-3` | Giá trị nền tảng; có thể là chi tiết nội bộ |
+| Semantic | `color-action`, `color-text`, `color-surface` | Vai trò trong UI, độc lập với giá trị cụ thể |
+| Component | `button-primary-bg`, `dialog-radius` | Quyết định riêng của một component hoặc một nhóm controls |
+
+Mình expose semantic tokens trước, chỉ thêm component tokens khi có nhu cầu override hợp lệ. Nếu mọi khoảng padding đều trở thành public token, mỗi chỉnh sửa layout sẽ phải giữ tương thích với rất nhiều điểm override.
+
+Contract nên ghi tên, ý nghĩa, kiểu giá trị dự kiến và nơi được dùng. `color-action` dùng cho background của primary action thì phải có token foreground tương ứng; “một màu dùng cho mọi thứ” không đủ để bảo đảm contrast.
+
+### Scope và namespace theo contract
+
+CSS custom properties khai báo bằng `--name` thông thường được kế thừa theo cây DOM. Điều này hữu ích khi shell và remote dùng React roots khác nhau: token không cần đi qua React Context. Nhưng inheritance không tạo CSS isolation; global reset hoặc selector quá rộng vẫn có thể thay đổi component của team khác.
+
+Ví dụ bên dưới dùng:
+
+- `data-ds-contract="shop-v1"` để chọn scope hỗ trợ token contract v1.
+- Prefix `--shop-v1-*` cho public tokens, tránh va chạm và cho phép coexist với contract v2.
+- Prefix `.shop-v1-*` cho classes do component package quản lý.
+- `data-theme="light"` hoặc `"dark"` cho giá trị theme, tách khỏi package version.
+
+Đây là policy minh họa, không phải yêu cầu của CSS hay Fumadocs. Không cần tăng namespace mỗi lần publish patch; chỉ đổi khi contract thật sự không còn tương thích.
+
+Nếu hai team cùng ghi `--color-primary` vào `:root`, kết quả phụ thuộc CSS cascade và thời điểm styles được thêm vào trang. Namespace riêng cộng với một owner cho global theme dễ debug hơn việc tranh xem remote nào load cuối.
+
+## Ví dụ theme bằng CSS custom properties
+
+### Token stylesheet
+
+Stylesheet này không dùng `:root` và không reset toàn document. Consumer standalone tự tạo scope giống shell để component có cùng điều kiện chạy local và integrated.
+
+```css title="@shop/tokens/dist/shop-v1.css"
+[data-ds-contract="shop-v1"] {
+  --shop-v1-color-surface: #ffffff;
+  --shop-v1-color-text: #111827;
+  --shop-v1-color-action: #1d4ed8;
+  --shop-v1-color-action-hover: #1e40af;
+  --shop-v1-color-on-action: #ffffff;
+  --shop-v1-color-focus: #1d4ed8;
+  --shop-v1-space-control-inline: 1rem;
+  --shop-v1-space-control-block: 0.625rem;
+  --shop-v1-radius-control: 0.375rem;
+  --shop-v1-font-body: system-ui, sans-serif;
+
+  color-scheme: light;
+  color: var(--shop-v1-color-text);
+  background-color: var(--shop-v1-color-surface);
+  font-family: var(--shop-v1-font-body);
+}
+
+[data-ds-contract="shop-v1"][data-theme="dark"] {
+  --shop-v1-color-surface: #111827;
+  --shop-v1-color-text: #f9fafb;
+  --shop-v1-color-action: #93c5fd;
+  --shop-v1-color-action-hover: #bfdbfe;
+  --shop-v1-color-on-action: #111827;
+  --shop-v1-color-focus: #93c5fd;
+
+  color-scheme: dark;
+}
+```
+
+Các giá trị là ví dụ để minh họa contract, không phải theme đã được audit cho mọi tổ hợp UI. Cần kiểm tra contrast trong context thực tế, bao gồm hover, focus, error, disabled, forced colors và theme tùy biến.
+
+Token package cần export stylesheet này bằng một public subpath như `@shop/tokens/shop-v1.css`, đưa file vào tarball và khai báo CSS là side effect nếu bundler dùng metadata đó. Việc generate token từ JSON, đồng bộ với design tool hoặc thêm artifact cho nền tảng khác là bước riêng; không bắt buộc để hiểu ví dụ này.
+
+### Shell cấp scope và cập nhật theme
+
+```html title="Các slot trong shell"
+<section data-ds-contract="shop-v1" data-theme="light">
+  <header id="shell-header"></header>
+  <div id="catalog-slot"></div>
+  <div id="cart-slot"></div>
+  <div id="overlay-slot"></div>
+</section>
+```
+
+```ts title="Theme integration phía shell"
+import '@shop/tokens/shop-v1.css';
+
+type Theme = 'light' | 'dark';
+
+const scope = document.querySelector<HTMLElement>(
+  '[data-ds-contract="shop-v1"]',
+);
+if (!scope) throw new Error('Thiếu design system scope shop-v1');
+
+function applyTheme(theme: Theme): void {
+  scope!.dataset.theme = theme;
+}
+
+applyTheme('dark');
+```
+
+Sau `applyTheme('dark')`, descendants không tự override tokens sẽ nhận giá trị mới qua CSS inheritance, kể cả catalog dùng Vue và cart dùng React. Remote không cần được remount; các component chỉ đọc CSS sẽ cập nhật theo style của document.
+
+Nếu remote có thư viện chart cần màu trong JavaScript, chỉ thay attribute chưa đủ. Shell phải truyền theme snapshot qua lifecycle contract hoặc một subscription có cleanup, để remote cập nhật chart bằng API của thư viện. Chỉ truyền những dữ liệu consumer thật sự cần, không truyền nguyên provider object của shell.
+
+<Callout type="warn" title="Fallback không sửa mọi token sai">
+  `var(--shop-v1-color-action, blue)` xử lý trường hợp custom property không có giá trị dùng được cho phép thay thế; nó không bảo đảm giá trị đã tồn tại có đúng kiểu cho property đang dùng. Ví dụ token nhận `16px` thì `background-color: var(...)` vẫn có thể trở thành invalid ở computed-value time. Fallback cũng có thể che giấu scope bị thiếu: component render được nhưng sai theme. Hãy test contract thay vì chỉ thêm màu mặc định khắp nơi.
+</Callout>
+
+## Ví dụ UI package cho React
+
+### Public component và stylesheet
+
+`Button` giữ API gần native button: consumer có thể truyền `disabled`, `aria-*`, handlers và form attributes. Ví dụ dùng `forwardRef` để consumer truy cập DOM button, và mặc định `type="button"` nhằm tránh submit form ngoài ý muốn.
+
+```tsx title="@shop/ui-react/src/Button.tsx"
+import { forwardRef, type ComponentPropsWithoutRef } from 'react';
+
+export type ButtonProps = ComponentPropsWithoutRef<'button'>;
+
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  function Button({ className, type = 'button', ...props }, ref) {
+    const classes = ['shop-v1-button', className].filter(Boolean).join(' ');
+
+    return <button {...props} ref={ref} type={type} className={classes} />;
+  },
+);
+```
+
+```ts title="@shop/ui-react/src/index.ts"
+export { Button, type ButtonProps } from './Button';
+```
+
+```css title="@shop/ui-react/src/styles.css"
+.shop-v1-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  padding: var(--shop-v1-space-control-block)
+    var(--shop-v1-space-control-inline);
+  border-radius: var(--shop-v1-radius-control);
+  font-family: var(--shop-v1-font-body);
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--shop-v1-color-on-action);
+  background-color: var(--shop-v1-color-action);
+  cursor: pointer;
+}
+
+.shop-v1-button:hover:not(:disabled) {
+  background-color: var(--shop-v1-color-action-hover);
+}
+
+.shop-v1-button:focus-visible {
+  outline: 2px solid var(--shop-v1-color-focus);
+  outline-offset: 3px;
+}
+
+.shop-v1-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+```
+
+Đây là component tối thiểu, chưa phải thư viện production hoàn chỉnh. Nó không có loading state, variants hay logic cho link. Nếu thêm icon-only button, consumer vẫn phải cung cấp accessible name; dùng native element không tự giải quyết mọi yêu cầu accessibility.
+
+Class `.shop-v1-button` là implementation trong ví dụ này, **không phải styling API được hứa ổn định cho consumer**. Consumer có thể thêm class cho layout bên ngoài, nhưng không nên override descendants hoặc dựa vào internal DOM. Nếu cần customization lâu dài, cung cấp props/semantic tokens có tài liệu thay vì để mỗi team tăng specificity.
+
+### Package exports và peer dependencies
+
+Manifest dưới giả định pipeline đã emit ESM tới `dist/index.js`, declarations tới `dist/index.d.ts` và copy CSS tới `dist/styles.css`. Đây là ví dụ manifest sau khi bạn có build pipeline, không phải lệnh đủ để tạo package.
+
+```json title="@shop/ui-react/package.json"
+{
+  "name": "@shop/ui-react",
+  "version": "2.3.0",
+  "type": "module",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "sideEffects": ["**/*.css"],
+  "dependencies": {
+    "@shop/tokens": "1.4.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0"
+  }
+}
+```
+
+Version và peer range ở đây là minh họa, không phải kết quả kiểm thử của một package thật. Maintainers chỉ nên công bố range được hỗ trợ sau khi test các React versions tương ứng. Với Vue hoặc Angular adapter, áp dụng cùng nguyên tắc cho framework của adapter đó.
+
+React là peer dependency để consumer cung cấp runtime tương thích; pipeline build UI library cũng phải externalize React và những subpath thực sự dùng như `react/jsx-runtime`. Chỉ thêm `peerDependencies` không ngăn bundler prebundle React vào output.
+
+`sideEffects` giữ CSS khỏi bị loại nhầm khi tree shaking trong bundler hỗ trợ metadata này. Nó không tự import stylesheet và không xử lý xung đột CSS. Tương tự, `exports` giới hạn các public entry points cho tooling hỗ trợ nó, không phải sandbox bảo mật.
+
+Token dependency được pin để tái hiện build, nhưng nếu consumer cũng import token package trực tiếp thì vẫn phải chọn version tương thích với UI package. Package manager có thể cài hai version; nó không chứng minh hai stylesheet cùng scope có thể chạy an toàn. Trước publish, kiểm tra tarball bằng `npm pack --dry-run` và cài tarball thật vào fixture consumer để phát hiện file CSS/declarations bị thiếu.
+
+### Consumer dùng entry công khai
+
+```tsx title="Catalog React — entry và component"
+import '@shop/tokens/shop-v1.css';
+import '@shop/ui-react/styles.css';
+import { Button } from '@shop/ui-react';
+
+export function AddToCartAction({
+  disabled,
+  onAdd,
+}: {
+  disabled: boolean;
+  onAdd: () => void;
+}) {
+  return (
+    <Button disabled={disabled} onClick={onAdd}>
+      Thêm vào giỏ
+    </Button>
+  );
+}
+```
+
+Entry này phải render bên trong scope `shop-v1` ở phần trước. Khi chạy standalone, catalog tạo scope riêng; khi shell mount catalog vào slot đã có scope, catalog không cần tạo một nested scope light làm che theme dark của shell.
+
+Mô hình trên cho mỗi consumer mang CSS để chạy độc lập, **với điều kiện các stylesheet cùng namespace còn tương thích khi cùng xuất hiện**. Hai UI versions cùng định nghĩa `.shop-v1-button` nhưng thay padding khác nhau vẫn tranh thắng theo cascade. Để tránh load order quyết định giao diện, chọn một policy rõ ràng:
+
+- Với các phiên bản tương thích cùng contract, phối hợp stylesheet dùng chung hoặc bảo đảm rules có thể coexist; test cả hai thứ tự tải.
+- Với hai implementation không thể coexist, dùng namespace CSS khác, scope tách biệt hoặc isolation phù hợp; không chỉ đổi version trong `package.json`.
+- Nếu shell là owner duy nhất của stylesheet chung, ghi đây là runtime dependency của remote và cung cấp cùng stylesheet trong harness standalone.
+
+Không có policy nào “miễn phí”: CSS do shell cấp giảm duplication nhưng tăng coupling; CSS đóng trong remote giữ khả năng tự chạy nhưng cần coexistence contract.
+
+## Theme qua các boundary
+
+### React Context không thay thế theme contract
+
+Hai React roots không tự chia sẻ Context dù root của remote nằm bên trong DOM của shell. Trong cùng React tree, provider và consumer còn cần tham chiếu cùng Context object; hai bản UI package cùng định nghĩa Context có thể khiến consumer không thấy provider mong đợi.
+
+Vì vậy, mình dùng CSS tokens cho giá trị visual và contract `theme`/`locale` cho phần cần JavaScript. Remote có thể dựng provider nội bộ từ snapshot đó. Không bắt shell React, catalog Vue và cart Angular dùng một framework-specific `ThemeProvider` chung.
+
+Nếu bạn chủ đích compose React components trong một tree, dùng provider chung vẫn hợp lý. Nhưng lúc ấy provider API và module identity trở thành một phần contract tích hợp; xem [Tích hợp React](/docs/ui-va-framework/react) trước khi quyết định share package.
+
+### Portal Shadow DOM và iframe
+
+| Boundary | Điều thực sự xảy ra | Cách tích hợp theme |
+| --- | --- | --- |
+| DOM descendants trong cùng document | Custom properties thường inherit từ ancestors | Cấp scope chung, hạn chế override local |
+| Portal/Teleport tới `document.body` | Element mới không còn nằm dưới scope ban đầu | Dùng overlay container trong scope hoặc cấp scope tương ứng cho overlay |
+| Shadow DOM | Stylesheet bên ngoài không chọn trực tiếp nodes bên trong shadow tree | Custom properties có thể inherit qua host; component cần internal styles dùng tokens |
+| iframe | Document riêng, không inherit CSS variables của parent | Gửi theme snapshot, validate message và áp dụng stylesheet bên trong iframe |
+
+Portal giữ quan hệ trong React tree, nhưng CSS inheritance đi theo **vị trí DOM thực tế**. Đây là lý do dialog có thể đọc đúng Context mà vẫn nhận sai màu. Với nhiều token contracts cùng trang, overlay cũng cần đúng scope của remote đã mở nó, không phải một scope global tùy ý.
+
+Shadow DOM không tự mang CSS file đã import ở document vào shadow root. Cần đưa stylesheet vào shadow root bằng cơ chế phù hợp với component. Custom property đã cấu hình không inherit hoặc bị override local cũng không theo hành vi inheritance thông thường.
+
+### SSR và lần render đầu tiên
+
+Với SSR, server nên render theme attribute và markup ban đầu tương thích với client; stylesheet cần sẵn sàng trước khi vùng UI hiện ra. Nếu client đổi theme sau hydration, tránh dùng snapshot ban đầu khác server cho những phần markup phụ thuộc theme, vì có thể gây hydration mismatch hoặc flash sai theme.
+
+Trong Next.js App Router, package có components sử dụng Hooks hoặc handlers cần có client boundary phù hợp; pipeline phải giữ directive `"use client"` ở entry cần thiết. Token stylesheet không vì thế trở thành JavaScript client component. Ví dụ `Button` trong bài là client-side lab, không phải cam kết tương thích React Server Components.
+
+## Versioning cho cả API và giao diện
+
+### Chốt public contract trước SemVer
+
+SemVer chỉ hữu ích khi bạn nói rõ cái gì là public API. Với design system, props và TypeScript types chưa đủ: consumer còn phụ thuộc token names, theme values, supported entry points và hành vi control.
+
+| Thay đổi | Cách đánh giá version | Việc cần làm thêm |
+| --- | --- | --- |
+| Thêm optional prop, giữ hành vi cũ | Thường là minor | Test default cũ và prop mới |
+| Thêm semantic token mới, không đổi token cũ | Thường là minor | Consumer cần token mới phải chờ provider hỗ trợ |
+| Deprecate prop/token nhưng vẫn hoạt động | Minor theo SemVer | Changelog và hướng dẫn thay thế |
+| Xóa/đổi tên public prop, token hoặc export | Major | Migration guide và thời gian coexist |
+| Đổi default `type`, event semantics hoặc keyboard behavior không tương thích | Major dù type không đổi | Integration và accessibility tests |
+| Sửa visual bug trong contract đã công bố | Có thể là patch | Visual review, không dùng nhãn patch để bỏ qua rủi ro |
+| Thay kích thước control, typography hoặc màu | Phụ thuộc visual contract | Đánh giá layout, contrast và release policy trước khi chọn version |
+
+Không phải mọi pixel thay đổi đều bắt buộc major. Nhưng nếu consumer được hứa kích thước cố định hoặc một hành vi focus cụ thể, phá lời hứa đó là incompatible change. Ghi rõ những gì ổn định và những gì được phép cải thiện; đừng đợi screenshot test đỏ mới bàn về contract.
+
+Chính sách major/minor/patch ổn định ở trên áp dụng cho package từ `1.0.0`. Với `0.y.z`, SemVer coi API chưa ổn định; nếu hệ thống đang phụ thuộc nó ở production, vẫn cần policy migration riêng thay vì xem mọi thay đổi là an toàn.
+
+### Package version khác token contract version
+
+`@shop/tokens@1.4.0` có thể tiếp tục cung cấp token contract `shop-v1`. `@shop/ui-react@2.3.0` cũng có thể dùng `shop-v1`. Không suy ra token contract từ major của UI package: chúng version những API khác nhau.
+
+Giả sử remote mới cần token `--shop-v1-color-danger` chưa có trong shell cũ. Đây là bổ sung tương thích cho provider, nhưng **consumer mới không chạy đúng chỉ vì cùng mang nhãn v1**. Cần khai báo minimum compatible provider version hoặc capability cụ thể và test tổ hợp đó.
+
+Mình ghi compatibility ở mức tối thiểu cần thiết: UI release yêu cầu token provider nào, shell hỗ trợ contracts nào, remote có yêu cầu overlay/theme capability mới không. Không biến bảng này thành một bản sao thủ công của toàn bộ dependency tree.
+
+<Callout type="warn" title="SemVer không chứng minh coexistence của CSS">
+  Hai package cùng major có thể resolve hợp lệ nhưng stylesheet vẫn ảnh hưởng nhau. Ngược lại, hai major khác nhau có thể cùng chạy nếu namespaces và contracts đã tách rõ. Package compatibility và CSS coexistence là hai điều phải kiểm thử riêng.
+</Callout>
+
+## Nâng cấp mà không khóa release
+
+Để chuyển từ `shop-v1` sang `shop-v2`, mình dùng trình tự **mở rộng hỗ trợ trước, migrate consumers sau, xóa hỗ trợ cũ cuối cùng**. Các version và release names trong bảng chỉ là ví dụ giả định.
+
+| Giai đoạn | Shell | Catalog | Cart | Điều kiện tiếp tục |
+| --- | --- | --- | --- | --- |
+| Hiện tại | Hỗ trợ v1 | UI cũ dùng v1 | UI cũ dùng v1 | Có baseline test |
+| Mở rộng | Hỗ trợ scopes v1 và v2 | Vẫn v1 | Vẫn v1 | Theme và overlays chạy đúng cho cả hai |
+| Canary | Vẫn hỗ trợ cả hai | UI mới dùng v2 cho cohort thử nghiệm | Vẫn v1 | Không regress flow catalog → cart |
+| Migrate tiếp | Vẫn hỗ trợ cả hai | v2 | Nâng lên v2 theo lịch riêng | Các tổ hợp được hỗ trợ đã qua test |
+| Thu gọn | Bỏ v1 khi đủ điều kiện | v2 | v2 | Hết traffic/rollback target cần v1 theo policy |
+
+Quy trình thực hiện:
+
+1. **Publish artifacts bất biến.** Phát hành token/UI packages mới, giữ package cũ, release notes và migration guide. Không sửa nội dung một version đã phát hành hoặc ghi đè CSS ở URL đã được cache.
+2. **Deploy provider tương thích trước.** Shell hỗ trợ cả hai contracts và cấp scope theo nhu cầu của từng remote. Nếu JS ở shell cần v1 còn remote cần v2, không thay toàn bộ document sang v2 rồi hy vọng remote cũ hiểu.
+3. **Nâng một consumer trên preview/canary.** Chạy nó với shell hiện tại, remote láng giềng cũ và shell rollback target còn được hỗ trợ. Kiểm tra theme, overlays, form, focus và luồng nghiệp vụ xuyên ứng dụng.
+4. **Nâng các consumer còn lại độc lập.** Mỗi team pin package và lockfile, ghi version vào release metadata rồi deploy artifact của mình. Không bắt team chưa cần feature mới phải nâng ngay, trừ khi hết support window hoặc có security fix bắt buộc.
+5. **Thu hồi contract cũ có bằng chứng.** Kiểm tra active remote releases, manifest được cache, khả năng rollback và tab lâu chưa reload. Có policy refresh/expiry cho session cũ trước khi gỡ stylesheet hoặc capability còn được dùng.
+
+Rollback catalog chỉ đưa catalog về artifact cũ; shell vẫn cần hỗ trợ contract cũ đó. Nếu đã xóa v1 khỏi shell, “rollback remote thành công” về mặt network vẫn có thể tạo UI hỏng. Chính sách retention phải bao gồm cả package, CSS assets, manifest và provider contract.
+
+Đổi URL manifest hoặc CSS không bảo đảm một tab đang mở đã thay tất cả code/styles cũ. Với rollback cần thay runtime hoặc bỏ CSS đã nạp, hãy có chiến lược document mới/reload phù hợp, thay vì trộn các artifacts rồi gọi đó là rollback.
+
+## Nếu chia sẻ UI package qua Module Federation
+
+Share `@shop/ui-react` có thể giảm code trùng hoặc bảo đảm module định nghĩa Context có cùng identity. Tuy nhiên, nó cũng khiến UI package mà remote thực sự chạy có thể đến từ build khác, không phải version đã dùng trong test standalone của remote.
+
+Mình không mặc định đặt toàn bộ design system thành singleton. Component thuần, không có state/provider identity chung, thường dễ quản lý hơn khi build local. Nếu chọn shared runtime, cần trả lời rõ:
+
+- Shared keys nào đang được consume, kể cả subpath imports? Share root package không tự bao phủ mọi entry trong mọi runtime.
+- Provider và consumer yêu cầu version nào? `singleton` không kiểm chứng tương thích API hoặc behavioral contract.
+- React runtime và Context identity có tương thích với composition boundary không?
+- CSS được ai tải? Shared JavaScript không tự bảo đảm chỉ có một stylesheet hoặc đúng token scope.
+- Remote có fallback local không, và fallback đó có styles tương ứng không?
+- Khi version không tương thích, chỉ remote bị fallback hay cả shell bị ảnh hưởng?
+
+Một UI singleton đã load không tự được thay nóng khi remote đến sau cung cấp version mới. Vì thế cần test thứ tự load và document mới trong rollout/rollback. Các tùy chọn cụ thể phụ thuộc plugin; đọc [Shared dependencies](/docs/module-federation/shared-dependencies) thay vì copy policy từ một federation runtime khác.
+
+## Kiểm thử design system và consumer
+
+Test package riêng trả lời “component có đúng contract không?”. Test integration trả lời “component có còn đúng khi nằm cạnh các remote khác không?”. Bạn cần cả hai, vì nhiều lỗi CSS/theme chỉ xuất hiện khi ghép ứng dụng.
+
+| Lớp kiểm thử | Những tình huống nên có |
+| --- | --- |
+| Token contract | Public tokens tồn tại trong từng theme/scope, đúng kiểu giá trị dự kiến; tokens deprecated còn hoạt động |
+| Component behavior | Native props/ref, default `type`, disabled, accessible name, keyboard và focus states |
+| Visual regression | Light/dark, hover/focus/error, viewport hẹp, nội dung dài, locale khác, zoom và forced colors |
+| Packaging | Cài tarball thật, public exports/types/CSS có mặt, production build không làm mất styles hoặc bundle framework sai |
+| Composition | Shell + catalog + cart khác supported versions; đảo thứ tự CSS/remote loading; mount/unmount nhiều lần |
+| Theme integration | Standalone và integrated; đổi theme không remount; overlay cùng scope; JS consumer được update |
+| Upgrade/rollback | Consumer mới với provider tối thiểu; remote cũ trong shell mới; rollback target còn được hỗ trợ |
+
+Snapshot tự động chỉ báo “khác”, không kết luận “đúng”. Automated accessibility tools cũng không thay kiểm thử keyboard, focus restoration của dialog và đọc screen reader ở các flow quan trọng.
+
+Với ví dụ `Button`, test nhanh có thể bắt đầu bằng việc mở form: nút mặc định không submit, `type="submit"` vẫn submit khi consumer yêu cầu, disabled không chạy click handler, và Tab hiển thị focus ring trong cả hai themes. Sau đó mở dialog của catalog, đổi theme rồi điều hướng sang cart để kiểm tra scope và cleanup xuyên boundary.
+
+Đừng chỉ test “latest với latest”. Tập trung vào các tổ hợp đang được hỗ trợ trong rollout và rollback window; đó mới là các tổ hợp người dùng có thể gặp.
+
+## Governance vừa đủ
+
+Một maintainer group cần sở hữu public contracts và review những thay đổi ảnh hưởng nhiều consumer. Nhưng biến nhóm này thành cổng duyệt mọi spacing của mọi màn hình sẽ làm team quay lại copy component để tránh chờ đợi.
+
+Mình áp dụng quy trình nhỏ:
+
+- Có owner cho từng package và theme integration, cùng support/deprecation policy dễ tìm.
+- Thêm component chung khi có nhu cầu tái sử dụng rõ; phần đặc thù domain ở lại với domain team.
+- Breaking change có proposal, compatibility plan, migration guide và người review accessibility.
+- Consumer dùng dependency automation để nhận PR nâng version, nhưng merge sau khi fixture/integration tests qua.
+- Release metadata ghi UI package, token contract/provider và stylesheet release; diagnostics không cần chứa dữ liệu người dùng.
+
+Design tools và code cần dùng cùng ngôn ngữ semantic token. Có thể dùng token source dạng JSON và generator, nhưng vẫn cần review ý nghĩa: generator không biết màu vừa đổi có làm thông báo lỗi giống primary action hay không.
+
+Nếu một bản vá bảo mật buộc phải rút ngắn support window, hãy công bố deadline và cách nâng cấp. Deploy độc lập không có nghĩa mỗi team được giữ dependency không còn an toàn vô thời hạn.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân có thể | Hướng xử lý |
+| --- | --- | --- |
+| Theme của catalog không đổi theo shell | Nested scope override hoặc component dùng literal colors | Kiểm tra ancestor scope và computed custom properties |
+| Dialog khác màu với trang | Portal/Teleport ra ngoài scope | Cấp overlay container trong đúng scope hoặc mirror scope đúng contract |
+| Local đúng, integrated sai padding | Global reset hoặc hai stylesheets cùng class cạnh tranh | Inspect matched rules và load order; sửa ownership/namespace thay vì tăng specificity |
+| CI pass nhưng production mất CSS | CSS không nằm trong tarball, thiếu import hoặc bị tree shaking | Kiểm tra package exports, files, sideEffects và production fixture |
+| Provider có nhưng component không đọc được | Khác root hoặc khác Context object | Bridge bằng snapshot, hoặc bảo đảm cùng tree và đúng module identity |
+| Remote mới thiếu màu/token | Shell provider cũ không có capability mới | Deploy provider trước, khai báo minimum version và giữ rollback tương thích |
+| Cập nhật CSS làm remote cũ hỏng ngay | Remote dựa vào URL mutable hoặc contract đã bị thay tại chỗ | Dùng immutable artifacts, pin URL và rollout theo contract |
+| Rollback JS nhưng UI vẫn mới | Stylesheet/shared module đã nạp còn tồn tại trong tab | Quan sát assets thực tế; rollback bằng document mới khi policy yêu cầu |
+
+## Checklist trước production
+
+- [ ] Public props, tokens, entry points và supported behaviors có tài liệu.
+- [ ] Foundations không phụ thuộc framework hoặc domain state.
+- [ ] Consumer pin versions, giữ lockfile và biết mình dùng token contract nào.
+- [ ] Framework peer dependencies và build externals đã được kiểm tra.
+- [ ] Stylesheets được package đúng, có owner, namespace và coexistence policy.
+- [ ] Standalone harness tái hiện scope/theme/overlay contract của shell.
+- [ ] Theme hoạt động qua roots, portals và các boundary thật sự dùng.
+- [ ] Component/visual/accessibility tests bao phủ cả trạng thái tương tác.
+- [ ] Preview đã test mixed versions, thứ tự tải và rollback targets.
+- [ ] Deprecation có support window; contract cũ không bị xóa khi còn consumer hợp lệ.
+- [ ] Release metadata giúp tìm đúng UI/token/CSS versions đang chạy.
+
+Bước đầu thực tế là chọn một control đang xuất hiện trong shell, catalog và cart, chẳng hạn `Button`. Viết contract cho nó, đặt nó vào fixture standalone và integrated, rồi thử nâng chỉ catalog trong khi cart giữ version cũ. Nếu thử nghiệm đó còn buộc cả ba team deploy cùng lúc, hãy sửa boundary hoặc provider contract trước khi đưa thêm components vào thư viện.
+
+## Tài liệu tham khảo
+
+- [Semantic Versioning 2.0.0](https://semver.org/) — Public API, deprecation, version increments và artifacts bất biến.
+- [MDN: Using CSS custom properties](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_cascading_variables/Using_CSS_custom_properties) — Scope, inheritance, fallback và invalid values.
+- [Node.js: Package entry points](https://nodejs.org/api/packages.html#package-entry-points) — Public exports và package subpaths.
+- [Webpack: Tree Shaking](https://webpack.js.org/guides/tree-shaking/) — Side effects, CSS imports và tối ưu production bundles.
+- [React: useContext](https://react.dev/reference/react/useContext) — Context tree và vấn đề duplicate modules.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="CSS isolation" href="/docs/ui-va-framework/css-isolation" description="Giữ styles của mỗi ứng dụng trong boundary phù hợp." />
+  <Card title="Accessibility và UX xuyên ứng dụng" href="/docs/ui-va-framework/accessibility" description="Phối hợp keyboard, focus và feedback giữa shell với remote." />
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Chọn dependencies cần shared identity và kiểm soát runtime versions." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Giữ các tổ hợp artifacts và contracts tương thích khi deploy." />
+</Cards>

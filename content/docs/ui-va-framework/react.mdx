@@ -1,18 +1,645 @@
 ---
 title: "Tích hợp React"
-description: "Quản lý React roots, lifecycle, contexts và yêu cầu runtime khi ghép ứng dụng React."
+description: "Chọn boundary cho ứng dụng React: component hay root riêng, contract mount/update/unmount, Context, shared runtime và xử lý lỗi."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop đã dùng React, còn team catalog muốn deploy màn hình sản phẩm riêng. Export một component rồi render vào shell trông khá đơn giản. Nhưng khi catalog cần router, theme hoặc một version React khác, bạn phải quyết định: **catalog là một nhánh trong React tree của shell, hay một ứng dụng có root riêng?**
+
+Quyết định này ảnh hưởng trực tiếp đến Context, lifecycle, xử lý lỗi và cách chia sẻ dependency. Module Federation có thể giúp tải code, nhưng không tự quyết định các boundary đó thay bạn.
+
+<Callout type="info" title="Phạm vi bài viết">
+  Bài này dành cho client-side integration, giả định bạn đã biết component, props và Hooks. Ví dụ dùng TypeScript cùng API `createRoot` của React 18 trở lên; shell và catalog trong lab là các module local, chưa phải hai ứng dụng deploy độc lập. Repository hiện tại chỉ chứa tài liệu, không có ứng dụng shop để chạy các đoạn code này. Sơ đồ dùng ASCII nên không cần cấu hình Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn boundary trước khi chọn loader](#chọn-boundary-trước-khi-chọn-loader)
+  - [Component trong tree của shell](#component-trong-tree-của-shell)
+  - [Ứng dụng có root riêng](#ứng-dụng-có-root-riêng)
+- [Quyền sở hữu DOM và lifecycle](#quyền-sở-hữu-dom-và-lifecycle)
+- [Thiết kế contract tích hợp](#thiết-kế-contract-tích-hợp)
+- [Ví dụ mount update và unmount](#ví-dụ-mount-update-và-unmount)
+  - [Contract và component catalog](#contract-và-component-catalog)
+  - [Adapter React của catalog](#adapter-react-của-catalog)
+  - [Controller phía shell](#controller-phía-shell)
+  - [Gắn controller vào trang](#gắn-controller-vào-trang)
+- [Context không đi theo cây DOM](#context-không-đi-theo-cây-dom)
+  - [Cùng tree cần cùng Context object](#cùng-tree-cần-cùng-context-object)
+  - [Khác root cần bridge rõ ràng](#khác-root-cần-bridge-rõ-ràng)
+  - [Portal không phải root mới](#portal-không-phải-root-mới)
+- [React runtime và shared dependencies](#react-runtime-và-shared-dependencies)
+  - [Điều kiện tránh duplicate React](#điều-kiện-tránh-duplicate-react)
+  - [Cấu hình shared cho Webpack Module Federation](#cấu-hình-shared-cho-webpack-module-federation)
+  - [Khi cần nhiều version React](#khi-cần-nhiều-version-react)
+- [Loading readiness và xử lý lỗi](#loading-readiness-và-xử-lý-lỗi)
+- [StrictMode và cleanup tài nguyên](#strictmode-và-cleanup-tài-nguyên)
+- [Router state CSS và hydration](#router-state-css-và-hydration)
+- [Kiểm thử boundary](#kiểm-thử-boundary)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn boundary trước khi chọn loader
 
-Bài này sẽ giúp bạn: quản lý React roots, lifecycle, contexts và yêu cầu runtime khi ghép ứng dụng React.
+Có hai cách ghép phổ biến. Cả hai có thể tải code bằng dynamic import hoặc một federation runtime; khác biệt chính nằm ở **ai render component và ai sở hữu React root**.
 
-[Xem các bài trong nhóm UI và framework](/docs/ui-va-framework).
+| Tiêu chí | Export component | Export lifecycle adapter |
+| --- | --- | --- |
+| Public API | Component và props | `mount(container, props)` trả handle |
+| Root owner | Shell | Remote |
+| React Context của shell | Đọc được nếu cùng tree và cùng Context object | Không tự truyền sang root riêng |
+| React runtime | Component phải tương thích với renderer của shell | Mỗi root có thể dùng cặp React và renderer riêng |
+| Cleanup | React của shell unmount nhánh component | Shell phải gọi `handle.unmount()` |
+| Error Boundary của shell | Có thể bắt lỗi trong nhánh remote | Không bắt lỗi trong tree của root remote |
+| Coupling | Cùng hệ sinh thái React và provider contracts | Ít phụ thuộc React API của shell hơn, nhiều bridge hơn |
+
+### Component trong tree của shell
+
+Remote export component; shell render nó như component local. Đây là mặc định mình chọn khi các team cùng dùng React tương thích, tin cậy nhau và cần giao diện phối hợp chặt chẽ.
+
+```text
+Root của shell
+└── ThemeProvider
+    └── ErrorBoundary
+        └── Suspense
+            └── CatalogPage từ remote
+```
+
+Ví dụ dưới chỉ minh họa cách tải component local. `ErrorBoundary` là boundary do shell cung cấp, không phải export có sẵn của React; khi chuyển sang federation, loader và type declaration cho remote phải được cấu hình riêng.
+
+```tsx title="Phác thảo composition trong shell"
+import { lazy, Suspense } from 'react';
+import { ErrorBoundary } from './ErrorBoundary';
+
+const CatalogPage = lazy(() => import('./catalog/App'));
+
+export function CatalogRoute() {
+  return (
+    <ErrorBoundary>
+      <Suspense fallback={<p role="status">Đang tải catalog…</p>}>
+        <CatalogPage
+          locale="vi-VN"
+          onAddToCart={(sku) => console.log('Yêu cầu thêm vào cart:', sku)}
+        />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+```
+
+Module được truyền cho `lazy` cần resolve về object có `default` là component. Nếu remote chỉ export named component, bạn có thể chuyển kết quả bằng `.then((module) => ({ default: module.CatalogPage }))`.
+
+Remote ở mô hình này **không gọi `createRoot` khi được import**. Entry chạy standalone có thể tạo root riêng để phát triển local, nhưng entry export cho shell chỉ cung cấp component. Nếu import remote đồng thời bootstrap một app, bạn sẽ có side effect ngoài lifecycle mà shell kiểm soát.
+
+### Ứng dụng có root riêng
+
+Remote export adapter, nhận một DOM container và tự tạo root. Shell có thể dùng React, Vue hoặc chỉ JavaScript; contract không bắt shell phải render JSX của remote.
+
+```text
+Shell root                         Catalog root
+└── ThemeProvider                   └── CatalogProviders
+    └── <div dành cho catalog>          └── CatalogApp
+             ▲                               │
+             └──────── DOM được render ──────┘
+
+Hai React tree riêng, dù DOM catalog nằm bên trong DOM shell.
+```
+
+Mình chọn cách này cho một màn hình có lifecycle tương đối độc lập hoặc khi shell không dùng React. Nó cũng giúp giữ provider nội bộ trong catalog, nhưng đổi lại theme, navigation và state dùng chung phải đi qua contract.
+
+Đừng chọn root riêng chỉ để đặt mỗi widget nhỏ thành “một micro-frontend”. Nhiều roots làm tăng số boundary cần phối hợp, không tự mang lại deploy độc lập hay hiệu năng tốt hơn.
+
+<Callout type="warn" title="Root riêng không phải isolation bảo mật">
+  Các ứng dụng vẫn có thể chạy trong cùng document, truy cập global object, tác động CSS và dùng CPU của trang. Root riêng là boundary của React tree, không phải sandbox. Nếu cần document hoặc security boundary, đánh giá [iframe](/docs/cac-cach-tich-hop/iframe).
+</Callout>
+
+## Quyền sở hữu DOM và lifecycle
+
+React quản lý nội dung bên trong container được truyền cho `createRoot`. Shell sở hữu slot và vị trí của slot; remote sở hữu descendants bên trong. Vì vậy shell không nên render thêm children, sửa `innerHTML` hoặc để remote khác mount vào cùng container trong lúc root còn hoạt động.
+
+Lifecycle nên có đường đi rõ ràng:
+
+```text
+Chưa mount → mount → update → update → unmount
+                                         │
+                                         └── handle cũ không dùng lại
+```
+
+`update` gọi `root.render` trên root hiện có, không tạo root mới. React có thể giữ local state nếu component type, vị trí và key vẫn tương ứng. Ngược lại, unmount rồi mount lại sẽ tạo tree mới và reset state; đây là hành vi bạn nên chọn có chủ đích, không phải cách cập nhật props mặc định.
+
+Shell phải yêu cầu remote unmount trước khi xóa container hoặc thay nó bằng ứng dụng khác. Chỉ xóa DOM không thông báo cho React rằng subscriptions, timers và các tài nguyên khác cần cleanup.
+
+Sau `root.unmount()`, không gọi `root.render()` trên root đó nữa. Bạn có thể tạo root mới trên cùng container **sau khi root trước đã unmount**, nhưng đó là một instance mới.
+
+## Thiết kế contract tích hợp
+
+Contract tốt nói rõ remote nhận dữ liệu gì, được yêu cầu hành động nào và lifecycle do ai điều khiển. Trong shop mẫu, catalog không cần biết toàn bộ cart store. Nó chỉ cần gửi SKU qua callback, còn cart hoặc shell quyết định cách xử lý nghiệp vụ.
+
+| Thành phần contract | Ví dụ | Quy tắc nên chốt |
+| --- | --- | --- |
+| Props dạng snapshot | `locale`, `theme`, thông tin hiển thị user | `update` nhận toàn bộ props hay partial props? |
+| Callback | `onAddToCart(sku)` | Đồng bộ hay Promise, có phản hồi lỗi nghiệp vụ không? |
+| Mount handle | `update`, `unmount` | Duplicate mount và update sau unmount xử lý thế nào? |
+| Capabilities | `navigate`, `requestLogin` | Remote chỉ được gọi các hành động shell cấp |
+| Diagnostics | App name, release ID, mount instance ID | Lỗi được report ở đâu, có loại bỏ dữ liệu nhạy cảm không? |
+
+Mình ưu tiên full snapshot cho `update`: nó tránh câu hỏi một field bị bỏ qua là “giữ giá trị cũ” hay “xóa giá trị”. Với update tần suất cao, hãy đo trước khi chuyển sang patch contract hoặc shared store.
+
+Callback function dùng được ở boundary cùng JavaScript realm như ví dụ này. Không mang nguyên contract đó sang `postMessage`: function không gửi được bằng structured clone. TypeScript cũng chỉ kiểm tra lúc build; nếu tải remote độc lập, cần kiểm tra shape của module và version contract tại runtime theo mức rủi ro của hệ thống.
+
+## Ví dụ mount update và unmount
+
+Ví dụ dùng shell JavaScript/TypeScript quản lý slot trực tiếp để tập trung vào lifecycle, không trộn thêm lifecycle của một React root cha. Trong một shell React cần chia sẻ sâu UI và Context, mình ưu tiên mô hình export component ở trên.
+
+Các file sau giả định nằm trong một lab client-side có bundler hỗ trợ TSX, `jsx: "react-jsx"`, DOM types, cùng `react`, `react-dom` và type packages tương thích. `import('./catalog/mount')` là loader local; thay bằng loader remote là một bước riêng, không biến lab này thành hệ thống federation hoàn chỉnh.
+
+### Contract và component catalog
+
+```ts title="src/contracts.ts"
+export type CatalogProps = {
+  locale: 'vi-VN' | 'en-US';
+  onAddToCart: (sku: string) => void;
+};
+
+export type CatalogHandle = {
+  update: (props: CatalogProps) => void;
+  unmount: () => void;
+};
+```
+
+```tsx title="src/catalog/App.tsx"
+import { useId, useState } from 'react';
+import type { CatalogProps } from '../contracts';
+
+export default function CatalogApp({ locale, onAddToCart }: CatalogProps) {
+  const [quantity, setQuantity] = useState(1);
+  const quantityId = useId();
+
+  return (
+    <section aria-label={locale === 'vi-VN' ? 'Sản phẩm' : 'Products'}>
+      <h2>{locale === 'vi-VN' ? 'Áo thun' : 'T-shirt'}</h2>
+      <label htmlFor={quantityId}>
+        {locale === 'vi-VN' ? 'Số lượng xem thử' : 'Preview quantity'}
+      </label>
+      <input
+        id={quantityId}
+        type="number"
+        min={1}
+        value={quantity}
+        onChange={(event) => {
+          const next = event.currentTarget.valueAsNumber;
+          setQuantity(Number.isFinite(next) ? Math.max(1, next) : 1);
+        }}
+      />
+      <button onClick={() => onAddToCart('shirt-001')}>
+        {locale === 'vi-VN' ? 'Thêm vào giỏ' : 'Add to cart'}
+      </button>
+    </section>
+  );
+}
+```
+
+`quantity` chỉ là local UI state để quan sát state preservation. Callback hiện chỉ gửi SKU một lần, không phải API thêm nhiều sản phẩm hay triển khai cart thật.
+
+### Adapter React của catalog
+
+Adapter không tạo root ở module scope. Mỗi lần `mount` tạo một instance; mỗi handle giữ reference đến đúng root của instance đó.
+
+```tsx title="src/catalog/mount.tsx"
+import { Component, StrictMode } from 'react';
+import type { ErrorInfo, ReactNode } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { CatalogHandle, CatalogProps } from '../contracts';
+import CatalogApp from './App';
+
+class CatalogErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    // Lab dùng console; production gửi diagnostics đến hệ thống của bạn.
+    console.error('[catalog] render failed', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <p role="alert">Catalog gặp lỗi. Hãy mở lại màn hình.</p>;
+    }
+    return this.props.children;
+  }
+}
+
+const owners = new WeakMap<HTMLElement, CatalogHandle>();
+let nextInstanceId = 0;
+
+export function mount(
+  container: HTMLElement,
+  initialProps: CatalogProps,
+): CatalogHandle {
+  if (owners.has(container)) {
+    throw new Error('Catalog đã mount trên container này');
+  }
+
+  const root = createRoot(container, {
+    identifierPrefix: `catalog-${++nextInstanceId}-`,
+  });
+  let active = true;
+
+  function render(props: CatalogProps) {
+    root.render(
+      <StrictMode>
+        <CatalogErrorBoundary>
+          <CatalogApp {...props} />
+        </CatalogErrorBoundary>
+      </StrictMode>,
+    );
+  }
+
+  const handle: CatalogHandle = {
+    update(props) {
+      if (!active) {
+        throw new Error('Không update Catalog sau unmount');
+      }
+      render(props);
+    },
+    unmount() {
+      if (!active) return;
+      active = false;
+      try {
+        root.unmount();
+      } finally {
+        owners.delete(container);
+      }
+    },
+  };
+
+  owners.set(container, handle);
+  try {
+    render(initialProps);
+  } catch (error) {
+    handle.unmount();
+    throw error;
+  }
+  return handle;
+}
+```
+
+Ở đây `unmount` là idempotent: gọi lần hai không làm gì; `update` sau unmount thì báo lỗi để lộ lỗi lifecycle phía caller. `WeakMap` ngăn double mount trong **cùng module adapter**, không phải registry toàn trang. Nếu hai bản bundle catalog cùng tồn tại, shell vẫn phải bảo đảm một owner cho mỗi slot.
+
+`identifierPrefix` giúp phân biệt ID tạo bởi `useId` giữa các roots. Counter trong ví dụ chỉ phân biệt instances của bản module này; production có nhiều bundle hoặc SSR cần quy ước prefix rộng hơn. Không dùng prefix đó như security identifier.
+
+`try/catch` quanh `render` không thay Error Boundary: công việc render của React có thể diễn ra sau khi `root.render` trả về. Boundary bên trong root mới là nơi hiển thị fallback khi tree catalog gặp lỗi thuộc phạm vi boundary.
+
+### Controller phía shell
+
+Một tình huống dễ bỏ sót: người dùng rời catalog khi bundle vẫn đang tải. `import()` không tự hủy khi route thay đổi. Controller dưới dùng cờ `disposed` để bỏ qua kết quả tải muộn, đồng thời giữ props mới nhất trong lúc chờ.
+
+```ts title="src/catalog-slot.ts"
+import type { CatalogHandle, CatalogProps } from './contracts';
+
+export function createCatalogSlot(
+  slot: HTMLElement,
+  initialProps: CatalogProps,
+) {
+  const status = document.createElement('p');
+  status.setAttribute('role', 'status');
+  status.textContent = 'Đang tải catalog…';
+
+  const container = document.createElement('div');
+  slot.replaceChildren(status, container);
+
+  let disposed = false;
+  let currentProps = initialProps;
+  let handle: CatalogHandle | undefined;
+
+  void (async () => {
+    try {
+      const module = await import('./catalog/mount');
+      if (disposed) return;
+
+      handle = module.mount(container, currentProps);
+      // Chỉ xác nhận đã tạo handle, chưa khẳng định UI đã commit.
+      status.remove();
+    } catch (error) {
+      if (disposed) return;
+      status.setAttribute('role', 'alert');
+      status.textContent = 'Không tải được catalog. Hãy mở lại màn hình.';
+      console.error('[shell] catalog load/mount failed', error);
+    }
+  })();
+
+  return {
+    update(nextProps: CatalogProps) {
+      if (disposed) throw new Error('Slot đã dispose');
+      currentProps = nextProps;
+      handle?.update(nextProps);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      try {
+        handle?.unmount();
+      } finally {
+        handle = undefined;
+        slot.replaceChildren();
+      }
+    },
+  };
+}
+```
+
+Controller này có **một owner cho slot**. Đừng gọi `createCatalogSlot` lần nữa trên slot đang hoạt động mà chưa dispose controller trước: `replaceChildren` khi đó sẽ xóa container của một root còn sống.
+
+Cờ `disposed` không ngăn download hay module evaluation. Vì vậy module remote vẫn phải tránh side effect ở top level như đăng ký listener global hoặc tự mount app. Những tài nguyên theo instance nên bắt đầu ở `mount` hoặc effect, và kết thúc ở cleanup.
+
+### Gắn controller vào trang
+
+Đặt markup này trong body của trang lab và để bundler nạp entry `src/main.ts`. Shell sở hữu buttons và status; catalog chỉ sở hữu descendants của container do controller tạo.
+
+```html title="Markup của trang lab"
+<button id="toggle-catalog">Mở catalog</button>
+<button id="switch-locale">Đổi ngôn ngữ</button>
+<p id="shell-status" role="status"></p>
+<div id="catalog-slot"></div>
+```
+
+```ts title="src/main.ts"
+import { createCatalogSlot } from './catalog-slot';
+import type { CatalogProps } from './contracts';
+
+const slot = document.querySelector<HTMLElement>('#catalog-slot')!;
+const toggle = document.querySelector<HTMLButtonElement>('#toggle-catalog')!;
+const switchLocale = document.querySelector<HTMLButtonElement>('#switch-locale')!;
+const shellStatus = document.querySelector<HTMLElement>('#shell-status')!;
+
+let locale: CatalogProps['locale'] = 'vi-VN';
+let controller: ReturnType<typeof createCatalogSlot> | undefined;
+
+function props(): CatalogProps {
+  return {
+    locale,
+    onAddToCart: (sku) => {
+      shellStatus.textContent = `Shell nhận yêu cầu thêm SKU: ${sku}`;
+    },
+  };
+}
+
+toggle.addEventListener('click', () => {
+  if (controller) {
+    controller.dispose();
+    controller = undefined;
+    toggle.textContent = 'Mở catalog';
+  } else {
+    controller = createCatalogSlot(slot, props());
+    toggle.textContent = 'Đóng catalog';
+  }
+});
+
+switchLocale.addEventListener('click', () => {
+  locale = locale === 'vi-VN' ? 'en-US' : 'vi-VN';
+  controller?.update(props());
+});
+```
+
+Trong lab, sửa quantity rồi đổi locale: label đổi nhưng quantity còn giữ nguyên. Đóng rồi mở lại catalog: quantity trở về `1`, vì instance trước đã unmount. Nếu dùng loader mạng, thử đóng khi đang tải và xác nhận catalog không xuất hiện lại sau đó. Dynamic import local có thể resolve quá nhanh để quan sát race này; hãy dùng loader có delay trong test.
+
+Entry này sống cùng document nên listeners của buttons có cùng vòng đời với trang. Nếu shell view cũng có thể mount/unmount mà không reload, view owner phải tháo các listeners đó, không chỉ dispose catalog.
+
+## Context không đi theo cây DOM
+
+Nhìn DOM có thể thấy catalog nằm trong `<div>` bên dưới shell, nhưng `useContext` không tìm provider bằng cách đi lên DOM. Nó tìm provider trong **React component tree của root đang render consumer**.
+
+### Cùng tree cần cùng Context object
+
+Remote component có thể đọc provider của shell khi nó ở bên dưới provider trong cùng React tree. Nhưng provider và consumer còn phải dùng **cùng một Context object**, không chỉ cùng tên export.
+
+Nếu shell và catalog đều tự gọi `createContext` để tạo `ThemeContext`, hai object khác nhau dù code giống hệt. Một package context bị bundle thành hai bản cũng có thể tạo ra vấn đề tương tự. Chia sẻ `react` không tự deduplicate package chứa Context.
+
+Với provider contracts dùng chung, mình chọn một package có public API nhỏ, version tương thích và cấu hình resolution/sharing bảo đảm module identity. Khi boundary không cần chia sẻ sâu, truyền `theme` qua props thường dễ bảo trì hơn là bắt mọi remote phụ thuộc provider nội bộ của shell.
+
+### Khác root cần bridge rõ ràng
+
+Hai roots dùng cùng bản React vẫn không chia sẻ provider hierarchy. Shell có thể đọc theme của mình rồi gọi `handle.update({ ...props, theme })`; remote nhận snapshot và đưa vào provider riêng của nó.
+
+Nếu cần external store xuyên roots, contract phải có subscription và cleanup rõ ràng. `useSyncExternalStore` là API phù hợp để React subscribe vào external store; `getSnapshot` cần trả snapshot ổn định khi dữ liệu chưa đổi. Đừng truyền một mutable object rồi mong React biết nó đã bị sửa.
+
+Tuy vậy, không nên chia sẻ cả store nội bộ chỉ để tránh viết bridge. Khi catalog biết shape của cart store, release của catalog sẽ bị ràng buộc với cấu trúc triển khai cart. Hãy bắt đầu bằng dữ liệu và hành động nghiệp vụ nhỏ như [state ownership](/docs/giao-tiep-va-trang-thai/state-ownership) đề xuất.
+
+### Portal không phải root mới
+
+`createPortal` đưa DOM của một nhánh React sang container khác nhưng giữ nhánh đó trong React tree gốc. Vì vậy Context vẫn đi theo tree, và React events của portal cũng propagate theo React tree.
+
+Đây là lựa chọn thích hợp cho modal hoặc tooltip muốn render vào overlay container của shell. Nó không giải quyết nhu cầu dùng React version độc lập và không tạo CSS isolation. Đừng thay root riêng bằng portal rồi vẫn kỳ vọng runtime boundary như trước.
+
+## React runtime và shared dependencies
+
+### Điều kiện tránh duplicate React
+
+Quy tắc cốt lõi là: **React mà component dùng Hooks phải là cùng module instance với React mà renderer của component đó sử dụng**. Cùng chuỗi version chưa đủ nếu bundler tạo hai module instances.
+
+Trong mô hình component export, renderer là React DOM của shell. Nếu catalog đem theo React riêng và dùng Hooks từ bản đó, bạn có thể gặp `Invalid hook call`. Ngoài duplicate React, lỗi này còn có thể đến từ vi phạm Rules of Hooks hoặc React và renderer không tương thích.
+
+Các UI/component packages dùng chung thường nên khai báo `react` và `react-dom` là `peerDependencies` nếu sử dụng chúng, đồng thời cấu hình build để externalize React và các subpath liên quan. `peerDependencies` là metadata cho package manager, không tự bảo đảm bundler không nhúng React vào output.
+
+Lệnh dưới giúp kiểm tra dependency tree của từng project, nhưng không chứng minh các bundle tải ở runtime đã dùng cùng instance:
+
+```bash
+npm ls react react-dom
+```
+
+Cần xem thêm bundle graph, module resolution, symlink/workspace packages, shared scope và artifacts thật mà browser đã tải. Một thư viện bundle sẵn React có thể không hiện như dependency duplicate trong kết quả lệnh này.
+
+### Cấu hình shared cho Webpack Module Federation
+
+Đây là phần cấu hình **Webpack 5 Module Federation**, không phải cấu hình áp dụng nguyên trạng cho mọi plugin Vite, Rspack hay federation runtime. Giả định tất cả consumers cần các version tương thích và đã có cấu hình `name`, `exposes`, `remotes`, cùng bootstrap phù hợp.
+
+```js title="Phần shared trong options của Webpack ModuleFederationPlugin"
+const reactVersion = '^19.2.0';
+const reactDomVersion = '^19.2.0';
+
+const sharedReact = {
+  singleton: true,
+  requiredVersion: reactVersion,
+  strictVersion: true,
+};
+const sharedReactDom = {
+  singleton: true,
+  requiredVersion: reactDomVersion,
+  strictVersion: true,
+};
+
+const shared = {
+  react: { ...sharedReact },
+  'react-dom': { ...sharedReactDom },
+  'react/jsx-runtime': { ...sharedReact },
+  'react/jsx-dev-runtime': { ...sharedReact },
+  'react-dom/client': { ...sharedReactDom },
+};
+// Truyền shared vào options của plugin ở shell và các remote liên quan.
+```
+
+Range ở đây là lựa chọn minh họa cho deployment dùng React 19.2, không phải yêu cầu mọi micro-frontend phải nâng lên version đó. Policy version cần phản ánh các tổ hợp shell/remote mà bạn thật sự kiểm thử.
+
+| Option | Ý nghĩa trong cấu hình này | Không bảo đảm điều gì? |
+| --- | --- | --- |
+| `singleton` | Dùng một version cho shared key trong share scope tương ứng | Không deduplicate mọi bundle, mọi scope hay mọi import trên trang |
+| `requiredVersion` | Khai báo semver range consumer chấp nhận | Không chứng minh ứng dụng tương thích về hành vi |
+| `strictVersion` | Từ chối shared version không đáp ứng yêu cầu | Không tự tìm version phù hợp hoặc sửa release lỗi |
+
+Các import subpath đáng kiểm tra vì automatic JSX transform dùng `react/jsx-runtime`, còn adapter dùng `react-dom/client`. Trong Webpack, key package gốc không phải một bảo đảm blanket rằng mọi subpath đã được share; cấu hình trên liệt kê các subpath dùng trong ví dụ. Nếu ứng dụng import thêm subpath như `react-dom/server`, cần đánh giá riêng. Webpack còn hỗ trợ cách share package subpaths bằng key có dấu `/` cuối, nhưng phải cân nhắc phạm vi và chi phí, không mở rộng một cách máy móc.
+
+Đừng bật `eager: true` trên mọi dependency chỉ để hết lỗi bootstrap. Với Webpack federation, asynchronous bootstrap là hướng cần kiểm tra trước; lỗi shared module cũng có thể xuất phát từ share scope chưa được khởi tạo đúng. Chi tiết nằm ở [shared dependencies](/docs/module-federation/shared-dependencies) và [version compatibility](/docs/module-federation/version-compatibility).
+
+### Khi cần nhiều version React
+
+React cho phép nhiều bản độc lập cùng tồn tại trên một trang khi mỗi component dùng đúng React tương ứng với renderer của nó. Vì vậy root riêng có thể là đường migration giữa các version, nhưng **root riêng tự nó không tạo sự độc lập về module resolution**.
+
+Bạn phải bảo đảm root của catalog thật sự dùng cặp React/React DOM tương thích riêng; không cấu hình singleton chung rồi kỳ vọng hai version major hoạt động độc lập. Cũng không đưa component, React elements hay Context objects từ runtime này sang runtime kia. Bridge nên trao đổi plain data và hành động được định nghĩa rõ.
+
+Mình vẫn ưu tiên một runtime tương thích khi các team cùng hệ sinh thái. Nếu cần version khác lâu dài, hãy đo bundle, kiểm tra UI libraries và đánh giá iframe khi isolation sâu quan trọng hơn việc hòa giao diện vào cùng document.
+
+## Loading readiness và xử lý lỗi
+
+“Bundle đã tải”, “mount đã trả handle” và “người dùng đã thấy màn hình usable” là ba mốc khác nhau. `root.render` không phải Promise xác nhận commit; controller trong lab chỉ bỏ status sau khi nhận handle, không triển khai readiness protocol.
+
+Nếu shell cần đo thời gian usable hoặc giữ loading đến khi remote render xong dữ liệu ban đầu, hãy bổ sung callback như `onReady(instanceId)`. Remote phát tín hiệu từ phase phù hợp sau commit, và shell bỏ qua tín hiệu của instance đã dispose. Một effect sau commit cũng chưa có nghĩa ảnh đã tải, dữ liệu đã đủ hoặc browser đã paint xong; readiness phải được định nghĩa theo UX của màn hình.
+
+| Loại lỗi | Owner xử lý mặc định | Hướng xử lý |
+| --- | --- | --- |
+| Download, chunk, remote entry hoặc contract không hợp lệ | Loader của shell | Status lỗi, diagnostics, retry có kiểm soát |
+| Lỗi render thuộc tree component remote | Error Boundary bao quanh nhánh đó | Fallback riêng cho vùng bị lỗi |
+| Lỗi render trong root riêng | Boundary hoặc error handlers của root remote | Fallback trong remote, report theo contract |
+| API trả lỗi nghiệp vụ | Feature code | Hiển thị lỗi thao tác và khả năng thử lại |
+| Promise bị reject hoặc event handler throw | Code khởi phát thao tác | `catch` và xử lý rõ ràng; không trông chờ boundary thông thường |
+
+Error Boundary của shell không bắt lỗi render ở một root catalog riêng, dù container nằm trong DOM của shell. `Suspense` cũng không tự quan sát một Promise import được gọi trong controller tùy ý; fallback của nó phục vụ các nguồn suspension được React hỗ trợ như `lazy`.
+
+Trong React 19, root options có `onCaughtError` và `onUncaughtError`; `onRecoverableError` có từ React 18. Đây là hooks cho diagnostics, không tự dựng fallback UI. Kiểm tra API của version thực tế trước khi copy cấu hình logging.
+
+Boundary của lab giữ trạng thái lỗi đến khi unmount; gọi `update` không reset nó. Retry cần policy riêng: tạo instance mới, reset boundary có chủ đích hoặc reload page trong tình huống phù hợp. Đổi `key` tùy tiện để retry cũng reset local state, và gọi lại import không bảo đảm khắc phục chunk lỗi hay cache của federation runtime.
+
+## StrictMode và cleanup tài nguyên
+
+Ở development, `StrictMode` có thể render thêm và chạy chu kỳ setup/cleanup effect bổ sung để phát hiện side effects không an toàn. Đây không phải lý do để tắt StrictMode khi thấy subscribe hoặc request chạy thêm.
+
+Effect đăng ký tài nguyên phải trả cleanup tương ứng. Ví dụ cho component trong remote:
+
+```tsx title="Một effect có cleanup đối xứng"
+import { useEffect } from 'react';
+
+export function CatalogDiagnostics() {
+  useEffect(() => {
+    const onResize = () => console.log('Catalog nhận resize');
+    window.addEventListener('resize', onResize);
+    const timer = window.setInterval(() => console.log('Catalog tick'), 5000);
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  return null;
+}
+```
+
+Tương tự, subscription phải unsubscribe; observer phải disconnect; request theo instance có thể cần `AbortController` hoặc guard để không áp dụng kết quả cũ. Abort phía client không bảo đảm backend chưa thực hiện thao tác, nên mutations vẫn cần semantics nghiệp vụ phù hợp.
+
+Nếu shell React bọc lifecycle adapter trong một host component, bạn còn phải kiểm thử cleanup/remount của host dưới StrictMode. Hủy root con ngay khi React đang commit root cha có thể gặp cảnh báo và vấn đề thứ tự teardown; không tạo hay hủy root trong render. Việc hoãn teardown cần chặn remount vào cùng container trước khi teardown xong. Đây là thêm một lý do để ưu tiên component composition khi không có yêu cầu root riêng.
+
+## Router state CSS và hydration
+
+Root boundary chỉ giải quyết một phần của integration. Các quyết định còn lại cần được chốt để tránh một trang có hai owner cạnh tranh.
+
+| Vấn đề | Hướng mặc định mình chọn | Bẫy cần tránh |
+| --- | --- | --- |
+| URL và history | Shell sở hữu browser navigation, remote nhận location hoặc capability `navigate` | Hai browser routers cùng tự sửa history, back/forward khó dự đoán |
+| State nghiệp vụ | Feature sở hữu state của nó, boundary trao đổi dữ liệu/hành động nhỏ | Dùng chung toàn bộ Redux store như public contract |
+| Cache dữ liệu | Provider local nếu không cần chia sẻ, policy rõ nếu dùng cache chung | Cho rằng cùng thư viện query nghĩa là cùng cache instance |
+| Theme và CSS | Tokens/contract dùng chung, selectors được scope | Root riêng không ngăn CSS global rò sang shell |
+| Modal và focus | Chốt overlay owner, focus restore và keyboard behavior | Nhiều roots không tự có một focus manager chung |
+| SSR và hydration | Dùng pipeline/framework phù hợp với HTML server đã tạo | `createRoot` trên HTML SSR rồi mong React hydrate |
+
+Với HTML đã được server render bằng React, API tương ứng là `hydrateRoot`, không phải `createRoot` của lab. Server/client cần thống nhất tree, dữ liệu ban đầu và `identifierPrefix` nếu sử dụng. Trong Next.js, framework quản lý lifecycle và hydration của app; không tự tạo root thứ hai vào vùng DOM Next.js đang sở hữu.
+
+[Next.js, SSR và hydration](/docs/ui-va-framework/nextjs-ssr), [routing](/docs/giao-tiep-va-trang-thai/routing) và [CSS isolation](/docs/ui-va-framework/css-isolation) là các quyết định riêng, không nên giấu chúng trong adapter React.
+
+## Kiểm thử boundary
+
+Unit test component catalog chưa đủ. Bạn cần chạy adapter với shell và runtime thực tế, vì lỗi module identity, tải muộn và provider boundary thường không xuất hiện khi component chạy standalone.
+
+| Ca kiểm thử | Kết quả cần quan sát |
+| --- | --- |
+| Mount một instance rồi update locale | UI đổi locale, local quantity không reset |
+| Unmount rồi mount instance mới | State reset có chủ đích, không cảnh báo root cũ |
+| Mount lần hai vào cùng container | Adapter từ chối, không có hai owners |
+| Gọi unmount hai lần | Cleanup không lặp tác dụng phụ |
+| Update sau unmount | Lỗi lifecycle rõ ràng |
+| Dispose khi loader chưa resolve | Kết quả muộn không tạo root |
+| Đổi props khi loader đang chờ | Instance mount bằng props mới nhất |
+| Hai instances ở hai slots | State riêng, IDs không trùng theo policy |
+| Component throw trong render | Remote fallback hoạt động, shell vẫn dùng được |
+| Loader reject | Shell báo lỗi, không cố update handle chưa tồn tại |
+| Mount/unmount lặp lại dưới StrictMode | Không còn timers, listeners hoặc subscriptions dư |
+| Shell và remote dùng releases khác nhau | Compatibility policy được kiểm tra bằng artifacts thật |
+
+Dùng deferred Promise trong test loader để chủ động quyết định thời điểm resolve/reject; nếu cần, tách hàm load ra thành dependency có thể inject. Đừng dựa hoàn toàn vào network throttling để tái hiện race.
+
+Với `useId`, test rằng `label.htmlFor` khớp input và IDs giữa instances không xung đột, không hardcode toàn bộ chuỗi ID do React tạo. Với leakage, kiểm tra số subscriptions/listeners còn sống hoặc behavior sau unmount; một ảnh chụp memory đơn lẻ chưa chứng minh có leak.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Kiểm tra trước | Hướng sửa |
+| --- | --- | --- |
+| `Invalid hook call` | Rules of Hooks, React/renderer pair, React module identity | Sửa đúng nguyên nhân; không mặc định đổ lỗi cho federation |
+| Catalog chỉ đọc default Context | Khác root, provider sai vị trí, Context object duplicate | Truyền props/bridge hoặc sửa tree/module sharing |
+| Cảnh báo tạo root trùng container | Adapter mount lặp, bootstrap chạy khi import | Một owner cho slot, tách entry standalone khỏi export |
+| `Cannot update an unmounted root` | Handle cũ còn được dùng sau teardown | Vô hiệu hóa instance và chặn callback/update cũ |
+| Remote hiện lại sau khi rời route | Import hoặc callback resolve muộn | Guard theo instance lifecycle trước khi mount/update |
+| Quantity reset mỗi lần đổi locale | Tạo root mới, đổi component type hoặc key | Update root hiện có và giữ identity khi muốn giữ state |
+| Shell boundary không hiện fallback | Lỗi thuộc root khác hoặc thao tác async | Boundary trong remote, `catch` tại operation owner |
+| Dev có subscriptions lặp | Effect thiếu cleanup hoặc module top-level side effects | Cleanup đối xứng, không tắt StrictMode để che lỗi |
+| CSS catalog làm đổi header shell | Selectors/global reset cùng document | Scope CSS và chốt policy styles/overlays |
+
+## Checklist trước production
+
+- [ ] Chọn rõ export component hay lifecycle adapter; entry import không tự bootstrap app.
+- [ ] Mỗi slot chỉ có một owner, teardown hoàn tất trước khi tái sử dụng container.
+- [ ] Contract chốt full/partial update, callback semantics và version compatibility.
+- [ ] Kết quả async của instance đã dispose không mount hoặc cập nhật UI trở lại.
+- [ ] React của component khớp React của renderer; kiểm tra cả import subpaths và UI libraries.
+- [ ] Context dùng chung có cùng object identity, hoặc được thay bằng bridge rõ ràng.
+- [ ] Error Boundary nằm đúng React tree; loader và async operations có xử lý lỗi riêng.
+- [ ] Readiness, retry và local state reset có semantics cụ thể, không suy ra từ `mount` trả về.
+- [ ] Timers, listeners, requests và subscriptions được cleanup qua nhiều lần mount/unmount.
+- [ ] Router, cache, CSS, overlays và focus có owner rõ; root riêng không bị coi như sandbox.
+- [ ] Integration tests chạy với tổ hợp releases thật và có phương án rollback khi runtime không tương thích.
+
+## Tài liệu tham khảo
+
+- [React — createRoot](https://react.dev/reference/react-dom/client/createRoot): quyền sở hữu container, update, unmount, root options và `identifierPrefix`.
+- [React — useContext](https://react.dev/reference/react/useContext): provider hierarchy và yêu cầu Context object identity.
+- [React — Invalid hook call warning](https://react.dev/warnings/invalid-hook-call-warning): Rules of Hooks, renderer mismatch và duplicate React.
+- [React — createPortal](https://react.dev/reference/react-dom/createPortal): DOM placement khác với React tree.
+- [React — StrictMode](https://react.dev/reference/react/StrictMode): kiểm tra bổ sung trong development và cleanup effects.
+- [React — useSyncExternalStore](https://react.dev/reference/react/useSyncExternalStore): subscription contract cho external stores.
+- [React — hydrateRoot](https://react.dev/reference/react-dom/client/hydrateRoot): hydrate HTML do server render.
+- [Webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): shared keys, singleton và version requirements.
+
+## Đọc tiếp
+
+Nếu đang dựng shop mẫu, hãy chọn một boundary và chạy các ca mount/update/unmount ở trên trước khi thêm federation loader. Khi lifecycle đã rõ, bạn sẽ dễ phân biệt lỗi React với lỗi tải remote hơn.
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Chốt dependency nào cần chung runtime và policy version." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Giữ state nghiệp vụ đúng owner thay vì chia sẻ cả store." />
+  <Card title="Next.js, SSR và hydration" href="/docs/ui-va-framework/nextjs-ssr" description="Phân biệt client-side roots với composition có server rendering." />
+  <Card title="Duplicate React" href="/docs/troubleshooting/duplicate-react" description="Khoanh vùng module identity, renderer và shared runtime." />
+</Cards>

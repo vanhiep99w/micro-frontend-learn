@@ -1,18 +1,533 @@
 ---
 title: "Security và trust boundaries"
-description: "Đánh giá remote code, CSP, supply chain và giới hạn isolation trong cùng JavaScript realm."
+description: "Xác định quyền của remote code, kiểm soát CSP và integrity, bảo vệ supply chain và chọn isolation phù hợp cho micro-frontend production."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog được deploy qua CDN riêng, còn shell giữ session của người dùng và hiển thị checkout. Một tài khoản publish catalog bị chiếm quyền, rồi `remoteEntry.js` bị thay bằng code đọc dữ liệu trên trang. Nếu shell tải entry đó như script bình thường, browser không biết đây là “code của team catalog”: nó chạy code trong môi trường của shell.
+
+Deploy độc lập không đồng nghĩa với quyền truy cập độc lập. Với micro-frontend chạy chung document, **bạn đang tin remote code gần như tin code của shell**. Bài này giúp bạn xác định sự tin cậy đó đi qua những hệ thống nào, đặt kiểm soát trước khi code chạy và chọn boundary khác khi không thể chấp nhận mức quyền ấy.
+
+<Callout type="info" title="Phạm vi và điều kiện dùng ví dụ">
+  Bài dùng shop giả định gồm shell, catalog và cart, nhất quán với các bài trong nhóm Production. Repository này là site tài liệu, không có ứng dụng shop để chạy snippet. URL, release ID và cấu hình bên dưới dành cho lab riêng; CSP phải được điều chỉnh theo framework, loader và browser mục tiêu. Sơ đồ dùng text, không cần Mermaid. Ví dụ loader tập trung vào CSR; SSR có thêm trust boundary phía server.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Bắt đầu từ tài sản và attacker](#bắt-đầu-từ-tài-sản-và-attacker)
+- [Remote code chạy với quyền của ai](#remote-code-chạy-với-quyền-của-ai)
+  - [Origin của asset không phải origin thực thi](#origin-của-asset-không-phải-origin-thực-thi)
+  - [Những boundary không phải sandbox](#những-boundary-không-phải-sandbox)
+  - [Chọn boundary theo mức tin cậy](#chọn-boundary-theo-mức-tin-cậy)
+- [Kiểm soát runtime config trước khi load](#kiểm-soát-runtime-config-trước-khi-load)
+  - [Config là một phần của control plane](#config-là-một-phần-của-control-plane)
+  - [Ví dụ policy chọn release đã duyệt](#ví-dụ-policy-chọn-release-đã-duyệt)
+- [Thiết kế CSP cho document của shell](#thiết-kế-csp-cho-document-của-shell)
+  - [Baseline cho lab không dùng inline script](#baseline-cho-lab-không-dùng-inline-script)
+  - [Nonce và strict dynamic](#nonce-và-strict-dynamic)
+  - [Report only rồi mới enforce](#report-only-rồi-mới-enforce)
+- [Integrity phải bao phủ asset graph](#integrity-phải-bao-phủ-asset-graph)
+  - [SRI kiểm tra bytes chứ không kiểm tra ý đồ](#sri-kiểm-tra-bytes-chứ-không-kiểm-tra-ý-đồ)
+  - [Entry hợp lệ chưa chứng minh chunks hợp lệ](#entry-hợp-lệ-chưa-chứng-minh-chunks-hợp-lệ)
+  - [Manifest và digest cần nguồn tin cậy độc lập](#manifest-và-digest-cần-nguồn-tin-cậy-độc-lập)
+- [Bảo vệ supply chain từ source đến CDN](#bảo-vệ-supply-chain-từ-source-đến-cdn)
+  - [Build và dependency controls](#build-và-dependency-controls)
+  - [Publish promote và hosting controls](#publish-promote-và-hosting-controls)
+- [Auth và dữ liệu không được phân quyền bằng UI](#auth-và-dữ-liệu-không-được-phân-quyền-bằng-ui)
+  - [Session token và BFF](#session-token-và-bff)
+  - [Capability hẹp và authorization phía server](#capability-hẹp-và-authorization-phía-server)
+- [XSS và message contract giữa các phần](#xss-và-message-contract-giữa-các-phần)
+  - [HTML sinks và Trusted Types](#html-sinks-và-trusted-types)
+  - [Event bus và postMessage](#event-bus-và-postmessage)
+- [Khi cần iframe làm security boundary](#khi-cần-iframe-làm-security-boundary)
+- [Ma trận kiểm thử security](#ma-trận-kiểm-thử-security)
+- [Runbook khi nghi remote bị compromise](#runbook-khi-nghi-remote-bị-compromise)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Bắt đầu từ tài sản và attacker
 
-Bài này sẽ giúp bạn: đánh giá remote code, CSP, supply chain và giới hạn isolation trong cùng JavaScript realm.
+Trước khi chọn header hay plugin, viết ra thứ bạn cần bảo vệ. Trong shop, đó có thể là session, dữ liệu cá nhân, thao tác thay đổi cart, kết quả checkout và quyền publish code. Một widget gợi ý sản phẩm có ít tính năng nhưng vẫn có thể nhìn thấy form checkout nếu nó chạy cùng document.
 
-[Xem các bài trong nhóm Production](/docs/production).
+Threat model cũng phải phân biệt code có lỗi với code chủ động gây hại. Error Boundary có thể xử lý một component throw; nó không ngăn một script đọc input rồi gửi đi.
+
+| Tài sản hoặc đường vào | Tình huống giả định | Kiểm soát cần có |
+| --- | --- | --- |
+| Remote source và dependency | Package hoặc PR đưa code độc hại vào bundle | Review, dependency policy, build có kiểm soát, kiểm tra artifact |
+| CI và publish credentials | Attacker upload bundle thay thế | Credential ngắn hạn, quyền theo app, protected environment, audit |
+| Runtime config hoặc import map | Remote URL bị đổi sang máy chủ attacker | Validate schema, policy độc lập, duyệt release, audit config |
+| CDN hoặc origin storage | Bytes bị thay ở URL vốn được cho phép | Immutable artifacts, integrity phù hợp, hạn chế overwrite/delete |
+| Nội dung API hoặc CMS | Dữ liệu trở thành script qua HTML sink | Escaping theo context, sanitizer khi cần HTML, CSP, Trusted Types |
+| Bridge của iframe | Message giả yêu cầu shell thực hiện thao tác có quyền | Kiểm tra origin/source/schema, giới hạn command, server authorization |
+| Remote đã được phép chạy | Remote lấy dữ liệu hoặc gọi API ngoài phạm vi chức năng | Isolation thực sự nếu cần; contract frontend không đủ để chống code độc hại |
+
+Mình mặc định coi remote nội bộ chạy cùng realm là **first-party code với quy trình release riêng**. Nó cần cùng tiêu chuẩn bảo mật như shell, chứ không phải mức kiểm tra nhẹ hơn vì nằm ở repo khác. Remote của đối tác, plugin do người dùng upload hoặc code chưa được review thì không nên được nạp trực tiếp vào document của sản phẩm.
+
+Ghi rõ owner cho từng đường vào. Team catalog có thể sở hữu source, nhưng quyền promote release, response headers và quyền ghi CDN thường thuộc các hệ thống khác. Threat model bỏ qua những hệ thống này sẽ bỏ qua đúng nơi attacker có thể thay code mà không sửa source.
+
+## Remote code chạy với quyền của ai
+
+### Origin của asset không phải origin thực thi
+
+Khi shell tại `https://shop.example.com` thêm classic script từ `https://assets.example.com/catalog/r18/remoteEntry.js`, script chạy trong realm của document shell. Native ESM được import vào realm đó cũng không tự tạo sandbox theo origin tải module.
+
+```text
+Source → CI → Artifact storage / CDN
+                         │
+                         │ remote entry, chunks, CSS
+                         ▼
+              Shell document: shop.example.com
+              ├── Shell code
+              ├── Catalog code
+              └── Cart code
+                  Cùng DOM, global object và quyền của document
+                         │
+                         ▼
+                 API kiểm tra session và quyền
+```
+
+Remote có thể đọc DOM, đăng ký listener vào document, đọc storage cùng origin và gọi API bằng môi trường của trang. Với cookie `HttpOnly`, nó không đọc được giá trị cookie qua JavaScript, nhưng vẫn có thể gửi request được browser gắn cookie theo các quy tắc credentials/cookie hiện hành.
+
+Tách CDN origin giúp quản lý hosting và cache; nó không hạ quyền của script sau khi script đã được phép chạy trong shell. CORS cũng không biến script thành code ít quyền hơn. Classic script cross-origin thường tải được không cần CORS khi không dùng SRI; module scripts và SRI cross-origin lại có yêu cầu CORS riêng.
+
+Nếu bạn evaluate remote trên server để SSR, hãy xem nó như code chạy trong tiến trình server. Tùy deployment, code đó có thể tiếp cận environment variables, filesystem, network hoặc request context. Browser CSP không bảo vệ bước này; cần kiểm soát artifact và sandbox/process boundary phía server nếu chạy code không đáng tin.
+
+### Những boundary không phải sandbox
+
+| Cơ chế | Giải quyết gì | Không bảo đảm gì |
+| --- | --- | --- |
+| Repo hoặc deployment riêng | Ownership và tốc độ release | Quyền runtime thấp hơn shell |
+| Module Federation scope, shared scope | Resolution và chia sẻ dependency | Cô lập DOM, storage hoặc API credentials |
+| React Error Boundary | Fallback cho một số lỗi trong React tree | Ngăn remote chạy side effect hoặc đánh cắp dữ liệu |
+| CSS Modules, Shadow DOM | Giảm xung đột style và đóng gói DOM | Sandbox cho JavaScript; kể cả closed shadow root không phải security boundary |
+| Mount vào một DOM container | Contract lifecycle và composition | Ngăn code đi ra ngoài container |
+| TypeScript types, frozen descriptor | Giảm lỗi contract hoặc mutation vô ý | Cấm remote bỏ qua contract và dùng browser API trực tiếp |
+| CSP | Giới hạn nguồn/thao tác tải tài nguyên và một số dạng thực thi | Phân quyền catalog khác cart trong cùng document |
+
+Đây là điểm cần giữ tách biệt với [resilience](/docs/production/resilience). Một remote có thể không crash nhưng vẫn gây hại. Ngược lại, một remote crash vì bug không tự động là security incident.
+
+### Chọn boundary theo mức tin cậy
+
+| Mức tin cậy | Hướng chọn mặc định | Điều kiện đi kèm |
+| --- | --- | --- |
+| Code nội bộ, có quyền như sản phẩm chính | Same-document integration | Review, release controls và monitoring như shell |
+| Code nội bộ nhưng không được phép đọc dữ liệu của shell | Origin/document boundary riêng | Thiết kế API và bridge, không chỉ tách repo |
+| App đối tác có contract nhỏ | Cross-origin iframe với sandbox được review | Chỉ trao dữ liệu và quyền thật sự cần |
+| Code tùy ý của người dùng hoặc chưa được review | Không chạy trong shell realm | Cần môi trường cô lập theo threat model; có thể chọn không hỗ trợ |
+| Nội dung HTML không cần JavaScript | Render text hoặc sanitize HTML | Không mở script execution chỉ để hiển thị nội dung |
+
+Nếu requirement nói “catalog không được nhìn thấy checkout”, same-realm Module Federation không đáp ứng requirement đó bằng cách giấu reference trong props. Bạn phải đổi boundary hoặc chấp nhận và ghi lại rủi ro; không nên gọi một coding convention là security isolation.
+
+## Kiểm soát runtime config trước khi load
+
+### Config là một phần của control plane
+
+Một JSON chọn remote URL có thể quyết định code nào chạy trên toàn bộ người dùng. Import map, federation manifest và cấu hình tag manager cũng có sức ảnh hưởng tương tự. Vì vậy, quyền sửa cấu hình cần được quản lý như quyền deploy code.
+
+Allowlist nên nằm trong policy do shell/platform tin cậy, không để config tự đưa ra `allowedOrigins` rồi shell dùng chính field đó để duyệt `entry`. Nếu attacker sửa được cả URL lẫn allowlist trong cùng response, validation chỉ còn là kiểm tra cú pháp.
+
+Trước khi tải, ít nhất cần kiểm tra:
+
+- Remote name, schema version, environment và contract version đã hỗ trợ.
+- HTTPS, origin chính xác, không có userinfo; port, path, query và fragment theo policy cụ thể.
+- Release được duyệt cho remote đó; không nhận URL tùy ý từ query string, localStorage hay dữ liệu API nghiệp vụ trên production.
+- Snapshot nhất quán cho một phiên bootstrap; có config revision để audit.
+- Chính sách redirects ở hosting: không dùng URL được duyệt làm redirect đến code tùy ý.
+
+Dùng `new URL()` và so sánh `url.origin`, không dùng `url.startsWith('https://assets.example.com')`. Chuỗi `https://assets.example.com.attacker.invalid/...` cũng có prefix ấy. Tuy vậy, parse URL đúng không chứng minh bytes ở URL đáng tin; đó là việc của artifact controls và integrity.
+
+### Ví dụ policy chọn release đã duyệt
+
+Snippet dưới là policy hẹp cho classic-script catalog entry. Nó minh họa khác biệt giữa **config chọn một release** và **config cấp quyền chạy một URL mới**. Policy được đóng gói trong shell artifact đáng tin, không lấy cùng response với config.
+
+```ts title="shell/src/security/approved-catalog.ts"
+const APPROVED_RELEASES: ReadonlyMap<string, string> = new Map([
+  ['r18', 'https://assets.example.com/catalog/r18/remoteEntry.js'],
+]);
+
+export type CatalogSelection = Readonly<{
+  release: string;
+  entry: string;
+}>;
+
+export function selectApprovedCatalog(input: unknown): CatalogSelection {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new Error('Invalid catalog selection');
+  }
+
+  const value = input as Record<string, unknown>;
+  if (typeof value.release !== 'string' || typeof value.entry !== 'string') {
+    throw new Error('Missing catalog release or entry');
+  }
+
+  const approvedEntry = APPROVED_RELEASES.get(value.release);
+  if (approvedEntry === undefined) {
+    throw new Error('Catalog release is not approved');
+  }
+
+  const url = new URL(value.entry);
+  if (
+    url.protocol !== 'https:' ||
+    url.origin !== 'https://assets.example.com' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== '' ||
+    value.entry !== approvedEntry
+  ) {
+    throw new Error('Catalog entry violates release policy');
+  }
+
+  // Trả canonical URL từ policy, không truyền raw object cho loader.
+  return Object.freeze({ release: value.release, entry: approvedEntry });
+}
+```
+
+Trong lab, `{ release: 'r18', entry: 'https://assets.example.com/catalog/r18/remoteEntry.js' }` được chấp nhận; host giả, query khác, `r19` chưa duyệt và kiểu dữ liệu sai đều bị reject trước khi tạo script tag. So sánh nguyên chuỗi với URL đã duyệt cố ý loại cả những cách viết URL tương đương nhưng không nằm trong contract.
+
+Đây không phải validator cho toàn bộ runtime config, cũng không xác thực nội dung file hay redirects. Xem [runtime configuration](/docs/trien-khai/runtime-configuration) cho schema và bootstrap đầy đủ. Danh sách release gắn trong shell buộc cập nhật shell để duyệt release mới; production có thể dùng policy service hoặc manifest đã ký để giảm coupling, nhưng nguồn policy và quyền phê duyệt phải được bảo vệ độc lập.
+
+<Callout type="warn" title="Validation chạy trước execution">
+  Kiểm tra export sau `import()` hoặc sau khi entry đã evaluate chỉ kiểm tra contract của code đã chạy. Nó không thể thu hồi side effect top-level. Khi selection không hợp lệ, fail closed cho remote đó và dùng fallback local; đừng thử URL dự phòng chưa được duyệt.
+</Callout>
+
+## Thiết kế CSP cho document của shell
+
+CSP là lớp defense in depth để chặn một số kiểu injection, hạn chế nguồn tài nguyên và kiểm soát cách script được chạy. Với same-document composition, shell sở hữu policy của document; mỗi team không thể xin một CSP riêng cho vùng DOM của mình.
+
+### Baseline cho lab không dùng inline script
+
+Ví dụ sau dành cho lab CSR: bootstrap nằm trong file external same-origin, remotes trên một asset host được kiểm soát, CSS là stylesheet external, API same-origin và không có iframe. Đây **không phải CSP copy nguyên vào Next.js hoặc mọi federation runtime**; framework có thể cần nonce cho bootstrap, inline styles hoặc cách tải assets khác.
+
+Header được xuống dòng để đọc; server phải gửi giá trị header hợp lệ trên một dòng:
+
+```http title="CSP minh họa cho shell lab"
+Content-Security-Policy: default-src 'none';
+  script-src 'self' https://assets.example.com;
+  style-src 'self' https://assets.example.com;
+  img-src 'self' https://assets.example.com;
+  font-src 'self' https://assets.example.com;
+  connect-src 'self';
+  object-src 'none';
+  base-uri 'none';
+  form-action 'self';
+  frame-ancestors 'none';
+  frame-src 'none';
+  worker-src 'none'
+```
+
+| Directive | Ý nghĩa trong lab | Điều phải kiểm tra khi áp dụng |
+| --- | --- | --- |
+| `script-src` | Cho external scripts từ shell và asset host | Host này không được phục vụ JavaScript do người dùng tùy ý upload |
+| `style-src` | Cho stylesheet external | CSS-in-JS hoặc inline style có thể cần thiết kế khác |
+| `connect-src` | Chỉ cho kết nối tới shell origin | API cross-origin, telemetry và WebSocket phải khai báo cụ thể nếu cần |
+| `object-src` | Không cho plugin objects | Giữ `'none'` nếu không có requirement rõ ràng |
+| `base-uri` | Không cho thay base URL bằng `<base>` | Routing của app không nên phụ thuộc một base tag chưa được cho phép |
+| `form-action` | Chỉ cho submit form tới shell origin | Payment/auth redirect hoặc form cross-origin cần review riêng |
+| `frame-ancestors` | Không cho site khác nhúng shell | Áp dụng qua response header; không có hiệu lực trong CSP meta tag |
+| `frame-src` | Shell không được tải iframe | Mở đúng origin nếu kiến trúc chọn iframe |
+| `worker-src` | Không cho tạo worker trong lab | Review riêng nếu app dùng worker hoặc service worker |
+
+Đừng thêm `'unsafe-eval'` chỉ vì build development bị chặn. Một devtool tạo code qua `eval()` có thể không phù hợp production; chọn cấu hình build production tương thích CSP. Tương tự, cho phép `https:` hoặc wildcard trên toàn bộ CDN là trao quyền tải code từ phạm vi quá rộng.
+
+CSP trả trên file `remoteEntry.js` không tạo policy riêng cho code đó trong shell. Policy điều khiển document shell phải có mặt ở response HTML của shell; trang iframe riêng thì có CSP của document iframe.
+
+`connect-src` giúp hạn chế một số kênh gửi dữ liệu, nhưng không phải data-loss prevention hoàn chỉnh. Dữ liệu vẫn có thể đi qua nguồn tài nguyên đã cho phép, endpoint same-origin bị lạm dụng hoặc navigation. CSP cũng không ngăn remote gọi API hợp lệ với session của người dùng.
+
+### Nonce và strict dynamic
+
+Nếu framework cần inline bootstrap, dùng nonce ngẫu nhiên đủ mạnh cho mỗi HTML response, rồi gắn cùng nonce vào những script tin cậy cần được phép chạy. Framework và federation loader phải phối hợp để bootstrap và các script/chunks tạo động chạy đúng policy. Với HTML/cache, nonce trong header và markup phải khớp; không hard-code hoặc tái sử dụng một nonce cố định cho toàn bộ người dùng.
+
+Một strict CSP có thể dùng dạng sau; `NONCE_PER_RESPONSE` là placeholder, không phải giá trị production:
+
+```http
+Content-Security-Policy: script-src 'nonce-NONCE_PER_RESPONSE' 'strict-dynamic'; object-src 'none'; base-uri 'none'
+```
+
+Đây chỉ là phần policy cho script, không thay thế các directive còn lại. Khi browser hỗ trợ `'strict-dynamic'`, trust của script root có nonce/hash được truyền cho script tải động theo semantics của CSP. Host allowlists như `'self'` hay `https://assets.example.com` trong cùng `script-src` sẽ bị bỏ qua trong cách áp dụng đó.
+
+Điều này giải quyết nhu cầu tải chunks động, nhưng cũng thay đổi mô hình bảo vệ: **trusted loader phải tự kiểm soát URL mà nó tải**. Nếu loader lấy URL từ dữ liệu attacker kiểm soát, `'strict-dynamic'` không giữ lại một host allowlist như bạn có thể kỳ vọng.
+
+Mình ưu tiên strict CSP với nonce/hash khi framework hỗ trợ tốt, nhưng chỉ sau khi kiểm chứng bootstrap, remote entry và lazy chunks trên browser mục tiêu. Không thêm `'unsafe-inline'` để làm lỗi biến mất, cũng không cấp nonce cho mọi script node được tạo từ nội dung không đáng tin.
+
+### Report only rồi mới enforce
+
+Triển khai policy mới qua `Content-Security-Policy-Report-Only` để tìm incompatibility trên các journey thật. Report-only **không chặn** vi phạm và không thay thế policy enforce hiện có. Bạn có thể giữ policy enforce cũ trong lúc đo policy ứng viên.
+
+Quy trình đề xuất:
+
+1. Inventory script, CSS, API, fonts, iframe, worker và telemetry của shell lẫn remotes; không chỉ kiểm tra trang đầu.
+2. Bật report-only ở môi trường kiểm thử và cohort có kiểm soát; cấu hình reporting endpoint theo browser mục tiêu.
+3. Chạy login/logout, route transition, lazy loading, error fallback và luồng payment/auth nếu có.
+4. Phân loại report theo directive, release và config revision; tách noise từ extension khỏi request do app tạo.
+5. Sửa build/loader hoặc review quyền cần thêm, rồi enforce từng bước và theo dõi lỗi.
+
+CSP reports có thể chứa URL nhạy cảm và là input không đáng tin. Collector phải giới hạn payload/rate, redact query chứa dữ liệu cá nhân và không coi report như bằng chứng duy nhất của compromise. Không bật ghi script samples một cách đại trà nếu chưa review dữ liệu có thể đi vào report.
+
+## Integrity phải bao phủ asset graph
+
+### SRI kiểm tra bytes chứ không kiểm tra ý đồ
+
+Subresource Integrity (SRI) cho browser so sánh bytes tải về với digest bạn đã cung cấp. Nếu file ở cùng URL bị thay nhưng digest tin cậy giữ nguyên, browser từ chối chạy file không khớp.
+
+Tạo digest từ **artifact đã build và duyệt**, không từ bản tải về sau khi có nghi ngờ:
+
+```bash title="Tạo SRI digest cho artifact trong lab"
+printf 'sha384-'
+openssl dgst -sha384 -binary ./dist/remoteEntry.js | openssl base64 -A
+printf '\n'
+```
+
+Gắn kết quả vào script hoặc để loader gắn `integrity` trước khi append node. `REPLACE_WITH_GENERATED_BASE64` dưới đây phải được thay bằng kết quả thật:
+
+```html title="Classic script entry dùng SRI"
+<script
+  src="https://assets.example.com/catalog/r18/remoteEntry.js"
+  integrity="sha384-REPLACE_WITH_GENERATED_BASE64"
+  crossorigin="anonymous"
+></script>
+```
+
+Ví dụ HTML chỉ minh họa tải entry, chưa gọi container `init`/`get` của Module Federation. Với SRI cross-origin, asset server phải đáp ứng CORS; `crossorigin="anonymous"` không gửi cookie cross-origin. Asset public không credentials có thể dùng `Access-Control-Allow-Origin: *` hoặc origin cụ thể phù hợp. Đừng mở wildcard CORS cho API có credentials theo cách tương tự.
+
+SRI chứng minh file khớp digest, không chứng minh file không có mã độc. Nếu code độc hại đã vào build và digest được duyệt theo build đó, SRI vẫn pass.
+
+### Entry hợp lệ chưa chứng minh chunks hợp lệ
+
+Federation entry thường tải thêm lazy chunks, shared dependencies, CSS hoặc metadata. SRI của entry không tự truyền xuống những tài nguyên ấy.
+
+```text
+remoteEntry.js [digest đã kiểm tra]
+├── product-page.js [cần kiểm tra riêng nếu tải dưới dạng script]
+├── shared-runtime.js [cần kiểm tra riêng]
+└── catalog.css [integrity riêng nếu cơ chế tải hỗ trợ]
+```
+
+Nếu attacker không sửa được entry nhưng sửa được `product-page.js`, release vẫn có thể bị compromise. Tên file có content hash không tự làm browser tính và xác minh hash đó; nó chỉ là naming/cache convention nếu không có cơ chế kiểm tra tương ứng.
+
+Khả năng gắn integrity cho toàn bộ graph phụ thuộc bundler, plugin và runtime. Với classic script chunks, integration có thể tạo digest metadata và gắn `integrity` khi tạo script tag. Với native `import()`, bạn không truyền được một `integrity` option như thuộc tính của script element; integrity của top-level module script cũng không mặc nhiên bảo vệ mọi import con.
+
+Trước khi công bố “release có SRI”, hãy kiểm tra những node nào thật sự có coverage. Entry, route chunk, shared chunk và CSS cần được xem riêng. Federation manifest có field hash không đồng nghĩa runtime đang enforce field đó; phải chứng minh bằng test thay bytes.
+
+Không dùng `fetch()` rồi `eval()` như cách vá integrity tùy tiện. Cách này kéo thêm rủi ro CSP, resolution/public path, module semantics và side effects. Nếu runtime không có coverage cần thiết, chọn integration hỗ trợ được, kiểm soát hosting chặt hơn và ghi rõ residual risk; với threat model không chấp nhận residual risk ấy, phải đổi kiến trúc.
+
+### Manifest và digest cần nguồn tin cậy độc lập
+
+Nếu attacker có thể thay cả `entry` và `integrity` trong một manifest không được xác thực, attacker chỉ việc cung cấp digest của code mới. Vì vậy, digest cần được pin vào shell artifact hoặc đi qua control plane đã xác thực với quyền phê duyệt phù hợp.
+
+Manifest đã ký là một lựa chọn khi cần phát hành linh hoạt. Khi dùng nó, hệ thống cần:
+
+- Verify chữ ký trên biểu diễn bytes/canonical format đã thống nhất, trước khi tin các URL và digest.
+- Pin trust anchor/key ID ở nguồn tin cậy; không nhận public key tùy ý từ chính manifest.
+- Kiểm tra environment, remote identity, schema, thời hạn và release policy.
+- Có rotation/revocation key và xử lý replay của manifest cũ, kể cả manifest cũ có chữ ký hợp lệ.
+
+Chữ ký cho biết ai phê duyệt manifest, không làm release cũ hết vulnerability. Với browser storage có thể bị xóa và client clock không phải trust anchor mạnh, đừng chỉ dựa vào localStorage để chống downgrade; promotion policy phía server vẫn cần ngăn phát lại release đã bị thu hồi.
+
+## Bảo vệ supply chain từ source đến CDN
+
+### Build và dependency controls
+
+Dependency install scripts, bundler plugins và CI actions đều có thể chạy code trong môi trường build. Một lockfile giúp lặp lại dependency resolution; nó không bảo đảm dependency ấy an toàn.
+
+Mặc định nên có:
+
+- Protected branch và review cho source, lockfile, build scripts, workflow và cấu hình publish.
+- Lockfile được commit; CI dùng chế độ cài đặt không tự sửa lockfile, như `npm ci` hoặc chế độ frozen tương ứng của package manager.
+- Kiểm soát registry, dependency provenance khi có hỗ trợ và nguồn package để giảm dependency confusion/typosquatting.
+- Policy cho lifecycle scripts; không cho chúng tiếp cận publish credentials nếu không cần.
+- Pin CI actions/tooling theo version hoặc commit đã review; theo dõi security updates, không pin rồi bỏ mặc.
+- Scan dependencies và secrets, ghi inventory/SBOM theo release; triage dựa trên exposure thực tế.
+- Build runner sạch, quyền tối thiểu; PR từ fork không nhận production secrets hay quyền promote.
+
+Không đồng nhất “scanner xanh” với “artifact sạch”. Scanner có thể tìm vulnerability đã biết, nhưng package độc hại mới hoặc logic đánh cắp dữ liệu có thể không bị phát hiện. Review, hạn chế quyền và kiểm chứng đường release vẫn cần cùng tồn tại.
+
+### Publish promote và hosting controls
+
+Build một lần, kiểm thử artifact đó, rồi promote chính artifact đã duyệt. Nếu mỗi môi trường rebuild với dependency hoặc build input khác, kết quả kiểm thử staging không còn chứng minh artifact production giống nhau.
+
+| Control | Quy tắc đề xuất | Vì sao cần |
+| --- | --- | --- |
+| Publish identity | Credential ngắn hạn, ưu tiên workload identity; giới hạn theo remote/prefix | Giảm thời gian và phạm vi dùng được khi credential lộ |
+| Promotion | Tách quyền build/upload khỏi quyền chọn release production | Upload được chưa đồng nghĩa tự phát hành cho mọi người dùng |
+| Artifact storage | Release prefix bất biến; cấm overwrite, hạn chế delete | Cùng release ID không được âm thầm mang bytes mới |
+| Config writes | Protected environment, approval và audit | Config change có thể đổi toàn bộ code được chạy |
+| CDN origin | Chỉ cho nguồn ghi đã duyệt; không dùng chung khu upload người dùng | Allowlist host không an toàn nếu attacker có quyền upload script vào host |
+| Domain ownership | Theo dõi DNS, certificate và dangling records | Host tin cậy bị takeover vẫn là host qua allowlist |
+| Asset responses | MIME đúng, `X-Content-Type-Options: nosniff`, HTTPS | Tránh content-type ambiguity; đây không thay thế integrity |
+| Service worker | Owner và scope rõ ràng; review lifecycle/cache | Worker cũ có thể tiếp tục phục vụ code sau rollback |
+| Release evidence | Lưu commit, build ID, digest graph, approvals và config revision | Điều tra cần nối được bytes thực tế với release được duyệt |
+
+Tag manager hoặc analytics SDK chạy trong shell cũng thuộc code trust boundary, dù không được gọi là micro-frontend. Hạn chế quyền publish container, review custom code và không để một kênh “marketing config” đi vòng qua release controls của sản phẩm.
+
+Xem [CI/CD](/docs/trien-khai/ci-cd) và [CDN assets](/docs/trien-khai/cdn-assets) cho quy trình deploy. Security bổ sung câu hỏi khác: ai có thể làm thay đổi code người dùng nhận, và thay đổi ấy có để lại bằng chứng đủ để kiểm tra không?
+
+## Auth và dữ liệu không được phân quyền bằng UI
+
+### Session token và BFF
+
+Mình ưu tiên BFF/session cookie khi kiến trúc cho phép: backend giữ token gọi downstream, browser dùng cookie `Secure`, `HttpOnly` và `SameSite` theo luồng auth đã review. Cookie host-only giúp tránh phát credential sang các subdomain không cần nó.
+
+Ví dụ cho shop có auth flow tương thích `SameSite=Lax`:
+
+```http
+Set-Cookie: __Host-shop_session=OPAQUE_SESSION_ID; Path=/; Secure; HttpOnly; SameSite=Lax
+```
+
+`OPAQUE_SESSION_ID` là placeholder. Prefix `__Host-` yêu cầu `Secure`, `Path=/` và không có `Domain` ở browser hỗ trợ prefix này. Không lưu access/refresh token trong runtime config, query string, event bus hoặc localStorage. Public config, source map và frontend bundle không phải nơi giữ secret.
+
+Nhưng BFF có chặn một remote độc hại không? Nó giảm việc lộ bearer token có thể dùng lại bên ngoài browser, **không ngăn remote đang chạy trong shell gửi request thay người dùng**. Remote vẫn có thể đọc DOM/response mà trang được phép đọc, rồi gọi endpoint BFF với session hiện tại.
+
+Cookie-based auth cần CSRF controls cho mutation theo threat model, chẳng hạn token và kiểm tra Origin/Referer phù hợp; SameSite là defense in depth, không phải câu trả lời duy nhất. Remote độc hại trong cùng origin thường cũng tiếp cận được những dữ liệu CSRF mà code hợp lệ dùng. CSRF defenses không thay thế XSS prevention hoặc code trust.
+
+Với iframe cross-origin, cookie behavior còn chịu SameSite, storage partitioning và hạn chế third-party cookies của browser. Không “sửa” integration bằng cách nới cookie `Domain` ra toàn bộ subdomain hoặc gửi refresh token qua `postMessage`.
+
+### Capability hẹp và authorization phía server
+
+Shell nên trao contract nghiệp vụ như `addItem(productId, quantity)` thay vì raw token và một HTTP client tùy ý. Contract hẹp giảm coupling, giảm dữ liệu được phát tán vô ý và giúp audit tốt hơn.
+
+Tuy nhiên, trong cùng realm, remote có thể bỏ qua props và gọi `fetch()` trực tiếp. Capability frontend ở đây là **contract tổ chức**, không phải security boundary cưỡng chế. Nếu cần enforce quyền khác nhau giữa remote và shell, thiết kế document/origin boundary và API policy thực sự.
+
+Backend phải xác thực session và authorization trên mỗi thao tác, bao gồm quyền với resource cụ thể. Giấu nút checkout, đổi route hoặc gửi `remoteName: 'cart'` không chứng minh caller có quyền. Một remote khác cũng có thể tự gửi field ấy.
+
+Với nghiệp vụ nhạy cảm, định nghĩa giới hạn và xác nhận phía server: quantity hợp lệ, cart thuộc user nào, trạng thái order nào cho phép mutation, và thao tác nào cần step-up/re-authentication. Không nhận giá tiền hoặc quyết định quyền từ event do frontend gửi rồi tin đó là sự thật.
+
+Dữ liệu cũng nên được giảm theo nhu cầu: catalog không cần toàn bộ profile, analytics không cần nội dung input checkout. Nhưng đừng gọi việc “không truyền props nhạy cảm” là isolation nếu dữ liệu ấy vẫn hiện trên DOM cùng document.
+
+## XSS và message contract giữa các phần
+
+### HTML sinks và Trusted Types
+
+Một remote đáng tin vẫn có thể mở cửa cho attacker qua dữ liệu API, CMS, URL hoặc storage. Text rendering mặc định của framework thường escape nội dung; các sink như `innerHTML`, `dangerouslySetInnerHTML`, `v-html` và API tương tự bỏ qua lớp bảo vệ đó.
+
+Mặc định render text. Nếu requirement thật sự cần rich HTML, dùng sanitizer được duy trì, cấu hình theo tập tag/attribute cần thiết và xử lý URL schemes. Không tự viết regex để “loại script”; XSS không chỉ nằm trong thẻ `<script>`.
+
+Escaping phải đúng context. `JSON.stringify()` cho ra JSON hợp lệ nhưng không đủ để nhúng raw output an toàn vào HTML script context có chuỗi `</script>`. Dùng serialization của framework và tránh nối chuỗi tạo script, handler hay URL thực thi.
+
+Trusted Types bổ sung lớp kiểm soát DOM injection sinks trên browser hỗ trợ. Một policy ứng viên có thể gồm:
+
+```http
+Content-Security-Policy: require-trusted-types-for 'script'; trusted-types app-html
+```
+
+Đây là phần bổ sung cho CSP của document, không phải policy hoàn chỉnh. App cần một Trusted Types policy được review với tên `app-html`; tên policy phải điều chỉnh theo framework/runtime thực tế. `require-trusted-types-for 'script'` yêu cầu trusted values ở các sink thuộc phạm vi directive, chứ không chỉ cấm literal script tags.
+
+Không tạo policy `createHTML: value => value` để tránh lỗi type: Trusted Types không tự sanitize nội dung. Policy phải thực hiện chuyển đổi an toàn phù hợp, và browser không hỗ trợ vẫn cần escaping/sanitization. Kiểm thử cả shell lẫn remotes; một library tạo HTML hoặc script URL nội bộ có thể cần adapter tương thích thay vì mở policy wildcard.
+
+### Event bus và postMessage
+
+Event bus cùng realm không xác thực được “team nào” phát event. `source: 'cart'` trong payload chỉ là dữ liệu mà bất kỳ code nào cũng có thể đặt. Schema validation giúp tránh lỗi và payload bất thường, nhưng không biến event thành bằng chứng authorization.
+
+Với iframe cross-origin, `postMessage` là điểm đi qua boundary. Receiver nên kiểm tra:
+
+1. `event.origin` bằng origin cụ thể đã pin, không so sánh prefix hay substring.
+2. `event.source` bằng `iframe.contentWindow` dự kiến, để tránh chấp nhận frame/tab khác cùng origin.
+3. Schema, version, message type, kích thước payload và field allowlist.
+4. Instance/handshake hiện tại và request ID, để không xử lý response cũ như response của phiên mount mới.
+5. Command có nằm trong quyền shell đã trao không; API phía server vẫn kiểm tra user/resource authorization.
+
+Sender dùng `targetOrigin` cụ thể, không dùng `'*'` cho dữ liệu nhạy cảm. Origin hợp lệ chỉ chứng minh message đến từ context của origin ấy; nếu app iframe bị compromise, message của attacker cũng có origin hợp lệ.
+
+Không cung cấp bridge kiểu “fetch bất kỳ URL với session của shell” hoặc “thực thi chuỗi JavaScript”. Nếu iframe chỉ cần cập nhật cart, bridge chỉ nên nhận command nghiệp vụ được giới hạn. Xem [iframe isolation](/docs/cac-cach-tich-hop/iframe) để thiết kế handshake và lifecycle chi tiết.
+
+## Khi cần iframe làm security boundary
+
+Chọn iframe khi bạn cần document riêng và giới hạn quyền thật sự, không chỉ muốn giấu CSS. Origin riêng là điều kiện quan trọng: iframe cùng origin không sandbox thích hợp vẫn có thể tiếp cận parent.
+
+Ví dụ tối thiểu cho app đối tác chỉ cần script, không cần origin identity/storage của chính nó:
+
+```html
+<iframe
+  src="https://partner.example.net/embed"
+  title="Công cụ của đối tác"
+  sandbox="allow-scripts"
+  referrerpolicy="no-referrer"
+></iframe>
+```
+
+Không có `allow-same-origin`, document sandbox có opaque origin. Message gửi từ nó thường có `event.origin === 'null'`, nên không thể dùng cách pin origin bình thường để xác thực sender. Đừng coi `'null'` là origin đáng tin; cần source check và thiết kế handshake/channel phù hợp, hoặc chọn mô hình giữ origin identity sau khi review.
+
+Nếu app cross-origin cần origin identity cho CORS/storage và message checks, có thể cân nhắc `sandbox="allow-scripts allow-same-origin"`. `allow-same-origin` giữ origin gốc của frame, **không** làm frame cùng origin với shell. Nhưng với frame thực sự same-origin, kết hợp hai quyền này có thể cho code gỡ sandbox và reload để thoát hạn chế; không dùng tổ hợp ấy như sandbox cho code không đáng tin cùng origin.
+
+Shell dùng `frame-src` để giới hạn nơi nó nhúng; app iframe dùng `frame-ancestors` để giới hạn ai được nhúng nó. Iframe còn cần CSP của chính document, Permissions Policy cho camera/microphone/geolocation nếu phù hợp, và review riêng cho forms, popups, downloads hoặc top navigation trước khi mở các quyền đó.
+
+Boundary vẫn có giới hạn. Không có bảo đảm mọi iframe luôn ở process/thread riêng; bridge quá rộng có thể biến shell thành nơi thực hiện thay các thao tác bị cấm, còn dữ liệu bạn chủ động gửi sang frame thì frame có thể sử dụng. Nếu requirement không cho đối tác nhận một dữ liệu, đừng gửi dữ liệu ấy rồi kỳ vọng sandbox ngăn nó đọc.
+
+## Ma trận kiểm thử security
+
+Chạy các test thay code trong lab/staging kiểm soát, không sửa artifact production để “thử xem có chặn không”. Ghi shell release, remote releases, config revision và browser vào kết quả; một test pass ở entry không chứng minh route chunk cũng được bảo vệ.
+
+| Test | Kết quả mong đợi | Bằng chứng cần quan sát |
+| --- | --- | --- |
+| Config dùng host giả có prefix giống host hợp lệ | Reject trước load | Không có request tới host giả; lỗi policy có reason code |
+| Config chọn release chưa duyệt hoặc sai environment | Remote không được mount | Fallback local và config revision trong diagnostics |
+| Entry redirect tới origin không duyệt | Không chạy code đích theo policy đã thiết kế | Network redirect chain và kết quả CSP/integrity trên browser mục tiêu |
+| Thay một byte trong entry giữ nguyên digest | Browser từ chối execution | Entry side effect không xảy ra; báo integrity/load failure |
+| Thay một byte trong lazy chunk giữ nguyên metadata | Từ chối nếu chunk thuộc coverage đã cam kết | Route được mở thật sự; integrity trên chunk, không chỉ entry |
+| Đổi cả URL và digest trong manifest không có approval hợp lệ | Reject manifest | Verification/policy fail trước tạo script tag |
+| Phát lại manifest đã ký nhưng release bị thu hồi | Reject theo release policy | Không chỉ kiểm tra chữ ký pass |
+| Inject inline handler hoặc `eval()` trong lab | CSP enforce chặn theo directive tương ứng | Console/report và không có side effect |
+| Trusted loader dùng URL attacker với strict CSP | Validator phải chặn | Không dựa vào host allowlist khi có `'strict-dynamic'` |
+| CMS chứa HTML/URL payload không hợp lệ | Hiển thị text hoặc HTML đã sanitize, không execute | DOM sau render và test sink trên browser hỗ trợ/không hỗ trợ Trusted Types |
+| Gọi API của resource không thuộc user | Backend từ chối, thường là `403` hoặc `404` theo API policy | Không có mutation, không phụ thuộc nút UI |
+| Gửi message từ origin/source sai hoặc phiên cũ | Bridge bỏ qua, không thực hiện command | Không có API request/mutation ngoài dự kiến |
+| Remote same-realm tự đọc DOM hoặc gọi API | Test cho thấy đây là quyền đang được tin cậy | Không báo pass giả rằng props boundary đã cô lập remote |
+| Rollback với tab cũ và service worker/cache cũ | Hành vi đúng theo kế hoạch phục hồi | Asset graph thực tế, không chỉ config trên server |
+
+Tách load failure do CSP, CORS, integrity và network ở mức diagnostics có thể quan sát, nhưng không suy luận chỉ từ một `TypeError`. Browser có thể trả lỗi chung cho caller; đối chiếu network, console và server/CDN evidence trong môi trường kiểm thử.
+
+Telemetry production nên có release IDs, config revision, giai đoạn failure và directive bị vi phạm. Không gửi cookie, token, toàn bộ profile, DOM checkout hay raw payload message vào log chỉ để tiện debug.
+
+## Runbook khi nghi remote bị compromise
+
+Đừng xử lý remote compromise như một lỗi chunk bình thường. Mục tiêu đầu tiên là ngăn code tiếp tục đến người dùng và thu hẹp quyền bị lộ; refresh liên tục hay retry loader có thể phát tán thêm code độc hại.
+
+1. **Kích hoạt incident ownership.** Gọi security/on-call và owner remote, platform, auth. Xác định khoảng thời gian, release, config revisions và phạm vi cohort nghi bị ảnh hưởng; chưa kết luận phạm vi chỉ từ log hiện có.
+2. **Chặn lượt tải mới.** Disable remote trong trusted control plane hoặc dừng promotion và chuyển sang shell/fallback đã biết an toàn. Nếu cần chặn cấp CDN/edge, thực hiện theo incident plan và kiểm tra tác động tới assets khác.
+3. **Thu hồi đường publish bị nghi lộ.** Vô hiệu hóa credential/workload identity liên quan, khóa quyền ghi config/storage và kiểm tra audit của CI, registry, DNS, CDN. Rotate qua hệ thống đã được xác minh an toàn.
+4. **Giữ bằng chứng.** Lưu bản manifest, entry, chunks, digests, headers, CDN logs và CI audit theo quy trình incident. Không chạy artifact nghi độc trên máy có credentials; không ghi đè release để “sửa nhanh”.
+5. **Phục hồi bằng artifact đã kiểm chứng.** Chọn release known-good sau khi xác nhận source/build/control plane không còn bị attacker kiểm soát. Kiểm tra cả graph và policy; một release cũ có thể vẫn chứa lỗ hổng đã bị khai thác.
+6. **Xử lý phiên đang sống.** Đổi config không unload code đã evaluate. Reload chỉ hữu ích khi HTML/assets/control plane đã an toàn; rà soát service worker và cache để tránh phục vụ lại artifact nghi ngờ. Code độc hại có thể không tuân thủ kill switch hoặc yêu cầu reload của shell.
+7. **Đánh giá credential và dữ liệu.** Nếu session/token có thể bị lộ hoặc bị dùng sai, phối hợp auth/backend để revoke, yêu cầu đăng nhập lại và kiểm tra mutation trái phép. `HttpOnly` không chứng minh session chưa bị lạm dụng trong browser.
+8. **Mở lại có kiểm soát.** Sửa root cause, thay key/credential khi cần, bổ sung test vào ma trận trên, rồi rollout cohort nhỏ từ pipeline sạch. Security owner quyết định nghĩa vụ thông báo nếu có dữ liệu bị ảnh hưởng.
+
+<Callout type="warn" title="Kill switch không phải thao tác gỡ mã độc">
+  Disable remote, unmount component hoặc reset Error Boundary không thu hồi listener, references, token đã đọc hay side effect đã xảy ra. Với code đã chạy trong cùng realm, remediation có thể cần chặn session phía server, reload từ deployment sạch và xử lý riêng service worker/cache. Không coi unmount thành công là kết thúc incident.
+</Callout>
+
+## Checklist trước production
+
+- [ ] Trust model ghi rõ remote nào được chạy với quyền của shell, remote nào cần boundary riêng.
+- [ ] Có owner cho source, build, publish, config, CDN, CSP và auth; đường marketing/tag manager cũng được kiểm kê.
+- [ ] Runtime config được validate trước execution; nguồn policy không do chính config tự cấp quyền.
+- [ ] Release selection, redirect behavior, environment và contract được kiểm tra; không có production override URL tùy ý.
+- [ ] CSP của HTML shell đã được test với bootstrap, lazy chunks và toàn bộ journey cần thiết; không dùng report-only như enforcement.
+- [ ] Nonce/strict-dynamic tương thích loader và cache; trusted loader không tải URL chưa duyệt.
+- [ ] Integrity coverage ghi rõ entry, chunks, shared assets và CSS nào được enforce, cùng residual risk còn lại.
+- [ ] Digest/manifest có nguồn tin cậy và quy trình revoke/downgrade; content-hashed filename không bị coi là integrity enforcement.
+- [ ] Artifact graph bất biến, publish credentials quyền tối thiểu, promote có approval và audit.
+- [ ] Không có secret/token trong bundle, config, storage dễ đọc hoặc bridge; backend kiểm tra user/resource authorization.
+- [ ] HTML sinks và message contracts được review; iframe sandbox/permissions phù hợp threat model.
+- [ ] Logs/reports đã redact dữ liệu nhạy cảm; có ma trận test và bằng chứng theo release.
+- [ ] Đã diễn tập chặn remote, revoke publish quyền, khôi phục clean release và xử lý tab/service worker cũ.
+
+Bước tiếp theo là lấy **một remote thật** và vẽ đường từ quyền sửa source/config đến bytes browser execute. Với mỗi điểm trên đường ấy, chỉ ra ai có thể thay dữ liệu, kiểm soát nào ngăn việc đó và test nào chứng minh kiểm soát đang hoạt động. Chỗ không có câu trả lời là backlog security cụ thể, không chỉ là một dòng “cần hardening”.
+
+## Tài liệu tham khảo
+
+- [MDN — CSP script-src, nonce và strict-dynamic](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/script-src).
+- [MDN — Subresource Integrity và yêu cầu CORS](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Subresource_Integrity).
+- [MDN — require-trusted-types-for](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/require-trusted-types-for).
+- [OWASP — Third Party JavaScript Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Third_Party_Javascript_Management_Cheat_Sheet.html).
+- [OWASP — Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+- [OWASP — Cross Site Scripting Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html).
+- [OWASP — Cross-Site Request Forgery Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Runtime configuration" href="/docs/trien-khai/runtime-configuration" description="Validate manifest và chọn snapshot trước khi bootstrap shell." />
+  <Card title="iframe isolation" href="/docs/cac-cach-tich-hop/iframe" description="Thiết kế sandbox, origin boundary và contract postMessage." />
+  <Card title="CI/CD cho nhiều micro-frontend" href="/docs/trien-khai/ci-cd" description="Kiểm soát artifact, promotion và bằng chứng của từng release." />
+  <Card title="Resilience khi remote lỗi" href="/docs/production/resilience" description="Phân biệt fallback vận hành với xử lý code đã bị compromise." />
+</Cards>

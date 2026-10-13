@@ -1,25 +1,365 @@
 ---
 title: "UI và framework"
-description: "Tích hợp framework và giữ trải nghiệm người dùng nhất quán."
+description: "Chọn boundary tích hợp React, Vue, Angular và Next.js; phân định lifecycle, runtime, CSS, design system và UX giữa các micro-frontend."
 ---
 
-Đây là trang khung cho nhóm **UI và framework**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Giả sử shell của shop dùng React, catalog muốn deploy riêng, còn cart đang ở một framework khác. Tải được cả hai bundle chưa đủ: khi đổi theme, mở modal hay chuyển route bằng bàn phím, người dùng vẫn phải thấy một sản phẩm thống nhất. Họ không cần biết màn hình nào thuộc team nào.
+
+Nhóm **UI và framework** giúp bạn thiết kế điểm ghép đó. Câu hỏi đầu tiên không phải “framework nào hỗ trợ micro-frontend?”, mà là **các phần sẽ chia sẻ component tree, dùng application riêng hay nằm trong document riêng?** Từ lựa chọn này, bạn mới chốt lifecycle, runtime và các quy tắc giao diện.
+
+<Callout type="info" title="Phạm vi trang này">
+  Đây là trang định hướng cho nhóm bài, không phải hướng dẫn cài đặt từng framework. Ví dụ mở rộng [shop mẫu](/docs/bat-dau/bai-toan-shop) để so sánh các boundary; không yêu cầu shop phiên bản đầu dùng nhiều framework. Repository hiện chỉ là site tài liệu. Code dưới đây là contract minh họa cho một lab browser-only, còn sơ đồ text không cần plugin Mermaid.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Chọn boundary trước khi chọn framework](#chọn-boundary-trước-khi-chọn-framework)
+  - [Ghép trong cùng component tree](#ghép-trong-cùng-component-tree)
+  - [Ghép qua container và lifecycle](#ghép-qua-container-và-lifecycle)
+  - [Ghép qua DOM API hoặc document riêng](#ghép-qua-dom-api-hoặc-document-riêng)
+- [Shell và remote cần thống nhất những gì](#shell-và-remote-cần-thống-nhất-những-gì)
+- [Contract tích hợp không phụ thuộc framework](#contract-tích-hợp-không-phụ-thuộc-framework)
+  - [Hình dạng public API](#hình-dạng-public-api)
+  - [Lifecycle và xử lý mount muộn](#lifecycle-và-xử-lý-mount-muộn)
+- [React Vue và Angular khác nhau ở điểm ghép nào](#react-vue-và-angular-khác-nhau-ở-điểm-ghép-nào)
+- [Shared runtime không phải shared state](#shared-runtime-không-phải-shared-state)
+- [Next.js cần thêm boundary phía server](#nextjs-cần-thêm-boundary-phía-server)
+- [CSS isolation và design system giải quyết hai việc khác nhau](#css-isolation-và-design-system-giải-quyết-hai-việc-khác-nhau)
+  - [Isolation giới hạn vùng ảnh hưởng](#isolation-giới-hạn-vùng-ảnh-hưởng)
+  - [Design system giữ ý nghĩa và hành vi nhất quán](#design-system-giữ-ý-nghĩa-và-hành-vi-nhất-quán)
+- [UX và accessibility xuyên ứng dụng](#ux-và-accessibility-xuyên-ứng-dụng)
+- [Kiểm thử tại điểm ghép](#kiểm-thử-tại-điểm-ghép)
+- [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
+- [Bài tập chốt boundary cho shop](#bài-tập-chốt-boundary-cho-shop)
+- [Checklist trước khi tích hợp](#checklist-trước-khi-tích-hợp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn boundary trước khi chọn framework
 
-Tích hợp framework và giữ trải nghiệm người dùng nhất quán.
+Mình mặc định giữ cùng framework khi xây mới các vùng UI cần tương tác chặt chẽ. Cùng stack giảm số adapter, số runtime phải kiểm chứng và các cầu nối cho providers hoặc router. Nhưng nếu đang migration hoặc phải giữ một ứng dụng legacy, boundary rõ ràng thường hữu ích hơn việc viết lại toàn bộ chỉ để đồng nhất framework.
 
-## Các bài trong nhóm
+**Micro-frontend không bắt buộc đa framework.** Nhiều ứng dụng React vẫn có thể release riêng; ngược lại, một trang có React và Vue chưa chứng minh các team có thể deploy độc lập. Độc lập còn phụ thuộc public API, compatibility và cách chọn release.
 
-- [Tích hợp React](/docs/ui-va-framework/react) — Quản lý React roots, lifecycle, contexts và yêu cầu runtime khi ghép ứng dụng React.
-- [Tích hợp Vue](/docs/ui-va-framework/vue) — Thiết kế mount/unmount, props và events cho một frontend Vue.
-- [Tích hợp Angular](/docs/ui-va-framework/angular) — Quản lý bootstrap, providers, router và lifecycle khi tích hợp Angular.
-- [Next.js, SSR và hydration](/docs/ui-va-framework/nextjs-ssr) — Đánh giá hỗ trợ theo phiên bản trước khi chọn federation, SSR hoặc composition cho Next.js.
-- [CSS isolation](/docs/ui-va-framework/css-isolation) — So sánh CSS Modules, naming conventions, Shadow DOM và cách tránh style leakage.
-- [Design system dùng chung](/docs/ui-va-framework/design-system) — Version tokens và UI packages để nhất quán giao diện mà không khóa release của các team.
-- [Accessibility và UX xuyên ứng dụng](/docs/ui-va-framework/accessibility) — Giữ focus, keyboard navigation, loading states và thông báo lỗi nhất quán.
+### Ghép trong cùng component tree
+
+Remote cung cấp component hoặc routes; shell render chúng trong application hiện có. Remote entry để nhúng không tự bootstrap thêm application khi được import.
+
+```text
+Application của shell
+└── Providers và router
+    └── Vùng xử lý loading và lỗi
+        └── Component hoặc route từ remote
+```
+
+Đây là lựa chọn mình xem trước khi shell và remote cùng framework tương thích, cần dùng chung providers và phối hợp UI sâu. Đổi lại, hai phía phải thống nhất runtime, public props và provider contracts. Nếu remote dùng một Context object khác với shell, chỉ trùng tên Context không làm nó đọc được giá trị của shell.
+
+Composition kiểu này cũng không biến framework thành sandbox. Component vẫn có thể thêm global listener, export CSS quá rộng hoặc thực hiện side effect ngoài tree.
+
+### Ghép qua container và lifecycle
+
+Shell giao một DOM container; adapter của remote tạo application riêng, nhận context và cung cấp cách update/unmount. Shell không cần biết component API của framework bên trong.
+
+```text
+Shell: navigation, slots, loading và fallback
+  │
+  ├── container + snapshot + services
+  ▼
+Remote adapter: mount / update / unmount
+  │
+  └── Application riêng: UI và local state
+```
+
+Mình chọn hướng này cho một màn hình tương đối độc lập hoặc khi shell khác framework. Root/app riêng làm quyền sở hữu lifecycle rõ hơn, nhưng providers của shell không tự đi qua boundary. Theme, navigation và state cần chia sẻ phải có bridge cụ thể.
+
+Shell sở hữu vị trí và vòng đời container; remote sở hữu subtree được giao khi mount. Không để React của shell và Vue của remote cùng sửa descendants trong subtree đó. Nếu shell cần render fallback, hãy đặt fallback ngoài subtree do remote quản lý hoặc chỉ thay nội dung sau khi remote đã teardown xong.
+
+### Ghép qua DOM API hoặc document riêng
+
+Custom element cung cấp properties, methods và DOM events cho consumer khác stack. Shadow DOM có thể bổ sung selector boundary, nhưng custom element không tự có Shadow DOM, và Shadow DOM không phải security sandbox.
+
+iframe phù hợp hơn khi cần document riêng, giữ app legacy tương đối nguyên vẹn hoặc đánh giá một trust boundary khác. Với nội dung không tin cậy, phải thiết kế origin, sandbox và quyền được cấp; chỉ đặt vào iframe cùng origin chưa đủ để kết luận an toàn.
+
+| Boundary | Hướng mình xem trước khi | Chi phí chính |
+| --- | --- | --- |
+| Component hoặc routes trong cùng application | Các team cùng stack tương thích, UI cần phối hợp sát | Coupling với renderer, providers và router |
+| Container với application riêng | Khác framework hoặc cần lifecycle riêng cho một vùng lớn | Bridge context, cleanup và lỗi từng app |
+| Custom element | Cần public DOM API cho nhiều consumer | Properties/events, tag registration, styling và reconnect |
+| iframe | Cần document riêng hoặc khó chuyển app legacy sang lifecycle adapter | Message protocol, navigation, session và accessibility |
+
+Loader là một quyết định khác. Module Federation hay native ES modules có thể tải module cung cấp component, lifecycle adapter hoặc custom element. Đổi loader không tự đổi boundary render, CSS hay bảo mật; xem thêm [Các cách tích hợp khác](/docs/cac-cach-tich-hop).
+
+Đừng tách mỗi button thành một application. Nếu một vùng UI phải hỏi shell về gần như mọi thay đổi nhỏ, bạn có thể đang cắt quá sâu. Với một team và một lịch release, modular frontend cùng shared components thường đủ.
+
+## Shell và remote cần thống nhất những gì
+
+Trong shop, shell ghép giao diện, catalog quản lý trải nghiệm chọn sản phẩm và cart sở hữu nghiệp vụ giỏ hàng. Shell có thể kết nối các phần với cart controller, nhưng không tự giữ một bộ đếm giỏ hàng thứ hai.
+
+| Mối quan tâm | Shell hoặc composition layer | Remote |
+| --- | --- | --- |
+| DOM | Tạo slot, quyết định vùng nào active | Render trong subtree được cấp |
+| Lifecycle | Điều phối load/mount/update/unmount | Tạo và hủy application cùng tài nguyên của instance |
+| Navigation | Điều phối URL cấp sản phẩm, Back/Forward và deep links | Gửi navigation intent; quản lý route con theo contract |
+| Context | Cấp locale, theme và capabilities cần thiết | Chuyển snapshot thành state/provider nội bộ |
+| Business state | Wiring tới owner phù hợp | Đọc hoặc gửi command qua public domain API |
+| Styles | Chốt baseline, theme scope và quy tắc global | Giới hạn CSS; không tự reset toàn document |
+| Loading và lỗi | Fallback khi tải code/mount thất bại | Pending, empty state, lỗi nghiệp vụ và lỗi render nội bộ |
+| UX toàn trang | Layout, focus khi chuyển màn hình, overlay policy | Semantics, keyboard và focus trong vùng mình sở hữu |
+| Diagnostics | Gắn app/release/instance vào báo cáo | Report lỗi đúng boundary, không gửi dữ liệu nhạy cảm |
+
+Bảng là một cách phân công cho shop, không phải yêu cầu mọi shell phải ôm các service. Điểm cần giữ là **mỗi tài nguyên hoặc hành vi dùng chung có một owner rõ ràng**. Nếu catalog và cart đều dùng router tác động browser history, phải có protocol phối hợp; không để hai bên tự xử lý cùng navigation.
+
+State nghiệp vụ cũng cần vòng đời khác UI. Khi rời catalog để mở cart, catalog UI có thể unmount nhưng giỏ hàng phải còn. Badge đọc snapshot/subscription từ cart owner; event “đã thêm sản phẩm” không phải lệnh cho badge tự cộng thêm lần nữa.
+
+## Contract tích hợp không phụ thuộc framework
+
+### Hình dạng public API
+
+Với application riêng trong cùng JavaScript realm, một public contract nên chỉ dùng dữ liệu, functions và web APIs. Đừng đưa React Context, Vue `Ref`, Pinia store hay Angular injector ra ngoài chỉ vì hai app đang dùng cùng stack hôm nay.
+
+```ts title="Contract minh họa cho một vùng UI client-side"
+type ShopRoute = '/catalog' | '/cart';
+
+type UiSnapshot = {
+  readonly locale: 'vi-VN' | 'en-US';
+  readonly theme: 'light' | 'dark';
+  readonly route: ShopRoute;
+};
+
+type UiServices = {
+  readonly navigate: (target: ShopRoute) => void;
+  readonly reportError: (error: unknown, phase: string) => void;
+};
+
+type UiHandle = {
+  update(next: UiSnapshot): void;
+  unmount(): void | Promise<void>;
+};
+
+type UiModule = {
+  readonly contractVersion: 1;
+  mount(
+    container: HTMLElement,
+    options: {
+      snapshot: UiSnapshot;
+      services: UiServices;
+      signal: AbortSignal;
+    },
+  ): Promise<UiHandle>;
+};
+```
+
+Đây là hình dạng API để thảo luận, không phải API có sẵn của React, Vue, Angular hay single-spa. Một vùng catalog có thể bổ sung capability `cart.addItem()` từ cart owner; không cần expose toàn store để thực hiện một hành động nghiệp vụ.
+
+Trong contract này, `update` nhận **full snapshot**, không phải partial patch. Shell gửi object mới khi context đổi; remote không mutate object đã nhận. `readonly` chỉ hỗ trợ kiểm tra lúc compile, không đóng băng object ở runtime.
+
+Services giữ identity trong một lần mount; việc đổi session hoặc thay service owner cần policy riêng. TypeScript không validate JavaScript tải từ mạng: loader vẫn cần kiểm tra shape/version của public module, còn payload không tin cậy cần validation phù hợp.
+
+<Callout type="warn" title="Contract này không phải message protocol hay security policy">
+  Functions và DOM container không thể gửi nguyên qua `postMessage`. Nếu dùng iframe, hãy thiết kế payload serializable, version, origin validation và request/response riêng. Các capabilities ở trên cũng chỉ là quy ước tích hợp giữa code tin cậy; remote chạy cùng trang vẫn có thể gọi global APIs. Backend vẫn phải kiểm tra authorization cho thao tác thật.
+</Callout>
+
+### Lifecycle và xử lý mount muộn
+
+Tên hàm chưa đủ thành contract. Trước khi viết adapter, hai team cần chốt các semantics sau:
+
+| Thời điểm | Cam kết đề xuất cho contract minh họa |
+| --- | --- |
+| Import module | Không tự bootstrap UI hoặc tạo side effect dài hạn |
+| Bắt đầu mount | Chỉ một instance được sở hữu subtree đó tại một thời điểm |
+| Mount resolve | UI ban đầu đã commit; có thể còn loading dữ liệu nghiệp vụ |
+| Mount reject hoặc bị hủy trước khi resolve | Adapter cleanup tài nguyên đã tạo và không để instance mồ côi |
+| Update | Áp dụng snapshot mới cho instance hiện tại, không mặc định remount |
+| Unmount | Dọn tree, listeners, subscriptions, timers, overlays và tác vụ thuộc UI |
+| Gọi unmount lần nữa | Không tạo lỗi hoặc side effect mới; thiết kế idempotent |
+| Update sau unmount | Là hành vi không hợp lệ; hai phía thống nhất cách phát hiện |
+
+API bootstrap/render của framework không tự bảo đảm định nghĩa “mount resolve” này. Adapter phải nối completion với commit/readiness phù hợp, thay vì resolve chỉ vì đã gọi hàm render. Lỗi render phát sinh sau mount cần error handling của remote và đường report riêng, không trông chờ `try/catch` quanh `mount()` bắt mọi lỗi tương lai.
+
+Một ca cần thử sớm là người dùng vào catalog rồi chuyển sang cart trước khi tải xong. Shell giữ generation hoặc instance ID cho lần navigation; kết quả load/mount của generation cũ không được thay slot hiện tại. Nếu một handle cũ vẫn resolve, shell phải unmount instance đó theo contract.
+
+`AbortSignal` là thông báo hủy có tính hợp tác. Nó không tự hủy mọi dynamic import hoặc code đang chạy; adapter và các tác vụ hỗ trợ signal phải xử lý nó. Shell vẫn cần chặn kết quả muộn, kể cả đã gọi abort.
+
+Unmount UI cũng không có nghĩa hoàn tác command nghiệp vụ đã được cart/backend xác nhận. Remote ngừng cập nhật view cũ, còn domain owner quyết định kết quả command và duy trì state đúng. Chi tiết triển khai nằm trong từng bài framework.
+
+## React Vue và Angular khác nhau ở điểm ghép nào
+
+Ba framework có thể đứng sau cùng một lifecycle contract, nhưng adapter bên trong không giống nhau. Bảng này là bản đồ đọc, không phải ma trận bảo đảm mọi version đều tương thích.
+
+| Chủ đề | React | Vue 3 | Angular |
+| --- | --- | --- | --- |
+| Cùng application | Render component trong tree của shell | Render component trong Vue app của shell | Ghép component/routes trong application và injector hierarchy phù hợp |
+| Application riêng | Root riêng qua `createRoot` cho CSR | App riêng qua `createApp` | Application riêng với host và application environment được quản lý |
+| Provider boundary | Context theo React tree và identity của Context object | App-level `provide`, plugins và config thuộc app tương ứng | DI theo injector hierarchy; root service của app không mặc định là singleton toàn trang |
+| Update qua adapter | Render lại trên root hiện có | Cập nhật state reactive làm đầu vào | Cập nhật inputs/state và bảo đảm change detection nhận thay đổi |
+| Teardown riêng | `root.unmount()` | `app.unmount()` | Destroy component/view và application do adapter sở hữu |
+| Điều cần kiểm chứng thêm | React/renderer tương thích, Hooks và error boundaries | Runtime, component compilation và plugin registration | Package compatibility, providers, router và Zone.js/zoneless |
+
+Nếu cùng React tree, component remote cần tương thích với renderer của shell; duplicate React có thể gây lỗi Hooks. Nếu React root riêng, Context của root shell không tự truyền qua chỉ vì DOM remote nằm bên trong shell.
+
+Vue cho phép nhiều app trên một trang với config và global assets riêng. Angular cũng có thể có application riêng với providers riêng; bạn không nên unmount một remote bằng cách hủy platform mà application khác còn dùng.
+
+Mình không khuyên thêm cả ba framework vào lab đầu tiên. Hãy làm một boundary hoạt động đúng với stack hiện có, rồi dùng cùng tiêu chí kiểm thử để đánh giá adapter khác khi có nhu cầu migration thật.
+
+## Shared runtime không phải shared state
+
+Có hai câu hỏi khác nhau: “các app có dùng cùng module instance của framework không?” và “các app có đọc cùng provider/store không?”. Chia sẻ runtime không tự giải quyết câu hỏi thứ hai.
+
+| Bạn muốn dùng chung | Điều thực sự cần thống nhất |
+| --- | --- |
+| React/Vue/Angular runtime | Version tương thích, renderer/compiler liên quan và build/shared policy |
+| Context hoặc injection token | Đúng object/token identity và đúng tree/injector scope |
+| State giỏ hàng | Một domain owner và public API; không chỉ cùng package chứa store factory |
+| Theme | Token/context contract và cách truyền qua root, shadow root hoặc document |
+| Design system | Public API, CSS/tokens, version policy và migration window |
+
+Hai app cùng import một package chứa `createCartStore()` nhưng mỗi app gọi factory riêng thì vẫn có hai store. Ngược lại, hai app khác framework có thể dùng cùng cart controller qua API không phụ thuộc framework.
+
+Không bật `singleton: true` cho mọi dependency như một công thức chung. Khi cần một module identity cho composition, hãy thiết kế shared policy và kiểm tra compatibility tương ứng. Với application riêng, có thể cân nhắc runtime riêng, nhưng phải đo bundle và kiểm tra tác động global; root riêng không chặn global patches, CSS hay CPU work ảnh hưởng cả trang.
+
+Mình ưu tiên một tập dependency được chia sẻ có lý do rõ ràng. Một UI package được pin và build vào từng consumer có thể dễ nâng cấp hơn một version runtime bắt buộc cho cả trang. Các cấu hình cụ thể nằm trong [Module Federation](/docs/module-federation) và các bài framework, không áp dụng nguyên xi giữa những federation implementation khác nhau.
+
+## Next.js cần thêm boundary phía server
+
+Với CSR, shell tải code rồi render UI. Với SSR hoặc prerender, browser có thể đã nhận HTML chứa catalog trước khi JavaScript chạy. Lúc đó cần chốt thêm: ai tạo HTML, release nào tạo nội dung đó, và ai hydrate subtree tương ứng?
+
+```text
+Server/build: code + dữ liệu + locale/theme ban đầu
+                         ↓
+                   HTML ban đầu
+                         ↓
+Browser: code và snapshot tương thích → hydration
+```
+
+Giả sử server render catalog release A nhưng browser resolve URL mutable sang release B. Nếu markup hoặc dữ liệu render khác nhau, hydration có thể lỗi. Pin artifact, quản lý cache và giữ snapshot đầu tương thích là một phần của integration contract, không chỉ là việc của pipeline deploy.
+
+Next.js còn có boundary Server Components/Client Components, routing và assets. `'use client'` không có nghĩa component không được prerender trên server. Tải được một module client-side cũng chưa chứng minh nó hoạt động với SSR, RSC hoặc client navigation của App Router.
+
+Mình chọn theo yêu cầu render trước: một vùng client-only, nhiều app theo route hoặc composition trong một app Next.js là những hướng khác nhau. Nếu đánh giá federation, phải ghi rõ Next.js version, router, bundler, plugin và đường server/client được hỗ trợ; không suy từ một demo React CSR sang toàn bộ Next.js.
+
+Đọc [Next.js, SSR và hydration](/docs/ui-va-framework/nextjs-ssr) trước khi chốt kiến trúc nếu HTML ban đầu hoặc SEO là yêu cầu. Site docs hiện dùng static export; nó không phải môi trường request-time SSR để kiểm chứng các lab đó.
+
+## CSS isolation và design system giải quyết hai việc khác nhau
+
+### Isolation giới hạn vùng ảnh hưởng
+
+Root riêng không tạo CSS boundary. Một stylesheet catalog với selector `button` có thể khớp cả nút cart trong cùng light DOM, dù hai app dùng framework khác nhau.
+
+Mình bắt đầu bằng local styles như CSS Modules, hạn chế global selectors và chốt owner cho reset/theme. CSS Modules giảm collision tên class, nhưng không ngăn selector bên ngoài khớp node của remote. Vue scoped styles và Angular emulated encapsulation cũng không nên được xem như document isolation.
+
+Shadow DOM tạo selector boundary mạnh hơn, nhưng inherited properties và CSS custom properties vẫn có các đường đi qua. iframe có document riêng nên CSS không tự cascade giữa parent và child. Mỗi mức đều có chi phí riêng cho theme và integration.
+
+Điểm dễ bỏ sót là overlay. Modal, tooltip hoặc dropdown render ra `document.body` có thể rời style scope của remote. Hãy chốt nơi render, token scope, stacking context, scroll lock và cleanup; tăng `z-index` mãi không sửa được một boundary sai.
+
+### Design system giữ ý nghĩa và hành vi nhất quán
+
+Isolation trả lời “style này ảnh hưởng vùng nào?”, còn design system trả lời “nút chính, thông báo lỗi và focus ring phải trông và hoạt động thế nào?”. Một trang có CSS cách ly hoàn hảo vẫn có thể mang ba kiểu UX khác nhau.
+
+Với nhiều framework, mình bắt đầu từ semantic tokens và patterns: màu hành động, spacing, typography, loading, form validation và keyboard behavior. Components có thể có implementation React/Vue/Angular riêng; không cần ép mọi app dùng một React component để có cùng trải nghiệm.
+
+Tokens và component APIs phải có version policy. Nếu đổi tên token hoặc hành vi `Dialog` làm remote cũ hỏng, đó là breaking change dù JavaScript vẫn import được. Mỗi consumer cần thời gian nâng cấp, còn shell giữ theme contract tương thích trong migration window đã chốt.
+
+Hai bài [CSS isolation](/docs/ui-va-framework/css-isolation) và [Design system dùng chung](/docs/ui-va-framework/design-system) nên được đọc cùng nhau: một bài giới hạn side effect, bài kia thiết kế những phần được chia sẻ có chủ đích.
+
+## UX và accessibility xuyên ứng dụng
+
+Người dùng trải nghiệm cả document, không trải nghiệm từng React root. Một vùng UI vượt qua kiểm tra standalone vẫn có thể làm hỏng keyboard navigation khi ghép vào shell.
+
+| Tình huống | Contract hoặc quy tắc cần có |
+| --- | --- |
+| Chuyển catalog sang cart | Một navigation owner; title, focus và scroll theo policy cấp sản phẩm |
+| Remote đang tải | Giữ layout hợp lý, báo trạng thái bằng semantics phù hợp, không tự giành focus |
+| Remote không tải được | Fallback có nội dung rõ và hành động retry; header/navigation vẫn dùng được |
+| Command thêm giỏ đang pending | Phản hồi tại nơi thao tác; không coi mount thành công là nghiệp vụ đã thành công |
+| Modal mở từ remote | Phối hợp focus, Escape, vùng nền inert và scroll lock trên phạm vi modal thật sự bao phủ |
+| Modal đóng hoặc remote unmount | Trả focus về trigger nếu còn tồn tại, hoặc về điểm hợp lý trong luồng mới |
+| Nhiều app cùng thông báo | Có policy toast/live region để tránh phát trùng hoặc ngắt lời liên tục |
+| IDs và landmarks | Tránh ID collision; heading, labels và landmarks phản ánh cấu trúc trang hoàn chỉnh |
+
+Với modal, `aria-modal="true"` không tự tạo focus trap hay ngăn người dùng tương tác với nền. Nếu hai remote mở modal độc lập, cả hai có thể giành focus và một app có thể mở scroll lock trong khi app kia vẫn cần khóa. Có thể dùng overlay service chung hoặc protocol quản lý tài nguyên; quan trọng là một policy phối hợp, không phải mọi modal phải được viết bằng framework của shell.
+
+Loading cũng cần phân tầng. Shell xử lý tải module và bootstrap; remote xử lý tải dữ liệu, empty state và lỗi nghiệp vụ. Khi catalog lỗi, đừng mặc định che toàn trang bằng spinner rồi khóa cả liên kết cart.
+
+Bài [Accessibility và UX xuyên ứng dụng](/docs/ui-va-framework/accessibility) là hướng đọc tiếp cho chủ đề này; hiện trang đó vẫn là placeholder. Các tiêu chí ở đây có thể dùng ngay để review integration, không cần đợi bài chi tiết.
+
+## Kiểm thử tại điểm ghép
+
+Đừng chỉ chạy từng app standalone. Mình thêm một integration harness render remote cạnh header, một vùng UI khác và các styles/providers giống shell thật. Nó giúp tìm lỗi chỉ xuất hiện khi các phần dùng chung document.
+
+| Ca thử | Kết quả cần quan sát |
+| --- | --- |
+| Mount rồi update locale/theme | UI đổi đúng; không reset local state ngoài policy đã chốt |
+| Vào/rời route nhiều lần | Không nhân đôi listeners, subscriptions, timers hoặc overlays |
+| Chuyển route khi module/mount chưa xong | Không có UI cũ ghi vào slot mới; instance muộn được cleanup |
+| Lỗi tải, lỗi render và lỗi command | Đúng boundary xử lý; fallback không làm mất navigation |
+| Thêm sản phẩm rồi unmount catalog | Cart state và badge vẫn đọc cùng owner |
+| Back/Forward và deep link | URL cùng UI khớp nhau, không có hai router xử lý trùng |
+| Remote cạnh CSS/provider của shell | Không style leakage ngoài contract; không giả định provider tự truyền |
+| Keyboard, modal và screen reader | Focus hợp lý, nền modal đúng, thông báo không bị lặp |
+| Shell cũ với remote mới và rollback | Các version còn hỗ trợ tương thích cả API lẫn tokens |
+| Nếu có SSR/prerender | HTML và render đầu tương thích; kiểm tra cả client navigation |
+
+Build production cần nằm trong vòng kiểm chứng vì dependency resolution, assets, CSS extraction và loader có thể khác dev mode. Nếu đo hiệu năng, ghi rõ artifact, thiết bị, mạng và kịch bản; đừng kết luận đa framework “nhẹ” hoặc “nặng” chỉ từ kích thước một bundle.
+
+## Lộ trình đọc trong nhóm
+
+Bạn không cần đọc tuần tự cả ba bài framework. Chọn bài tương ứng với stack hoặc bài toán migration, rồi đọc các chủ đề xuyên ứng dụng.
+
+| Bài | Khi nên đọc | Quyết định cần mang ra khỏi bài |
+| --- | --- | --- |
+| [Tích hợp React](/docs/ui-va-framework/react) | Shell/remote dùng React | Component hay root riêng; Context, runtime và error handling |
+| [Tích hợp Vue](/docs/ui-va-framework/vue) | Nhúng Vue 3 hoặc ghép Vue vào shell khác stack | App lifecycle, reactive update, services và router ownership |
+| [Tích hợp Angular](/docs/ui-va-framework/angular) | Nhúng Angular hoặc tách Angular application | Bootstrap/host, injector scope, change detection và teardown |
+| [Next.js, SSR và hydration](/docs/ui-va-framework/nextjs-ssr) | Cần Next.js, HTML ban đầu hoặc server composition | Boundary server/client và ma trận hỗ trợ theo version |
+| [CSS isolation](/docs/ui-va-framework/css-isolation) | Các vùng UI dùng chung document | Mức isolation, global styles, theme và overlay scope |
+| [Design system dùng chung](/docs/ui-va-framework/design-system) | Muốn giao diện nhất quán qua release độc lập | Tokens/UI packages, public API và migration policy |
+| [Accessibility và UX xuyên ứng dụng](/docs/ui-va-framework/accessibility) | Review trải nghiệm toàn trang | Focus, keyboard, loading và lỗi; bài chi tiết hiện chưa được viết |
+
+Với shop CSR cùng React, mình đọc React → CSS isolation → Design system, rồi kiểm thử UX toàn trang. Với shell React và catalog Angular, bắt đầu từ contract container → bài Angular → styles/overlay. Nếu yêu cầu SSR có từ đầu, đọc bài Next.js trước khi chọn loader thay vì ghép xong mới thêm hydration.
+
+## Bài tập chốt boundary cho shop
+
+Trước khi viết adapter, hãy tạo một bản quyết định ngắn cho một màn hình catalog. Không cần cài thêm framework để làm bài tập này.
+
+1. Chọn component trong application shell, application riêng, custom element hoặc iframe. Nêu lý do và một boundary bạn đã loại bỏ.
+2. Ghi owner của container, URL, cart state, theme và overlay; owner có thể thuộc domain hoặc composition layer.
+3. Viết public input/output và semantics mount/update/unmount. Nếu cần SSR, bổ sung owner render/hydration cùng release policy.
+4. Chọn một ca tải chậm, một ca cleanup và một ca keyboard để làm tiêu chí nghiệm thu trước khi nối loader thật.
+
+Ví dụ một kết quả hợp lý: catalog dùng Vue application riêng vì shell không dùng Vue; shell điều phối URL; cart controller thuộc cart domain sống lâu hơn catalog UI; theme truyền qua snapshot/tokens; overlay theo policy toàn trang. Khi chuyển sang `/cart` trong lúc catalog tải, catalog không được mount vào slot hiện tại.
+
+Sau đó thử thay Vue bằng React hoặc Angular trên giấy. Nếu shell contract không cần đổi, boundary đang che được khác biệt implementation. Nếu mọi thao tác đều cần một framework object từ remote, hãy xem lại liệu bạn đang cần composition cùng application thay vì một contract được gọi là “framework-neutral”.
+
+## Checklist trước khi tích hợp
+
+- [ ] Có lý do tách frontend; đa framework chỉ được thêm khi có nhu cầu cụ thể.
+- [ ] Boundary render và cơ chế tải module được chọn riêng, không nhầm loader với isolation.
+- [ ] Mỗi subtree và hành vi dùng chung có owner; không có hai framework cùng sửa một vùng DOM.
+- [ ] Public contract nói rõ snapshot, services, version, readiness và cách report lỗi.
+- [ ] Mount bị hủy, kết quả đến muộn, unmount lặp và cleanup async đã được kiểm chứng.
+- [ ] URL và business state không có nhiều writer độc lập ngoài protocol đã chốt.
+- [ ] Runtime compatibility được kiểm chứng; không suy từ singleton sang shared providers/state.
+- [ ] Global CSS, tokens, overlays và scroll lock có policy tương thích qua release.
+- [ ] Loading, fallback, keyboard và focus được kiểm tra trên trang ghép hoàn chỉnh.
+- [ ] Nếu có SSR/prerender, server/build và browser dùng code/dữ liệu render tương thích.
+- [ ] Có ca thử shell/remote khác release, production artifact và rollback.
+
+## Tài liệu tham khảo
+
+- [React — createRoot](https://react.dev/reference/react-dom/client/createRoot): quyền sở hữu DOM, nhiều roots, update và unmount; phân biệt với hydration.
+- [Vue — Creating a Vue Application](https://vuejs.org/guide/essentials/application.html): nhiều app instances có configuration và global assets riêng.
+- [Angular — Hierarchical injectors](https://angular.dev/guide/di/hierarchical-dependency-injection): scope và cách resolve providers theo injector hierarchy.
+- [Next.js — Hydration error](https://nextjs.org/docs/messages/react-hydration-error): khác biệt giữa server output và lần render đầu trong browser.
+- [MDN — Using shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM): DOM/CSS encapsulation và giới hạn của shadow boundary.
+- [WAI-ARIA APG — Dialog Modal Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/): keyboard interaction, focus khi mở/đóng và điều kiện modal thực sự.
+
+## Đọc tiếp
+
+Chọn bài framework cho boundary của bạn, rồi mang checklist ở trên vào một integration harness. Hoàn thành một ca chuyển route khi tải chậm trước khi thêm remote thứ hai.
+
+<Cards>
+  <Card title="Tích hợp React" href="/docs/ui-va-framework/react" description="Chọn cùng tree hay root riêng, quản lý Context và lifecycle." />
+  <Card title="Tích hợp Vue" href="/docs/ui-va-framework/vue" description="Đặt Vue app sau contract mount, update và unmount." />
+  <Card title="Tích hợp Angular" href="/docs/ui-va-framework/angular" description="Quản lý host, providers, change detection và cleanup." />
+  <Card title="Next.js, SSR và hydration" href="/docs/ui-va-framework/nextjs-ssr" description="Chốt server/client boundary và compatibility theo phiên bản." />
+</Cards>

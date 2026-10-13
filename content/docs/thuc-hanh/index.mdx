@@ -1,23 +1,236 @@
 ---
 title: "Thực hành"
-description: "Áp dụng kiến thức vào shop mẫu qua các bài lab có tiêu chí đánh giá."
+description: "Lộ trình làm shop mẫu: kiểm chứng ranh giới shell–catalog–cart, routing và session, release độc lập, fallback và bằng chứng nghiệm thu."
 ---
 
-Đây là trang khung cho nhóm **Thực hành**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+Shell đã hiển thị catalog, nhưng catalog có thể release mà không kéo shell theo không? Khi chuyển route, giỏ hàng có giữ đúng state không? Và nếu remote lỗi, người dùng còn làm được gì? Một màn hình chạy được chưa trả lời hết những câu hỏi đó.
+
+Nhóm bài này dùng shop mẫu để bạn kiểm chứng từng ranh giới bằng hành vi quan sát được. Mình khuyên làm một lát cắt nhỏ, lưu bằng chứng rồi mới thêm phần tiếp theo; đừng dựng cả shop trước rồi mới tìm xem state và contract thuộc về ai.
+
+<Callout type="info" title="Đây là lộ trình, không phải một ứng dụng có sẵn">
+  Repository đang đọc là site Next.js + Fumadocs. Code thực hành nằm trong workspace riêng, không thêm dependency hay backend fixture vào site docs. Các lab dùng cùng bối cảnh shop nhưng không phải tất cả đều nối tiếp bằng cách chép code vào cùng một app.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bạn cần chứng minh điều gì](#bạn-cần-chứng-minh-điều-gì)
+- [Chuẩn bị trước khi làm lab](#chuẩn-bị-trước-khi-làm-lab)
+  - [Kiến thức và môi trường](#kiến-thức-và-môi-trường)
+  - [Tách các lát cắt thực hành](#tách-các-lát-cắt-thực-hành)
+- [Ranh giới của shop mẫu](#ranh-giới-của-shop-mẫu)
+- [Lộ trình thực hành](#lộ-trình-thực-hành)
+  - [Lab 1 ghép shell catalog và cart](#lab-1-ghép-shell-catalog-và-cart)
+  - [Lab 2 routing và authentication](#lab-2-routing-và-authentication)
+  - [Lab 3 deploy độc lập](#lab-3-deploy-độc-lập)
+  - [Lab 4 giả lập remote lỗi](#lab-4-giả-lập-remote-lỗi)
+  - [Đánh giá toàn bộ bài thực hành](#đánh-giá-toàn-bộ-bài-thực-hành)
+- [Cách làm một vòng thực hành](#cách-làm-một-vòng-thực-hành)
+- [Bằng chứng cần lưu](#bằng-chứng-cần-lưu)
+- [Tiêu chí tự nghiệm thu](#tiêu-chí-tự-nghiệm-thu)
+- [Khi kết quả không như mong đợi](#khi-kết-quả-không-như-mong-đợi)
+- [Bắt đầu từ đâu](#bắt-đầu-từ-đâu)
 
-## Phạm vi dự kiến
+## Bạn cần chứng minh điều gì
 
-Áp dụng kiến thức vào shop mẫu qua các bài lab có tiêu chí đánh giá.
+Mục tiêu không phải tạo càng nhiều remote càng tốt. Bạn cần biết phần nào có thể thay đổi riêng, contract nào vẫn phải giữ và lỗi ở một phần sẽ ảnh hưởng đến phần còn lại thế nào.
 
-## Các bài trong nhóm
+| Câu hỏi | Bằng chứng cần có |
+| --- | --- |
+| Có thật sự tích hợp ở runtime không? | Shell tải public module từ artifact remote, không import source nội bộ của app khác |
+| State có một owner không? | Badge và cart đọc cùng snapshot; chuyển route không tạo một giỏ mới |
+| URL và session có nhất quán không? | Deep link, refresh, Back/Forward và logout khi request pending đều có kết quả đúng |
+| Catalog có release độc lập không? | Selection đổi sang catalog mới trong khi bytes của artifact shell và cart giữ nguyên |
+| Thay đổi không tương thích có bị chặn không? | Candidate sai contract bị từ chối trước promotion, không chỉ gây lỗi sau khi người dùng tải |
+| Có phục hồi được không? | Fallback nói đúng mức suy giảm; rollback có bằng chứng cho document mới và tab đang mở |
 
-- [Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart) — Ghép ba ứng dụng với hợp đồng giao tiếp và quyền sở hữu state rõ ràng.
-- [Lab routing và authentication](/docs/thuc-hanh/routing-auth) — Thêm deep links, session và navigation xuyên các frontend của shop.
-- [Lab deploy độc lập](/docs/thuc-hanh/deploy-doc-lap) — Release catalog mà không rebuild shell và kiểm tra tính tương thích.
-- [Lab giả lập remote lỗi](/docs/thuc-hanh/remote-loi) — Giả lập network failures và version mismatch để kiểm tra fallback cùng rollback.
-- [Checklist đánh giá bài thực hành](/docs/thuc-hanh/checklist-danh-gia) — Đánh giá coupling, independent deployment, test coverage, UX và observability.
+Các lab tập trung vào cơ chế tích hợp, không xây checkout, thanh toán hay hệ thống e-commerce hoàn chỉnh. Giỏ in-memory, dữ liệu mock và auth fixture giúp tái hiện tình huống; chúng không chứng minh dữ liệu bền vững hoặc security production.
+
+## Chuẩn bị trước khi làm lab
+
+### Kiến thức và môi trường
+
+Bạn nên quen với JavaScript modules, Promise, React props và vòng đời mount/unmount. Với nhánh webpack, cần hiểu host consume module do remote expose, async bootstrap và shared dependency khác shared state. Nếu chưa rõ đường tải, bắt đầu ở [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien), thay vì sửa lỗi bằng cách import thẳng source catalog.
+
+Môi trường chung gồm Node.js 22 trở lên, npm, Git và browser có DevTools. Lab deploy dùng Bash trên Linux/macOS và Playwright; đọc yêu cầu của từng bài trước khi cài tooling. Không cần cloud account để kiểm chứng các mục tiêu local này.
+
+| Trước khi làm | Điểm xuất phát |
+| --- | --- |
+| Ghép ba app React | [Cấu trúc workspace](/docs/bat-dau/workspace), rồi [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien) |
+| Routing và session | Có shell tải catalog bằng Federation; biết HTTP status, cookie và request cancellation ở mức cơ bản |
+| Deploy độc lập | Có thể làm bằng workspace riêng của lab; không bắt buộc hoàn thành code React ở hai lab trước |
+| Phân tích lỗi remote | Có baseline hoạt động và hiểu [Resilience khi remote lỗi](/docs/production/resilience) |
+
+Mở DevTools cả Console lẫn Network. UI cho biết người dùng thấy gì, còn request URL, status và release metadata cho biết code nào đã thực sự tải. Chỉ chụp màn hình thành công sẽ bỏ sót nhiều lỗi tại điểm ghép.
+
+### Tách các lát cắt thực hành
+
+Có ba lát cắt đã có hướng dẫn chi tiết, với mục tiêu và implementation khác nhau:
+
+| Lát cắt | Nơi thực hành | Điều cần giữ rõ |
+| --- | --- | --- |
+| Shell–catalog–cart | `shop-workspace`, React + webpack Module Federation | Một cart controller cho mỗi phiên chạy của shell; UI chỉ đọc public API |
+| Routing/auth | Branch lab riêng trong `shop-workspace` | Shell mẫu tập trung vào router và auth, chưa ghép badge/mutation của lab giỏ hàng |
+| Deploy độc lập | Thư mục riêng `independent-deploy-lab`, native ESM + mount API | Là bài kiểm chứng release, không phải bước thay webpack config của shop React |
+
+Giữ checkpoint Git trước khi chuyển lát cắt. Lab routing bổ sung `SessionCartPage`, không thay signature của `CartPage({ controller })` ở lab đầu. Nếu muốn ghép hai lát cắt, bạn còn phải xử lý vòng đời cart theo session: logout hoặc đổi user không được để giỏ của phiên cũ xuất hiện trong phiên mới.
+
+<Callout type="warn" title="Không suy rộng bằng chứng giữa các implementation">
+  Lab deploy chứng minh cơ chế artifact, selection và rollback với native ESM. Muốn khẳng định shop webpack deploy độc lập, bạn phải áp dụng cơ chế tương đương và kiểm thử lại chính artifact webpack, shared runtime, public modules và đường tải chunks của shop đó.
+</Callout>
+
+## Ranh giới của shop mẫu
+
+Mô hình chung giữ catalog và cart không biết implementation nội bộ của nhau. Shell là composition layer: nó nối các contract, chọn vùng hiển thị và phối hợp trải nghiệm toàn trang.
+
+```text
+Catalog ── yêu cầu thêm hàng ──► Shell ── public API ──► Cart owner
+                                  │                        │
+                           layout / navigation      state / snapshot
+                                  │                        │
+                               Badge ◄──── projection ─────┘
+```
+
+Đây là sơ đồ trách nhiệm chung; chữ ký callback và cách tích hợp cụ thể nằm trong từng lab. Shell khởi tạo hoặc giữ reference đến domain runtime không có nghĩa shell sở hữu logic nghiệp vụ của runtime đó.
+
+| Boundary | Owner | Dấu hiệu đang vượt ranh giới |
+| --- | --- | --- |
+| Layout, top-level navigation, vùng remote và fallback | Shell | Catalog tự sửa header hoặc tạo router thứ hai trong integrated mode |
+| UI sản phẩm và ý định thêm hàng | Catalog | Catalog import cart reducer/store hoặc tự sửa badge |
+| Mutation và snapshot giỏ | Cart | Shell giữ thêm một bộ đếm để “đồng bộ” với giỏ |
+| Browser URL và auth runtime ở lab routing | Shell | Mỗi remote tự đọc session và quyết định login theo một cách khác |
+| Session hợp lệ, authorization và dữ liệu private | Backend fixture trong lab; backend thật ở production | Route guard được coi là đủ để bảo vệ API |
+| Chọn release và giữ artifacts | Cơ chế triển khai của lab | Overwrite URL release cũ hoặc sửa bundle shell để chọn catalog mới |
+
+Một callback chạy được chỉ chứng minh caller gọi được callee. Bạn vẫn cần định nghĩa payload, kết quả, failure semantics và cleanup. Chẳng hạn, kết quả thêm hàng thành công trong lab controller xác nhận mutation in-memory, không phải một đơn hàng đã được backend lưu.
+
+## Lộ trình thực hành
+
+Mình chọn thứ tự **composition → routing/session → release → failure → review** vì mỗi bước thêm một loại rủi ro. Tuy nhiên, đây là thứ tự học khái niệm, không phải lời hứa rằng code của bước sau luôn cộng trực tiếp lên bước trước.
+
+### Lab 1 ghép shell catalog và cart
+
+[Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart) nối callback thêm hàng với cart controller, rồi cho badge và cart UI đọc cùng snapshot. Bạn sẽ kiểm thử SKU trùng, quantity, command lỗi và subscription.
+
+Điểm nghiệm thu quan trọng là thêm hàng khi chưa mở cart vẫn cập nhật badge. Chuyển từ catalog sang cart rồi quay lại không làm mất giỏ; reload document thì giỏ rỗng vì lab chỉ lưu trong memory. Hai hành vi này kiểm tra hai vòng đời khác nhau, không được coi là cùng một lỗi.
+
+Lưu contract test của controller và bằng chứng integrated/standalone. Giỏ standalone không phải giỏ của shell, vì hai trang chạy trong hai document riêng.
+
+### Lab 2 routing và authentication
+
+[Lab routing và authentication](/docs/thuc-hanh/routing-auth) đặt một `BrowserRouter` trong shell, thêm auth runtime và backend fixture local. Catalog cung cấp nhánh route; cart nhận session projection cùng API adapter.
+
+Bạn cần kiểm tra mở deep link trước login, quay về đúng URL sau login, refresh với cookie còn hợp lệ và Back/Forward. Sau đó thử logout trong lúc request cart còn pending, rồi login user khác: response cũ không được cập nhật private UI của phiên mới.
+
+Điểm dễ nhầm là gom mọi lỗi session thành “chưa đăng nhập”. Lỗi mạng hoặc `5xx` chưa đủ để kết luận logout; `403` là thiếu quyền, không phải yêu cầu login lại. Backend fixture cho phép chọn user để luyện các ca này, **không phải dịch vụ authentication được phép deploy**.
+
+### Lab 3 deploy độc lập
+
+[Lab deploy độc lập](/docs/thuc-hanh/deploy-doc-lap) dùng các release minh họa shell `s17`, cart `r7`, catalog `r18` và `r19`. Bạn publish catalog candidate vào đường dẫn mới, kiểm thử rồi promote bằng runtime config.
+
+Bằng chứng chính là SHA-256 của toàn bộ artifact shell và cart không đổi, trong khi document mới chọn catalog r19. Candidate r20 phá contract phải bị gate từ chối trước khi thay selection đang phục vụ.
+
+Sau rollback, mở document mới và kiểm tra tab cũ riêng. Tab đã chạy r19 có thể tiếp tục giữ r19; đổi config không tự thay module đã evaluate. Giữ cả entry lẫn lazy modules cũ để tab đó còn tải được phần chưa dùng.
+
+### Lab 4 giả lập remote lỗi
+
+[Lab giả lập remote lỗi](/docs/thuc-hanh/remote-loi) hiện là trang khung, chưa có quy trình chi tiết. Trong lúc chờ, bạn có thể luyện theo các tình huống dưới đây trên bản local đã có baseline, kết hợp [Resilience](/docs/production/resilience) và [Integration và E2E](/docs/kiem-thu-va-tooling/integration-e2e).
+
+| Tình huống luyện tập | Điều cần quan sát |
+| --- | --- |
+| Chặn remote entry trước lần tải đầu của document mới | Loading kết thúc theo policy; fallback thuộc shell hiển thị; vùng không phụ thuộc remote vẫn dùng được |
+| Chặn một lazy chunk chưa tải | Entry thành công không bị nhầm với route đã ready; lỗi có thể định vị tới request chunk |
+| Làm remote tải chậm | Deadline và retry có giới hạn; rời route không để kết quả muộn cập nhật UI đã bị thay |
+| Dùng candidate sai contract | Gate hoặc kiểm tra boundary chặn việc sử dụng; UI không báo thành công giả |
+| Rollback khi còn tab chạy candidate | Ghi release thực dùng của từng tab, không chỉ revision config mới nhất |
+
+Mỗi lần chỉ gây một lỗi để biết nó phát sinh ở phase nào. Khi dùng request blocking, bắt đầu bằng document mới và xác nhận request thực sự bị chặn: module đã cache hoặc evaluate có thể khiến thử nghiệm không tác động như bạn nghĩ. Không tự động retry mutation thêm hàng để “sửa” lỗi tải remote; hai thao tác đó có semantics khác nhau.
+
+### Đánh giá toàn bộ bài thực hành
+
+[Checklist đánh giá bài thực hành](/docs/thuc-hanh/checklist-danh-gia) cũng đang là trang khung. Dùng tiêu chí tự nghiệm thu bên dưới cho đến khi có checklist chi tiết; đừng đánh dấu một ca chưa chạy là đã đạt.
+
+Khi review, hãy chọn một thay đổi nhỏ trong catalog và hỏi: cần sửa bao nhiêu app, có phải rebuild shell không, ai xác nhận compatibility, và quay lại release cũ bằng cách nào? Nếu mọi thay đổi đều kéo cả ba app đi cùng, bạn đã tìm thấy coupling cần xem lại, dù UI vẫn hoạt động.
+
+## Cách làm một vòng thực hành
+
+1. **Chọn lát cắt và baseline.** Ghi branch/commit, versions và cách chạy; thực hiện một journey thành công trước khi thay đổi. Baseline lỗi thì chưa dùng được để kết luận candidate gây regression.
+2. **Chốt điều cần quan sát.** Ví dụ: thêm cùng SKU hai lần phải tăng quantity trên cùng một dòng và badge đọc cùng tổng. Viết expected result trước khi chạy.
+3. **Thay đổi nhỏ nhất có thể.** Làm đúng public contract của lab; không import source app khác chỉ để bỏ qua loader hoặc giải quyết lỗi state.
+4. **Chạy integrated và kiểm tra boundary.** Dùng shell, xem Network/Console và chạy test phù hợp. Standalone hữu ích cho UI domain, nhưng không thay test điểm ghép.
+5. **Thử một failure case.** Chọn command bị từ chối, session lỗi hoặc asset không tải được tùy lát cắt. Ghi cả state sau lỗi và khả năng tiếp tục dùng app.
+6. **Phục hồi rồi tạo checkpoint.** Bỏ fault injection, kiểm tra lại journey và lưu evidence cùng code. Chỉ chuyển bài khi bạn giải thích được điều đã chứng minh và phần còn chưa kiểm thử.
+
+Không cần dựng pipeline production chỉ để làm vòng đầu. Nhưng khi mục tiêu là deploy độc lập, phải thử artifact đã build: HMR thay component trong dev server không chứng minh rằng shell production giữ nguyên bytes.
+
+## Bằng chứng cần lưu
+
+Evidence nên đủ để một người khác chạy lại mà không cần bạn đứng cạnh. Có thể đặt ghi chú và kết quả test trong workspace lab; không đưa chúng vào repository tài liệu này.
+
+```text title="Mẫu ghi nhận một lần kiểm chứng"
+Lab / lát cắt:
+Branch + commit:
+Môi trường + dependency lockfile:
+Cách khởi động và URL:
+Baseline / candidate / release set (nếu có):
+
+Ca kiểm thử:
+- Điều kiện ban đầu:
+- Các bước tái hiện:
+- Kết quả mong đợi:
+- Kết quả thực tế:
+- Network / Console / test output liên quan:
+- Trạng thái sau phục hồi:
+
+Kết luận: đạt / chưa đạt / chưa kiểm thử
+Giới hạn: mock nào đang dùng, tổ hợp nào chưa được kiểm chứng
+```
+
+Với lab state, ưu tiên test output và snapshot assertions. Với lab auth, ghi thứ tự request cùng trạng thái UI; không lưu cookie/session secrets trong evidence. Với lab deploy, thêm artifact digests, config revisions và release thực load ở cả document mới lẫn tab cũ.
+
+Một test không báo lỗi chưa chắc có assertion đúng mục tiêu. Ví dụ, chỉ kiểm tra catalog render không chứng minh rằng thêm hàng cập nhật đúng badge hoặc rằng logout đã loại bỏ response của phiên cũ.
+
+## Tiêu chí tự nghiệm thu
+
+Đánh giá theo lát cắt bạn đã làm. Những mục không thuộc lát cắt có thể ghi “không áp dụng”; những mục thuộc phạm vi nhưng chưa chạy phải ghi “chưa kiểm thử”.
+
+- [ ] Có baseline tái hiện được, public contract và owner cho từng boundary.
+- [ ] Shell không import source nội bộ của remote; catalog không truy cập store nội bộ của cart.
+- [ ] Badge và cart UI đọc cùng nguồn state; unmount UI không vô tình xóa giỏ của shell.
+- [ ] Command thất bại không hiển thị thành công hoặc cập nhật badge bằng một bộ đếm riêng.
+- [ ] Deep link, refresh, Back/Forward giữ URL và màn hình nhất quán.
+- [ ] Pending session, lỗi mạng, `401` và `403` được xử lý theo đúng contract của lab.
+- [ ] Logout/đổi user loại bỏ private state cũ và không nhận response muộn của phiên trước.
+- [ ] Release catalog có bằng chứng artifact shell/cart giữ nguyên, không chỉ lời khẳng định “không sửa source”.
+- [ ] Candidate không tương thích bị chặn trước promotion; rollback không overwrite artifact.
+- [ ] Có kiểm chứng tab cũ sau promotion/rollback, bao gồm đường tải lazy modules khi áp dụng.
+- [ ] Remote lỗi có loading/fallback đúng policy; lỗi tải không bị nhầm với kết quả mutation.
+- [ ] Evidence ghi rõ test đã chạy, mocks, giới hạn và cách phục hồi.
+
+Đạt checklist local này chưa đủ để gọi hệ thống production-ready. Trước production còn phải đánh giá performance budget, trust boundaries, backend authorization, telemetry, retention và ownership vận hành tại [Vận hành production](/docs/production).
+
+## Khi kết quả không như mong đợi
+
+Đừng sửa đồng thời webpack, router và state để xem lỗi có biến mất không. Xác định phase đầu tiên sai rồi đối chiếu public contract của đúng lát cắt.
+
+| Triệu chứng | Kiểm tra trước | Bài hỗ trợ |
+| --- | --- | --- |
+| Shell không tải được remote | URL entry/chunk, server đang chạy, status và Console | [Remote không tải](/docs/troubleshooting/remote-khong-tai) |
+| Invalid hook call hoặc shared runtime lỗi | Versions thực resolve và shared constraints | [Duplicate React](/docs/troubleshooting/duplicate-react), [Shared version mismatch](/docs/troubleshooting/shared-version-mismatch) |
+| Badge lệch hoặc giỏ mất khi đổi route | Controller có bị tạo lại khi mount không; UI có giữ bản sao state không | [Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart) |
+| Refresh deep link lỗi hoặc URL đổi mà UI không đổi | History fallback, router owner và nhánh route | [Routing và CSS](/docs/troubleshooting/routing-css) |
+| Logout rồi dữ liệu cũ xuất hiện | Session epoch, cancellation và cleanup của private state | [Lab routing và authentication](/docs/thuc-hanh/routing-auth) |
+| Promote rồi browser vẫn chạy release cũ | Document có pin selection không; module đã evaluate chưa; headers/cache có đúng không | [Stale cache](/docs/troubleshooting/stale-cache), [Runtime configuration](/docs/trien-khai/runtime-configuration) |
+
+Sau khi sửa, chạy lại ca vừa thất bại và journey baseline. Một workaround làm hết exception nhưng bỏ mất command, mất state hoặc che UI bằng fallback không phải là kết quả đạt.
+
+## Bắt đầu từ đâu
+
+Nếu shell chưa tải được catalog, hoàn thành workspace và host/remote đầu tiên. Nếu đã có baseline đó, mở lab shell–catalog–cart, ghi owner của giỏ và chạy ca “thêm hàng trước khi mở cart”. Đó là bước đầu cụ thể để kiểm tra boundary, thay vì chỉ nhìn ba app có render hay không.
+
+<Cards>
+  <Card title="Lab shell, catalog và cart" href="/docs/thuc-hanh/shop-shell-catalog-cart" description="Ghép callback, cart controller và snapshot; có hướng dẫn chi tiết." />
+  <Card title="Lab routing và authentication" href="/docs/thuc-hanh/routing-auth" description="Deep links, cookie session và response muộn; có hướng dẫn chi tiết." />
+  <Card title="Lab deploy độc lập" href="/docs/thuc-hanh/deploy-doc-lap" description="Artifact bất biến, promotion và rollback trong lab ESM riêng." />
+  <Card title="Lab giả lập remote lỗi" href="/docs/thuc-hanh/remote-loi" description="Trang khung cho bài kiểm chứng failure, fallback và recovery." />
+  <Card title="Checklist đánh giá bài thực hành" href="/docs/thuc-hanh/checklist-danh-gia" description="Trang khung cho tiêu chí review toàn bộ bài thực hành." />
+</Cards>

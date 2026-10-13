@@ -1,18 +1,476 @@
 ---
 title: "Duplicate React và Invalid Hook Call"
-description: "Phân biệt React bị nạp trùng với vi phạm Rules of Hooks và runtime không tương thích."
+description: "Chẩn đoán Invalid Hook Call trong micro-frontend: phân biệt lỗi Hooks, React và renderer lệch version, kiểm tra module identity và sửa dependency sharing."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Catalog chạy standalone bình thường, nhưng khi shell render component từ remote thì browser báo `Invalid hook call`. Bạn kiểm tra manifest: cả hai dùng cùng version React. Vậy tại sao vẫn lỗi? Vì **cùng version không có nghĩa là cùng module instance**, và duplicate React cũng không phải nguyên nhân duy nhất của lỗi này.
+
+Bài này đi từ triệu chứng đến bằng chứng, rồi mới sửa cấu hình. Mục tiêu là xác định React mà component gọi Hooks có trùng với React mà renderer của nó sử dụng hay không, thay vì thử lần lượt alias, reinstall và `singleton` cho đến khi lỗi biến mất.
+
+<Callout type="info" title="Phạm vi và nơi chạy ví dụ">
+  Ví dụ chính dùng shell–catalog trong [lab host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien): npm workspaces, Webpack 5 Module Federation và React client-side. Các đường dẫn `apps/shell`, `apps/catalog` thuộc `shop-workspace`, không phải repository Next.js + Fumadocs chứa tài liệu này. Phần Vite là biến thể cho resolution local, không phải cấu hình federation của lab. Sơ đồ dùng ASCII, không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Phân loại lỗi trước khi sửa](#phân-loại-lỗi-trước-khi-sửa)
+- [Điều kiện để Hooks hoạt động](#điều-kiện-để-hooks-hoạt-động)
+  - [Một tree cần đúng React instance](#một-tree-cần-đúng-react-instance)
+  - [Nhiều React độc lập có thể cùng tồn tại](#nhiều-react-độc-lập-có-thể-cùng-tồn-tại)
+- [Quy trình chẩn đoán](#quy-trình-chẩn-đoán)
+  - [Bước 1 Ghi lại release và đường tái hiện](#bước-1-ghi-lại-release-và-đường-tái-hiện)
+  - [Bước 2 Loại trừ lỗi gọi Hooks](#bước-2-loại-trừ-lỗi-gọi-hooks)
+  - [Bước 3 Kiểm tra dependency tree và resolution](#bước-3-kiểm-tra-dependency-tree-và-resolution)
+  - [Bước 4 So sánh React ở shell và remote](#bước-4-so-sánh-react-ở-shell-và-remote)
+  - [Bước 5 Đối chiếu bundle và share scope](#bước-5-đối-chiếu-bundle-và-share-scope)
+- [Sửa đúng nguồn gây duplicate](#sửa-đúng-nguồn-gây-duplicate)
+  - [Shared policy của Webpack Module Federation](#shared-policy-của-webpack-module-federation)
+  - [Async bootstrap và khởi tạo share scope](#async-bootstrap-và-khởi-tạo-share-scope)
+  - [Package UI nhúng React vào output](#package-ui-nhúng-react-vào-output)
+  - [Workspace symlink và Vite dedupe](#workspace-symlink-và-vite-dedupe)
+  - [React và React DOM không tương thích](#react-và-react-dom-không-tương-thích)
+- [Những cách chữa dễ che mất nguyên nhân](#những-cách-chữa-dễ-che-mất-nguyên-nhân)
+- [Kiểm chứng sau khi sửa](#kiểm-chứng-sau-khi-sửa)
+- [Checklist đóng sự cố](#checklist-đóng-sự-cố)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Phân loại lỗi trước khi sửa
 
-Bài này sẽ giúp bạn: phân biệt React bị nạp trùng với vi phạm Rules of Hooks và runtime không tương thích.
+Theo tài liệu React, ba nguyên nhân thường gặp của `Invalid hook call` là vi phạm Rules of Hooks, React và renderer không tương thích, hoặc nhiều bản React bị dùng chéo trong cùng app. Stack trace và hoàn cảnh tái hiện giúp chọn nhánh điều tra, nhưng chưa đủ để kết luận.
 
-[Xem các bài trong nhóm Xử lý sự cố](/docs/troubleshooting).
+| Triệu chứng | Nhánh nên kiểm tra trước | Không nên suy ra ngay |
+| --- | --- | --- |
+| `Invalid hook call` hoặc lỗi đọc `useState` trên dispatcher `null` | Vị trí gọi Hooks, React instance và renderer | Chắc chắn thiếu `singleton` |
+| `Rendered more hooks than during the previous render` hoặc `Rendered fewer hooks than expected` | Hook trong nhánh điều kiện, loop hoặc sau early return | Có hai React vì remote tải muộn |
+| Standalone chạy được, tích hợp vào shell mới lỗi | Resolution, shared scope, package UI và cách shell gọi component | Standalone đã chứng minh remote tương thích với shell |
+| `Unsatisfied version ... of shared singleton module ...` | Version policy của federation | Một lỗi Rules of Hooks |
+| `Shared module is not available for eager consumption` | Async bootstrap và sharing initialization | Cần bật `eager: true` cho tất cả |
+| `useContext` trả default value nhưng không có lỗi Hooks | Provider hierarchy và identity của Context object | React bị duplicate |
+| Effect chạy thêm vòng setup/cleanup trong development | StrictMode và cleanup | Một React runtime thứ hai |
+
+Giữ nguyên thông báo lỗi đầu tiên, component stack và release đang chạy. Một lỗi thứ cấp trong fallback có thể làm bạn điều tra nhầm component.
+
+<Callout type="warn" title="Ứng phó khi đang có sự cố production">
+  Nếu một remote release mới làm màn hình hỏng, dùng fallback hoặc rollback theo quy trình release của hệ thống trước. Đừng sửa trực tiếp singleton policy trên production để thử. Tab đã consume một shared module không tự thay module đó khi bạn đổi URL remote; kiểm tra rollback trên document mới và xử lý tab cũ theo chính sách đã có.
+</Callout>
+
+## Điều kiện để Hooks hoạt động
+
+### Một tree cần đúng React instance
+
+Khi React DOM render function component, nó thiết lập dispatcher để các Hooks của React biết đang làm việc với render nào. Nếu component import `useState` từ React B nhưng renderer đang dùng React A, Hook đọc trạng thái của B, không phải dispatcher mà A đang sử dụng.
+
+```text
+Đúng:
+  React DOM của shell ───► React A ◄─── useState của CatalogPage
+
+Sai:
+  React DOM của shell ───► React A
+  CatalogPage          ───► React B ───► dispatcher không đúng render
+
+  React A.version === React B.version vẫn có thể là true.
+```
+
+Có thể hình dung renderer và Hooks phải dùng chung một sổ theo dõi render. Hai cuốn sổ có cùng nhãn version vẫn là hai cuốn khác nhau. Đây chỉ là cách hình dung module identity; nó không mô tả toàn bộ thuật toán scheduling của React.
+
+Trong mô hình export component, shell sở hữu root và renderer. Catalog không thể giữ Hooks từ React riêng rồi kỳ vọng renderer của shell điều khiển chúng. Chia sẻ React đúng instance cũng chưa đủ nếu component vi phạm Rules of Hooks hoặc dùng API không được version đang chạy hỗ trợ.
+
+### Nhiều React độc lập có thể cùng tồn tại
+
+Nhiều bản React trên một trang **không tự động là lỗi**. Một widget có root riêng có thể dùng cặp React/React DOM riêng, miễn các component của widget dùng đúng React tương ứng với renderer của widget.
+
+Nhưng gọi thêm `createRoot` không tự tạo isolation về dependency. Nếu vẫn tham gia singleton scope chung, remote có thể consume React của shell dù bạn tưởng nó có runtime riêng. Muốn giữ nhiều version, cần thiết kế cả loader, resolution và lifecycle boundary; iframe cung cấp document và JavaScript realm riêng khi cần isolation mạnh hơn.
+
+Không chuyển component, React elements hay Context objects giữa hai runtime độc lập như một public contract. Dùng plain data và callbacks ở boundary cùng realm; nếu dùng iframe, đổi sang message contract phù hợp. Ngược lại, hai roots dùng chung React vẫn không tự chia sẻ provider hierarchy. Chi tiết boundary nằm ở [Tích hợp React](/docs/ui-va-framework/react).
+
+## Quy trình chẩn đoán
+
+### Bước 1 Ghi lại release và đường tái hiện
+
+Trước khi xóa cache hoặc reinstall, lưu một bộ bằng chứng tối thiểu:
+
+- Shell release ID, catalog release ID và URL `remoteEntry.js` thực tế trong Network.
+- Thông báo đầu tiên, stack trace và thao tác gây lỗi.
+- Lỗi xảy ra standalone, tích hợp, hay cả hai; development hay production build.
+- Navigation path và thứ tự tải các remote, đặc biệt khi lỗi chỉ xuất hiện sau khi mở cart rồi catalog.
+- Manifest, lockfile và cấu hình build tương ứng với **artifact đang chạy**, không chỉ branch hiện tại.
+
+Thử tái hiện trên document mới, rồi so với tab đã mở trước deploy. Nếu hai trường hợp khác nhau, cần điều tra cả runtime đã consume lẫn cache/release mapping; chưa nên kết luận source code mới bị lỗi.
+
+### Bước 2 Loại trừ lỗi gọi Hooks
+
+Tìm Hook đầu tiên trong stack và kiểm tra nơi nó được gọi. Với các Hooks như `useState`, `useEffect` và `useContext`, giữ lời gọi ở top level của function component hoặc custom Hook, không nằm trong event handler, vòng lặp, nhánh điều kiện hay callback của `useMemo`/`useEffect`.
+
+API `use` của React có ngoại lệ: có thể gọi trong điều kiện hoặc vòng lặp, nhưng vẫn phải ở component/custom Hook và không gọi trong `try/catch`. Đừng áp dụng ngoại lệ đó cho `useState` hoặc các Hooks thông thường.
+
+```jsx title="Sai: Hook sau early return"
+import { useState } from 'react';
+
+export function CatalogPage({ enabled }) {
+  if (!enabled) return null;
+  const [query, setQuery] = useState('');
+  return <input value={query} onChange={(e) => setQuery(e.target.value)} />;
+}
+```
+
+```jsx title="Đúng: thứ tự Hooks ổn định"
+import { useState } from 'react';
+
+export function CatalogPage({ enabled }) {
+  const [query, setQuery] = useState('');
+  if (!enabled) return null;
+  return <input value={query} onChange={(e) => setQuery(e.target.value)} />;
+}
+```
+
+Shell cũng phải render remote bằng JSX, chẳng hạn `<CatalogPage />`, thay vì gọi `CatalogPage()` như function thường. Cách gọi trực tiếp có thể báo invalid hook call khi ở ngoài render, hoặc gắn Hooks vào component caller khi ở trong render; cả hai đều bỏ qua component boundary đúng của React.
+
+Chạy ESLint với `eslint-plugin-react-hooks` nếu ứng dụng đã cấu hình. Lab docs này không cung cấp lint script cho bạn. Lint sạch giúp loại trừ nhiều lỗi gọi Hooks, nhưng không chứng minh module identity tại runtime.
+
+### Bước 3 Kiểm tra dependency tree và resolution
+
+Từ root `shop-workspace`, kiểm tra từng workspace:
+
+```bash
+npm ls react react-dom --workspace=@shop/shell --workspace=@shop/catalog
+npm explain react
+npm explain react-dom
+```
+
+Nếu có package UI riêng, kiểm tra manifest, dependency tree và output của package đó nữa. Một package chỉ dùng React để làm component thường không nên ép app cài thêm bản React qua `dependencies`.
+
+Đọc kết quả theo ba câu hỏi:
+
+1. React và React DOM resolve ra version nào ở mỗi app? Với lab, giữ hai package cùng version đã chốt.
+2. Ai kéo thêm React: app, UI library hay linked package? `npm explain` giúp lần theo đường dependency.
+3. Có dependency `invalid`, peer conflict hoặc version range không thỏa mãn không? `npm ls` có thể trả exit code khác `0` khi tree không hợp lệ; giữ lại thông báo đó.
+
+Để xem resolution theo Node từ vị trí của từng workspace, chạy đoạn sau ở root lab:
+
+```bash
+node --input-type=module <<'NODE'
+import { createRequire } from 'node:module';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+for (const app of ['shell', 'catalog']) {
+  const require = createRequire(resolve(`apps/${app}/package.json`));
+  const reactEntry = require.resolve('react');
+  const reactDomEntry = require.resolve('react-dom/client');
+  const fromRenderer = createRequire(reactDomEntry);
+
+  console.log({
+    app,
+    react: realpathSync(reactEntry),
+    reactFromRenderer: realpathSync(fromRenderer.resolve('react')),
+    reactDomClient: realpathSync(reactDomEntry),
+    reactVersion: require('react/package.json').version,
+    reactDomVersion: require('react-dom/package.json').version,
+  });
+}
+NODE
+```
+
+Nếu trong một app, `react` và `reactFromRenderer` chỉ về hai nơi khác nhau, đó là dấu hiệu cần kiểm tra resolution. Nếu chúng giống nhau, **bạn vẫn chưa chứng minh browser dùng chung React**: bundler có alias, conditional exports, federation runtime và các build riêng. UI library nhúng sẵn React trong output thậm chí có thể không hiện là duplicate trong `npm ls`.
+
+### Bước 4 So sánh React ở shell và remote
+
+Với lab classic JSX transform, component remote import React trực tiếp. Bạn có thể tạm expose một diagnostic module đọc React theo **đúng đường import của component đang lỗi**.
+
+```js title="apps/catalog/src/react-diagnostic.js — module tạm cho lab"
+import React from 'react';
+
+export function getReactDiagnostic() {
+  return {
+    instance: React,
+    useState: React.useState,
+    createElement: React.createElement,
+    version: React.version,
+  };
+}
+```
+
+Thêm entry này vào object `exposes` hiện có của catalog, không thay entry `./CatalogPage`:
+
+```js title="Entry bổ sung trong exposes của catalog"
+'./ReactDiagnostic': './src/react-diagnostic.js',
+```
+
+Từ shell, gọi diagnostic sau async bootstrap và sau khi tái hiện lỗi trên route catalog:
+
+```js title="Đoạn tạm trong bootstrap của shell — chỉ chạy development"
+import React from 'react';
+
+async function compareReact() {
+  const { getReactDiagnostic } = await import('catalog/ReactDiagnostic');
+  const remote = getReactDiagnostic();
+
+  console.table({
+    sameReactObject: React === remote.instance,
+    sameUseState: React.useState === remote.useState,
+    sameCreateElement: React.createElement === remote.createElement,
+    shellVersion: React.version,
+    catalogVersion: remote.version,
+  });
+}
+
+if (process.env.NODE_ENV === 'development') {
+  compareReact().catch((error) => {
+    console.error('[react-diagnostic] Không tải được diagnostic', error);
+  });
+}
+```
+
+Đây là diagnostic, không gọi `useState` để “thử” ở ngoài component. So sánh function references giúp tránh nhầm khi bundler tạo các namespace wrappers khác nhau: riêng object namespace `import * as React` không bằng nhau chưa đủ kết luận duplicate.
+
+| Kết quả | Cách đọc |
+| --- | --- |
+| Cùng version nhưng `sameUseState` là `false` | Hai đường import không trả về cùng Hook implementation; lần theo bundle graph và resolution |
+| Khác version và function references khác nhau | Kiểm tra cả version policy lẫn module identity |
+| Cả ba identity checks đều `true` | Import React của shell và diagnostic remote đang khớp; tiếp tục kiểm tra renderer, package UI và Rules of Hooks |
+| Diagnostic không tải được | Điều tra lỗi expose/load trước; chưa có kết quả identity để kết luận |
+
+Phép so sánh này **không trực tiếp đọc React bên trong React DOM**. Kết hợp nó với bước resolution và bundle graph của renderer. Nếu lỗi nằm trong `@shop/ui`, diagnostic ở `apps/catalog/src` có thể vẫn báo khớp trong khi UI package dùng React đã nhúng riêng; cần instrument đúng package/component đó hoặc kiểm tra output của nó.
+
+Diagnostic cũng có thể làm thay đổi thứ tự consume shared module. Vì vậy không tải nó trước remote lỗi khi đang điều tra một lỗi phụ thuộc load order. Xóa diagnostic module, entry expose và caller sau khi xác nhận; không biến nó thành public API production.
+
+### Bước 5 Đối chiếu bundle và share scope
+
+Mở DevTools với đúng release và sourcemaps nếu hệ thống cung cấp. Đối chiếu stats/module graph của shell, catalog và package UI để tìm:
+
+- `react` mà renderer và component resolve đến đâu.
+- Import nào đã trở thành shared consumer, import nào vẫn là module local hoặc code nằm trong prebuilt library.
+- Request gốc, subpath hoặc absolute path nào đi ngoài policy đã khai báo.
+- Shared key, share scope và versions do từng build cung cấp.
+
+Một artifact chứa local fallback React không chứng minh runtime đã chạy hai instance: fallback có thể không được consume. Tương tự, hai chunk có tên chứa `react` hoặc nhiều requests tải React trong Network chưa phải bằng chứng về module identity.
+
+Với Webpack 5, có thể quan sát registry bằng đoạn tạm trong **module được webpack bundle**, sau khi remote đã được tải qua luồng tích hợp thông thường:
+
+```js title="Snapshot share scope — debug-only, không dán trực tiếp vào browser console"
+const scope = __webpack_share_scopes__.default ?? {};
+
+for (const key of ['react', 'react-dom', 'react-dom/client']) {
+  console.table(
+    Object.entries(scope[key] ?? {}).map(([version, entry]) => ({
+      key,
+      version,
+      from: entry.from,
+      loaded: entry.loaded,
+      eager: entry.eager,
+    })),
+  );
+}
+```
+
+Các globals này là API runtime của webpack trong code bundle, không được bảo đảm tồn tại trên `window`; shape metadata dùng ở đây là chi tiết implementation để debug, không phải contract ứng dụng. Đừng gọi factory `get()` chỉ để quan sát, vì việc đó có thể làm thay đổi trạng thái tải/evaluation.
+
+Scope có nhiều versions đăng ký chưa có nghĩa nhiều versions đã được dùng. Một entry `loaded` cũng không chứng minh mọi import trên trang đi qua entry đó. Nếu build dùng scope khác `default`, kiểm tra scope thực tế; với loader container thủ công, xác nhận host và container được nối đúng scope trước khi lấy module.
+
+## Sửa đúng nguồn gây duplicate
+
+### Shared policy của Webpack Module Federation
+
+Nếu shell render component catalog trong cùng tree, mình chọn một runtime tương thích với shared policy nhất quán ở **cả hai build**. Trong `webpack.config.cjs` của từng app, tạo object này và truyền nó vào options của `ModuleFederationPlugin` đang có:
+
+```js title="Phần shared trong webpack.config.cjs của shell và catalog"
+const deps = require('./package.json').dependencies;
+
+function singletonPolicy(requiredVersion, packageName) {
+  return {
+    singleton: true,
+    requiredVersion,
+    strictVersion: true,
+    eager: false,
+    packageName,
+  };
+}
+
+const shared = {
+  react: singletonPolicy(deps.react, 'react'),
+  'react-dom': singletonPolicy(deps['react-dom'], 'react-dom'),
+  'react-dom/client': singletonPolicy(deps['react-dom'], 'react-dom'),
+  'react/jsx-runtime': singletonPolicy(deps.react, 'react'),
+  'react/jsx-dev-runtime': singletonPolicy(deps.react, 'react'),
+};
+
+// Giữ name, remotes/exposes và các options hiện có của từng app.
+// Truyền `shared` vào options của ModuleFederationPlugin đó.
+```
+
+Lab đầu tiên dùng classic transform nên không phát sinh JSX runtime imports. Các entry JSX ở trên phục vụ build có automatic transform; hãy đối chiếu requests thật của development và production. Package gốc `react` không tự bao phủ mọi subpath trong Webpack 5 gốc.
+
+- `singleton` giới hạn version của **mỗi shared key trong scope**, không deduplicate mọi module trên trang.
+- `requiredVersion` đọc range consumer chấp nhận từ manifest của app, không phải version runtime đã được chọn.
+- `strictVersion` từ chối singleton không thỏa range thay vì tiếp tục với warning; nó không tự giải quyết release mismatch.
+- `packageName` chỉ rõ package để suy ra metadata cho các subpath.
+
+Không đặt `shareKey: 'react'` cho `react/jsx-runtime`: đó là các modules có exports khác nhau, không phải hai tên thay thế của cùng API. Alias đến absolute path hoặc thư viện nhúng sẵn React cũng có thể làm code đi ngoài shared requests dù object cấu hình nhìn đúng.
+
+Sau khi sửa, rebuild các app liên quan và kiểm tra artifacts mới. Không chỉ sửa config shell rồi kỳ vọng React đã được nhúng trong artifact remote cũ biến mất. Nếu bật strict policy làm xuất hiện version mismatch, chuyển sang [Shared version mismatch](/docs/troubleshooting/shared-version-mismatch) thay vì tắt kiểm tra để che lỗi.
+
+### Async bootstrap và khởi tạo share scope
+
+Nếu lỗi thực tế là eager consumption, kiểm tra entry trước khi thay policy:
+
+```js title="apps/shell/src/index.js và apps/catalog/src/index.js"
+import('./bootstrap').catch((error) => {
+  console.error('Không bootstrap được ứng dụng', error);
+});
+```
+
+Các import React, React DOM và code render nằm trong `bootstrap.jsx` hoặc modules nó import. Giữ entry ban đầu nhỏ để tạo async boundary; import React đồng bộ trước dynamic import có thể làm mục đích đó mất tác dụng.
+
+Với `remotes` thông thường, webpack sinh plumbing khởi tạo sharing. Với loader thủ công, thứ tự cần là khởi tạo sharing của host, nối container vào đúng scope, rồi lấy module; xem [Cơ chế Module Federation](/docs/module-federation/co-che). Không tự gọi lại `container.init` trong mỗi component render.
+
+Async boundary xử lý thời điểm consumption, không chữa duplicate do prebundled library hay sai resolution. Vì thế cần giữ hai nhánh chẩn đoán tách biệt.
+
+### Package UI nhúng React vào output
+
+Một UI package dùng bởi shell và catalog có thể là nguồn duplicate dù hai app share React đúng. Có hai việc riêng phải sửa: dependency declaration và bundler output.
+
+Manifest minh họa cho library có API được kiểm thử với React 19.2; thay range bằng các versions library thực sự hỗ trợ:
+
+```json title="Trích package.json của một UI library"
+{
+  "peerDependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  }
+}
+```
+
+Chỉ khai báo peer `react-dom` nếu library sử dụng nó. Development dependencies giúp build/test library local; peer dependencies mô tả dependency do consumer cung cấp. **Peer metadata không tự bảo đảm React không nằm trong bundle**, kể cả khi package manager đã xử lý peer dependencies đúng.
+
+Nếu library dùng Rollup, đánh dấu root packages và subpaths là external:
+
+```js title="Phần external trong cấu hình Rollup của UI library"
+const isReactExternal = (id) =>
+  id === 'react' ||
+  id.startsWith('react/') ||
+  id === 'react-dom' ||
+  id.startsWith('react-dom/');
+
+// Ghép vào config hiện có, cùng input, plugins và output của library:
+// external: isReactExternal
+```
+
+Đây là cấu hình build **library**, không phải yêu cầu externalize React khỏi mọi app bundle. Nếu app output còn bare import `react` nhưng không có loader/import map giải quyết nó, browser sẽ không chạy được.
+
+Rebuild library, kiểm tra output giữ import React external thay vì nhúng implementation, rồi cập nhật consumer và rebuild remote. Host federation không thể deduplicate implementation đã được đóng gói vào một file library như code nội bộ. Khi phát triển linked library, cũng kiểm tra local dev dependency có đang resolve thành một instance khác trong app không.
+
+### Workspace symlink và Vite dedupe
+
+Với `npm link`, symlink hoặc workspace packages, bundler có thể nhìn thấy React ở app và React ở thư mục library. Kiểm tra real paths, alias và cách bundler xử lý symlink trước; việc hai paths khác nhau chỉ là bằng chứng về resolution, chưa phải kết luận mọi builds dùng chéo runtime.
+
+Trong một app Vite có linked packages, `resolve.dedupe` là hướng mình thử sau khi peer/external policy đã đúng:
+
+```ts title="vite.config.ts — ghép resolve vào config hiện có"
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+  },
+});
+```
+
+Vite sẽ resolve các dependencies được liệt kê về bản ở project root trong graph nó xử lý. Nó không viết lại remote bundle đã build ở project khác, không thay federation policy và không lấy React ra khỏi library đã prebundle. Vite cũng có giới hạn dedupe cho một số SSR ESM outputs; không mang cấu hình client này sang SSR mà bỏ qua kiểm chứng integration.
+
+Với webpack, audit `resolve.alias` và `resolve.symlinks` nếu có cấu hình custom. Alias cố định React về app có thể giúp chứng minh lỗi local resolution, nhưng không nên ép một alias toàn hệ thống khi các roots chủ đích giữ runtime độc lập. Thay đổi cách resolve symlink cũng ảnh hưởng package identity khác, nên kiểm thử lại Context packages và HMR.
+
+### React và React DOM không tương thích
+
+Nếu identity đúng nhưng version/renderer không tương thích, sửa dependency pair và peer ranges, không tiếp tục thêm singleton entries. Trong lab, giữ `react` và `react-dom` cùng version chính xác đã kiểm thử ở shell và catalog; production phải kiểm tra thêm UI libraries và APIs mà remote sử dụng.
+
+Không tự nâng tất cả lên latest khi đang điều tra. Chọn bộ version được hỗ trợ, cập nhật manifest và lockfile có chủ đích, cài lại theo lockfile rồi rebuild các artifacts liên quan. `npm ci` giúp tái lập bộ dependency đã chốt; nó không sửa được một lockfile hoặc shared policy sai.
+
+Ngay cả khi mỗi app build với cặp React/React DOM đúng, federation vẫn negotiate các shared keys riêng. Vì thế cần kiểm chứng **cặp runtime thực sự được consume**, không chỉ cặp trong manifest. Một remote yêu cầu API mới hơn singleton đang load có thể cần release phối hợp hoặc boundary độc lập, không phải `requiredVersion: false`.
+
+## Những cách chữa dễ che mất nguyên nhân
+
+| Cách thử | Vì sao chưa phải giải pháp | Làm thay thế |
+| --- | --- | --- |
+| Xóa lockfile rồi reinstall | Làm đổi bộ dependency và mất dữ liệu tái hiện | Giữ lockfile, xác định dependency path và sửa có chủ đích |
+| Bật `eager: true` ở mọi app | Đổi timing và tải fallback sớm, không chữa resolution | Giữ async bootstrap và audit sharing initialization |
+| Đặt `requiredVersion: false` hoặc tắt strict để hết lỗi | Bỏ kiểm tra tương thích, không làm API mới xuất hiện | Sửa version policy hoặc chọn runtime boundary khác |
+| Chỉ so sánh `React.version` | Hai instances có thể cùng chuỗi version | So sánh references tại đúng import path và bundle graph |
+| Tắt StrictMode | Che vòng cleanup bổ sung trong dev, không deduplicate React | Sửa cleanup và điều tra module identity riêng |
+| Tạo root riêng ngay khi thấy invalid hook call | Không tự tách resolution, đồng thời đổi Context và lifecycle | Chọn boundary có chủ đích, bảo đảm cặp runtime riêng |
+| Share mọi dependency hoặc gom tất cả subpaths vào một key | Tăng coupling; các subpaths có thể có exports khác nhau | Liệt kê requests cần share và giữ đúng API của từng key |
+| Refresh thấy hết lỗi rồi đóng sự cố | Có thể chỉ reset singleton/cache trong tab đó | Kiểm thử release mapping, load order và tab cũ |
+
+Nếu `useContext` vẫn nhận default value sau khi React identity đã khớp, kiểm tra provider có ở đúng tree và provider/consumer có dùng cùng Context object không. Một package gọi `createContext` bị load thành hai instances là vấn đề identity của **package Context**, không nhất thiết là duplicate React.
+
+## Kiểm chứng sau khi sửa
+
+Chạy lại tình huống ban đầu trên document mới, với artifacts được build từ manifest và lockfile đã sửa. Khi chẩn đoán, dùng document mới để reset runtime; khi xác nhận rollout, vẫn cần test tab cũ thay vì bỏ qua chúng.
+
+| Ca kiểm thử | Kết quả cần thấy |
+| --- | --- |
+| Catalog standalone và catalog trong shell | Cả hai render, thao tác state không báo lỗi Hooks |
+| Development và production build | Cả hai dùng đúng import/sharing policy, không chỉ dev chạy được |
+| Shell cũ–remote mới và shell mới–remote cũ trong compatibility window | Tổ hợp được hỗ trợ chạy đúng; tổ hợp bị từ chối có fallback rõ |
+| Catalog tải trước cart và ngược lại | Không thay đổi tính đúng do provider/consumer load order |
+| Rời route rồi quay lại | State reset/preservation theo thiết kế, không có duplicate mount |
+| Tab mở trước deploy và tab mở sau deploy | Release behavior đúng chính sách, không dùng artifacts trộn ngoài dự kiến |
+| Package UI linked local và package build được publish | Không chỉ bản linked chạy đúng trong khi published bundle nhúng React |
+
+Trong mỗi ca hỗ trợ, thao tác thật trên component dùng Hooks: nhập tìm kiếm, click tăng quantity hoặc đổi props. Không chỉ kiểm tra remote entry tải được hay snapshot render lần đầu. Error Boundary có thể che lỗi bằng fallback; test phải xác nhận UI remote đã render và tương tác thành công.
+
+Trong lab, từ root `shop-workspace`, build lại rồi chạy các dev scripts đã có:
+
+```bash
+npm run build
+```
+
+Mở hai terminal riêng cho hai dev servers:
+
+```bash
+npm run dev:shell
+```
+
+```bash
+npm run dev:catalog
+```
+
+Các dev scripts kiểm tra development, không phục vụ output production. Muốn xác nhận production, phục vụ build bằng preview/static server hoặc deployment pipeline của ứng dụng; `npm run build` thành công không chứng minh browser đã chạy đúng shared runtime.
+
+Nếu chỉ hết lỗi khi bypass cache, quay lại kiểm tra URL release, headers và remote entry/chunk consistency theo [Stale cache](/docs/troubleshooting/stale-cache). Đừng chọn “người dùng tự clear cache” làm biện pháp phòng ngừa.
+
+## Checklist đóng sự cố
+
+- [ ] Đã xác định lỗi Rules of Hooks, duplicate identity hay React/renderer mismatch, kèm bằng chứng.
+- [ ] Đã lưu shell/remote release IDs, lockfile và đường tái hiện ban đầu.
+- [ ] Component và renderer dùng cùng React instance trong boundary cần chia sẻ.
+- [ ] React/React DOM runtime và peer dependencies nằm trong compatibility policy đã kiểm thử.
+- [ ] Các build dùng đúng shared scope, shared keys và subpath requests thực tế.
+- [ ] UI libraries không nhúng React ngoài ý muốn; linked/published package đã được kiểm tra.
+- [ ] Standalone, integrated, production, load order và compatibility window đã chạy lại.
+- [ ] Diagnostic module, temporary exposes và debug logs đã được gỡ.
+- [ ] Có guardrail phù hợp: Hooks lint, bundle audit hoặc integration test giữa shell và remote.
+
+Ghi nguyên nhân theo đường đi cụ thể, chẳng hạn “`@shop/ui` nhúng React vào output nên Hooks không dùng instance của renderer shell”, thay vì chỉ ghi “duplicate React”. Đường đi đó cho biết test hoặc build check nào cần thêm để lỗi không quay lại.
+
+## Tài liệu tham khảo
+
+- [React — Invalid Hook Call Warning](https://react.dev/warnings/invalid-hook-call-warning): ba nhóm nguyên nhân, quy tắc module identity và trường hợp nhiều React độc lập trên một trang.
+- [React — Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks): vị trí gọi Hooks và thứ tự gọi cần giữ ổn định.
+- [Webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): `singleton`, `requiredVersion`, `strictVersion`, shared keys và scopes.
+- [Webpack — Module Federation troubleshooting](https://webpack.js.org/concepts/module-federation/#troubleshooting): async boundary và eager consumption.
+- [Vite — resolve.dedupe](https://vite.dev/config/shared-options.html#resolve-dedupe): resolution cho duplicated/linked dependencies và giới hạn SSR.
+- [Rollup — external](https://rollupjs.org/configuration-options/#external): giữ dependencies ngoài output của library.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Đọc sâu policy, subpaths và cách quan sát share scope." />
+  <Card title="Tích hợp React" href="/docs/ui-va-framework/react" description="Chọn component boundary hay root riêng và quản lý lifecycle." />
+  <Card title="Shared version mismatch" href="/docs/troubleshooting/shared-version-mismatch" description="Điều tra khi version policy từ chối shared singleton." />
+  <Card title="Integration và E2E tests" href="/docs/kiem-thu-va-tooling/integration-e2e" description="Đưa lỗi runtime composition vào kiểm thử giữa shell và remote." />
+</Cards>

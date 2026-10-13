@@ -1,18 +1,613 @@
 ---
 title: "Performance và bundle budget"
-description: "Đo loading waterfalls, duplicated dependencies, Core Web Vitals và kích thước bundles."
+description: "Đo critical path, Core Web Vitals và duplicated dependencies; đặt bundle budget theo user journey và kiểm soát regression khi deploy micro-frontend độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog và cart đều đạt bundle budget của team mình, nhưng mở shop vẫn chậm: shell chờ runtime config, rồi mới tải catalog entry, rồi mới phát hiện chunk và API cần gọi. Mỗi phần riêng lẻ có vẻ nhẹ. Người dùng lại phải chờ cả chuỗi.
+
+**Performance budget phải áp dụng cho trải nghiệm đã ghép, không chỉ cho từng remote.** Bài này giúp bạn tìm bước nằm trên critical path, phân biệt chi phí network với CPU, rồi đưa giới hạn có thể kiểm tra vào CI và rollout.
+
+<Callout type="info" title="Phạm vi và điều kiện áp dụng">
+  Ví dụ dùng shop giả định gồm shell, catalog và cart, chủ yếu là client-side runtime composition. Repository này là site tài liệu, không có ứng dụng shop hay pipeline performance có sẵn. Các file và số budget bên dưới là ví dụ cho lab riêng; không phải benchmark hoặc cấu hình production của repository. Sơ đồ text không cần Mermaid. Phần webpack chỉ áp dụng cho webpack 5 Module Federation, không mặc định áp dụng cho Next.js hay mọi federation runtime.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Bắt đầu từ user journey](#bắt-đầu-từ-user-journey)
+  - [Định nghĩa điểm bắt đầu và điểm ready](#định-nghĩa-điểm-bắt-đầu-và-điểm-ready)
+  - [Cold load warm load và chuyển route](#cold-load-warm-load-và-chuyển-route)
+- [Chọn metrics phản ánh trải nghiệm](#chọn-metrics-phản-ánh-trải-nghiệm)
+  - [Core Web Vitals và ngưỡng tốt](#core-web-vitals-và-ngưỡng-tốt)
+  - [Lab không thay thế RUM](#lab-không-thay-thế-rum)
+  - [Quyền sở hữu metrics khi nhiều remote cùng chạy](#quyền-sở-hữu-metrics-khi-nhiều-remote-cùng-chạy)
+- [Đọc loading waterfall và critical path](#đọc-loading-waterfall-và-critical-path)
+  - [Tìm dependency nối tiếp thay vì chỉ đếm request](#tìm-dependency-nối-tiếp-thay-vì-chỉ-đếm-request)
+  - [Tải song song khi đã đủ thông tin](#tải-song-song-khi-đã-đủ-thông-tin)
+- [Instrument loader và UI readiness](#instrument-loader-và-ui-readiness)
+  - [Đo các phase bằng Performance API](#đo-các-phase-bằng-performance-api)
+  - [Đọc Resource Timing đúng với cache và cross origin](#đọc-resource-timing-đúng-với-cache-và-cross-origin)
+  - [Thu thập Web Vitals một lần trong shell](#thu-thập-web-vitals-một-lần-trong-shell)
+- [Giảm JavaScript trên đường tải chính](#giảm-javascript-trên-đường-tải-chính)
+  - [Chia code theo nhu cầu của route](#chia-code-theo-nhu-cầu-của-route)
+  - [Tìm duplicated dependencies](#tìm-duplicated-dependencies)
+  - [Shared dependencies không phải tối ưu miễn phí](#shared-dependencies-không-phải-tối-ưu-miễn-phí)
+- [Chọn preload prefetch và cache](#chọn-preload-prefetch-và-cache)
+- [Giảm CPU và layout cost sau khi tải xong](#giảm-cpu-và-layout-cost-sau-khi-tải-xong)
+- [Đặt bundle budget cho composition](#đặt-bundle-budget-cho-composition)
+  - [Chốt đơn vị và phạm vi đo](#chốt-đơn-vị-và-phạm-vi-đo)
+  - [Budget minh họa cho shop](#budget-minh-họa-cho-shop)
+  - [Script kiểm tra budget trong CI](#script-kiểm-tra-budget-trong-ci)
+- [Đưa performance vào release độc lập](#đưa-performance-vào-release-độc-lập)
+- [Runbook khi performance giảm sau deploy](#runbook-khi-performance-giảm-sau-deploy)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Bắt đầu từ user journey
 
-Bài này sẽ giúp bạn: đo loading waterfalls, duplicated dependencies, Core Web Vitals và kích thước bundles.
+Mình bắt đầu với một đường đi quan trọng, chẳng hạn mở `/catalog`, nhìn thấy sản phẩm và thêm một SKU vào giỏ. Đo đường đi này trước sẽ hữu ích hơn chạy analyzer cho tất cả remote rồi tối ưu bundle lớn nhất: remote lớn nhất có thể chưa được tải trong journey đó.
 
-[Xem các bài trong nhóm Production](/docs/production).
+### Định nghĩa điểm bắt đầu và điểm ready
+
+Đừng dùng “remote tải xong” thay cho “người dùng làm được việc”. Với catalog, import resolve chỉ chứng minh module đã sẵn sàng để sử dụng; UI có thể còn chờ data, CSS hoặc render.
+
+| Mốc | Định nghĩa cho shop | Bên instrument |
+| --- | --- | --- |
+| `navigation_start` | Document bắt đầu navigation; Performance API dùng time origin tương ứng | Browser và shell |
+| `route_start` | Router chấp nhận chuyển sang route mới, trước khi gọi loader | Shell |
+| `module_loaded` | Loader resolve module cần cho route | Shell integration layer |
+| `ui_ready` | Danh sách đầu tiên đã commit vào DOM, dữ liệu cần thiết có sẵn và hành động chính dùng được | Remote báo cho shell |
+| `add_confirmed` | Cart controller xác nhận thêm hàng, UI hiển thị trạng thái đã xác nhận | Cart owner và catalog UI |
+
+`ui_ready` là contract ứng dụng do bạn định nghĩa, không phải Web Vital của browser. Nó cũng không đảm bảo mọi ảnh đã decode hay frame đã được paint. Nếu ảnh sản phẩm là nội dung chính, cần kiểm tra thêm LCP và filmstrip trong trace.
+
+Mỗi lần chuyển route cần một operation ID riêng. Nếu người dùng rời catalog trước khi ready, ghi nhận `cancelled` hoặc `abandoned` theo schema đã chốt; đừng đưa lần đó vào histogram thành công như thể catalog tải trong vài mili giây.
+
+### Cold load warm load và chuyển route
+
+Ba điều kiện sau không thể gộp thành một phép đo:
+
+| Điều kiện | Cách tái hiện trong lab | Câu hỏi trả lời |
+| --- | --- | --- |
+| Cold document load | Profile sạch, chưa có HTTP cache hoặc service worker của app; mở URL trực tiếp | Người dùng mới phải tải và chạy bao nhiêu tài nguyên? |
+| Warm document load | Giữ cache từ lần trước nhưng mở document mới | HTTP cache tiết kiệm được gì, code vẫn tốn CPU ra sao? |
+| SPA route transition | Giữ document đang chạy, chuyển catalog → cart → catalog | Module cache, state và lifecycle giúp hoặc gây hại thế nào? |
+
+Cold browser không đồng nghĩa cold CDN. Ghi rõ trạng thái edge cache nếu đó là biến bạn đang kiểm tra. DevTools “Disable cache” hữu ích cho debug, nhưng không tự xóa service worker Cache Storage hoặc module đã evaluate trong document.
+
+Cố định viewport, CPU/network profile, dữ liệu fixture, auth state và release set khi so sánh. Một lần chạy nhanh trên máy developer chưa nói được gì về điện thoại yếu. Với lab, lặp nhiều lần rồi so sánh median cùng độ dao động; đừng gọi p75 của vài lần chạy là p75 trải nghiệm người dùng thật.
+
+## Chọn metrics phản ánh trải nghiệm
+
+### Core Web Vitals và ngưỡng tốt
+
+Theo [hướng dẫn Web Vitals của web.dev](https://web.dev/articles/vitals), ba Core Web Vitals là:
+
+| Metric | Đo điều gì | Ngưỡng tốt | Rủi ro thường gặp trong micro-frontend |
+| --- | --- | --- | --- |
+| LCP | Thời gian đến nội dung lớn nhất đủ điều kiện được paint | Không quá `2.5 s` | Nội dung catalog chỉ xuất hiện sau config, entry, chunk và data |
+| INP | Độ trễ phản hồi tương tác, tính đến lần paint tiếp theo | Không quá `200 ms` | Nhiều remote cùng xử lý event, render hoặc chạy tác vụ dài trên main thread |
+| CLS | Mức dịch chuyển layout ngoài dự kiến, không có đơn vị | Không quá `0.1` | Slot đổi kích thước khi thay skeleton, ảnh/font đến muộn, CSS remote tác động shell |
+
+Đánh giá ngưỡng ở **p75 của các lượt truy cập có metric tương ứng**, tách mobile và desktop; muốn đạt mức tốt cần cả ba metric đạt ngưỡng. Đây là ngưỡng hướng dẫn công khai, khác với bundle budget minh họa ở cuối bài.
+
+INP không phải thời gian API trả về. Khi bấm thêm hàng, browser có thể paint trạng thái pending nhanh nên interaction latency thấp, nhưng xác nhận nghiệp vụ vẫn chậm. Vì vậy vẫn cần metric `add_confirmed` hoặc duration riêng cho thao tác giỏ hàng.
+
+### Lab không thay thế RUM
+
+Lab giúp bạn giữ điều kiện ổn định và tìm nguyên nhân bằng Network, Performance trace, Coverage và bundle analyzer. RUM — real user monitoring — cho biết vấn đề có thực sự ảnh hưởng đến người dùng với thiết bị, network và cache khác nhau hay không.
+
+Lighthouse navigation audit có thể giúp phát hiện LCP, CLS và main-thread blocking khi tải trang. TBT, tổng thời gian blocking trong lab, là tín hiệu hỗ trợ chẩn đoán INP; **TBT không phải INP**. Muốn kiểm tra tương tác trong lab, thực hiện journey có click, nhập liệu và chuyển route, rồi xem trace. RUM vẫn là nơi đánh giá INP ngoài thực tế.
+
+Dashboard nên giữ thêm sample count, tỷ lệ ready thành công, tỷ lệ bỏ dở và remote load error rate. Nếu remote mới khiến người dùng thoát trước ready, histogram của các lượt thành công có thể đẹp hơn trong khi trải nghiệm tổng thể tệ đi.
+
+### Quyền sở hữu metrics khi nhiều remote cùng chạy
+
+Web Vitals được quan sát ở cấp document/page, không tự phân chia thành “LCP của catalog” và “INP của cart”. Cùng React root hay roots riêng cũng không tạo main thread riêng. Muốn quy lỗi cho một remote, phải kết hợp trace, attribution, custom phase metrics và release metadata.
+
+Mặc định mình để shell đăng ký Web Vitals và gửi telemetry một lần. Remote chỉ báo các mốc nghiệp vụ và readiness qua capability do shell cấp, như trong bài [Logs, metrics và tracing](/docs/kiem-thu-va-tooling/observability).
+
+Với SPA, không mặc định mỗi lần router đổi URL là một page visit có LCP mới. Đo `route_start → ui_ready` riêng; nếu dùng soft-navigation measurement, kiểm tra version thư viện, browser hỗ trợ và semantics của metric rồi tách dataset đó khỏi document-navigation metrics. Không tự reset Web Vitals bằng cách đăng ký observers lại mỗi route.
+
+<Callout type="warn" title="Iframe có khoảng trống quan sát">
+  Web APIs của parent không quan sát đầy đủ nội dung bên trong iframe, kể cả same-origin frame, trong khi dữ liệu CrUX có thể bao gồm đóng góp của iframe. Telemetry riêng trong frame giúp điều tra, nhưng không được lấy p75 hoặc điểm Web Vitals của từng frame rồi cộng thành Web Vitals của cả trang. Cần hiểu cách aggregation của metric và giới hạn của công cụ.
+</Callout>
+
+## Đọc loading waterfall và critical path
+
+### Tìm dependency nối tiếp thay vì chỉ đếm request
+
+Một đường tải client-side có thể như sau; đây là sơ đồ minh họa, không phải thứ tự bắt buộc của mọi runtime:
+
+```text
+HTML → shell bootstrap → runtime config → catalog entry → route chunks
+                                                             │
+                                                             ▼
+                                                     catalog API → render
+```
+
+Critical path là chuỗi phụ thuộc quyết định mốc bạn đang đo. Mười request nhỏ chạy song song có thể ít gây chờ hơn ba request nhỏ nối tiếp qua network latency cao. Ngược lại, HTTP/2 hoặc HTTP/3 không làm dependency giữa các bước biến mất.
+
+Trong DevTools Network, bật các cột Initiator, Priority, Size và Waterfall. Tìm request chỉ bắt đầu sau một request khác hoàn tất, rồi dùng Initiator để xác nhận ai kích hoạt nó. Sau đó đối chiếu Performance trace: một khoảng trống giữa hai request có thể do JavaScript chưa chạy được, không phải do network.
+
+Ví dụ giả định: config mất `100 ms`, entry `120 ms`, chunks `180 ms`, data `250 ms`, render `80 ms`. Nếu tất cả nối tiếp, phần chuỗi này là `730 ms`, chưa tính HTML và bootstrap. Tăng compression chỉ tác động một phần duration; nó không xóa năm bước phụ thuộc.
+
+Nếu API catalog đã có contract rõ và được phép gọi ngay sau config/auth, có thể bắt đầu data song song với entry và chunks:
+
+```text
+                     ┌── catalog entry → route chunks ──┐
+Config và auth ready ┤                                  ├── render
+                     └── catalog API ───────────────────┘
+```
+
+Với cùng các số giả định và giả sử hai nhánh không tranh tài nguyên, đoạn sau config trở thành `max(120 + 180, 250) + 80 = 380 ms`, thay vì `630 ms`. Đây là phép tính lý tưởng để giải thích dependency, không phải cam kết tốc độ thật; trace sau thay đổi mới xác nhận được lợi ích.
+
+### Tải song song khi đã đủ thông tin
+
+Mình ưu tiên bỏ dependency nhân tạo trước khi thêm preload. Nếu shell đã biết đúng release và route, đừng đợi UI của shell render xong mới khởi động loader catalog.
+
+Tuy vậy, gọi data sớm không có nghĩa shell import implementation của data layer catalog. Hãy dùng API/capability công khai hoặc contract route-data đã chốt. Cần biết auth, tham số, owner của cache và cách hủy request khi người dùng rời route; nếu chưa có các điều kiện đó, giữ data fetching trong remote rồi tối ưu các bước khác.
+
+Không bypass bước validate runtime config hoặc pin release set để tiết kiệm một request. Cũng không tải mọi container để “chắc chắn share scope đầy đủ”: tùy runtime và sharing strategy, cách đó có thể kéo remote không dùng vào startup. Kiểm tra trace của đúng plugin/version đang triển khai.
+
+## Instrument loader và UI readiness
+
+### Đo các phase bằng Performance API
+
+Dùng Network để tìm request; dùng User Timing để nối request với boundary của ứng dụng. Helper dưới đây chạy trong browser có Performance API, không cần dependency ngoài. `work` phải là một Promise phản ánh đúng phase bạn muốn đo.
+
+```ts title="src/performance/measure-phase.ts trong lab"
+type PhaseSample = {
+  operationId: string;
+  phase: string;
+  status: 'ok' | 'error';
+  durationMs: number;
+};
+
+export async function measurePhase<T>(
+  operationId: string,
+  phase: string,
+  work: () => Promise<T>,
+  report: (sample: PhaseSample) => void,
+): Promise<T> {
+  const start = performance.now();
+  let status: PhaseSample['status'] = 'error';
+
+  try {
+    const result = await work();
+    status = 'ok';
+    return result;
+  } finally {
+    const end = performance.now();
+    const entryName = `mfe:${operationId}:${phase}`;
+
+    try {
+      performance.measure(entryName, { start, end });
+      // report là adapter đồng bộ enqueue dữ liệu, không chờ network.
+      report({ operationId, phase, status, durationMs: end - start });
+    } catch {
+      // Telemetry không thay thế kết quả hoặc lỗi của work.
+    } finally {
+      performance.clearMeasures(entryName);
+    }
+  }
+}
+```
+
+Gọi helper quanh config fetch, module loader hoặc một Promise readiness do remote cung cấp. Không wrap `root.render()` rồi đặt tên `ui_ready`: React có thể schedule render và trả về trước khi UI commit. Remote cần resolve readiness theo contract đã chốt, chỉ một lần cho mỗi mount/operation, và xử lý unmount hoặc timeout để Promise không treo mãi.
+
+User Timing measure ở đây không tự phân biệt download, compile, evaluation và render. Module loader duration có thể chứa nhiều phần đó; dùng Performance trace để tách tiếp. Helper cũng không cung cấp timeout hoặc cancellation: các phần này thuộc loader/lifecycle, không thuộc phép đo.
+
+`clearMeasures` giữ performance timeline khỏi tăng mãi trong SPA; observer đang thu thập entries vẫn có thể nhận entry đã tạo. Không gọi `performance.clearResourceTimings()` tùy ý từ remote, vì đó là dữ liệu dùng chung với các observer khác. Trong lab, có thể giữ measures khi cần xem trực tiếp trong DevTools.
+
+### Đọc Resource Timing đúng với cache và cross origin
+
+Chạy đoạn sau trong Console sau journey để xem các request đến CDN của lab:
+
+```js title="Quan sát tài nguyên đã có trong performance timeline"
+const resources = performance.getEntriesByType('resource')
+  .filter((entry) => new URL(entry.name).hostname === 'cdn.example.com');
+
+console.table(resources.map((entry) => ({
+  asset: new URL(entry.name).pathname,
+  durationMs: Math.round(entry.duration),
+  transferBytes: entry.transferSize,
+  encodedBodyBytes: entry.encodedBodySize,
+  decodedBodyBytes: entry.decodedBodySize,
+})));
+```
+
+`transferSize` bao gồm response headers và body; `encodedBodySize` là body trước khi giải nén, còn `decodedBodySize` là body sau giải nén. Chúng không phải cùng một phép đo với kích thước file trên disk.
+
+Với resource cross-origin, một số timing fields và các size fields bị ẩn nếu response không cho phép timing access. CDN của ví dụ có thể gửi:
+
+```http title="Response header trên static assets cho shell của lab"
+Timing-Allow-Origin: https://shop.example.com
+```
+
+TAO không thay thế CORS, không cấp quyền đọc response body, cũng không cấp quyền thực thi script. CORS và TAO giải quyết hai việc khác nhau.
+
+`transferSize === 0` **không đủ** để kết luận cache hit: nó cũng có thể là dữ liệu bị ẩn do thiếu TAO. Trong điều kiện resource same-origin hoặc có TAO, `transferSize === 0` cùng `decodedBodySize > 0` là dấu hiệu local cache reuse. Nếu cần phân loại service worker hoặc revalidation, xem thêm trace và request details.
+
+Console snapshot chỉ có những entries còn trong buffer. Với RUM chạy lâu, dùng `PerformanceObserver` có `buffered: true`, quản lý buffer và thu thập chọn lọc qua shell. Không gửi toàn bộ URL có query string, token hay định danh người dùng vào telemetry.
+
+### Thu thập Web Vitals một lần trong shell
+
+Ví dụ sau dùng API của `web-vitals` major 5. Cài vào **lab shell**, pin version đã kiểm thử trong lockfile; không thêm package vào site docs chỉ để đọc bài:
+
+```bash
+npm install web-vitals@5
+```
+
+```ts title="src/performance/install-vitals.ts trong lab"
+import { onCLS, onINP, onLCP, type Metric } from 'web-vitals';
+
+type PageContext = {
+  shellRelease: string;
+  initialRouteTemplate: string;
+};
+
+export type VitalSample = PageContext & {
+  metricId: string;
+  name: Metric['name'];
+  value: number;
+  rating: Metric['rating'];
+  navigationType: Metric['navigationType'];
+};
+
+let installed = false;
+
+export function installVitals(
+  context: PageContext,
+  enqueue: (sample: VitalSample) => void,
+): void {
+  if (installed) return;
+  installed = true;
+  const pageContext = { ...context };
+
+  const report = (metric: Metric) => {
+    try {
+      enqueue({
+        ...pageContext,
+        metricId: metric.id,
+        name: metric.name,
+        value: metric.value,
+        rating: metric.rating,
+        navigationType: metric.navigationType,
+      });
+    } catch {
+      // Adapter telemetry không được làm hỏng ứng dụng.
+    }
+  };
+
+  onLCP(report);
+  onINP(report);
+  onCLS(report);
+}
+```
+
+Gọi `installVitals` một lần từ browser bootstrap của shell, không gọi từ render của từng remote. `enqueue` là adapter đồng bộ đưa sample vào hàng đợi transport của bạn; snippet không dựng ingestion endpoint, consent hoặc retry policy. Các function còn lại được gọi với options mặc định, không bật soft-navigation reporting.
+
+Giữ nguyên đơn vị: LCP và INP ở `ms`, CLS không có đơn vị. Một metric có thể được report cập nhật với cùng `metricId`; backend cần giữ snapshot mới nhất theo document/metric ID và thứ tự event do transport cung cấp, thay vì tính mỗi callback thành một visit mới hoặc cộng các `value`. Bfcache restore có thể tạo metric ID mới; dùng `navigationType` để phân tích riêng. Nếu không có INP vì không có tương tác đủ điều kiện hoặc API không được hỗ trợ, đừng điền `0` để làm đẹp p75.
+
+Context cố định giữ route ban đầu của document, không lấy URL tại lúc callback rồi coi đó là route tạo ra LCP. Với INP và CLS kéo dài qua nhiều route, cần event-time attribution nếu muốn điều tra route cụ thể. Release set thực tế, remote đang hoạt động và phase metrics nên được lưu qua facade riêng như trong bài observability; không đổi global `app_name` để quy toàn bộ Web Vitals cho remote cuối cùng vừa mount.
+
+## Giảm JavaScript trên đường tải chính
+
+### Chia code theo nhu cầu của route
+
+Mình mặc định chỉ tải code để hiển thị route hiện tại và thực hiện hành động chính của route đó. Trong shop, catalog không cần tải toàn bộ Cart UI chỉ để gửi `addItem` qua cart controller. Nhưng phần nghiệp vụ cần để thêm giỏ vẫn phải sẵn sàng; “lazy cart” không được làm nút thêm giỏ mất chức năng.
+
+| Phần code | Lựa chọn khởi đầu | Điều cần kiểm chứng |
+| --- | --- | --- |
+| Shell header, router, vùng fallback | Initial shell | Không kéo implementation mọi domain vào entry |
+| Catalog page | Tải khi route cần | Exposed module không import eager tất cả màn hình catalog |
+| Cart UI | Tải khi mở `/cart` | Controller dùng từ catalog không phụ thuộc ngược vào UI |
+| Chart, editor, export PDF | Tải khi mở feature tương ứng | Không bị barrel import hoặc side effect kéo vào initial graph |
+| Locale data, icon set | Chỉ import phần cần dùng | Bundler thực sự tree-shake được package/entry đó |
+
+Code splitting không làm tổng code tự nhỏ đi. Nó đổi thời điểm trả chi phí và có thể thêm round trips. Đừng tách mỗi component vài dòng thành một chunk; tách theo route hoặc feature có giá trị trì hoãn rõ ràng.
+
+Dùng analyzer trên production build để tìm import chain của module lớn, rồi đối chiếu Coverage khi chạy journey. Coverage cho biết phần chưa execute trong lần ghi cụ thể, không chứng minh phần đó có thể xóa: route khác, nhánh lỗi hoặc lazy action có thể cần nó.
+
+### Tìm duplicated dependencies
+
+Có hai chuyện khác nhau: dependency được emit vào nhiều artifact, và dependency thực sự được tải/chạy nhiều lần trong composition. Module Federation có thể giữ fallback local trong artifact nhưng chỉ consume một provider ở journey đang đo. Vì vậy không lấy tổng mọi file trong `dist` làm lượng JavaScript người dùng tải.
+
+Quy trình tìm duplication:
+
+1. Lưu stats/metafile của **shell và từng remote** ở đúng production release. Với webpack có thể xuất stats bằng `webpack --profile --json > stats.json`; với bundler khác dùng format analyzer tương ứng.
+2. So package name, version thực tế, resolved path và import request; chú ý root import, subpath import, alias và các bản ESM/CommonJS khác nhau.
+3. Chạy composition và kiểm tra chunks thực sự tải trong Network. Source maps/analyzer giúp xác định module nằm trong các chunk có tên hash.
+4. Nếu đang share dependency, kiểm tra provider được consume và policy runtime; chỉ thấy hai file tên `vendor` chưa chứng minh có hai React instance.
+5. Sau khi thay đổi, đo lại cả bytes lẫn CPU và test compatibility, không chỉ xem biểu đồ bundle đẹp hơn.
+
+Ví dụ giả định: shell và catalog đều đóng gói một date library. Chuyển catalog sang import hàm cần dùng có thể rẻ hơn share cả thư viện và tạo thêm runtime coupling. Với React component do shell render, hai React instance lại là vấn đề correctness cần xử lý, không chỉ vấn đề bytes.
+
+### Shared dependencies không phải tối ưu miễn phí
+
+Mình bắt đầu với danh sách shared nhỏ, có lý do cho từng package. React/renderer và Context identity cần policy tương thích rõ ràng khi component chạy trong tree của shell. Utility nhỏ, thuần và chỉ một remote dùng thường giữ local.
+
+Đừng bật `eager: true` hàng loạt để giảm waterfall. Với webpack Module Federation, eager đưa provided/fallback module vào initial chunks; bạn có thể tiết kiệm một async boundary nhưng tải nhiều code sớm hơn. Giữ async bootstrap mặc định, chỉ cân nhắc eager khi trace cho thấy lợi ích và budget vẫn đạt.
+
+`singleton` không chứng minh version tương thích, và `shared` root package không mặc định bao phủ mọi subpath. Tối ưu này phải đi cùng compatibility tests cho release set. Xem [Shared dependencies](/docs/module-federation/shared-dependencies) để đọc policy chi tiết, thay vì copy một cấu hình shared chung cho tất cả packages.
+
+## Chọn preload prefetch và cache
+
+Hint giống việc chuẩn bị trước món khách có thể gọi: chuẩn bị đúng giúp ít chờ, chuẩn bị cả thực đơn thì tranh bếp với món đang cần. Browser vẫn tự quyết định cách xử lý hint; không có đảm bảo mọi hint được tải hoặc giữ lại.
+
+| Cơ chế | Dùng khi nào | Không nên dùng khi nào |
+| --- | --- | --- |
+| `preconnect` | Biết origin critical sắp dùng, kết nối chưa mở | Cho mọi CDN/third party bất kể route |
+| `preload` | Tài nguyên cần cho navigation hiện tại nhưng được phát hiện muộn | Mọi chunk của mọi remote |
+| `modulepreload` | Entry/chunks là native ESM, URL và credentials mode phù hợp | Classic-script federation container chỉ vì tên file kết thúc bằng `.js` |
+| `prefetch` | Tài nguyên có xác suất dùng ở navigation tiếp theo | Network hạn chế, chưa ổn định LCP hoặc feature ít được mở |
+| Loader warmup trên intent | Focus/hover hoặc tín hiệu người dùng làm khả năng mở feature cao hơn | Top-level code có side effect không an toàn khi evaluate sớm |
+
+Preload có thể tranh bandwidth với ảnh LCP và CSS. Prefetch có độ ưu tiên thấp hơn nhưng vẫn dùng data/cache; không phải “miễn phí”. Nếu runtime có API preload/prefetch riêng, đọc xem nó chỉ fetch bytes hay còn init container, negotiate shared và evaluate module.
+
+Mọi hint phải trỏ đến **URL thuộc release đã pin**, không phải remote “latest” khác với URL loader dùng. Với preload, `as`, CORS và credentials mode phải phù hợp request tiêu thụ sau đó để tránh tải trùng; với ESM, `modulepreload` có semantics riêng. Luôn xác nhận reuse bằng Network trên browser mục tiêu.
+
+Cache hiệu quả giúp warm load, nhưng JavaScript từ disk cache vẫn cần parse/evaluate khi mở document mới. Giữ URL artifacts bất biến, dùng compression trên CDN, kiểm tra `Content-Encoding`, và để selection/config có policy freshness riêng. Không gắn cache một năm cho URL config mutable chỉ để điểm lab cao hơn. Chi tiết headers và tab cũ nằm ở bài [Caching và cache invalidation](/docs/trien-khai/caching).
+
+## Giảm CPU và layout cost sau khi tải xong
+
+Nếu Network đã nhanh nhưng click vẫn đơ, tiếp tục nén bundle không xử lý đúng nút thắt. Ghi Performance trace quanh tương tác chậm, xem main-thread tasks, event handling, scripting, style recalculation, layout và paint; dùng React Profiler nếu cần hiểu component nào render nhiều.
+
+| Triệu chứng | Nguyên nhân cần kiểm tra | Hướng xử lý khởi đầu |
+| --- | --- | --- |
+| Click thêm hàng chậm phản hồi | Handler làm validation nặng; subscriber khiến nhiều tree render lại | Paint pending sớm, giảm fan-out, chỉ cập nhật consumer cần dữ liệu đó |
+| Route mount gây long tasks | Evaluate thư viện lớn; xử lý toàn bộ data trong một task | Lazy feature không critical, chia tác vụ để nhường main thread; cân nhắc worker cho CPU work phù hợp |
+| Filter danh sách gây giật | Render hàng nghìn item, tính lại dữ liệu không cần thiết | Giới hạn/paginate hoặc virtualize sau khi kiểm tra accessibility và UX |
+| Quay lại route càng lúc càng chậm | Timers, subscriptions, observers hoặc roots không cleanup | Kiểm tra lifecycle qua nhiều vòng mount/unmount, heap và số listeners |
+| Slot nhảy khi remote đến | Skeleton và nội dung khác kích thước, ảnh không có dimensions | Dành chỗ phù hợp cho slot, khai báo kích thước/aspect ratio ảnh |
+| Layout toàn trang bị tính lại | CSS global của remote, đọc/ghi layout xen kẽ | Scope CSS, batch DOM reads/writes, kiểm tra style/layout trong trace |
+
+Nhiều roots hoặc Shadow DOM không biến mỗi remote thành một thread. Worker hữu ích cho công việc có thể tách khỏi DOM và trả kết quả qua message; chuyển data lớn vào worker cũng có chi phí. Không dùng worker để che vấn đề import/render boundary chưa rõ.
+
+`Promise.resolve()` hoặc chuỗi microtask không nhất thiết nhường cơ hội paint cho browser. Khi chia CPU work, dùng scheduler/yield phù hợp browser mục tiêu và đo lại responsiveness; không chỉ đổi function thành `async` rồi coi long task đã hết.
+
+Với SSR, HTML sớm có thể giúp LCP nhưng hydration và event handling vẫn tốn CPU. So initial HTML, hydration cost và tương tác sau hydrate; không suy từ “đã có nội dung trên server” thành “không cần JS budget”. Xem [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr) cho boundary cụ thể.
+
+## Đặt bundle budget cho composition
+
+### Chốt đơn vị và phạm vi đo
+
+Một budget phải có câu trả lời cho bốn câu hỏi: đo journey nào, trong cache state nào, tính những resources nào và dùng đơn vị gì.
+
+- **Raw JS bytes:** kích thước file minified trước HTTP compression; gần hơn với lượng code browser phải xử lý, nhưng không dự đoán chính xác CPU.
+- **Gzip/Brotli body bytes:** dung lượng sau compression; cùng thuật toán/settings mới so sánh được. Gzip estimate ở CI không phải Brotli bytes trên CDN.
+- **Transfer bytes:** bytes response theo phép đo network, có thể gồm headers; chịu ảnh hưởng cache/revalidation.
+- **Duration:** thời gian phase hoặc journey; chỉ so sánh khi môi trường và ready contract giống nhau.
+
+Quy định `1 KiB = 1024 bytes` và lưu số nguyên bytes trong config để tránh nhầm với kB. JS budget không bao phủ ảnh, font, CSS, API payload hay scripts third-party nếu bạn chưa đưa chúng vào scope riêng. Một hero image quá lớn vẫn có thể phá LCP khi JavaScript đạt budget.
+
+Budget composition phải tính runtime shell, provider shared thực sự dùng, remote entry, route chunks và mọi JS speculative được tải trước mốc ready trong journey. Một file immutable được tham chiếu nhiều lần bằng cùng URL thì đếm một lần cho unique-body budget; cùng bytes phát hành dưới hai URL và đều tải thì đếm cả hai. Nếu browser thực sự request cùng URL nhiều lần vì mismatch credentials/hints, cần network gate riêng để phát hiện — unique-body check không thấy lỗi đó.
+
+### Budget minh họa cho shop
+
+Các số sau **chỉ là điểm khởi đầu giả định cho lab**, không phải chuẩn ngành hoặc kết quả đo. Điều chỉnh dựa trên baseline của app, người dùng mục tiêu và critical journey.
+
+| Gate | Phạm vi | Giới hạn minh họa |
+| --- | --- | --- |
+| Initial catalog JS | Document cold load đến catalog ready; gồm shell và dependencies cần dùng | `900 KiB` raw và `240 KiB` gzip estimate |
+| Incremental cart JS | Code mới cần khi lần đầu chuyển catalog → cart trong cùng document | `320 KiB` raw và `80 KiB` gzip estimate |
+| Catalog ready trong lab | Cùng fixture, viewport và throttling profile qua nhiều lần chạy | Median không quá `3 s` |
+| Field experience | Mobile/desktop riêng, có đủ samples theo policy nội bộ | p75 LCP/INP/CLS đạt các ngưỡng tốt ở trên |
+
+Per-app budget vẫn có ích để review PR sớm, nhưng là gate bổ sung. Ba remote cùng đạt budget `100 KiB` không chứng minh route tải cả ba remote cùng shell đạt budget `240 KiB`.
+
+Ngoài hard cap, so delta với baseline để thấy regression khi còn dưới trần. Ví dụ, team có thể yêu cầu review khi gzip tăng trên `10 KiB`; đây cũng là policy minh họa. Không tự nâng trần theo build mới, vì cách đó biến gate thành phép đo không có giới hạn.
+
+### Script kiểm tra budget trong CI
+
+Script dưới đây là **unique JS body-size gate**, không phải crawler hoặc performance benchmark. Nó nén file bằng gzip level 9 để tạo estimate ổn định, không đọc transfer bytes và không kiểm tra duration. Chạy trong lab bằng Node.js 22 trở lên, không cần package ngoài.
+
+Input có hai loại file:
+
+1. Budget config do team sở hữu và review trong repository lab.
+2. Journey report do build/test adapter tạo: mỗi URL JS thực sự thuộc journey được ánh xạ đến file artifact local đúng release. Có thể lấy danh sách URL từ browser journey rồi nối với manifests/stats của các builds; bài này không cung cấp adapter cho từng bundler.
+
+Ví dụ input bên dưới rút gọn danh sách assets để dễ đọc. Trong CI, adapter phải liệt kê **toàn bộ** JS trong scope, kể cả dependency chunks; không chỉ liệt kê entry points. Các đường dẫn file tính từ thư mục chứa report.
+
+```json title="performance/budgets.json trong lab"
+{
+  "catalog-cold": {
+    "maxRawBytes": 921600,
+    "maxGzipBytes": 245760
+  },
+  "cart-incremental": {
+    "maxRawBytes": 327680,
+    "maxGzipBytes": 81920
+  }
+}
+```
+
+```json title="performance/journeys.json trong lab, danh sách rút gọn"
+{
+  "catalog-cold": [
+    {
+      "url": "https://shop.example.com/assets/shell.a1.js",
+      "file": "../artifacts/shell/assets/shell.a1.js"
+    },
+    {
+      "url": "https://cdn.example.com/catalog/releases/r18/remoteEntry.js",
+      "file": "../artifacts/catalog/r18/remoteEntry.js"
+    },
+    {
+      "url": "https://cdn.example.com/catalog/releases/r18/assets/page.b2.js",
+      "file": "../artifacts/catalog/r18/assets/page.b2.js"
+    }
+  ],
+  "cart-incremental": [
+    {
+      "url": "https://cdn.example.com/cart/releases/r9/remoteEntry.js",
+      "file": "../artifacts/cart/r9/remoteEntry.js"
+    },
+    {
+      "url": "https://cdn.example.com/cart/releases/r9/assets/page.c3.js",
+      "file": "../artifacts/cart/r9/assets/page.c3.js"
+    }
+  ]
+}
+```
+
+```js title="scripts/check-bundle-budget.mjs trong lab"
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
+
+const [budgetArg, reportArg] = process.argv.slice(2);
+assert(budgetArg && reportArg,
+  'Usage: node check-bundle-budget.mjs <budgets.json> <journeys.json>');
+const reportPath = resolve(reportArg);
+const budgets = JSON.parse(readFileSync(resolve(budgetArg), 'utf8'));
+const journeys = JSON.parse(readFileSync(reportPath, 'utf8'));
+const isObject = (value) => value !== null &&
+  typeof value === 'object' && !Array.isArray(value);
+assert(isObject(budgets) && isObject(journeys), 'Expected JSON objects');
+assert(Object.keys(budgets).length > 0, 'No budgets configured');
+assert.deepEqual(Object.keys(journeys).sort(), Object.keys(budgets).sort(),
+  'Journey names must match budgets exactly');
+
+// Một URL immutable phải luôn ánh xạ đến cùng artifact local.
+const artifactsByUrl = new Map();
+let failed = false;
+
+for (const [journey, limit] of Object.entries(budgets)) {
+  assert(isObject(limit), `Invalid budget: ${journey}`);
+  for (const key of ['maxRawBytes', 'maxGzipBytes']) {
+    assert(Number.isSafeInteger(limit[key]) && limit[key] > 0,
+      `Invalid ${key}: ${journey}`);
+  }
+
+  const assets = journeys[journey];
+  assert(Array.isArray(assets) && assets.length > 0,
+    `Missing assets: ${journey}`);
+  const seen = new Set();
+  let rawBytes = 0;
+  let gzipBytes = 0;
+
+  for (const asset of assets) {
+    assert(isObject(asset) && typeof asset.url === 'string' &&
+      typeof asset.file === 'string' && asset.file.trim(),
+      `Invalid asset: ${journey}`);
+    const url = new URL(asset.url);
+    assert(['http:', 'https:'].includes(url.protocol) &&
+      !url.hash && !url.username && !url.password,
+      `Invalid asset URL: ${asset.url}`);
+    const key = url.href;
+    const file = resolve(dirname(reportPath), asset.file);
+    if (artifactsByUrl.has(key)) {
+      assert.equal(artifactsByUrl.get(key), file,
+        `Conflicting artifact for URL: ${key}`);
+    } else {
+      artifactsByUrl.set(key, file);
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const body = readFileSync(file); // File thiếu làm CI fail, không bỏ qua.
+    assert(body.length > 0, `Empty artifact: ${file}`);
+    rawBytes += body.length;
+    gzipBytes += gzipSync(body, { level: 9 }).length;
+  }
+
+  const over = rawBytes > limit.maxRawBytes ||
+    gzipBytes > limit.maxGzipBytes;
+  console.log(`${over ? 'FAIL' : 'PASS'} ${journey}: ` +
+    `raw=${rawBytes}/${limit.maxRawBytes} bytes, ` +
+    `gzip=${gzipBytes}/${limit.maxGzipBytes} bytes`);
+  failed ||= over;
+}
+
+process.exitCode = failed ? 1 : 0;
+```
+
+Sau khi build tất cả artifacts cần và tạo report:
+
+```bash
+node scripts/check-bundle-budget.mjs \
+  performance/budgets.json performance/journeys.json
+```
+
+Một journey vượt raw hoặc gzip cap làm process exit `1`; thiếu input, journey hoặc artifact cũng fail. Script deduplicate theo URL trong từng journey, không theo tên package hoặc hash file. Hai URL khác nhau dùng cùng file local vẫn bị tính hai lần, vì đó là hai tài nguyên distinct đối với phép đo này.
+
+Adapter phải tự tính set difference cho `cart-incremental` so với modules/tài nguyên đã có sau catalog. Script không suy ra module cache hoặc readiness; nếu report không đầy đủ, số kết quả vẫn có thể thấp sai. Gắn report với release set, lưu danh sách URL và kiểm tra tính đầy đủ bằng browser test. Một journey hợp lệ không tải JS mới có thể được miễn gate incremental theo policy riêng; script này chủ động từ chối danh sách rỗng để tránh pass khi adapter bị hỏng.
+
+Giữ raw/gzip report và analyzer artifact trong CI để người review biết module nào tăng. Source maps, `.gz` sidecars và `.br` sidecars không phải JS body cần cộng thêm; runtime tải file JS với HTTP compression thì chỉ tính representation tương ứng một lần.
+
+## Đưa performance vào release độc lập
+
+Remote deploy độc lập không có nghĩa nó được tự quyết định mọi phần của budget. Shell/platform owner chịu trách nhiệm trải nghiệm toàn trang; remote owner chịu trách nhiệm phase, dependency và phần budget của mình. Hai bên cùng review khi remote cần thêm code vào critical path.
+
+Một pipeline có thể chia thành các lớp:
+
+1. **PR/build của remote:** production analyzer, local asset delta, per-app budget và correctness tests. Pin toolchain/compression settings để diff có ý nghĩa.
+2. **Composition preview:** candidate remote ghép với shell và các release đang hỗ trợ; tạo journey report và chạy unique-body budget, browser journey, lab traces. Không chỉ đo standalone remote.
+3. **Canary:** so RUM theo candidate và baseline với device/route cohorts tương đương; theo dõi sample count, readiness success, errors và abandonment bên cạnh p75.
+4. **Promote hoặc rollback:** theo release policy đã chốt; exceptions về budget phải có owner, lý do, phạm vi và hạn xem lại.
+
+Lưu `shell_release`, release thực tế của từng remote, runtime config revision và browser/lab profile cùng kết quả đo. Trong giai đoạn chuyển tiếp cần test cả tab cũ và document mới khi phù hợp compatibility window; remote mới có thể làm chậm một tổ hợp host cũ dù tổ hợp mới đạt gate.
+
+Không so hai p75 trên cohorts khác nhau rồi kết luận deploy gây regression. CDN cache chưa warm, traffic mix, auth state hoặc backend latency cũng có thể thay đổi. Chốt cửa sổ quan sát, số samples tối thiểu và mức regression chấp nhận trước rollout; số cụ thể phụ thuộc traffic và SLO, không có một con số đúng cho mọi shop.
+
+Nếu rollback selection, code đã evaluate trong tab đang mở không tự unload. Kiểm tra document mới nhận release nào, có giữ artifacts cũ và policy cho tab cũ. Xem [Rollout và rollback](/docs/trien-khai/rollout-rollback) thay vì purge mọi cache như một bước mặc định.
+
+## Runbook khi performance giảm sau deploy
+
+Ưu tiên khôi phục user journey đang bị ảnh hưởng. Sau đó mới chọn tối ưu dài hạn.
+
+1. Xác nhận metric nào giảm, trên route/device nào, từ thời điểm nào; kiểm tra sample count và tỷ lệ errors/abandonment.
+2. Lấy release set **thực tế đã chạy**, không chỉ phiên bản dự kiến trong deployment dashboard.
+3. Tái hiện bằng production artifacts trong cold load, warm load hoặc route transition tương ứng. Lưu Network và Performance trace đã loại dữ liệu nhạy cảm.
+4. Phân loại theo bảng dưới; mỗi lần thử một thay đổi để còn giải thích được kết quả.
+5. Nếu vượt tiêu chí rollback đã chốt, dừng promote hoặc rollback selection qua quy trình release. Không chờ bundle optimization nếu journey chính đang không dùng được.
+
+| Dấu hiệu | Kiểm tra trước | Hành động khởi đầu |
+| --- | --- | --- |
+| LCP tăng, chunks bắt đầu muộn | Config, Initiator chain, data fetching nối tiếp | Bỏ dependency nhân tạo; tải song song nhánh độc lập |
+| Bytes tăng sau remote release | Composition report, stats, version/subpath imports | Gỡ import kéo cả package; lazy feature không critical; review shared policy |
+| Bytes không đổi nhưng startup CPU tăng | Script evaluation, parse/compile, import side effects | So module/code mới và main-thread trace, không chỉ compression |
+| INP tăng khi thao tác giỏ | Event handler, subscriber fan-out, renders của cả shell và remote | Giảm công việc đồng bộ và cập nhật consumer không cần thiết |
+| CLS tăng sau mount | Skeleton, ảnh/font, CSS tác động ngoài slot | Giữ dimensions, ổn định layout và scope CSS |
+| Chỉ warm load bị lỗi hoặc chậm | Cache policy, URL mutable, service worker, tab cũ | Tái hiện từng lớp cache; sửa release graph/policy đúng lớp |
+| Ready nhanh hơn nhưng abandonment tăng | Mẫu số, timeouts, định nghĩa ready vừa đổi | Khôi phục phép đo đúng; không diễn giải histogram success đơn độc |
+
+Không bật preload cho mọi remote để chữa một waterfall chưa hiểu. Nếu nguyên nhân là task dài, preload chỉ có thể đưa task đó đến sớm hơn và cạnh tranh với nội dung critical.
+
+## Checklist trước production
+
+- [ ] Có ít nhất một critical journey với điểm ready và kết quả nghiệp vụ rõ ràng.
+- [ ] Đã đo cold document, warm document và SPA transition trên cùng release set.
+- [ ] Có Network waterfall và Performance trace của production build, không lấy dev server làm baseline.
+- [ ] Shell thu thập Web Vitals một lần; remote báo phase/readiness qua contract.
+- [ ] RUM giữ đúng đơn vị, deduplicate cập nhật metric và không điền metric thiếu thành `0`.
+- [ ] Cross-origin Resource Timing có policy TAO cần thiết; không suy cache hit từ `transferSize` đơn độc.
+- [ ] Analyzer/stats của các builds đã được đối chiếu với chunks thực sự tải.
+- [ ] Shared dependency thay đổi đã qua compatibility tests, không chỉ size gate.
+- [ ] Composition budget tính cả shell, providers, remote entry, route chunks và JS speculative trong scope.
+- [ ] Journey report đầy đủ, ánh xạ đúng artifacts và gate fail khi dữ liệu thiếu.
+- [ ] Có budget/signal riêng cho images, CSS, fonts, API và third-party resources khi chúng ảnh hưởng journey.
+- [ ] Skeleton, ảnh và lifecycle cleanup đã được kiểm tra qua nhiều vòng chuyển route.
+- [ ] Canary có sample policy, owner và tiêu chí rollback; exception budget có hạn xem lại.
+
+Để bắt đầu, chọn `/catalog` cold load, ghi một trace và đánh dấu bước khiến sản phẩm xuất hiện muộn nhất. Sửa một dependency trên đường đó, giữ cùng fixture/profile rồi đo lại; chỉ thêm preload hoặc shared dependency khi dữ liệu cho thấy chúng giải quyết đúng chi phí.
+
+## Tài liệu tham khảo
+
+- [Web Vitals — web.dev](https://web.dev/articles/vitals): metrics, ngưỡng tốt, p75 và vai trò của field/lab measurement.
+- [web-vitals — GoogleChrome](https://github.com/GoogleChrome/web-vitals): API, reporting lifecycle, attribution, browser support và giới hạn iframe; kiểm tra docs của version đang pin.
+- [PerformanceResourceTiming transferSize — MDN](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming/transferSize): transfer bytes, cache reuse và TAO.
+- [Preload modules — web.dev](https://web.dev/articles/modulepreload): semantics của modulepreload so với preload script.
+- [ModuleFederationPlugin — webpack](https://webpack.js.org/plugins/module-federation-plugin/): shared hints, eager và cấu hình container.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Chọn provider, singleton và version policy mà không kéo mọi package vào runtime coupling." />
+  <Card title="Logs, metrics và tracing" href="/docs/kiem-thu-va-tooling/observability" description="Gắn phase metrics và trải nghiệm người dùng với app, release và operation." />
+  <Card title="Caching và cache invalidation" href="/docs/trien-khai/caching" description="Giữ artifact URL bất biến và hiểu cache ở CDN, browser và document đang chạy." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Đặt canary, pin release set và xử lý regression sau deploy độc lập." />
+</Cards>

@@ -1,18 +1,604 @@
 ---
 title: "Runtime configuration"
-description: "Quản lý manifests, remote URLs và cấu hình môi trường không chứa secrets."
+description: "Tách cấu hình khỏi frontend artifact: thiết kế manifest, kiểm tra remote URLs, giữ snapshot theo document và promote cấu hình không chứa secrets."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn đã kiểm thử shell ở staging và muốn đưa đúng artifact đó lên production. Nếu địa chỉ catalog và API đã được nhúng vào JavaScript lúc build, đổi biến môi trường khi deploy không làm bundle tự thay đổi. Bạn phải build lại, và artifact vừa kiểm thử không còn là artifact đang promote.
+
+Runtime configuration tách những quyết định có thể thay đổi — môi trường, remote release, một số feature flags — ra khỏi bundle. Shell đọc cấu hình trước khi dùng nó để tải remote. Nhưng file JSON này cũng có thể làm cả shop không khởi động, hoặc đưa code ngoài ý muốn vào cùng window. Vì vậy, mình xem **thay cấu hình là một lần release**, có validation, review và rollback như thay code.
+
+<Callout type="info" title="Phạm vi và môi trường ví dụ">
+  Bài dùng shop giả định gồm shell, catalog và cart. Các snippet TypeScript dành cho shell CSR trong một lab riêng, với remote dạng classic script container của webpack 5; không phải code sẵn có trong repository docs. Sơ đồ text hiển thị trực tiếp, không cần Mermaid. Cách nối loader vào federation được trình bày ở [Dynamic remotes](/docs/module-federation/dynamic-remotes); bài này tập trung vào hợp đồng cấu hình và vận hành.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chốt cấu hình ở thời điểm nào](#chốt-cấu-hình-ở-thời-điểm-nào)
+  - [Build time deploy time và runtime](#build-time-deploy-time-và-runtime)
+  - [Những gì nên và không nên đưa vào runtime config](#những-gì-nên-và-không-nên-đưa-vào-runtime-config)
+- [Chọn cách cung cấp cấu hình](#chọn-cách-cung-cấp-cấu-hình)
+- [Thiết kế manifest của shop](#thiết-kế-manifest-của-shop)
+  - [Schema và ý nghĩa từng field](#schema-và-ý-nghĩa-từng-field)
+  - [Phân biệt các loại manifest](#phân-biệt-các-loại-manifest)
+  - [Version schema khác version artifact](#version-schema-khác-version-artifact)
+- [Đọc và kiểm tra cấu hình trước khi bootstrap](#đọc-và-kiểm-tra-cấu-hình-trước-khi-bootstrap)
+  - [Kiểm tra schema môi trường và URL](#kiểm-tra-schema-môi-trường-và-url)
+  - [Fetch có deadline và giữ một snapshot](#fetch-có-deadline-và-giữ-một-snapshot)
+  - [Đặt async boundary trước ứng dụng](#đặt-async-boundary-trước-ứng-dụng)
+- [Truyền cấu hình qua boundary](#truyền-cấu-hình-qua-boundary)
+  - [Shell sở hữu remote resolution](#shell-sở-hữu-remote-resolution)
+  - [Feature flag không phải authorization](#feature-flag-không-phải-authorization)
+- [Cache và thời điểm nhận cấu hình mới](#cache-và-thời-điểm-nhận-cấu-hình-mới)
+  - [Config endpoint khác immutable artifact](#config-endpoint-khác-immutable-artifact)
+  - [Tab cũ rollout và kill switch](#tab-cũ-rollout-và-kill-switch)
+- [Sinh publish và rollback cấu hình](#sinh-publish-và-rollback-cấu-hình)
+  - [Tạo candidate bằng JSON serializer](#tạo-candidate-bằng-json-serializer)
+  - [Publish theo thứ tự an toàn](#publish-theo-thứ-tự-an-toàn)
+  - [Rollback bằng revision mới](#rollback-bằng-revision-mới)
+- [Môi trường preview và SSR](#môi-trường-preview-và-ssr)
+- [Xử lý lỗi và last known good](#xử-lý-lỗi-và-last-known-good)
+- [Kiểm thử và chẩn đoán](#kiểm-thử-và-chẩn-đoán)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chốt cấu hình ở thời điểm nào
 
-Bài này sẽ giúp bạn: quản lý manifests, remote URLs và cấu hình môi trường không chứa secrets.
+### Build time deploy time và runtime
 
-[Xem các bài trong nhóm Triển khai](/docs/trien-khai).
+Một giá trị có nguồn từ environment variable không có nghĩa là browser đọc nó ở runtime. Điều cần hỏi là: **giá trị này được lấy ở bước nào, và nằm ở đâu sau bước đó?**
+
+| Thời điểm | Ví dụ | Khi đổi giá trị |
+| --- | --- | --- |
+| Build time | Bundler thay hằng số API URL; Next.js inline `NEXT_PUBLIC_*` vào client bundle | Phải tạo bundle mới |
+| Deploy time | Pipeline hoặc container startup tạo file JSON bên cạnh assets | Có thể giữ nguyên JS/CSS artifact, nhưng cần publish config mới |
+| Runtime phía browser | Shell fetch `/runtime/config.json` khi document khởi động | Document mới nhận response theo policy cache |
+| Runtime phía server | Server đọc deployment config khi xử lý request động | Chỉ ảnh hưởng client nếu server gửi phần public cho client; vẫn phụ thuộc cache/render policy |
+
+Deploy-time generation và runtime consumption thường đi cùng nhau: pipeline tạo JSON khi deploy, browser đọc JSON khi chạy. Bạn không cần dựng một config service chỉ để phục vụ vài field công khai.
+
+Trong Next.js, `NEXT_PUBLIC_*` dùng trong client bundle được chốt lúc build. Thay biến trong container sau `next build` không cập nhật giá trị đã inline. Với static export như site docs này, không có Next.js server đọc env theo request; runtime endpoint phải là file hoặc service do hosting bên ngoài phục vụ.
+
+### Những gì nên và không nên đưa vào runtime config
+
+Mình đưa vào config những giá trị đã nằm trong contract mà shell hiểu, có thể thay mà không sửa cấu trúc code. Ví dụ: chọn catalog r18 thay r17, tắt route cart trước lần mount mới, hoặc bật một UI variant đã có trong cart artifact.
+
+| Nhóm | Nên đặt ở đâu | Lý do |
+| --- | --- | --- |
+| Remote entry URL và release | Runtime config, trong allowlist của shell | Promote artifact mà không rebuild shell |
+| Public API path hoặc endpoint | Runtime config nếu cần; ưu tiên same-origin `/api` | Tránh phân tán policy network và credentials |
+| UI flags đã có implementation | Runtime config hoặc flag service có contract riêng | Thay hành vi nằm trong code đã phát hành |
+| Shared React policy, remote format, alias compile-time | Build/integration config | JSON không thể thay dependency graph đã compile |
+| Password, private API key, signing key | Secret store phía server/CI | Browser không thể giữ bí mật trước người dùng |
+| Access token, user profile, cart data | Luồng auth và domain data riêng | Không trộn dữ liệu theo user vào config triển khai |
+
+<Callout type="warn" title="Public nghĩa là người dùng đọc được">
+  JSON, `window.__CONFIG__`, inline script và biến được nhúng vào bundle đều là dữ liệu public khi gửi tới browser. Base64, minification hoặc yêu cầu đăng nhập để lấy config không biến nó thành nơi chứa secrets. Một số SDK có public identifier được thiết kế để lộ; chỉ dùng theo contract của SDK, không nhầm với credential có quyền quản trị.
+</Callout>
+
+Nếu host và remote luôn release cùng nhau, URL tĩnh theo version có thể đơn giản hơn. Runtime config đáng dùng khi thực sự cần promote cùng artifact giữa môi trường hoặc chọn release độc lập, không phải để chuyển mọi hằng số ra một file JSON.
+
+## Chọn cách cung cấp cấu hình
+
+| Cách cung cấp | Điểm được | Điểm cần xử lý |
+| --- | --- | --- |
+| Fetch JSON same-origin | Dữ liệu tách khỏi code; dễ kiểm tra và version; phù hợp hosting tĩnh | Thêm request vào bootstrap và failure mode network |
+| Dữ liệu nhúng trong HTML do server tạo | Không cần request config riêng; thuận lợi để pin SSR snapshot | HTML cache phải khớp cohort; serialize an toàn theo context HTML |
+| Script `runtime-config.js` gán global | Dễ ghép với một số hệ thống legacy | Config trở thành executable JavaScript; phụ thuộc thứ tự tải, CSP và global mutation |
+| Config service chọn cohort | Chọn release/flags theo policy tập trung | Thêm service cần availability, privacy và cache isolation |
+
+Mặc định mình chọn **JSON same-origin** cho shell CSR. Endpoint có thể phục vụ file được sinh khi deploy; chưa cần dịch vụ động. Same-origin cũng giúp không phải mở CORS chỉ cho bước lấy config.
+
+Nếu đã SSR, truyền public snapshot cùng response thường hợp lý hơn việc browser fetch một revision khác ngay trước hydration. Không nội suy raw JSON vào `<script>` bằng nối chuỗi: chuỗi chứa `</script>` có thể thoát khỏi context HTML. Dùng cơ chế serialization an toàn của framework, chỉ truyền field được allowlist và áp dụng CSP phù hợp. JSON serialization đúng cú pháp chưa đồng nghĩa với escaping đúng context HTML.
+
+## Thiết kế manifest của shop
+
+### Schema và ý nghĩa từng field
+
+Endpoint `/runtime/config.json` trả một document nhất quán. Ví dụ sau dùng domain và revision minh họa; bạn phải thay domain bằng deployment của lab trước khi chạy.
+
+```json title="Response minh họa của /runtime/config.json"
+{
+  "schemaVersion": 1,
+  "revision": "demo-config-42",
+  "environment": "production",
+  "apiBasePath": "/api",
+  "flags": {
+    "newCartSummary": false
+  },
+  "remotes": {
+    "catalog": {
+      "enabled": true,
+      "scope": "catalog_app",
+      "entry": "https://assets.example.com/catalog/r18/remoteEntry.js",
+      "release": "r18",
+      "contractVersion": 1
+    },
+    "cart": {
+      "enabled": true,
+      "scope": "cart_app",
+      "entry": "https://assets.example.com/cart/r7/remoteEntry.js",
+      "release": "r7",
+      "contractVersion": 1
+    }
+  }
+}
+```
+
+| Field | Contract trong ví dụ |
+| --- | --- |
+| `schemaVersion` | Shell chỉ hiểu schema major `1` |
+| `revision` | ID duy nhất cho một lần publish config; dùng audit và telemetry |
+| `environment` | `staging` hoặc `production`, phải khớp origin của shell |
+| `apiBasePath` | Cố định `/api`; gateway của từng môi trường chọn backend tương ứng |
+| `flags.newCartSummary` | Boolean, không dùng string `"false"`; UI variant đã tồn tại trong artifact |
+| `remotes.<name>.enabled` | Cho phép lần resolve/mount mới; không unload code đang chạy |
+| `scope` | Global container đã thống nhất với loader, không tùy ý đổi theo release |
+| `entry` | URL tuyệt đối tới classic script entry trong release prefix bất biến |
+| `release` | ID của cả artifact graph; ví dụ r18 gồm entry, chunks, CSS và assets |
+| `contractVersion` | Major public API shell chấp nhận, không phải version framework |
+
+Cấu hình giống một phiếu điều phối: nó nói dùng hàng từ kho nào, không sửa được hàng đã lấy ra. Đổi `entry` chỉ chọn code cho lượt tải chưa xảy ra; không sửa module cache hoặc instance đã mount.
+
+Một snapshot chung cho catalog và cart giúp hai remote không tự đọc hai revision khác nhau khi có promote giữa chừng. Nó **không** chứng minh hai release tương thích; contract tests và kiểm thử tổ hợp artifact vẫn phải làm riêng.
+
+### Phân biệt các loại manifest
+
+Trong micro-frontend, từ “manifest” có thể chỉ nhiều thứ khác nhau:
+
+- **Application runtime manifest:** JSON do team thiết kế như ví dụ trên, chọn môi trường và remote release. Shell tự fetch, validate và đưa descriptor cho loader.
+- **Federation manifest:** `mf-manifest.json` do integration Module Federation enhanced sinh, chứa metadata để runtime tương ứng resolve remote entry và assets. Không có schema như JSON của shop.
+- **Import map:** ánh xạ module specifier sang URL cho cơ chế ESM; thời điểm đăng ký và resolution tuân theo import-map semantics.
+
+Có thể xếp hai lớp: runtime config chọn URL `mf-manifest.json` của một release, rồi enhanced runtime đọc artifact đó. Nhưng loader webpack gốc dạng script phải nhận JavaScript entry, không phải JSON manifest. Ví dụ trong bài cố ý chỉ chấp nhận `/remoteEntry.js`; không áp dụng nguyên validator này cho ESM hoặc enhanced runtime.
+
+### Version schema khác version artifact
+
+Giữ ba khái niệm tách biệt: `schemaVersion` nói shell có đọc được cấu hình không; `contractVersion` nói shell có hiểu API remote không; `release` nói artifact cụ thể nào được chọn. Bump catalog r18 lên r19 không nhất thiết đổi hai version còn lại.
+
+Với field mới không bắt buộc, shell cũ có thể bỏ qua, còn shell mới dùng default đã xác định. Validator bên dưới chỉ giữ các field nó hiểu, nên không truyền raw fields xuống remote. Đừng đổi một field từ boolean thành string mà vẫn gọi đó là schema 1.
+
+Khi cần breaking schema, deploy reader hỗ trợ trước, xác nhận cả shell cũ còn được phục vụ và các tab đang sống, rồi mới publish writer dùng schema mới. Có thể cần endpoint theo schema major hoặc selector theo shell compatibility; một `/config.json` chung không thể mặc nhiên phục vụ mọi shell lịch sử.
+
+## Đọc và kiểm tra cấu hình trước khi bootstrap
+
+Luồng khởi động mong muốn là:
+
+```text
+Bootstrap ──► Fetch JSON ──► Validate + pin snapshot ──► Start shell
+                                                          │
+                                                          ▼
+                                              Resolve remote khi cần
+```
+
+Lấy JSON thành công chưa đủ. `response.json() as RuntimeConfig` chỉ thuyết phục TypeScript, không kiểm tra response server, file deploy sai hay dữ liệu bị sửa.
+
+### Kiểm tra schema môi trường và URL
+
+Module sau là policy hẹp cho hai remote đã biết. Cùng shell artifact có thể chạy ở staging và production vì biết trước cả hai origin tin cậy; config chọn release chứ không được quyền tự khai báo thêm origin tin cậy.
+
+```ts title="shell/src/runtime-config.ts — phần 1"
+type Environment = 'staging' | 'production';
+type RemoteName = 'catalog' | 'cart';
+
+type RemoteSpec = Readonly<{
+  enabled: boolean;
+  scope: string;
+  entry: string;
+  release: string;
+  contractVersion: 1;
+}>;
+
+export type RuntimeConfig = Readonly<{
+  schemaVersion: 1;
+  revision: string;
+  environment: Environment;
+  apiBasePath: '/api';
+  flags: Readonly<{ newCartSummary: boolean }>;
+  remotes: Readonly<Record<RemoteName, RemoteSpec>>;
+}>;
+
+const POLICY = {
+  staging: {
+    shellOrigin: 'https://staging.shop.example.com',
+    assetOrigin: 'https://staging-assets.example.com',
+  },
+  production: {
+    shellOrigin: 'https://shop.example.com',
+    assetOrigin: 'https://assets.example.com',
+  },
+} as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseRemote(
+  name: RemoteName,
+  value: unknown,
+  assetOrigin: string,
+): RemoteSpec {
+  if (
+    !isRecord(value) || typeof value.enabled !== 'boolean' ||
+    value.scope !== `${name}_app` || value.contractVersion !== 1 ||
+    typeof value.release !== 'string' || !/^r[1-9]\d*$/.test(value.release) ||
+    typeof value.entry !== 'string'
+  ) {
+    throw new Error(`CONFIG_REMOTE_INVALID:${name}`);
+  }
+
+  const url = new URL(value.entry); // URL sai cú pháp cũng bị reject.
+  if (
+    url.protocol !== 'https:' || url.origin !== assetOrigin ||
+    url.username || url.password || url.search || url.hash ||
+    url.pathname !== `/${name}/${value.release}/remoteEntry.js`
+  ) {
+    throw new Error(`CONFIG_REMOTE_URL_DENIED:${name}`);
+  }
+
+  return Object.freeze({
+    enabled: value.enabled,
+    scope: value.scope,
+    entry: url.href,
+    release: value.release,
+    contractVersion: 1,
+  });
+}
+
+export function validateConfig(
+  value: unknown,
+  shellOrigin: string,
+): RuntimeConfig {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
+    throw new Error('CONFIG_SCHEMA_UNSUPPORTED');
+  }
+  const environment = value.environment;
+  if (environment !== 'staging' && environment !== 'production') {
+    throw new Error('CONFIG_ENVIRONMENT_INVALID');
+  }
+  const policy = POLICY[environment];
+  if (shellOrigin !== policy.shellOrigin) {
+    throw new Error('CONFIG_ENVIRONMENT_MISMATCH');
+  }
+  if (
+    typeof value.revision !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(value.revision) ||
+    value.apiBasePath !== '/api' || !isRecord(value.flags) ||
+    typeof value.flags.newCartSummary !== 'boolean' ||
+    !isRecord(value.remotes)
+  ) {
+    throw new Error('CONFIG_FIELDS_INVALID');
+  }
+
+  return Object.freeze({
+    schemaVersion: 1,
+    revision: value.revision,
+    environment,
+    apiBasePath: '/api',
+    flags: Object.freeze({ newCartSummary: value.flags.newCartSummary }),
+    remotes: Object.freeze({
+      catalog: parseRemote('catalog', value.remotes.catalog, policy.assetOrigin),
+      cart: parseRemote('cart', value.remotes.cart, policy.assetOrigin),
+    }),
+  });
+}
+```
+
+Validator so exact origin và exact release path. Kiểm tra prefix chuỗi như `startsWith('https://assets.example.com')` có thể cho lọt `assets.example.com.attacker.invalid`. Code cũng chặn credentials, query và hash trong entry URL; descriptor `enabled: false` vẫn phải hợp lệ để có thể kiểm tra toàn snapshot.
+
+Policy không đọc allowlist từ chính JSON đang validate. Nếu JSON vừa khai báo URL vừa khai báo “URL này đáng tin”, validation không còn ranh giới trust. Trong lab có localhost hoặc preview, thêm một policy riêng được kiểm soát; không tự động tắt HTTPS/origin checks khi request thất bại.
+
+`Object.freeze` chỉ shallow. Ví dụ freeze riêng từng object con vì snapshot này chỉ chứa primitives và các object đã biết. Với schema lớn hơn, dùng schema validator và chiến lược immutable phù hợp, nhưng vẫn giữ semantic checks như environment–origin và release–path.
+
+<Callout type="warn" title="Allowlist không chứng minh code an toàn">
+  Một entry trên CDN được phép vẫn có thể chứa code nguy hiểm nếu artifact hoặc quyền publish bị compromise. Config có quyền chọn code chạy trong cùng window, nên cần least-privilege cho pipeline, bảo vệ storage/CDN, review thay đổi, CSP và kiểm thử artifact. CORS không phải cơ chế xác nhận một remote đáng tin; một số cách tải classic script có thể chạy cross-origin mà không cần CORS cho entry.
+</Callout>
+
+### Fetch có deadline và giữ một snapshot
+
+Thêm đoạn sau vào cùng module. Thời hạn 5 giây chỉ là giá trị minh họa; chọn theo mục tiêu bootstrap của sản phẩm.
+
+```ts title="shell/src/runtime-config.ts — phần 2"
+let snapshotPromise: Promise<RuntimeConfig> | undefined;
+
+async function fetchConfig(): Promise<RuntimeConfig> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch('/runtime/config.json', {
+      mode: 'same-origin',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'error',
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`CONFIG_HTTP:${response.status}`);
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.split(';')[0].trim().toLowerCase() !== 'application/json') {
+      throw new Error('CONFIG_CONTENT_TYPE_INVALID');
+    }
+    const value: unknown = await response.json();
+    return validateConfig(value, window.location.origin);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function getRuntimeConfig(): Promise<RuntimeConfig> {
+  snapshotPromise ??= fetchConfig();
+  return snapshotPromise;
+}
+```
+
+Mọi caller trong shell dùng cùng Promise, kể cả khi gọi đồng thời. Promise reject cũng được giữ; không để mỗi remote tự retry và nhận revision khác nhau. Đây là snapshot **theo document đang sống**, không phải theo phiên đăng nhập và không persist qua reload.
+
+Timer abort request fetch và việc đọc body đang chờ; nó không preempt phần parse/validate đồng bộ đã chạy trên main thread. Giữ payload nhỏ, giới hạn kích thước ở server và không dùng config endpoint để trả danh sách sản phẩm hoặc dữ liệu domain lớn.
+
+### Đặt async boundary trước ứng dụng
+
+Bootstrap chỉ phụ thuộc vào config loader và UI lỗi cục bộ. Không static-import module có thể tải remote trước khi cấu hình sẵn sàng.
+
+```ts title="shell/src/bootstrap.ts"
+import { getRuntimeConfig } from './runtime-config';
+
+async function bootstrap() {
+  const root = document.getElementById('app');
+  if (!root) throw new Error('APP_ROOT_MISSING');
+
+  try {
+    const config = await getRuntimeConfig();
+    const { startShell } = await import('./app');
+    await startShell(root, config);
+  } catch {
+    // Không hiển thị raw error, response body hoặc URL cho người dùng.
+    const message = document.createElement('p');
+    message.setAttribute('role', 'alert');
+    message.textContent = 'Không thể khởi động cửa hàng. Vui lòng thử lại.';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Tải lại';
+    retry.addEventListener('click', () => window.location.reload());
+    root.replaceChildren(message, retry);
+  }
+}
+
+void bootstrap();
+```
+
+`./app` là module lab bạn cần cung cấp, export `startShell(root, config)` và cấu hình resolver dùng snapshot này trước lần federated import đầu tiên. Bootstrap không phải một implementation loader. Với webpack promise-based remote, nối resolver theo [Dynamic remotes](/docs/module-federation/dynamic-remotes), nhưng thay nguồn manifest bằng snapshot chung; không fetch thêm `/runtime/remotes.json` riêng cho mỗi alias.
+
+Failure UI không phụ thuộc catalog/cart, nếu không lỗi config lại cần tải chính remote chưa resolve được để hiển thị lỗi. Ví dụ gom lỗi config và `startShell` vào cùng UI; production nên ghi phase và mã lỗi đã chuẩn hóa qua telemetry best-effort của shell để phân biệt hai nguồn lỗi.
+
+## Truyền cấu hình qua boundary
+
+### Shell sở hữu remote resolution
+
+Shell/platform sở hữu schema và policy đọc config. Team catalog/cart sở hữu artifact, public contract và behavior của remote; pipeline deploy cung cấp release descriptor đã kiểm chứng. Quyền publish config production không nên mặc nhiên đi kèm quyền upload bất kỳ artifact nào.
+
+Sau validation, shell dùng descriptor để chọn container. Remote chỉ nhận phần nó cần qua integration contract: API capability, flag cho UI và metadata phục vụ quan sát. Đừng đưa toàn bộ manifest vào một global mà mọi remote có thể sửa.
+
+```ts title="Ý tưởng context truyền vào cart, không phải API của webpack"
+const cartContext = Object.freeze({
+  apiBasePath: config.apiBasePath,
+  newCartSummary: config.flags.newCartSummary,
+  configRevision: config.revision,
+});
+```
+
+Trong thực tế, nếu cart cần gọi một thao tác có auth, mình ưu tiên truyền capability được giới hạn như `readCart()` hơn là phát tán token hoặc cho remote chọn một API URL tùy ý. Nếu remote tự fetch HTTP, contract phải nói rõ same-origin path, credentials policy và error semantics.
+
+Thêm alias `checkout` vào JSON không khiến shell webpack đã compile tự hiểu `import('checkout/Page')`. Muốn registry thực sự mở ở runtime phải thiết kế loader/integration tương ứng; đây là thay đổi kiến trúc, không chỉ thêm field.
+
+### Feature flag không phải authorization
+
+Flag `newCartSummary` chỉ chọn UI đã có trong code. Backend vẫn phải kiểm tra quyền và nghiệp vụ cho mọi operation; người dùng có thể sửa client flag, gọi API trực tiếp hoặc giữ tab chạy config cũ.
+
+`enabled: false` là quyết định orchestration cho các lần resolve/mount mới. Loader phải kiểm tra field này và shell cần fallback đúng nghĩa, ví dụ thông báo cart tạm không khả dụng. Không biến lỗi remote thành “giỏ hàng trống” vì đó là khẳng định dữ liệu mà ứng dụng chưa đọc được.
+
+Nếu flag cần thay trong lúc document đang chạy, tách một cơ chế flag refresh có contract riêng. Chỉ cập nhật những hành vi an toàn, không thay toàn bộ remote release map giữa một operation. Một UI variant mới cũng có thể không tương thích với cart cũ; pipeline phải kiểm tra flag–release combination chứ không chỉ JSON có boolean hợp lệ.
+
+## Cache và thời điểm nhận cấu hình mới
+
+### Config endpoint khác immutable artifact
+
+Bài chọn một policy dễ kiểm chứng trước: config mutable không cache; artifacts theo release được cache dài.
+
+```http title="Headers cho /runtime/config.json"
+Content-Type: application/json; charset=utf-8
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
+```
+
+```http title="Headers cho assets trong prefix release bất biến"
+Cache-Control: public, max-age=31536000, immutable
+```
+
+Header artifact áp dụng cả entry nếu URL của entry thực sự bất biến như `/catalog/r18/remoteEntry.js`. Không dùng policy đó cho `/catalog/latest/remoteEntry.js` rồi ghi đè nội dung mỗi lần deploy. Chunks và asset graph phải cùng release, không chỉ entry có tên version.
+
+`fetch(..., { cache: 'no-store' })` điều khiển HTTP cache của browser; nó không tự sửa CDN rule hoặc bypass service worker dùng Cache Storage. Cần cấu hình endpoint ở hosting/CDN để không bị rule “cache everything”, và loại config khỏi precache hoặc stale-response handler của service worker. Đừng để SPA fallback trả `index.html` với HTTP 200 cho config bị thiếu; validator sẽ từ chối content type, nhưng deploy vẫn đang lỗi.
+
+Khi cần giảm tải config endpoint, có thể chuyển sang `Cache-Control: no-cache` với ETag và revalidation, hoặc TTL ngắn có freshness budget rõ ràng. `no-cache` **cho phép lưu nhưng yêu cầu validate trước reuse**, khác `no-store`. Chỉ thêm stale-while-revalidate nếu chấp nhận document mới nhận config cũ trong cửa sổ đã công bố.
+
+Với response chọn theo cookie/cohort, không dùng shared cache chung chỉ dựa vào URL. Policy cache key phải thực sự phân biệt response hoặc bỏ shared cache; `private, no-store` là điểm khởi đầu thận trọng. Header `Vary` không thay thế việc kiểm chứng cache implementation và privacy.
+
+### Tab cũ rollout và kill switch
+
+Giả sử tab A đã pin revision 42 với catalog r18. Bạn publish revision 43 trỏ catalog r19. Tab B khởi động sau đó sẽ nhận revision 43 theo policy endpoint; tab A vẫn dùng revision 42, kể cả catalog chưa tải, vì release đã pin trong snapshot.
+
+Đó là chủ ý: cùng document không ghép release map mới vào share scope và các module đã evaluate. Back/forward cache cũng có thể khôi phục document cũ thay vì chạy bootstrap mới. “Reload trang” và “đi Back về trang” không có cùng semantics.
+
+Một config flag trong snapshot không phải kill switch tức thì cho toàn bộ tab đang mở. Nếu nghiệp vụ cần dừng thao tác ngay, backend phải có cơ chế chặn tương ứng. Client có thể nhận thông báo hoặc refresh flag rồi dừng lượt mount mới, nhưng không thể hứa unload code hoặc đảo ngược tác vụ đã gửi.
+
+Giữ artifacts cũ trong cửa sổ hỗ trợ document. Tab A có thể lazy-load một chunk của r18 sau khi r19 đã promote; xóa thư mục r18 ngay khi publish config mới sẽ tạo lỗi chunk dù config của A hoàn toàn hợp lệ.
+
+## Sinh publish và rollback cấu hình
+
+### Tạo candidate bằng JSON serializer
+
+Deployment config có thể lấy input từ env của CI/container, nhưng browser không đọc env đó trực tiếp. Pipeline chọn các giá trị public, serialize thành JSON và validate candidate trước khi publish.
+
+Tránh nối chuỗi hoặc dùng `envsubst` như một JSON encoder: dấu ngoặc kép, newline và kiểu boolean có thể tạo dữ liệu sai. Với `jq`, ví dụ cập nhật một snapshot đã được kiểm soát như sau. Các giá trị là minh họa; revision thực tế phải duy nhất.
+
+```bash title="Trong workspace triển khai của lab, không phải site docs"
+jq \
+  --arg revision 'demo-config-43' \
+  --arg release 'r19' \
+  --arg entry 'https://assets.example.com/catalog/r19/remoteEntry.js' \
+  '.revision = $revision
+   | .remotes.catalog.release = $release
+   | .remotes.catalog.entry = $entry' \
+  config.current.json > config.candidate.json
+
+jq -e '.schemaVersion == 1 and (.revision | type == "string")' \
+  config.candidate.json > /dev/null
+```
+
+`--arg` serialize string đúng cách; nó không chứng minh URL hay release hợp lệ. Lệnh `jq -e` chỉ là smoke check, **không thay toàn bộ validator**. CI phải chạy cùng policy schema/URL mà shell dùng, với shell origin mục tiêu, rồi test compatibility và artifact readiness.
+
+Với boolean lấy từ env, validate input là `true` hoặc `false` rồi chuyển sang JSON boolean; không chấp nhận mọi string non-empty là true. Chỉ allowlist những env cần public, không dump `process.env` thành config.
+
+### Publish theo thứ tự an toàn
+
+1. **Build và kiểm thử remote artifact.** Ghi release metadata, contract version và dependency policy; kiểm tra tổ hợp với shell và remotes còn lại.
+2. **Upload toàn bộ artifact graph vào prefix mới.** Không ghi đè release cũ. Xác nhận entry, chunks, CSS và assets tới được qua hosting/CDN thực tế.
+3. **Sinh candidate config.** Giữ nguyên descriptors không đổi, chọn revision mới và validate với môi trường mục tiêu.
+4. **Kiểm thử candidate trong preview/staging phù hợp.** Browser phải đọc đúng candidate, tải remote và hoàn tất journey; HTTP 200 của entry chưa đủ.
+5. **Publish nguyên snapshot.** Dùng atomic file replacement hoặc một object PUT đầy đủ theo bảo đảm của storage, không sửa file đang được serve từng phần. Kiểm tra semantics consistency của hệ thống thực tế.
+6. **Xác nhận qua origin công khai và quan sát.** Kiểm tra JSON, headers, revision và release được tải, rồi theo dõi lỗi bootstrap/load/mount theo cohort.
+
+Atomic snapshot nghĩa là reader không thấy nửa JSON hoặc catalog đã cập nhật nhưng cart còn đang sửa trong cùng response. Nó không đồng nghĩa mọi CDN edge hoặc mọi document chuyển revision đồng thời. Bạn vẫn cần freshness budget, cache policy và kiểm chứng rollout.
+
+Nếu hai pipeline có thể promote cùng lúc, dùng một publisher có lock hoặc optimistic concurrency theo version/ETag của object config. Không để catalog pipeline upload một bản manifest cũ rồi vô tình ghi đè lần promote cart vừa diễn ra. Với file sinh khi container startup, chỉ đánh readiness sau khi candidate hợp lệ và đã được thay atomically.
+
+### Rollback bằng revision mới
+
+Rollback config là publish một snapshot mới trỏ về artifacts cũ đã kiểm chứng. Ví dụ revision 44 đưa catalog r19 về r18, giữ cart r7 và các flags tương thích. Nên dùng **revision mới** thay vì tái sử dụng ID 42 để audit biết đó là một hành động rollback, không phải response cũ lọt từ cache.
+
+Không revert mù toàn bộ snapshot nếu từ revision 42 đã có một thay đổi cart hoặc flag độc lập cần giữ. Chọn đúng phần cần rollback, validate lại tổ hợp và kiểm tra quyền publish như một lần promote.
+
+Rollback chỉ có tác dụng nếu artifact cũ còn tồn tại, backend contract còn hỗ trợ, và các policy về auth/config vẫn tương thích. Nó không lấy r19 ra khỏi tab đã chạy r19. Kiểm tra cả document mới sau rollback lẫn document cũ tiếp tục hoạt động; nếu cần reload có kiểm soát, tránh làm mất thao tác chưa lưu của người dùng.
+
+## Môi trường preview và SSR
+
+Preview nên dùng cùng schema nhưng policy riêng: shell origin cụ thể, asset prefix theo deployment và API phục vụ dữ liệu test. Đừng lấy URL từ query string hoặc localStorage rồi cho phép chạy như production remote; đó là đường đưa code tùy ý vào shell nếu không có isolation và validation.
+
+Không mở allowlist bằng cách chấp nhận mọi subdomain của một nền tảng hosting đa tenant. Mình ưu tiên domain preview do tổ chức kiểm soát, hoặc registry deployment đã xác minh và policy kiểm tra deployment ID. Preview chứa code chưa được review không được dùng credentials hay backend production, kể cả khi UI trông giống production.
+
+Với SSR, browser snapshot phải khớp snapshot server đã dùng để render:
+
+```text
+Request ──► Resolve config snapshot ──► Render HTML + public snapshot
+                                                 │
+                                                 ▼
+                              Browser hydrate với cùng release map
+```
+
+Không fetch “latest config” riêng trước hydration rồi ghép code mới với HTML cũ. HTML, RSC payload nếu có, client artifacts và remote mapping phải theo strategy version nhất quán. Cache HTML cũng cần phân biệt cohort/variant nếu nội dung khác nhau.
+
+Module `snapshotPromise` trong bài chỉ dành cho một browser document. Không bê singleton đó lên SSR server để dùng cho mọi user/tenant: một process phục vụ nhiều requests, có thể giữ nhầm snapshot hoặc rò cấu hình giữa cohorts. Resolve theo request hoặc dùng cache đã có key, TTL và isolation được thiết kế rõ. Server cũng cần allowlist URL riêng để tránh SSRF; policy browser không tự bảo vệ request server.
+
+Nếu site static export cần config ở runtime, dùng file/service bên ngoài Next.js, không giả định Route Handler động sẽ tồn tại trong output tĩnh. Xem [Next.js, SSR và hydration](/docs/ui-va-framework/nextjs-ssr) khi thiết kế boundary render.
+
+## Xử lý lỗi và last known good
+
+Mặc định ví dụ **fail closed cho quyết định chọn remote**: config không hợp lệ thì không tải container. Shell vẫn có thể hiển thị trạng thái lỗi cục bộ. Đây thường an toàn hơn việc âm thầm chọn `/latest` hoặc đoán URL từ một convention.
+
+| Lỗi | Hành động mặc định |
+| --- | --- |
+| Timeout, network error, HTTP không thành công | Dừng bootstrap phụ thuộc config; hiển thị retry có kiểm soát |
+| Sai schema, thiếu field, boolean thành string | Reject snapshot; sửa publisher, không coercion âm thầm |
+| Environment không khớp hoặc URL ngoài policy | Không load script; báo lỗi cấu hình/bảo mật đã chuẩn hóa |
+| Descriptor hợp lệ nhưng `enabled: false` | Không resolve/mount remote mới; hiển thị unavailable theo domain |
+| Config hợp lệ nhưng chunk/container lỗi | Xử lý tại remote boundary; không quy thành lỗi config fetch |
+
+Có nên dùng last-known-good để shop vẫn chạy khi config endpoint lỗi? Có thể, nhưng đó là một policy riêng chứ không phải “catch rồi đọc localStorage”. Snapshot cũ có thể bật lại một tính năng vừa bị tắt, trỏ tới artifact đã hết retention hoặc không còn hợp backend.
+
+Chỉ dùng last-known-good khi đã xác định:
+
+- Nguồn snapshot được phê duyệt, namespace theo environment/schema/shell compatibility và không chứa dữ liệu user.
+- Thời hạn sử dụng tối đa, artifact retention tương ứng và full revalidation bằng policy hiện tại.
+- Loại lỗi nào cho phép fallback. Không mặc nhiên che URL bị deny, schema mismatch hoặc dấu hiệu cấu hình bị sửa dưới tên “network outage”.
+- Những flags/operations không được phép dùng stale config, cùng policy fail-closed phía backend.
+- Telemetry nhận biết fallback, revision stale và tuổi snapshot; có cách xóa bỏ snapshot không còn được phép dùng.
+
+Thời điểm lưu snapshot trên client không phải bằng chứng nội dung đang mới. Storage client có thể bị sửa, đồng hồ có thể lệch; nếu cần quyết định nhạy cảm, đưa policy về server. Một fallback nhúng sẵn trong shell cũng là code/config cần version và kiểm chứng, không tự an toàn chỉ vì không phải fetch.
+
+## Kiểm thử và chẩn đoán
+
+Validator nên chạy trong unit tests và trong CI publish config. Loader/bootstrap cần test với response thật hoặc fixture kiểm soát; các thao tác cache, CDN và service worker phải kiểm tra trên browser cùng hosting gần production.
+
+| Ca kiểm thử | Điều cần assert |
+| --- | --- |
+| Config production hợp lệ | Snapshot có đủ descriptors, URL canonical và objects đã freeze |
+| Config staging trên shell production | Reject trước khi gọi remote loader |
+| `schemaVersion: 2`, thiếu cart hoặc flag là `"false"` | Reject, không cast/coerce thành config hợp lệ |
+| Hostname giả prefix, HTTP, credentials, query hoặc sai release path | URL bị deny trước script injection |
+| Hai caller gọi config đồng thời | Một fetch và cùng snapshot object |
+| HTTP 404 hoặc HTML 200 do SPA fallback | Reject; failure UI không cần remote |
+| Fetch treo hoặc JSON lỗi | Kết thúc bằng fallback; timer được cleanup |
+| Promote giữa hai lần mở route | Document cũ vẫn dùng revision đã pin |
+| `enabled: false` | Không tải/mount mới; không hiển thị dữ liệu giả |
+| Entry thành công nhưng chunk lỗi | Error được gán đúng remote/load phase |
+| Rollback với tab cũ và tab mới | Tab mới chọn release rollback, tab cũ không bị mất assets |
+| Config endpoint qua service worker/CDN | Không trả revision stale trái policy |
+| Hai promote đồng thời | Conflict được phát hiện, không mất thay đổi remote khác |
+
+Ghi tối thiểu shell release, config revision, environment, remote candidate release và phase thất bại. Candidate là release manifest chọn; release thực chạy nên được xác nhận từ metadata trong artifact sau khi load. Hai giá trị khác nhau là tín hiệu cần điều tra. Không log toàn response, tokens, user data hoặc query URL; release/revision cũng cần quản lý cardinality nếu dùng làm metric labels.
+
+Để kiểm tra endpoint, chạy từ môi trường triển khai với domain đã thay cho lab:
+
+```bash
+curl --fail --silent --show-error \
+  --dump-header /tmp/shop-config.headers \
+  'https://shop.example.com/runtime/config.json' \
+  --output /tmp/shop-config.json
+
+cat /tmp/shop-config.headers
+jq '{schemaVersion, revision, environment, remotes}' /tmp/shop-config.json
+```
+
+Lệnh không follow redirect; xác nhận status 200 và content type JSON trước khi tin kết quả. Sau đó chạy validator đầy đủ và kiểm tra DevTools trong browser. `curl` không đi qua service worker hoặc HTTP cache của browser, nên curl thấy revision mới chưa chứng minh tab người dùng thấy cùng revision.
+
+Khi deploy xong mà UI vẫn dùng release cũ, kiểm tra theo thứ tự:
+
+1. Document có đang dùng snapshot đã pin hoặc được khôi phục từ bfcache không?
+2. Public endpoint trả revision nào, headers và CDN rules có đúng không?
+3. Service worker có intercept và trả config đã lưu không?
+4. Loader có consume snapshot này hay vẫn đọc một manifest/global khác?
+5. Entry/chunks thực sự tải từ release prefix nào, metadata trong artifact là gì?
+
+Không bắt đầu bằng cách xóa mọi cache hoặc đổi URL ngẫu nhiên. Trước hết xác định lớp nào giữ quyết định cũ, rồi sửa đúng policy của lớp đó.
+
+## Checklist trước production
+
+- [ ] Cùng frontend artifact đã kiểm thử được promote; config thay đổi có audit riêng.
+- [ ] Schema có owner, version và validator runtime, không chỉ TypeScript types.
+- [ ] Config chỉ chứa public deployment values; secrets và domain/user data đi luồng riêng.
+- [ ] Environment, origin, remote format, scope, contract và release path được kiểm tra.
+- [ ] Allowlist nằm trong policy tin cậy, không do JSON tự cấp cho chính nó.
+- [ ] Bootstrap đọc một snapshot trước remote resolution; remote không tự fetch manifest khác.
+- [ ] Config endpoint có content type, cache và SPA/service-worker exclusion đúng.
+- [ ] Artifact graph bất biến, upload trước config và retention đủ cho tab cũ/rollback.
+- [ ] Publish nguyên snapshot, có kiểm soát concurrent writers và revision duy nhất.
+- [ ] Flags không được dùng thay backend authorization; semantics kill switch đã xác định.
+- [ ] Timeout, failure UI, optional fallback và retry policy đã có kiểm thử.
+- [ ] Telemetry phân biệt config revision, candidate release, loaded release và failure phase.
+- [ ] Preview không có quyền production; SSR nếu có giữ snapshot đúng request/hydration.
+
+Bắt đầu bằng một lần promote catalog với cùng shell artifact, rồi rollback khi một tab cũ vẫn đang mở. Nếu bạn chỉ ra được revision của từng tab và cả hai vẫn tải đủ chunks, bạn đã kiểm chứng được phần quan trọng nhất của thiết kế này.
+
+## Tài liệu tham khảo
+
+- [Next.js — Environment Variables](https://nextjs.org/docs/pages/guides/environment-variables) — client env inlining, build-time values và nhu cầu runtime configuration.
+- [MDN — Request cache](https://developer.mozilla.org/en-US/docs/Web/API/Request/cache) — semantics của `cache` trong Fetch API.
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) — phân biệt `no-store`, `no-cache`, `private` và `immutable`.
+- [Module Federation — manifest](https://module-federation.io/configure/manifest.html) — manifest artifact do integration enhanced sinh, khác schema của ứng dụng.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Dynamic remotes" href="/docs/module-federation/dynamic-remotes" description="Nối descriptor đã validate vào loader và promise-based remote của webpack." />
+  <Card title="Caching và cache invalidation" href="/docs/trien-khai/caching" description="Thiết kế freshness cho entry, manifest và assets theo release." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Kiểm soát cohorts và phục hồi khi release mới có vấn đề." />
+  <Card title="Observability" href="/docs/kiem-thu-va-tooling/observability" description="Nối config revision và artifact release với lỗi và journey outcomes." />
+</Cards>

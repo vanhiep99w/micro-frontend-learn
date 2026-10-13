@@ -1,18 +1,517 @@
 ---
 title: "Lỗi routing và CSS"
-description: "Khoanh vùng deep links, history conflicts, style leakage và các assets không tìm thấy."
+description: "Runbook khoanh vùng deep link 404, xung đột browser history, sai asset URL và CSS leakage khi ghép shell với remote."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Catalog chạy đúng khi mở standalone, nhưng vào từ shell thì refresh bị 404, Back đổi URL mà không đổi màn hình, hoặc nút giỏ hàng bỗng nhận style của catalog. Những triệu chứng này có thể xuất hiện cùng lúc, nhưng không nhất thiết cùng nguyên nhân. Sửa router không giúp một stylesheet đang trả HTML; đổi thứ tự import CSS cũng không sửa được asset base sai.
+
+Bài này giúp bạn tìm **ranh giới đầu tiên có hành vi sai**: server phục vụ document, router chọn màn hình, runtime tải asset, hay CSS cascade quyết định giao diện. Mình ưu tiên giữ bằng chứng rồi sửa đúng owner, thay vì thêm redirect về trang chủ hoặc `!important` để che triệu chứng.
+
+<Callout type="info" title="Phạm vi ví dụ">
+  Ví dụ dùng shop giả định gồm shell, catalog và cart; URL công khai là `/catalog`, `/catalog/products/sku-42` và `/cart`. Code thuộc workspace thực hành riêng, không phải implementation có sẵn trong repository tài liệu này. Ví dụ React dùng API declarative của React Router v7; phần asset runtime dùng webpack 5 khi được ghi rõ.
+
+  Cấu hình Nginx dưới đây dành cho một SPA tĩnh, không phải cấu hình triển khai site Next.js chứa tài liệu. Với SSR, server cần xử lý route theo framework thay vì trả cùng một `index.html`. Sơ đồ ASCII không cần thêm renderer.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Khoanh vùng nhanh theo triệu chứng](#khoanh-vùng-nhanh-theo-triệu-chứng)
+- [Thu thập bằng chứng trước khi sửa](#thu-thập-bằng-chứng-trước-khi-sửa)
+- [Deep link và refresh trả lỗi](#deep-link-và-refresh-trả-lỗi)
+  - [Phân biệt server 404 với app not found](#phân-biệt-server-404-với-app-not-found)
+  - [Tách SPA fallback khỏi API và assets](#tách-spa-fallback-khỏi-api-và-assets)
+  - [Kiểm chứng bằng request thật](#kiểm-chứng-bằng-request-thật)
+- [Document đúng nhưng remote chọn sai màn hình](#document-đúng-nhưng-remote-chọn-sai-màn-hình)
+  - [Đối chiếu basename và mount path](#đối-chiếu-basename-và-mount-path)
+  - [Kiểm tra nested routes và router context](#kiểm-tra-nested-routes-và-router-context)
+- [Back Forward và history conflicts](#back-forward-và-history-conflicts)
+  - [Tìm writer và nguồn location](#tìm-writer-và-nguồn-location)
+  - [Ngăn navigation loop và listener dư](#ngăn-navigation-loop-và-listener-dư)
+- [CSS ảnh hoặc font tải sai URL](#css-ảnh-hoặc-font-tải-sai-url)
+  - [Phân biệt các base URL](#phân-biệt-các-base-url)
+  - [Kiểm tra publicPath và CSS đầu ra](#kiểm-tra-publicpath-và-css-đầu-ra)
+  - [HTTP thành công nhưng browser không dùng asset](#http-thành-công-nhưng-browser-không-dùng-asset)
+- [Style leakage khi ghép remote](#style-leakage-khi-ghép-remote)
+  - [Tìm declaration thực sự thắng](#tìm-declaration-thực-sự-thắng)
+  - [Sửa phạm vi selector thay vì tăng specificity](#sửa-phạm-vi-selector-thay-vì-tăng-specificity)
+- [Modal mất style hoặc bị che](#modal-mất-style-hoặc-bị-che)
+- [CSS lỗi sau navigation hoặc remount](#css-lỗi-sau-navigation-hoặc-remount)
+- [Hai ca chẩn đoán mẫu](#hai-ca-chẩn-đoán-mẫu)
+  - [Refresh lỗi nhưng click trong app vẫn chạy](#refresh-lỗi-nhưng-click-trong-app-vẫn-chạy)
+  - [Mở catalog làm đổi nút cart](#mở-catalog-làm-đổi-nút-cart)
+- [Ma trận kiểm thử sau khi sửa](#ma-trận-kiểm-thử-sau-khi-sửa)
+- [Giảm ảnh hưởng và thông tin escalation](#giảm-ảnh-hưởng-và-thông-tin-escalation)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Khoanh vùng nhanh theo triệu chứng
 
-Bài này sẽ giúp bạn: khoanh vùng deep links, history conflicts, style leakage và các assets không tìm thấy.
+Bảng này chọn nơi kiểm tra đầu tiên, không khẳng định nguyên nhân chỉ từ một error string.
 
-[Xem các bài trong nhóm Xử lý sự cố](/docs/troubleshooting).
+| Triệu chứng | Bằng chứng cần xem trước | Owner thường cần xử lý |
+| --- | --- | --- |
+| Click trong app chạy, mở trực tiếp hoặc refresh bị 404 | Request loại Document, response body, CDN rewrite | Hosting của shell hoặc server route |
+| Document là shell nhưng app hiện not found | Location router đang đọc, mount path, route matcher | Shell và remote owner |
+| URL thành `/catalog/catalog/...` hoặc mất `/shop` | Quy ước pathname của bridge, basename, route builder | Navigation contract |
+| Back đổi URL nhưng UI không đổi | Router subscription, memory router, location snapshot | History owner và bridge |
+| Back vừa quay lại đã bị đưa đi tiếp | Navigation trace, redirect effect, push khi nhận snapshot | Bridge, auth guard hoặc canonicalization |
+| CSS, ảnh hoặc font chỉ mất ở URL sâu | Request URL và Initiator, `document.baseURI`, CSS đầu ra | Asset pipeline hoặc deploy mapping |
+| CSS trả `200` nhưng Console báo MIME error | Response body có phải HTML; redirect đăng nhập | Hosting/CDN hoặc auth policy cho asset |
+| Remote mount làm style shell đổi | Declaration thắng trong Styles/Computed | Remote CSS hoặc global baseline |
+| Modal mất style hoặc bị che | DOM parent, portal target, clipping và stacking context | Overlay contract giữa shell và remote |
+| Chỉ lỗi sau vào/ra remote nhiều lần | Stylesheet và listener còn lại sau unmount | Lifecycle của adapter hoặc style loader |
+
+Tách đường chọn màn hình khỏi đường tải tài nguyên:
+
+```text
+Deep link → server trả shell document → router chọn remote → remote render
+
+Asset URL → CDN/server trả CSS, ảnh, font → browser áp dụng vào DOM
+```
+
+Một route khớp đúng vẫn có thể render UI thiếu CSS. Ngược lại, CSS tải đủ không chứng minh router đang hiển thị đúng màn hình.
+
+## Thu thập bằng chứng trước khi sửa
+
+1. Ghi URL đầy đủ, thao tác gây lỗi, thời điểm kèm timezone, shell release, remote release được chọn và config revision. Phân biệt vào bằng link trong app, mở tab mới, refresh và Back/Forward.
+2. Bật **Preserve log** ở Network và Console. Tái hiện một lần, giữ request Document cùng request asset thất bại đầu tiên; ghi status, Content-Type, redirect chain, response body liên quan và Initiator.
+3. Nếu lỗi giao diện, chọn đúng element trong Elements. Lưu class, DOM parent, property bị sai và stylesheet chứa declaration thắng. Ảnh chụp màn hình không thay thế bằng chứng này.
+4. So sánh standalone với composed, rồi thử đảo thứ tự vào catalog và cart. Dùng cùng release và viewport; nếu không, kết quả so sánh có thể phản ánh hai build khác nhau.
+5. Sau khi giữ bằng chứng, thử trong document mới với **Disable cache** khi DevTools mở. Nếu có service worker, dùng chế độ bypass phù hợp cho lần kiểm chứng; Disable cache không tự bypass mọi service worker hay purge CDN.
+
+Không suy ra thiếu CSS chỉ vì không thấy request `.css`: dev build có thể inject thẻ `style`, còn production có thể extract CSS riêng. Kiểm tra cả Network lẫn DOM để biết style được đưa vào đâu.
+
+<Callout type="warn" title="Giữ an toàn khi thu thập log">
+  URL, HAR, history state và lệnh Copy as cURL có thể chứa token, cookie hoặc dữ liệu người dùng. Chỉ giữ phần đã loại bỏ dữ liệu nhạy cảm và chia sẻ qua kênh được phép. Đừng xóa toàn bộ storage để debug vì có thể mất session hoặc thao tác chưa lưu.
+</Callout>
+
+## Deep link và refresh trả lỗi
+
+### Phân biệt server 404 với app not found
+
+Khi click một link trong SPA, router có thể đổi URL mà không yêu cầu server trả document mới. Khi refresh `/catalog/products/sku-42`, browser lại gửi request cho URL đó. Dev server có history fallback nên chạy được không có nghĩa production hosting đã cấu hình tương tự.
+
+Mở Network, lọc loại **Document** rồi kiểm tra:
+
+- Server/CDN trả 404 và body là trang lỗi của hosting: shell chưa có cơ hội xử lý route. Sửa server route hoặc fallback.
+- Server trả shell document, JavaScript chạy rồi app hiện not found: chuyển sang route matching và location contract.
+- Document bị redirect sang `/` hoặc `/login`: xem redirect chain và owner thực hiện redirect. Redirect không phải SPA fallback.
+- Document đúng nhưng entry/chunk không tải: điều tra asset URL hoặc policy; chưa thể kết luận route không tồn tại.
+
+SPA fallback là **internal rewrite**, giữ URL công khai để router đọc đúng điểm đến. Redirect mọi deep link về `/` có thể làm trang hết 404 nhưng người dùng mất bookmark, query và màn hình cần mở.
+
+### Tách SPA fallback khỏi API và assets
+
+Một fallback áp dụng cho mọi request có thể biến `/assets/missing.css` thành HTML với status `200`. Browser sau đó báo MIME error thay vì 404 rõ ràng. API bị rewrite tương tự còn khiến client gặp lỗi parse JSON.
+
+Ví dụ dưới đây minh họa phần `server` trong cấu hình Nginx cho SPA chạy ở root. Giả định shell build nằm tại `/srv/shop`, shell assets ở `/assets/`, API dùng prefix `/api/`, còn remote assets được phục vụ từ CDN riêng.
+
+```nginx title="Ví dụ server block cho SPA tĩnh"
+server {
+    listen 80;
+    server_name shop.example;
+    root /srv/shop;
+    include /etc/nginx/mime.types;
+
+    # API đi tới backend, không đi qua SPA fallback.
+    location ^~ /api/ {
+        proxy_pass http://127.0.0.1:8080;
+    }
+
+    # Prefix asset phải trả đúng file hoặc 404.
+    location ^~ /assets/ {
+        try_files $uri =404;
+    }
+
+    # Bảo vệ cả asset nằm ngoài prefix /assets/.
+    location ~* \.(js|mjs|css|map|json|png|jpe?g|gif|svg|ico|webp|woff2?|ttf)$ {
+        try_files $uri =404;
+    }
+
+    location = /index.html {
+        try_files $uri =404;
+    }
+
+    location = / {
+        try_files /index.html =404;
+    }
+
+    location = /catalog {
+        try_files $uri /index.html;
+    }
+    location /catalog/ {
+        try_files $uri /index.html;
+    }
+    location = /cart {
+        try_files $uri /index.html;
+    }
+    location /cart/ {
+        try_files $uri /index.html;
+    }
+
+    # Path ngoài nhánh ứng dụng đã công bố không được fallback.
+    location / {
+        try_files $uri =404;
+    }
+}
+```
+
+Các nhánh `/catalog/` và `/cart/` không dùng `^~`, để location regex dành cho file asset vẫn được xét. Exact location `/index.html` bảo đảm thiếu entry trả 404 thay vì lặp internal redirect. API backend và đường dẫn filesystem trong ví dụ cần được thay theo môi trường thật; đây chưa phải cấu hình production đầy đủ về TLS, cache hay security headers.
+
+Mẫu này cố ý chỉ fallback các nhánh đã công bố. Nếu thêm `/login`, bạn phải bổ sung mapping. Các đuôi file trong regex cũng là một policy minh họa: nếu product ID có dạng kết thúc bằng `.json`, nó sẽ bị xem là asset. Chốt reserved asset prefixes và route grammar theo ứng dụng thật thay vì sao chép danh sách đuôi file một cách máy móc.
+
+Với CDN/object storage, áp dụng nguyên tắc tương tự ở lớp rewrite: document route đi tới shell, asset thiếu giữ lỗi đúng nghĩa, API không vào fallback. Nếu CDN thay cả 404 asset bằng trang HTML, sửa Nginx phía sau chưa đủ.
+
+<Callout type="warn" title="Không đổi kiến trúc chỉ để tránh cấu hình hosting">
+  Hash routing có thể tránh gửi phần route sau `#` tới server, nhưng làm thay đổi public URL contract. Mình chỉ chọn khi hosting thật sự không hỗ trợ routing cần thiết và sản phẩm chấp nhận URL dạng đó, không coi đây là bản vá mặc định. Với SSR hoặc Next.js, giữ cơ chế route của framework; không rewrite mọi request sang một SPA entry.
+</Callout>
+
+### Kiểm chứng bằng request thật
+
+Dùng GET thay vì chỉ HEAD, vì bạn cần xem body có đúng là shell hay không. Chạy với endpoint của môi trường cần kiểm tra; domain dưới đây chỉ là minh họa.
+
+```bash title="Kiểm tra document và asset thiếu"
+curl -sS -D /tmp/shop-route.headers \
+  -H 'Accept: text/html' \
+  'https://shop.example/catalog/products/sku-42?sort=price-asc' \
+  -o /tmp/shop-route.body
+
+head -n 20 /tmp/shop-route.headers
+head -c 240 /tmp/shop-route.body
+printf '\n'
+
+curl -sS -D /tmp/shop-asset.headers \
+  'https://shop.example/assets/does-not-exist.css' \
+  -o /tmp/shop-asset.body
+
+head -n 20 /tmp/shop-asset.headers
+```
+
+Với SPA này, deep link hợp lệ cần trả shell HTML, thường là `200`; asset giả phải trả `404`, không phải shell HTML `200`. Không thêm `-L` ở lần đầu để tránh che redirect. Nếu thấy `3xx`, kiểm tra `Location` và từng bước tiếp theo.
+
+Fragment như `#reviews` không được gửi trong HTTP request. Sau khi document tải, browser/router xử lý nó; dùng browser để kiểm chứng khôi phục fragment và scroll. `curl` chỉ kiểm tra HTTP, không chứng minh browser render hay chấp nhận policy của asset.
+
+## Document đúng nhưng remote chọn sai màn hình
+
+### Đối chiếu basename và mount path
+
+Viết rõ ba giá trị trước khi sửa config:
+
+| Giá trị | Ví dụ | Owner và ý nghĩa |
+| --- | --- | --- |
+| Application basename | `/shop` nếu toàn app nằm dưới subpath | Shell router bỏ/thêm prefix của toàn app |
+| Domain mount path | `/catalog` trong không gian route của app | Shell chọn catalog; remote nhận nhánh nội bộ |
+| Asset base URL | `https://assets.example.com/catalog/r18/` | Runtime/build tải tài nguyên; không chọn màn hình |
+
+Với basename `/shop`, URL công khai có thể là `/shop/catalog/products/sku-42`, trong khi shell khai báo route `/catalog/*`. Đừng thêm `/shop` lần nữa vào mọi route con. Ngược lại, link HTML viết tay `href="/catalog"` bỏ qua basename; dùng route builder hoặc API router để dựng link phù hợp.
+
+Ở boundary cô lập, đối chiếu chính snapshot được gửi, không chỉ thanh địa chỉ. Bridge có thể gửi full pathname hoặc path tương đối với mount path, nhưng phải thống nhất một quy ước. Nếu shell đã bỏ `/catalog` rồi remote tiếp tục bỏ lần nữa, route detail sẽ mất segment; nếu cả hai cùng thêm prefix, URL sẽ bị lặp.
+
+Kiểm tra cả `search` và `hash`. Bridge chỉ đồng bộ pathname sẽ làm filter hoặc fragment lệch dù màn hình chính có vẻ đúng. Với matcher tự viết, dùng ranh giới segment: `pathname === '/cart' || pathname.startsWith('/cart/')`, không nhận nhầm `/cartoon`.
+
+### Kiểm tra nested routes và router context
+
+Trong mô hình React cùng cây render, shell giữ `BrowserRouter`; remote export route subtree, không export một router browser thứ hai. Đây là phần ghép route tối thiểu, chưa gồm loading/error boundary; các page component được giả định đã có trong workspace lab.
+
+```tsx title="Phần route của shell"
+import { BrowserRouter, Route, Routes } from 'react-router';
+import { CatalogRoutes } from 'catalog/routes';
+
+export function ShellRoutes() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/catalog/*" element={<CatalogRoutes />} />
+        <Route path="*" element={<p>Không tìm thấy route của shop</p>} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+```
+
+```tsx title="catalog/routes.tsx"
+import { Route, Routes } from 'react-router';
+import { ProductList } from './ProductList';
+import { ProductDetail } from './ProductDetail';
+
+export function CatalogRoutes() {
+  return (
+    <Routes>
+      <Route index element={<ProductList />} />
+      <Route path="products/:productId" element={<ProductDetail />} />
+      <Route path="*" element={<p>Không tìm thấy màn hình catalog</p>} />
+    </Routes>
+  );
+}
+```
+
+Nếu shell mount một component chứa descendant `Routes`, thiếu `/*` ở điểm gắn là nơi cần kiểm tra khi URL root chạy mà URL sâu không chạy. Nếu dùng layout route có route children, kiểm tra `Outlet` có được render. Với data router, dùng route objects/loaders theo API tương ứng thay vì giả định mẫu trên cung cấp data APIs.
+
+Standalone harness có thể bọc `CatalogRoutes` bằng router riêng; export dùng trong shell vẫn không bọc thêm router. Nếu hai bên tạo React root độc lập, remote không tự nhận context qua DOM container. Khi đó dùng navigation port thay vì cố share package để truyền context. Nếu cùng cây mà hook vẫn không thấy router, kiểm tra identity của package tạo context và cấu hình shared dependencies.
+
+## Back Forward và history conflicts
+
+### Tìm writer và nguồn location
+
+Trong một SPA có một URL công khai, mình mặc định giữ **một browser-history owner** ở shell. Remote yêu cầu navigation qua owner, rồi nhận location để render. Nếu mỗi domain thật sự là một document độc lập, browser navigation qua link thường có thể phù hợp hơn; không bắt chúng phải dùng SPA bridge.
+
+Khi Back sai, ghi trace ở navigation adapter của shell:
+
+| Field | Mục đích |
+| --- | --- |
+| Navigation ID hoặc revision | Ghép command với location đã commit |
+| Source | Phân biệt thao tác người dùng, guard, canonicalization và browser traversal |
+| Mode | Phân biệt push, replace và việc nhận location từ Back/Forward |
+| Location trước và sau | Phát hiện prefix sai, query mất hoặc update trùng; loại dữ liệu nhạy cảm |
+| Remote nhận revision | Xác định bridge đã chuyển location mới hay chưa |
+
+`pushState()` và `replaceState()` không tự phát `popstate`. Adapter chỉ subscribe `popstate` nhưng tự gọi `pushState` khi click sẽ đổi URL mà không thông báo UI. Với router library, dùng API navigation của router; không gọi trực tiếp History API cạnh router để tạo một đường cập nhật ngoài subscription.
+
+Có thể quan sát browser traversal bằng listener tạm trong DevTools của môi trường thử nghiệm:
+
+```js title="Chỉ quan sát Back/Forward, không sửa history"
+const observePop = () => {
+  console.debug('[popstate]', { pathname: window.location.pathname });
+};
+window.addEventListener('popstate', observePop);
+
+// Sau khi kiểm tra, chạy dòng này trong cùng Console context:
+// window.removeEventListener('popstate', observePop);
+```
+
+Listener này không log mọi navigation trong SPA, không chứng minh remote đã cập nhật và không thay thế trace của owner. Không log nguyên history state hoặc query có dữ liệu nhạy cảm.
+
+### Ngăn navigation loop và listener dư
+
+Một lỗi phổ biến là bridge gửi location của shell vào memory router, rồi listener của memory router coi thay đổi đó là thao tác mới và push ngược ra browser. Khi bấm Back, UI vừa nhận route cũ đã tạo history entry mới nên người dùng bị mắc lại.
+
+Tách hai đường:
+
+```text
+Remote gửi command → Shell commit location → Remote áp dụng snapshot
+                                             └─ không phát lại command
+```
+
+Adapter nên có thao tác “apply external location” riêng, hoặc source/revision để bỏ qua update do shell gửi. So sánh URL có thể bỏ một số update trùng nhưng chưa đủ để xử lý race với guard bất đồng bộ. Việc đồng bộ vào memory router thường dùng replace nội bộ; Back cấp ứng dụng vẫn đi qua shell history owner.
+
+`initialEntries` của `MemoryRouter` chỉ khởi tạo history; đổi prop đó không phải cơ chế cập nhật location liên tục. Kiểm tra bridge đang thực sự điều hướng memory router khi snapshot đổi. Đọc [Navigation contract](/docs/giao-tiep-va-trang-thai/routing#navigation-contract-cho-remote-cô-lập) nếu cần thiết kế adapter đầy đủ.
+
+Nếu số callback tăng sau mỗi lần vào remote, kiểm tra unsubscribe khi unmount và callback identity dùng với `removeEventListener`. Dev Strict Mode có thể chạy thêm chu kỳ setup/cleanup để lộ lỗi, nhưng tắt Strict Mode không sửa listener leak.
+
+Cuối cùng, tìm effect redirect hoặc auth guard đang push lại một URL sau mỗi lần mount. Dùng replace cho redirect/canonicalization phù hợp, nhưng **đổi mọi push thành replace không chữa được vòng lặp**. Guard phải ổn định với location đã hợp lệ và không commit kết quả navigation cũ sau request mới hơn.
+
+## CSS ảnh hoặc font tải sai URL
+
+### Phân biệt các base URL
+
+Lấy URL thực tế từ Network và xem Initiator. Nó cho biết browser đang tải asset do HTML, JavaScript hay stylesheet tham chiếu.
+
+| Nguồn tham chiếu | Base cần kiểm tra | Bẫy thường gặp |
+| --- | --- | --- |
+| `<img src="images/item.png">` hoặc link CSS tương đối trong document | `document.baseURI`, có thể bị `<base>` thay đổi | URL sâu làm browser tìm dưới thư mục route |
+| `url('../fonts/catalog.woff2')` trong stylesheet ngoài | URL của chính stylesheet, sau khi bundler transform | Copy CSS nhưng không giữ cấu trúc font tương ứng |
+| `url(...)` trong thẻ `style` của document | Base URL của document | Dev inject style có thể khác production extract CSS |
+| Chunk hoặc asset URL do webpack runtime dựng | `output.publicPath` và runtime của đúng build | Catalog chunk bị tải từ origin/prefix của shell |
+| `src="/images/item.png"` | Origin của document | Dấu `/` không trỏ tới CDN của remote và bỏ application subpath |
+
+Ví dụ phép resolve URL, không gửi network request:
+
+```js title="Tách document base khỏi stylesheet base"
+new URL('images/item.png', 'https://shop.example/catalog/products/sku-42').href;
+// https://shop.example/catalog/products/images/item.png
+
+new URL('../fonts/catalog.woff2',
+  'https://assets.example.com/catalog/r18/css/main.css').href;
+// https://assets.example.com/catalog/r18/fonts/catalog.woff2
+```
+
+Đừng thêm thẻ `<base>` chỉ để sửa một remote: nó ảnh hưởng đến nhiều URL tương đối trong document chung. Basename của router cũng không rewrite `img src` hoặc CSS `url()`.
+
+### Kiểm tra publicPath và CSS đầu ra
+
+Với webpack 5 classic-script remote, `output.publicPath: 'auto'` là điểm bắt đầu hợp lý khi chunks nằm cạnh runtime/entry được tải. Chỉ cần sửa trường liên quan trong config remote đang có:
+
+```js title="Trích cấu hình webpack của catalog"
+output: {
+  publicPath: 'auto',
+}
+```
+
+Sau build, mở remote **từ shell** và kiểm tra URL chunk/CSS/font thực tế. `auto` dựa vào ngữ cảnh script/runtime; nó không sửa các string URL viết tay, không upload artifact thiếu và không bảo đảm mọi CSS loader/plugin có cùng quy tắc. Nếu assets ở base khác entry, cấu hình base đã biết hoặc cơ chế runtime public path của toolchain, thiết lập trước khi module cần asset được evaluate.
+
+Kiểm tra stylesheet đầu ra thay vì chỉ đọc file source. Bundler có thể rewrite `url()`, emit font/ảnh có hash hoặc extract CSS với một public path riêng. Một ảnh import qua module và một ảnh viết literal trong JSX có thể đi qua hai đường khác nhau.
+
+Standalone có CSS không đồng nghĩa federated export đã tải CSS: file đó có thể chỉ được link trong HTML standalone, còn shell không tải HTML này. Đưa component CSS vào dependency graph của export, hoặc dùng manifest/style-loading contract rõ ràng. Với CSS extraction, kiểm tra toolchain có tự tải CSS cho async chunk đang dùng hay yêu cầu shell gắn stylesheet.
+
+Nếu URL asset đúng nhưng artifact đã bị xóa sau deploy, chuyển sang [Cache lỗi thời và chunk errors](/docs/troubleshooting/stale-cache). Đổi publicPath không khôi phục được file đã mất.
+
+### HTTP thành công nhưng browser không dùng asset
+
+Một response `200` mới chứng minh server trả response, chưa chứng minh browser dùng được tài nguyên:
+
+- CSS body là HTML hoặc trang login: sửa fallback/auth mapping; không chỉ đổi header thành `text/css`.
+- Body đúng nhưng MIME type sai: cấu hình MIME đúng tại server/CDN; kiểm tra headers của response browser thực sự nhận.
+- CSS hoặc font bị CSP chặn: xem directive như `style-src` hoặc `font-src` được nêu trong Console, rồi sửa policy cho origin được phép.
+- Font cross-origin bị CORS chặn: kiểm tra response font, không chỉ response CSS; cho phép origin shell theo chính sách triển khai.
+- Request HTTPS kéo asset HTTP: sửa URL mixed content thay vì tắt bảo vệ của browser.
+
+Không áp cùng một kết luận CORS cho mọi loại asset: font, stylesheet, image và các cách fetch có semantics khác nhau. Dùng lỗi Console và request cụ thể để xác định policy đang áp dụng.
+
+## Style leakage khi ghép remote
+
+### Tìm declaration thực sự thắng
+
+Chọn element bị sai trong Elements, mở **Computed** và truy ngược property, ví dụ `background-color`, về declaration đang thắng. Trong **Styles**, ghi stylesheet URL hoặc thẻ `style`, selector, cascade layer và `!important` nếu có.
+
+Sau đó tắt đúng declaration trong DevTools để kiểm chứng. Nếu nút shell trở lại bình thường khi tắt `button { ... }` của catalog, bạn đã có bằng chứng về selector leakage. Thao tác này chỉ có hiệu lực trong document hiện tại; chưa phải bản sửa deploy.
+
+Nếu không có selector remote khớp trực tiếp, xem inheritance từ ancestor và giá trị custom property. `color`, `font-family`, `line-height` có thể kế thừa; `--shop-color-accent` có thể bị remote ghi đè ở `:root`. Kích thước dùng `rem` còn phụ thuộc font-size của document root.
+
+Không mặc định “stylesheet tải sau luôn thắng”. Browser xét nhiều yếu tố của cascade trước source order. Đổi thứ tự import có thể che một lỗi trong một lần tải nhưng để nó xuất hiện lại khi remote được lazy-load theo thứ tự khác.
+
+### Sửa phạm vi selector thay vì tăng specificity
+
+Một remote trong light DOM không có CSS boundary chỉ vì nó nằm trong một React root khác. CSS global của catalog vẫn có thể khớp button của cart:
+
+```css title="Rule có thể gây leakage"
+button { background: #dc2626; }
+.card { padding: 2rem; }
+:root { --shop-color-accent: #dc2626; }
+```
+
+Mặc định mình dùng CSS Modules cho component, để shell sở hữu baseline/reset toàn document, còn remote chỉ sử dụng hoặc override token tại root do nó sở hữu. Ví dụ chuyển button của catalog sang local class:
+
+```css title="catalog/ProductCard.module.css"
+.root {
+  --catalog-button-bg: #1d4ed8;
+}
+
+.button {
+  background: var(--catalog-button-bg);
+  color: #fff;
+  font: inherit;
+}
+```
+
+```tsx title="catalog/ProductCard.tsx"
+import styles from './ProductCard.module.css';
+
+export function ProductCard() {
+  return (
+    <article className={styles.root}>
+      <button type="button" className={styles.button}>
+        Thêm vào giỏ
+      </button>
+    </article>
+  );
+}
+```
+
+CSS Modules tránh trùng class, không chặn selector bên ngoài. Shell có `button { background: red !important; }` vẫn có thể phá nút này. Kiểm tra cả chiều remote đi ra shell và shell đi vào remote; review global escapes cùng CSS vendor/reset được import cạnh component. Với build độc lập, xác nhận class đầu ra không trùng do template chỉ dùng `[local]`.
+
+Trong migration CSS global, namespace selector dưới root như `[data-mfe="catalog"] .catalog-button` là bước sửa có kiểm soát. Nhưng namespace không bảo vệ portal nằm ngoài root, không chặn CSS shell đi vào và có thể bao cả remote khác được mount bên trong catalog.
+
+<Callout type="warn" title="Không dùng isolation mạnh hơn khi chưa xác định nguyên nhân">
+  Cascade layers quản lý ưu tiên, không tạo selector boundary. Shadow DOM chặn selector thông thường xuyên boundary, nhưng inheritance, custom properties và geometry của host vẫn ảnh hưởng; CSS phải được đưa vào đúng shadow root. Shadow DOM không sandbox JavaScript. Với app legacy cần document riêng, cân nhắc iframe cùng chi phí messaging, focus và routing thay vì coi nó là bản vá CSS miễn phí.
+</Callout>
+
+## Modal mất style hoặc bị che
+
+Nếu trang catalog đúng nhưng modal sai, kiểm tra nơi modal thực sự render. Portal gắn dưới `body` có thể nằm ngoài `[data-mfe="catalog"]`, nên selector scoped dưới root không khớp nữa. Nếu catalog dùng Shadow DOM, stylesheet trong shadow root cũng không chọn modal đã render ra light DOM.
+
+Chọn một overlay contract rõ ràng: remote được truyền portal target trong boundary của nó, hoặc shell cung cấp overlay host cùng style/theme policy riêng. Đừng sửa bằng cách export reset global để modal nhận style, vì nó mở lại phạm vi ảnh hưởng ra cả shell.
+
+Nếu style đúng nhưng modal vẫn bị che, xem ancestor có `overflow: hidden`, `transform`, `opacity`, `isolation` hoặc thuộc tính tạo stacking context. `z-index: 999999` trên modal không giúp nó thoát stacking context của ancestor và không tự loại bỏ clipping. Đánh giá DOM placement và host layout trước khi tăng z-index.
+
+Việc chuyển portal target cũng cần kiểm thử focus trap, Escape, trả focus về trigger, scroll lock và theme. Nếu overlay sửa `body.style.overflow`, phải khôi phục theo lifecycle và phối hợp với overlay khác; một remote unmount không được tự mở scroll khi modal của remote còn lại vẫn đang mở.
+
+## CSS lỗi sau navigation hoặc remount
+
+Nếu lần đầu đúng nhưng vào/ra catalog nhiều lần mới sai, chụp danh sách thẻ `link`/`style` trước mount, sau mount và sau unmount. Tìm stylesheet bị inject lặp, style bị xóa nhầm hoặc global mutation còn sót lại.
+
+| Dấu hiệu | Điều cần kiểm tra | Cách sửa theo owner |
+| --- | --- | --- |
+| Mỗi lần mount thêm cùng một stylesheet | Loader có deduplicate theo URL/release không | Một registry có ownership và reference count nếu nhiều consumer |
+| Catalog unmount làm cart mất style | Hai bên dùng chung stylesheet nhưng cleanup không biết consumer khác | Không xóa khi còn consumer; baseline shell do shell quản lý |
+| Vào lại remote bị unstyled | CSS bị gỡ nhưng module đã evaluate nên import không chạy lại | Thiết kế style loader có thể attach lại, không dựa vào side effect import chỉ chạy một lần |
+| Sau đóng modal trang vẫn không scroll | Body mutation chưa được khôi phục | Cleanup và overlay manager có chính sách dùng chung |
+| Chỉ lỗi khi đổi theme | Token bị ghi global hoặc subscription theme còn tồn tại | Giới hạn token scope, unsubscribe và áp snapshot theme hiện tại |
+
+Không mặc định xóa mọi stylesheet của remote khi unmount. CSS Modules đã scoped có thể được giữ trong document nếu không có tác động global; đổi lại cần đánh giá số release/style tích lũy. Style dùng chung không nên bị remote tự nhận quyền xóa.
+
+Nếu production lỗi còn dev đúng, kiểm tra CSS extraction, tree shaking và khai báo `sideEffects` của package. Một package đánh dấu toàn bộ code không có side effect có thể khiến import CSS bị loại tùy toolchain; xác nhận CSS có trong artifact/dependency graph trước khi sửa metadata. Nếu thấy flash unstyled trong lúc lazy-load, mount UI sau khi stylesheet cần thiết sẵn sàng hoặc giữ loading boundary phù hợp.
+
+## Hai ca chẩn đoán mẫu
+
+### Refresh lỗi nhưng click trong app vẫn chạy
+
+Giả sử mở `/catalog` rồi click sản phẩm thành công, nhưng refresh `/catalog/products/sku-42` trả 404. Network cho thấy request Document nhận trang lỗi hosting và không có shell bootstrap chạy.
+
+Kết luận ở bước này là **entry request chưa đến được shell**, không phải `ProductDetail` sai. Bổ sung rewrite cho nhánh document catalog, giữ nguyên URL và bảo vệ asset prefix. Sau đó kiểm tra lại cả deep link và asset thiếu.
+
+Nếu document đã đúng nhưng request ảnh chuyển thành `/catalog/products/images/item.png`, đó là lỗi thứ hai: `src` tương đối đang resolve theo document base. Sửa cách dựng asset URL hoặc dùng import được bundler quản lý; không tiếp tục nới SPA fallback để trả HTML cho ảnh.
+
+Ca này hoàn tất khi tab mới mở đúng sản phẩm, query/fragment được khôi phục và các asset có URL đúng. Một lần click trong app chạy chưa đủ làm tiêu chí nghiệm thu.
+
+### Mở catalog làm đổi nút cart
+
+Giả sử shell ban đầu có nút cart màu xanh. Sau khi vào catalog, nút chuyển đỏ; Computed chỉ ra `button { background: #dc2626; }` từ stylesheet catalog, và tắt declaration đó khôi phục màu ban đầu.
+
+Kết luận là remote export selector global ra document chung. Chuyển style component sang local class, bỏ rule global đó và review reset/token đi kèm. Đừng thêm `!important` cho cart: bản vá này chỉ làm hai owner tiếp tục tranh cùng property.
+
+Nếu rule vẫn ảnh hưởng sau khi deploy code mới, đối chiếu URL/release của stylesheet và style còn trong document cũ. Đây có thể là stylesheet từ release trước còn sống, không chứng minh selector mới vẫn sai. Kiểm tra document mới rồi quay lại lifecycle/cache theo bằng chứng.
+
+## Ma trận kiểm thử sau khi sửa
+
+Chạy trên build production phục vụ bằng hosting dự kiến, không chỉ dev server. Thêm ứng dụng basename nếu môi trường triển khai dưới subpath.
+
+| Ca | Thao tác | Kết quả cần đạt |
+| --- | --- | --- |
+| Deep link | Mở tab mới tại URL sản phẩm có query và fragment | Shell khởi động, đúng remote/màn hình và URL state |
+| Refresh | Reload URL sâu của catalog và cart | Không mất destination; document và assets đều đúng |
+| Unknown route | Mở subroute không tồn tại trong catalog | Domain not found, không giả thành lỗi remote hoặc redirect mất URL |
+| Asset thiếu | Request một CSS/chunk giả | Trả lỗi đúng nghĩa, không shell HTML `200` |
+| Basename | Điều hướng, mở tab mới dưới `/shop` nếu dùng | Không mất hoặc lặp prefix; asset base độc lập |
+| Browser history | Catalog → sản phẩm → cart → Back → Forward | URL và UI thống nhất, không thêm push khi nhận traversal |
+| Query state | Đổi filter rồi Back | Khôi phục filter từ URL, không chỉ pathname |
+| Thứ tự tải | Vào catalog rồi cart; làm ngược lại trong document mới | Style shell và từng remote không đổi ngoài contract |
+| Lifecycle | Mount/unmount nhiều lần | Listener không tăng; style không bị xóa nhầm hoặc inject vô hạn |
+| Overlay | Mở modal, đóng, đổi route và thử nhiều overlay | Style, focus, Escape và scroll lock đúng |
+| Theme và layout | Đổi theme, viewport, kiểm tra root font policy | Token đúng scope; không overflow/clipping ngoài dự kiến |
+| Release phối hợp | Shell hiện tại với remote mới và bản rollback còn hỗ trợ | Route/style contract tương thích trong cửa sổ release đã chốt |
+
+Chỉ dùng screenshot regression chưa đủ phát hiện history loop hoặc HTML giả dạng CSS. Kết hợp E2E navigation, assertion HTTP và kiểm tra style ở các element đại diện; xem [Integration tests và E2E](/docs/kiem-thu-va-tooling/integration-e2e).
+
+## Giảm ảnh hưởng và thông tin escalation
+
+Khi lỗi đang ảnh hưởng người dùng, rollback release remote hoặc cấu hình rewrite đã xác định gây lỗi nếu có đường rollback tương thích. Giữ fallback của shell hoạt động; đừng ép mọi navigation về trang chủ, reload liên tục hoặc tắt CSP để phục hồi tạm thời. Nếu có form chưa lưu, tránh cưỡng bức refresh mà không có chính sách bảo vệ dữ liệu.
+
+Khi chuyển ticket, gửi bằng chứng đủ để owner tiếp theo tái hiện:
+
+- URL đã loại dữ liệu nhạy cảm, thao tác tối thiểu, browser/viewport và việc lỗi có xuất hiện trong document mới hay không.
+- Shell release, remote release được chọn/đã chạy, config revision và thời điểm kèm timezone.
+- Document/asset request URL đã làm sạch, status, Content-Type, redirect chain, cache source và phần response liên quan.
+- Với history: source, mode, location đã làm sạch, revision và remote nào bỏ lỡ hoặc phát lại update.
+- Với CSS: element, DOM/portal parent, property sai, declaration thắng, stylesheet/release và kết quả khi tắt declaration.
+- Một thay đổi đã thử, kết quả đo được và ca kiểm thử còn thất bại; không chỉ ghi “đã xóa cache nhưng vẫn lỗi”.
+
+Chốt owner bằng ranh giới lỗi: document rewrite thuộc hosting, public navigation thuộc shell/bridge, URL tài nguyên thuộc build/deploy, selector leakage thuộc CSS owner. Sau bản sửa, đưa thao tác tái hiện tối thiểu vào regression test trước khi đóng ticket.
+
+## Tài liệu tham khảo
+
+- [React Router — BrowserRouter](https://reactrouter.com/api/declarative-routers/BrowserRouter): browser history và application basename; đối chiếu API theo version dùng trong workspace.
+- [React Router — MemoryRouter](https://reactrouter.com/api/declarative-routers/MemoryRouter): history trong memory và initial entries.
+- [MDN — popstate event](https://developer.mozilla.org/en-US/docs/Web/API/Window/popstate_event): khác biệt giữa ghi history và browser traversal.
+- [Nginx — try_files](https://nginx.org/en/docs/http/ngx_http_core_module.html#try_files): kiểm tra file và internal redirect.
+- [webpack — Public Path](https://webpack.js.org/guides/public-path/): asset base, runtime public path và chế độ `auto`.
+- [MDN — CSS url()](https://developer.mozilla.org/en-US/docs/Web/CSS/url): relative URL trong stylesheet và các yêu cầu với tài nguyên ngoài.
+- [MDN — Using Shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM): selector boundary và cách áp style cho shadow tree.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Routing và navigation" href="/docs/giao-tiep-va-trang-thai/routing" description="Thiết kế URL ownership và navigation contract thay vì chỉ sửa triệu chứng." />
+  <Card title="CSS isolation" href="/docs/ui-va-framework/css-isolation" description="Chọn CSS Modules, namespace hoặc Shadow DOM; kiểm soát portal và theme." />
+  <Card title="Remote không tải được" href="/docs/troubleshooting/remote-khong-tai" description="Khoanh vùng entry, chunks, publicPath và browser policy." />
+  <Card title="Cache lỗi thời và chunk errors" href="/docs/troubleshooting/stale-cache" description="Phân biệt sai URL với release cũ và artifact đã bị xóa." />
+</Cards>

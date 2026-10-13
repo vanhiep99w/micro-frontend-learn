@@ -1,18 +1,606 @@
 ---
 title: "iframe isolation"
-description: "Đánh giá isolation, sandbox, postMessage và giới hạn UX của iframe."
+description: "Tích hợp micro-frontend bằng iframe: ranh giới isolation, sandbox, contract postMessage, lifecycle và những giới hạn về UX, auth, routing."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell của shop đã dùng React mới, nhưng một vùng quản trị vẫn chạy framework cũ và mang theo cả bộ CSS global. Bạn muốn đưa vùng đó vào cùng sản phẩm mà chưa phải sửa toàn bộ ứng dụng. `iframe` cho phép nhúng một **document riêng**, thay vì đưa component và stylesheet của ứng dụng cũ vào document của shell.
+
+Đổi lại, hai phía không còn chia sẻ component tree, router hay store một cách tự nhiên. Bạn phải thiết kế cách gửi dữ liệu, đồng bộ theme, xử lý loading và trả focus cho người dùng. Mình chọn iframe khi ranh giới document riêng thật sự có giá trị, không chỉ vì đây là cách nhanh nhất để thấy hai giao diện trên cùng màn hình.
+
+<Callout type="info" title="Phạm vi ví dụ">
+  Repository này là site tài liệu. Các HTML, JavaScript và URL dưới đây dành cho lab riêng, không phải ứng dụng shop đã có trong repo. Ví dụ chỉ triển khai handshake, theme và resize; nghiệp vụ cart, auth và router được bàn như phần contract cần bổ sung. Sơ đồ dùng ASCII để không cần thêm cấu hình renderer.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [iframe tạo ra boundary nào](#iframe-tạo-ra-boundary-nào)
+  - [Document riêng không đồng nghĩa process riêng](#document-riêng-không-đồng-nghĩa-process-riêng)
+  - [Same origin và cross origin](#same-origin-và-cross-origin)
+- [Khi nào nên dùng](#khi-nào-nên-dùng)
+- [Thiết kế sandbox và chính sách nhúng](#thiết-kế-sandbox-và-chính-sách-nhúng)
+  - [Chỉ mở những quyền cần thiết](#chỉ-mở-những-quyền-cần-thiết)
+  - [Bẫy allow scripts và allow same origin](#bẫy-allow-scripts-và-allow-same-origin)
+  - [CSP ở cả shell và ứng dụng nhúng](#csp-ở-cả-shell-và-ứng-dụng-nhúng)
+- [Thiết kế contract postMessage](#thiết-kế-contract-postmessage)
+  - [Envelope và validation](#envelope-và-validation)
+  - [Handshake và phiên mount](#handshake-và-phiên-mount)
+  - [Command nghiệp vụ cần phản hồi riêng](#command-nghiệp-vụ-cần-phản-hồi-riêng)
+- [Ví dụ tích hợp tối thiểu](#ví-dụ-tích-hợp-tối-thiểu)
+  - [Adapter phía shell](#adapter-phía-shell)
+  - [Document và bridge phía catalog](#document-và-bridge-phía-catalog)
+  - [Chạy và quan sát lab](#chạy-và-quan-sát-lab)
+- [Lifecycle và xử lý lỗi](#lifecycle-và-xử-lý-lỗi)
+- [UX không tự đi qua boundary](#ux-không-tự-đi-qua-boundary)
+  - [Resize scroll và overlays](#resize-scroll-và-overlays)
+  - [Theme và accessibility](#theme-và-accessibility)
+  - [Routing và deep links](#routing-và-deep-links)
+- [Auth cookies và dữ liệu nhạy cảm](#auth-cookies-và-dữ-liệu-nhạy-cảm)
+- [Hiệu năng SEO và deploy độc lập](#hiệu-năng-seo-và-deploy-độc-lập)
+- [Kiểm thử boundary](#kiểm-thử-boundary)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist trước production](#checklist-trước-production)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## iframe tạo ra boundary nào
 
-Bài này sẽ giúp bạn: đánh giá isolation, sandbox, postMessage và giới hạn UX của iframe.
+Một iframe tạo nested browsing context: ứng dụng nhúng có `window`, `document`, stylesheet và môi trường JavaScript riêng. Shell tải một trang HTML qua `src`; trang đó tự tải bundle, chạy framework và quản lý UI bên trong.
 
-[Xem các bài trong nhóm Các cách tích hợp khác](/docs/cac-cach-tich-hop).
+```text
+Shell document: header, router, fallback
+  │
+  └── <iframe src="https://catalog.example.net/embed">
+        └── Catalog document: DOM, CSS, framework riêng
+
+Shell window   ◄──── postMessage ────►   Catalog window
+```
+
+Khác với Web Components, đây không chỉ là một boundary cho DOM selectors. React Context, dependency injection, module-level singleton và DOM events của catalog không tự nối với shell. Muốn trao đổi, hai bên dùng một contract như `postMessage` hoặc cùng gọi backend qua API của mình.
+
+### Document riêng không đồng nghĩa process riêng
+
+| Khía cạnh | iframe cung cấp gì? | Điều không nên suy ra |
+| --- | --- | --- |
+| DOM và CSS | Mỗi document có cây DOM và stylesheet riêng | Styles của shell không tự tạo theme cho catalog |
+| JavaScript | Mỗi frame có global object và realm riêng | Không bảo đảm frame luôn ở process hoặc thread riêng |
+| Dependency | Catalog có thể dùng framework và version khác shell | Không tự chia sẻ dependency để giảm bundle |
+| Lỗi UI | Shell có thể thay frame bằng fallback | Không bảo đảm tránh mọi ảnh hưởng CPU, memory hoặc browser crash |
+| Quyền truy cập | Same-origin policy và sandbox hạn chế một số hành vi | Không có nghĩa mọi iframe đều an toàn để chạy code không đáng tin |
+
+Browser quyết định cách phân bổ process theo kiến trúc và cơ chế site isolation của nó. Đừng dùng iframe như lời hứa rằng một vòng lặp JavaScript nặng sẽ không ảnh hưởng độ mượt của trang. Bạn vẫn phải đo CPU, long tasks và memory trên browser mục tiêu.
+
+### Same origin và cross origin
+
+Origin gồm **scheme, hostname và port**. `https://shop.example.com` và `https://catalog.example.com` khác origin, dù có thể cùng site theo cách browser xác định site. Hai trang ở cùng host nhưng khác path, chẳng hạn `/shop` và `/legacy`, vẫn cùng origin.
+
+Nếu không có hạn chế sandbox bổ sung, iframe cùng origin có thể truy cập DOM của parent và ngược lại. Vì vậy, chỉ đưa một ứng dụng vào iframe cùng origin không tạo security boundary với shell.
+
+Với iframe khác origin, same-origin policy chặn việc tùy ý đọc DOM, biến global hay storage của phía còn lại. Nó không cấm mọi tương tác: các bên vẫn có thể giữ tham chiếu window và gửi `postMessage`. Chính chỗ giao tiếp đó cần được kiểm soát.
+
+<Callout type="warn" title="Không dùng CORS để mở quyền đọc DOM">
+  CORS điều khiển việc JavaScript đọc một số response cross-origin, như response từ `fetch`. Nó không cho shell đọc `iframe.contentDocument` của một trang khác origin và không thay thế chính sách cho phép nhúng. Đừng thêm `Access-Control-Allow-Origin: *` để chữa lỗi truy cập DOM của iframe.
+</Callout>
+
+## Khi nào nên dùng
+
+Mình ưu tiên iframe cho một **vùng ứng dụng tương đối độc lập**: màn hình legacy, công cụ quản trị của đối tác hoặc nội dung cần boundary bảo mật được thiết kế riêng. Nó ít phù hợp hơn khi bạn phải nhúng rất nhiều widget nhỏ, chia sẻ state liên tục và làm giao diện trông như một component tree duy nhất.
+
+| Tình huống | Hướng chọn mặc định | Lý do |
+| --- | --- | --- |
+| Legacy app khó sửa, CSS global mạnh | Cân nhắc iframe | Giữ document và runtime riêng mà không phải chuyển toàn bộ code ngay |
+| App đối tác cần embed, hai bên có contract nhỏ | Cân nhắc iframe cross-origin | Không buộc hai bên cùng framework hoặc build pipeline |
+| Nội dung không đáng tin cậy | Origin riêng và sandbox được review | Chỉ iframe không đủ; còn phải giới hạn quyền và giao tiếp |
+| Product card cần tooltip, modal và tương tác sâu với shell | Ưu tiên component hoặc Web Components phù hợp | Document boundary làm tăng chi phí phối hợp UI |
+| Các team tin cậy nhau, cần chia sẻ React Context và dependency | Đánh giá Module Federation hoặc modular frontend | iframe không cung cấp kết nối component tự nhiên |
+| Trang sản phẩm cần SEO và SSR ở trang chính | Ưu tiên render nội dung vào document chính | HTML bên trong iframe không tự trở thành HTML nội dung của shell |
+| Một team nhỏ, cùng lịch release | Bắt đầu bằng frontend modular | Chưa có lợi ích rõ để trả chi phí bridge và vận hành riêng |
+
+Trong [shop mẫu](/docs/bat-dau/bai-toan-shop), shell, catalog và cart cần phối hợp giỏ hàng. iframe có thể làm được, nhưng nếu lý do duy nhất là “mỗi team thích một framework” thì mình sẽ đánh giá boundary nhẹ hơn trước.
+
+## Thiết kế sandbox và chính sách nhúng
+
+Boundary cross-origin hạn chế quyền đọc giữa các document. `sandbox` bổ sung hạn chế cho ứng dụng nhúng, chẳng hạn chạy script, gửi form, mở popup và điều hướng top-level. Hai cơ chế bổ trợ nhau, không thay thế nhau.
+
+### Chỉ mở những quyền cần thiết
+
+`sandbox=""` áp dụng các hạn chế sandbox; từng token `allow-*` mở lại một nhóm khả năng. Ngược lại, **không có attribute `sandbox`** nghĩa là bạn không bật các hạn chế sandbox đó.
+
+| Token | Mở lại khả năng nào? | Khi nào cân nhắc? |
+| --- | --- | --- |
+| `allow-scripts` | Chạy JavaScript | SPA hoặc widget có tương tác |
+| `allow-same-origin` | Giữ origin thực thay vì bị đặt vào opaque origin | App tin cậy cần API phụ thuộc origin, storage hoặc bridge xác thực origin thông thường |
+| `allow-forms` | Submit form | Luồng thật sự dùng HTML form submission |
+| `allow-popups` | Mở popup hoặc tab mới theo các hạn chế áp dụng | Luồng có nhu cầu rõ, không thêm chỉ để hết lỗi console |
+| `allow-popups-to-escape-sandbox` | Popup không kế thừa các hạn chế sandbox của frame | Cần review riêng vì đích mới không còn chịu cùng sandbox |
+| `allow-top-navigation-by-user-activation` | Điều hướng top-level khi có user activation | Chỉ khi UX thực sự yêu cầu; thường nên nhờ shell điều hướng |
+| `allow-downloads` | Tải file qua các cơ chế được token này cho phép | App có chức năng export/download |
+
+`allow` là attribute khác, dùng cho Permissions Policy như camera, microphone hay fullscreen. Nó không phải bí danh của `sandbox`; khả năng cuối cùng còn bị giới hạn bởi policy ở parent và các điều kiện bảo mật của API. Mặc định đừng cấp các capability này nếu catalog không dùng.
+
+### Bẫy allow scripts và allow same origin
+
+Tên `allow-same-origin` dễ gây hiểu nhầm: nó **không biến hai origin khác nhau thành một**. Nó giữ origin bình thường của document nhúng, thay vì để sandbox áp dụng opaque origin.
+
+Với app tin cậy ở origin khác shell, tổ hợp `allow-scripts allow-same-origin` có thể phù hợp: app chạy script và bridge nhận được origin dự kiến, trong khi same-origin policy vẫn ngăn đọc DOM của shell. Đây là mô hình của ví dụ dưới.
+
+Nhưng nếu app nhúng cùng origin với shell và có cả hai token, script của nó có thể truy cập frame element, gỡ sandbox rồi reload. Đừng coi cấu hình này là boundary bảo mật cho code không đáng tin. Nội dung đó nên được phục vụ từ origin riêng, và không được có đường điều hướng trở về nội dung có khả năng chạy code trên origin của shell.
+
+Nếu bỏ `allow-same-origin`, message từ document có opaque origin thường có `event.origin === 'null'`. Chuỗi `'null'` không định danh duy nhất một ứng dụng. Ví dụ bridge kiểm tra origin bên dưới **không dùng được nguyên trạng** cho trường hợp đó.
+
+<Callout type="warn" title="Không chữa opaque origin bằng wildcard">
+  Đừng đổi mọi `targetOrigin` thành `*` và chấp nhận mọi message có origin `'null'` để làm demo chạy. Với nội dung không đáng tin, cần thiết kế riêng cách cấp capability tối thiểu, có thể qua `MessageChannel` sau bootstrap được kiểm soát, và review việc frame điều hướng. Tuyệt đối không gửi session hay token nhạy cảm vào một kênh chỉ được xác thực bằng `'null'`.
+</Callout>
+
+### CSP ở cả shell và ứng dụng nhúng
+
+Shell quyết định **được tải frame từ đâu** bằng `frame-src`. Ứng dụng nhúng quyết định **ai được nhúng mình** bằng `frame-ancestors`.
+
+```http title="Response header của shell — phần policy liên quan iframe"
+Content-Security-Policy: frame-src https://catalog.example.net;
+```
+
+```http title="Response header của catalog — phần policy cho phép nhúng"
+Content-Security-Policy: frame-ancestors https://shop.example.com;
+```
+
+Đây là các phần policy minh họa, không phải CSP đầy đủ cho production. Hãy ghép chúng vào policy hiện có cùng `script-src`, `connect-src` và các directive khác. Nếu có nhiều lớp iframe lồng nhau, `frame-ancestors` kiểm tra các ancestor, không chỉ parent trực tiếp.
+
+`frame-ancestors` phải được gửi trong HTTP response header; đặt vào thẻ `<meta>` không có tác dụng. Nó cũng không fallback về `default-src`. Ngược lại, khi không có `frame-src`, việc tải frame có thể bị điều khiển bởi các directive fallback như `child-src` hoặc `default-src`.
+
+Kiểm tra cả `X-Frame-Options` do server hoặc proxy thêm vào. `DENY` hoặc cấu hình `SAMEORIGIN` cũ có thể khiến luồng embed không hoạt động trên các client chịu ảnh hưởng; không dùng `ALLOW-FROM` làm giải pháp hiện đại. Header cho phép embed cần nhất quán qua CDN, reverse proxy, trang lỗi và redirect.
+
+## Thiết kế contract postMessage
+
+`postMessage` gửi dữ liệu qua structured clone. Bạn có thể gửi plain object, array và những loại dữ liệu được hỗ trợ mà không cần `JSON.stringify`; không thể gửi function, DOM node hay mutable store rồi mong phía kia sử dụng trực tiếp.
+
+Quan trọng hơn, API này không trả kết quả nghiệp vụ. Nó gửi một message bất đồng bộ, không bảo đảm listener đã tồn tại và không báo cho sender biết handler phía kia đã thành công.
+
+### Envelope và validation
+
+Contract của lab dùng một envelope nhỏ:
+
+```ts title="Contract minh họa — không phải runtime validator"
+type Theme = 'light' | 'dark';
+type Base = {
+  channel: 'shop.catalog';
+  version: 1;
+  session: string;
+};
+
+type ShellMessage =
+  | (Base & { type: 'INIT'; locale: 'vi-VN'; theme: Theme })
+  | (Base & { type: 'THEME'; theme: Theme });
+
+type CatalogMessage =
+  | (Base & { type: 'READY' })
+  | (Base & { type: 'RESIZE'; height: number });
+```
+
+Mỗi receiver kiểm tra theo thứ tự:
+
+1. `event.origin` đúng origin đã cấu hình, so sánh chính xác, không dùng `includes` hoặc `endsWith`.
+2. `event.source` đúng window mong đợi: `iframe.contentWindow` ở shell, `window.parent` ở catalog.
+3. `event.data` là object và có channel, version, type phù hợp.
+4. Session khớp phiên đang hoạt động và payload có đúng kiểu, giới hạn, giá trị cho phép.
+
+Origin đúng chưa đủ. Hai iframe có thể cùng origin; kiểm tra source giúp tránh nhận message của instance khác. TypeScript types cũng không thay runtime validation: dữ liệu đến từ bên ngoài chưa được chứng minh là đúng type.
+
+Khi gửi, luôn truyền **origin đích chính xác**, chẳng hạn `frame.contentWindow.postMessage(message, catalogOrigin)`. Origin không chứa path `/embed`. Nếu frame bị điều hướng sang origin khác, message gửi với origin đích cũ sẽ không được trao cho document mới ở origin đó.
+
+### Handshake và phiên mount
+
+Lab chọn luồng đơn giản: shell đăng ký listener trước khi gắn frame; sau sự kiện `load`, shell gửi `INIT`; catalog trả `READY` sau khi UI và bridge đã sẵn sàng. Shell chỉ xử lý resize sau `READY`.
+
+Mỗi lần `load`, shell tạo session mới và bỏ readiness của phiên cũ. Message cũ đã nằm trong hàng đợi sẽ không được dùng để cập nhật UI của phiên mới. Session là định danh lifecycle, **không phải credential hoặc bằng chứng phân quyền**.
+
+Ví dụ này giả định catalog đã đăng ký listener trước `load`, và render UI đồng bộ. Với framework mount bất đồng bộ, hãy giữ lại `INIT` và chỉ trả `READY` sau khi mount xong. Nếu bridge được tải muộn, cần bổ sung cơ chế announcement hoặc retry handshake có giới hạn; `postMessage` không tự buffer message cho listener sẽ tồn tại trong tương lai.
+
+### Command nghiệp vụ cần phản hồi riêng
+
+Nếu catalog nhúng cần thêm sản phẩm vào giỏ, đừng phát `CART_UPDATED` ngay khi người dùng bấm nút. Đó mới là một yêu cầu, chưa phải kết quả. Shell chuyển command qua public API của cart controller; owner của cart xác nhận và cung cấp snapshot cho badge.
+
+```json title="Ví dụ mở rộng contract — chưa được triển khai trong lab"
+{
+  "channel": "shop.catalog",
+  "version": 1,
+  "session": "current-mount-id",
+  "type": "CART_ADD_REQUEST",
+  "requestId": "operation-id",
+  "sku": "ao-thun-den",
+  "quantity": 1
+}
+```
+
+Phản hồi cần cùng `requestId`, với một type đã thống nhất như `CART_ADD_RESULT`, trạng thái thành công hoặc error code có giới hạn. Shell validate SKU, quantity và quyền của sender trước khi gọi controller; backend vẫn validate nghiệp vụ khi có backend.
+
+Timeout chỉ cho biết **chưa nhận được kết quả**, không chứng minh thao tác chưa chạy. Nếu tự retry command thêm giỏ, bạn có thể cộng hai lần. Muốn retry an toàn, owner xử lý mutation phải hỗ trợ idempotency và quy tắc lưu kết quả, hoặc consumer phải đối soát state trước khi thử lại. Correlation ID tự nó không tạo idempotency.
+
+## Ví dụ tích hợp tối thiểu
+
+Lab dùng hai origin HTTP khác nhau:
+
+| Phía | URL |
+| --- | --- |
+| Shell | `http://localhost:4300` |
+| Catalog | `http://localhost:4301/embed.html` |
+
+Port khác nhau nên khác origin. Đây là môi trường local, không phải ví dụ kiểm chứng third-party cookies; production cần HTTPS và policy phù hợp. Catalog là ứng dụng do bạn kiểm soát, được sandbox với `allow-scripts allow-same-origin`.
+
+### Adapter phía shell
+
+Shell giữ loading status **bên ngoài** iframe, đặt `title` cho frame và giới hạn chiều cao được nhận. Timeout 8 giây và khoảng chiều cao 240–1200 pixel là lựa chọn minh họa của lab, không phải ngưỡng chuẩn cho mọi sản phẩm.
+
+```html title="shell/index.html"
+<button id="theme" type="button">Đổi theme</button>
+<p id="embed-status" role="status" aria-live="polite"></p>
+<div id="catalog-slot"></div>
+<script type="module" src="/shell.js"></script>
+```
+
+```js title="shell/shell.js"
+const CATALOG_URL = 'http://localhost:4301/embed.html';
+const CATALOG_ORIGIN = new URL(CATALOG_URL).origin;
+const CHANNEL = 'shop.catalog';
+
+function mountCatalog(slot, status) {
+  const frame = document.createElement('iframe');
+  frame.title = 'Danh sách sản phẩm';
+  frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+  frame.referrerPolicy = 'no-referrer';
+  frame.loading = 'eager';
+  frame.style.cssText = 'display:block;width:100%;height:360px;border:0';
+
+  const listeners = new AbortController();
+  let session = '';
+  let theme = 'light';
+  let ready = false;
+  let failed = false;
+  let disposed = false;
+  let timer;
+
+  function armTimeout() {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (disposed || ready) return;
+      failed = true;
+      frame.hidden = true;
+      status.textContent = 'Catalog chưa sẵn sàng. Hãy tải lại vùng này.';
+    }, 8000);
+  }
+
+  function send(message) {
+    if (disposed || failed || !session) return;
+    frame.contentWindow?.postMessage({
+      channel: CHANNEL, version: 1, session, ...message,
+    }, CATALOG_ORIGIN);
+  }
+
+  frame.addEventListener('load', () => {
+    session = crypto.randomUUID();
+    ready = false;
+    failed = false;
+    frame.hidden = false;
+    status.textContent = 'Đang khởi tạo catalog…';
+    armTimeout();
+    send({ type: 'INIT', locale: 'vi-VN', theme });
+  }, { signal: listeners.signal });
+
+  window.addEventListener('message', (event) => {
+    if (disposed || failed || event.origin !== CATALOG_ORIGIN ||
+        event.source !== frame.contentWindow) return;
+    const message = event.data;
+    if (!message || typeof message !== 'object' || Array.isArray(message) ||
+        message.channel !== CHANNEL || message.version !== 1 ||
+        !session || message.session !== session) return;
+
+    if (message.type === 'READY') {
+      ready = true;
+      clearTimeout(timer);
+      status.textContent = 'Catalog đã sẵn sàng.';
+      // Đồng bộ cả trường hợp đổi theme trong lúc đang handshake.
+      send({ type: 'THEME', theme });
+      return;
+    }
+    if (!ready || message.type !== 'RESIZE') return;
+    if (typeof message.height !== 'number' ||
+        !Number.isFinite(message.height) || message.height <= 0) return;
+    const height = Math.min(1200, Math.max(240, Math.ceil(message.height)));
+    frame.style.height = `${height}px`;
+  }, { signal: listeners.signal });
+
+  status.textContent = 'Đang tải catalog…';
+  armTimeout(); // Bao phủ cả trường hợp chưa nhận được load.
+  frame.src = CATALOG_URL;
+  slot.replaceChildren(frame);
+
+  return {
+    setTheme(value) {
+      if (disposed || (value !== 'light' && value !== 'dark')) return;
+      theme = value;
+      if (ready) send({ type: 'THEME', theme });
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(timer);
+      listeners.abort();
+      frame.remove();
+      status.textContent = '';
+    },
+  };
+}
+
+const slot = document.querySelector('#catalog-slot');
+const status = document.querySelector('#embed-status');
+const catalog = mountCatalog(slot, status);
+let dark = false;
+document.querySelector('#theme').addEventListener('click', () => {
+  dark = !dark;
+  catalog.setTheme(dark ? 'dark' : 'light');
+});
+
+// Trong shell thật: gọi catalog.dispose() khi rời route hoặc unmount adapter.
+```
+
+Bridge chỉ chấp nhận hai message types của catalog và không coi payload là HTML. Một sender đúng origin vẫn có thể gửi sai dữ liệu; `RESIZE` có kiểu sai hoặc chiều cao không hữu hạn bị bỏ qua.
+
+Lab ẩn frame khi timeout và hiển thị fallback ở shell. Trong sản phẩm, hãy cung cấp nút thử lại tạo adapter mới và hủy adapter cũ trước đó. Không tự reload cả trang hay retry liên tục: người dùng có thể đang có dữ liệu chưa lưu ở vùng khác.
+
+### Document và bridge phía catalog
+
+Catalog cần một wrapper nội dung không phụ thuộc chiều cao viewport để đo resize. Bridge bên dưới đăng ký listener khi module chạy; chỉ gửi message sau khi nhận `INIT` hợp lệ.
+
+```html title="catalog/embed.html"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Catalog nhúng</title>
+    <style>
+      html { color-scheme: light; }
+      body { margin: 0; background: #fff; color: #17202a; font: 16px system-ui; }
+      html[data-theme="dark"] { color-scheme: dark; }
+      html[data-theme="dark"] body { background: #17202a; color: #fff; }
+      #content { display: flow-root; padding: 16px; }
+    </style>
+  </head>
+  <body>
+    <main id="content">
+      <h1>Catalog</h1>
+      <p>Áo thun đen — 150.000 ₫</p>
+      <p>Túi vải — 80.000 ₫</p>
+      <p>Bình nước — 120.000 ₫</p>
+    </main>
+    <script type="module" src="/bridge.js"></script>
+  </body>
+</html>
+```
+
+```js title="catalog/bridge.js"
+const SHELL_ORIGIN = 'http://localhost:4300';
+const CHANNEL = 'shop.catalog';
+const content = document.querySelector('#content');
+let session = '';
+let scheduled = 0;
+let lastHeight = -1;
+const listeners = new AbortController();
+
+function send(message) {
+  if (!session || window.parent === window) return;
+  window.parent.postMessage({
+    channel: CHANNEL, version: 1, session, ...message,
+  }, SHELL_ORIGIN);
+}
+
+function scheduleResize() {
+  if (!session || scheduled) return;
+  scheduled = requestAnimationFrame(() => {
+    scheduled = 0;
+    const height = Math.ceil(content.getBoundingClientRect().height);
+    if (height === lastHeight) return;
+    lastHeight = height;
+    send({ type: 'RESIZE', height });
+  });
+}
+
+const observer = new ResizeObserver(scheduleResize);
+observer.observe(content);
+
+window.addEventListener('message', (event) => {
+  if (window.parent === window || event.origin !== SHELL_ORIGIN ||
+      event.source !== window.parent) return;
+  const message = event.data;
+  if (!message || typeof message !== 'object' || Array.isArray(message) ||
+      message.channel !== CHANNEL || message.version !== 1 ||
+      typeof message.session !== 'string' ||
+      message.session.length < 1 || message.session.length > 128) return;
+  if (message.theme !== 'light' && message.theme !== 'dark') return;
+
+  if (message.type === 'INIT' && message.locale === 'vi-VN') {
+    session = message.session;
+    lastHeight = -1;
+    document.documentElement.lang = 'vi';
+    document.documentElement.dataset.theme = message.theme;
+    send({ type: 'READY' }); // Với framework: chờ UI mount xong trước dòng này.
+    scheduleResize();
+    return;
+  }
+  if (message.type === 'THEME' && session && message.session === session) {
+    document.documentElement.dataset.theme = message.theme;
+    scheduleResize();
+  }
+}, { signal: listeners.signal });
+
+// Khi document thực sự bị hủy, browser sẽ giải phóng context của frame.
+// Nếu bridge nằm trong một app sống lâu, gọi disposeBridge khi unmount vùng UI.
+function disposeBridge() {
+  listeners.abort();
+  observer.disconnect();
+  cancelAnimationFrame(scheduled);
+  scheduled = 0;
+  session = '';
+}
+```
+
+`ResizeObserver` theo dõi thay đổi kích thước wrapper, còn `requestAnimationFrame` gộp các lần đo trong một frame và `lastHeight` tránh gửi lại số đo không đổi. Đây không phải cơ chế chống flood từ sender độc hại; production vẫn cần giới hạn tần suất xử lý và tài nguyên theo mức độ tin cậy.
+
+`disposeBridge()` dành cho lifecycle bên trong ứng dụng catalog; lab giữ UI sống suốt vòng đời document nên chưa gọi hàm đó. Khi shell gỡ iframe, document bị hủy, nhưng các listener shell đã tạo trên window của mình vẫn phải được cleanup riêng.
+
+### Chạy và quan sát lab
+
+Lưu ba file ở phía shell/catalog theo tên trên. Nếu có Python 3, mở hai terminal và chạy các static server sau trong thư mục lab, **không phải tại root của site tài liệu**:
+
+```bash title="Terminal 1"
+python3 -m http.server 4300 --bind localhost --directory shell
+```
+
+```bash title="Terminal 2"
+python3 -m http.server 4301 --bind localhost --directory catalog
+```
+
+Mở `http://localhost:4300`. Bạn sẽ thấy trạng thái chuyển sang “Catalog đã sẵn sàng”, rồi iframe đổi chiều cao theo wrapper. Bấm “Đổi theme” sẽ đổi nền catalog qua message, không phải do CSS của shell xuyên qua boundary.
+
+Dùng đúng hostname `localhost`; nếu mở shell bằng `127.0.0.1`, origin không khớp cấu hình và handshake sẽ bị bỏ qua. Các server này chỉ phục vụ lab tối thiểu, không thiết lập response headers CSP minh họa ở phần trước.
+
+Thử đổi port trong `SHELL_ORIGIN`, hoặc sửa catalog không trả `READY`, để quan sát fallback sau timeout. Thêm đoạn nội dung vào `#content` trong DevTools của frame để xem resize; khi vượt mức 1200 pixel, frame giữ chiều cao tối đa và nội dung bên trong có thể cần scroll.
+
+## Lifecycle và xử lý lỗi
+
+**Sự kiện `load` không phải bằng chứng ứng dụng nhúng đã hoạt động.** Browser có thể phát `load` ngay cả khi nội dung iframe không tải thành công, và không cung cấp `error` như một cơ chế đáng tin để phát hiện mọi lỗi tải frame. Vì vậy, ví dụ dùng `load` để bắt đầu handshake, không dùng nó để báo catalog sẵn sàng.
+
+| Mốc | Trách nhiệm của shell | Trách nhiệm của catalog |
+| --- | --- | --- |
+| Mount | Tạo frame, listeners, loading UI và deadline | Tải document và khởi tạo app |
+| Handshake | Gửi cấu hình, chờ `READY` của phiên hiện tại | Validate sender, áp dụng cấu hình, xác nhận khi UI sẵn sàng |
+| Hoạt động | Nhận message hợp lệ và áp dụng policy | Quản lý UI nội bộ, gửi event theo contract |
+| Reload document | Tạo session mới, hủy pending work thuộc phiên cũ | Khởi tạo state và bridge mới |
+| Unmount | Gỡ listeners, timer, frame; hủy pending requests | Cleanup subscriptions, observers và async work khi UI unmount |
+
+Nếu mở rộng thành request/response, map các request đang chờ cũng thuộc lifecycle adapter. Khi unmount hoặc thay session, reject chúng với lỗi như `EMBED_DISPOSED`; đừng để Promise treo vô hạn. Với async handler shell đang gọi backend, dùng abort khi có thể và kiểm tra session trước khi trả kết quả về frame.
+
+`READY` chỉ xác nhận một mốc, không chứng minh ứng dụng luôn khỏe về sau. Bạn có thể bổ sung báo lỗi render hoặc heartbeat nếu SLA cần, nhưng không nên biến heartbeat thành vòng reload tự động làm mất form chưa lưu. Log tối thiểu nên có frame instance, session, protocol version và mốc timeout, không chứa token hoặc toàn bộ payload người dùng.
+
+Trong shell React, tạo adapter trong effect ở client và gọi `dispose()` ở cleanup. Không tạo iframe trong render, và không để theme thay đổi khiến cả effect mount chạy lại nếu chỉ cần gửi message. React Error Boundary của shell cũng không tự bắt exception bên trong document của iframe; lỗi đó cần được quan sát tại catalog và báo về qua contract phù hợp.
+
+## UX không tự đi qua boundary
+
+Có document riêng giúp tránh CSS đè nhau, nhưng các phần UI vẫn phải trông và hoạt động như một sản phẩm. Phần công việc này thường lớn hơn đoạn tạo iframe.
+
+### Resize scroll và overlays
+
+Mình chọn auto-height cho nội dung ngắn, để người dùng chủ yếu scroll document chính. Với dashboard dài hoặc app có nhiều panel, một vùng viewport cố định với scroll nội bộ có thể dễ kiểm soát hơn. Hãy chọn rõ chiến lược thay vì để cả hai document có scroll ngoài ý muốn.
+
+Tránh vòng lặp resize: shell đổi chiều cao iframe; catalog dùng `min-height: 100vh` rồi báo chiều cao lớn hơn; shell lại tăng tiếp. Đo wrapper theo nội dung, không phụ thuộc chiều cao frame, giới hạn giá trị và chỉ gửi khi thay đổi như trong lab.
+
+Dropdown, tooltip và modal của catalog chỉ vẽ trong viewport của frame. `z-index: 999999` không giúp chúng phủ header shell. Nếu trải nghiệm cần modal cấp toàn trang, shell nên sở hữu modal và nhận một yêu cầu ngữ nghĩa có whitelist; không nhận HTML tùy ý từ frame rồi gắn vào document chính.
+
+### Theme và accessibility
+
+CSS custom properties, font và stylesheet của shell không tự truyền vào document nhúng. Thống nhất một tập token hoặc theme identifier, rồi để catalog áp dụng mapping của mình. `color-scheme` có thể giúp controls theo theme, nhưng không thay thế đồng bộ design tokens.
+
+Iframe cần `title` mô tả đúng vùng nội dung, còn catalog vẫn cần document title, landmarks, heading hierarchy và tên accessible cho controls bên trong. `title` của iframe không sửa được một app nhúng không dùng keyboard được.
+
+Kiểm thử tab từ shell vào frame và trở ra, zoom, focus sau navigation, và tình huống frame bị gỡ khi focus đang nằm bên trong. Nếu shell mở modal theo yêu cầu catalog, nó phải quản lý focus trap và trả focus qua một contract đã thống nhất; shell cross-origin không thể tùy ý query nút nội bộ của catalog. Loading/fallback và nút retry nên nằm ngoài frame để vẫn sử dụng được khi catalog hỏng.
+
+### Routing và deep links
+
+Shell nên sở hữu URL cấp sản phẩm; catalog chỉ sở hữu route nội bộ của vùng mình. Gửi một message như `NAVIGATE_REQUEST` với route key hoặc path được allowlist nếu cần chuyển sang `/cart`. Không mở `allow-top-navigation` chỉ để catalog tự ghi `window.top.location`, và không điều hướng theo mọi URL nhận được.
+
+Route synchronization cần quy tắc về Back/Forward, tránh echo và giới hạn dữ liệu. Shell có thể gửi route snapshot; catalog báo ý định điều hướng, không phản chiếu lại mọi snapshot vừa nhận. Nếu dùng path, hãy parse URL và kiểm tra cả origin lẫn tập path/query được phép, không chỉ kiểm tra chuỗi bắt đầu bằng `/`.
+
+`history.pushState` ở catalog cập nhật history của context catalog, không tự đồng bộ URL shell; navigation trong frame cũng có thể ảnh hưởng hành vi Back của browsing context tổng thể. Kiểm thử cả browser Back, reload deep link và route chưa tồn tại. Mount một iframe chỉ là ghép UI, chưa phải tích hợp router.
+
+## Auth cookies và dữ liệu nhạy cảm
+
+“Khác origin” và “third-party” không đồng nghĩa. Hai subdomain HTTPS có thể cross-origin nhưng same-site; khác registrable domain có thể là cross-site. Vì vậy, lab khác port kiểm chứng same-origin policy, nhưng không chứng minh auth sẽ hoạt động trong iframe cross-site ở production.
+
+Cookie còn chịu `Domain`, `Path`, `Secure`, `SameSite` và chính sách privacy của browser. Với nhiều trường hợp iframe cross-site, `SameSite=Lax` hoặc `Strict` không đáp ứng luồng gửi cookie mong muốn; `SameSite=None; Secure` cũng **không bảo đảm** third-party cookie được cho phép. Storage có thể bị partition hoặc bị hạn chế; `allow-same-origin` không tắt các policy đó.
+
+Mặc định, mình để từng app dùng session/backend của nó với quyền tối thiểu, và thiết kế auth với backend/identity team. Đừng gửi toàn bộ access token của shell qua `INIT`, nhét token vào query string của `src`, hoặc chia sẻ cookie rộng cho mọi subdomain chỉ để iframe nhận được session. Khi cần handoff, phải giới hạn audience, thời hạn, khả năng replay và cách backend đổi/xác minh dữ liệu.
+
+Login có thể cần top-level redirect hoặc popup, còn trang identity provider thường không cho embed. Những đường đi đó phải được thiết kế rõ, không giải quyết bằng cách mở mọi sandbox token. Nếu app thiếu cookie hoặc chưa login, hãy báo trạng thái auth có nghĩa thay vì chỉ để shell kết luận “remote tải chậm”.
+
+<Callout type="warn" title="Message hợp lệ không phải authorization">
+  Kiểm tra origin và source xác nhận nguồn message trong mô hình đã chọn, không xác nhận user được thêm giỏ, export dữ liệu hay thanh toán. App tin cậy vẫn có thể có XSS. Shell và backend phải kiểm tra quyền của từng capability; tránh cung cấp bridge kiểu “gọi bất kỳ API nào bằng token của shell”.
+</Callout>
+
+## Hiệu năng SEO và deploy độc lập
+
+Catalog có thể tự triển khai HTML và assets mà shell không rebuild, nhưng chỉ khi URL embed và protocol còn tương thích. HTML version mới với bundle cũ trong cache, hoặc shell cũ gặp catalog mới, đều phải được xem là tình huống bình thường. Giữ compatibility window, quản lý cache/version assets và có đường rollback.
+
+iframe không có dependency sharing như Module Federation. Nếu shell và catalog đều dùng React, mỗi phía thường tải bundle của mình; nhiều iframe còn nhân chi phí khởi tạo app, network, memory và font. Với catalog chính của trang, lab chọn `loading="eager"`; chỉ chọn lazy loading cho vùng ngoài viewport và bắt đầu deadline khi thật sự kích hoạt tải, không timeout trước khi browser cho frame tải.
+
+Đo thời gian từ lúc người dùng cần vùng UI đến `READY`, chi phí tải assets và ảnh hưởng trên thiết bị yếu. Đừng dùng `load` làm metric “ứng dụng đã dùng được”, hoặc giả định khác document đồng nghĩa không block UX.
+
+Về SEO, HTML shell chỉ chứa iframe element; nội dung catalog không tự nằm trong HTML SSR của shell. Search engine có thể xử lý frame theo cách riêng, nhưng không nên dựa vào đó để bảo đảm trang sản phẩm có nội dung, metadata và structured data cần thiết. Nếu SEO là yêu cầu chính, chọn kiến trúc render nội dung quan trọng vào document chính hoặc cung cấp trang canonical độc lập có chiến lược rõ ràng.
+
+## Kiểm thử boundary
+
+Unit tests cho validators là cần thiết, nhưng không thay browser tests: sandbox, origin, CSP, focus và history cần browser thực. Chạy một phần suite trên hai origin khác nhau và trên các browser mục tiêu.
+
+| Ca kiểm tra | Kết quả mong đợi |
+| --- | --- |
+| Message đúng shape nhưng sai origin | Bị bỏ qua, không đổi state |
+| Message từ iframe khác cùng origin | Bị bỏ qua vì source không khớp |
+| Version/channel/type không hỗ trợ | Không được xử lý như message hợp lệ |
+| Message phiên cũ sau reload | Không resize hoặc resolve request phiên mới |
+| `RESIZE` là chuỗi, âm, `NaN` hoặc vô hạn | Bị từ chối; giá trị hợp lệ quá lớn bị giới hạn theo policy |
+| Catalog không trả `READY` | Loading kết thúc bằng fallback, shell vẫn dùng được |
+| Catalog trả `READY` sau khi deadline hết | Không tự hồi sinh phiên đã bị coi là lỗi trong lab |
+| Theme đổi trong handshake | Khi ready, catalog nhận theme mới nhất |
+| Unmount rồi mount lại nhiều lần | Không nhân listeners, timers hoặc pending requests |
+| CSP chặn frame hoặc catalog không cho embed | Có fallback; console/network giúp tìm nguyên nhân |
+| Frame tự reload hoặc điều hướng origin | Reset session; không gửi dữ liệu nhạy cảm sang đích lạ |
+| Keyboard, zoom và Back/Forward | Không trap focus; navigation và scroll đúng quyết định UX |
+| Third-party cookies bị chặn | Có luồng auth/fallback rõ, không treo ở loading vô hạn |
+| Shell cũ với catalog mới và ngược lại | Hoạt động trong compatibility window hoặc báo lỗi có kiểm soát |
+
+Khi thêm command cart, bổ sung ca duplicate request, timeout sau khi mutation đã hoàn tất, unmount khi request đang chạy và backend từ chối quyền. Badge phải đọc state từ cart owner, không cộng theo số message đã nhận.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân có thể | Hướng xử lý |
+| --- | --- | --- |
+| Frame trắng nhưng vẫn có `load` | CSP, `X-Frame-Options`, HTTP error hoặc app crash | Kiểm tra headers/console của frame và readiness handshake |
+| Shell không đọc được DOM catalog | Hai phía khác origin | Dùng public message contract, không thêm CORS để mở DOM |
+| Handshake bị bỏ qua | Sai scheme/host/port, redirect, opaque origin hoặc listener quá muộn | Kiểm tra URL cuối, sandbox, cấu hình origin và thứ tự bootstrap |
+| Theme shell đổi nhưng catalog không đổi | CSS không đi qua document boundary | Gửi theme/token contract và áp dụng tại catalog |
+| Frame tăng chiều cao liên tục | Số đo phụ thuộc viewport hoặc feedback loop | Đo wrapper độc lập, tránh `100vh`, dedupe và giới hạn resize |
+| Modal bị cắt dù z-index rất lớn | Overlay nằm trong viewport iframe | Chọn overlay nội bộ hoặc shell-owned modal theo contract |
+| Giỏ bị cộng hai lần | Retry mutation không idempotent hoặc nhiều listeners | Deduplicate tại owner, cleanup listeners và đối soát request/result |
+| Login local được nhưng production lỗi | SameSite, privacy policy hoặc IdP không cho embed | Kiểm thử cross-site thực và thiết kế auth riêng |
+
+## Checklist trước production
+
+- [ ] Có lý do chọn document boundary thay vì chỉ chia bundle hoặc component.
+- [ ] Origin của catalog được kiểm soát; nội dung không đáng tin không chạy cùng origin với shell.
+- [ ] Sandbox và Permissions Policy chỉ mở capability thực sự cần.
+- [ ] `frame-src`, `frame-ancestors` và headers từ proxy/CDN được kiểm chứng.
+- [ ] Mọi message kiểm tra origin, source, version, session, type và payload tại runtime.
+- [ ] Không gửi token, mutable store hoặc HTML tùy ý qua bridge.
+- [ ] Có readiness deadline, fallback, retry chủ động và cleanup theo lifecycle.
+- [ ] Command có response, timeout và quy tắc idempotency/đối soát khi cần.
+- [ ] Scroll, resize, modal, keyboard, focus và routing có owner rõ ràng.
+- [ ] Auth đã được thử khi storage/cookies bị hạn chế trên browser mục tiêu.
+- [ ] Có đo hiệu năng, compatibility tests, logging an toàn và kế hoạch rollback.
+
+Trước khi đưa cả catalog vào iframe, hãy làm một thử nghiệm nhỏ: chạy shell và catalog trên hai origin, bật sandbox dự kiến, kiểm tra handshake, rồi cố tình chặn embed và unmount lúc đang chờ. Nếu bridge phải có quá nhiều lệnh chỉ để UI hoạt động như một component thông thường, đó là dấu hiệu nên xem lại boundary trước khi mở rộng nghiệp vụ.
+
+## Tài liệu tham khảo
+
+- [MDN — iframe: sandbox, loading và hành vi load/error](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe).
+- [MDN — Window.postMessage và các yêu cầu kiểm tra sender](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage).
+- [MDN — Same-origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Same-origin_policy).
+- [MDN — CSP frame-src](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-src).
+- [MDN — CSP frame-ancestors](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-ancestors).
+- [MDN — Set-Cookie và SameSite](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie).
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Web Components" href="/docs/cac-cach-tich-hop/web-components" description="So sánh document boundary với custom element và Shadow DOM trong cùng runtime." />
+  <Card title="So sánh các cách tích hợp" href="/docs/cac-cach-tich-hop/so-sanh" description="Đặt iframe cạnh federation, single-spa và các lựa chọn khác." />
+  <Card title="Contracts giữa các phần" href="/docs/giao-tiep-va-trang-thai/contracts" description="Tiếp tục thiết kế API, payload và compatibility giữa các owner." />
+  <Card title="Bảo mật micro-frontend" href="/docs/production/security" description="Xem boundary bảo mật ở mức toàn hệ thống, không chỉ riêng iframe." />
+</Cards>

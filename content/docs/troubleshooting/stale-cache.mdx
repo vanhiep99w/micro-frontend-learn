@@ -1,18 +1,448 @@
 ---
 title: "Cache lỗi thời và chunk errors"
-description: "Debug entry cũ, artifacts đã bị xóa và chunk load errors sau deploy."
+description: "Runbook debug entry cũ, chunks bị xóa và lỗi sau deploy: xác định lớp cache, khôi phục artifact graph và kiểm chứng tab cũ lẫn tab mới."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Bạn vừa deploy catalog, tab mới chạy bình thường nhưng tab mở từ sáng báo `ChunkLoadError` khi vào trang sản phẩm. Một người hard reload thì hết lỗi, người khác vẫn gặp. Đừng vội purge toàn bộ CDN: một tab có thể đang giữ entry cũ trong runtime, còn chunk mà entry đó cần đã bị pipeline xóa khỏi origin.
+
+Bài này giúp bạn xác định **ai chọn release, ai trả bytes và file nào không còn tồn tại**. Mặc định mình giữ bằng chứng trước, phục hồi graph bị thiếu nếu có thể, rồi mới sửa policy cache. Hard reload chỉ là một phép đối chiếu hoặc cách phục hồi client có kiểm soát, không phải bản sửa cho deploy.
+
+<Callout type="info" title="Phạm vi">
+  Ví dụ dùng shop giả định với shell và remote catalog, webpack 5 Module Federation trong browser. URL `assets.example.com`, release `r18`/`r19`, config revision và hash là minh họa; repo này chỉ chứa site tài liệu, không có CDN hay pipeline để chạy lệnh production. Layout `/catalog/releases/r18/` nối tiếp [Caching và cache invalidation](/docs/trien-khai/caching).
+
+  Với Vite/ESM hoặc runtime enhanced, tên lỗi, manifest và cơ chế retry có thể khác. Vẫn kiểm tra selection, entry và dependency graph, nhưng không áp dụng thao tác reset webpack container cho mọi runtime. Sơ đồ text bên dưới không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Xử lý nhanh khi đang có incident](#xử-lý-nhanh-khi-đang-có-incident)
+- [Phân biệt code cũ hợp lệ với cache lỗi](#phân-biệt-code-cũ-hợp-lệ-với-cache-lỗi)
+- [Khoanh vùng theo triệu chứng](#khoanh-vùng-theo-triệu-chứng)
+- [Các lớp cần kiểm tra](#các-lớp-cần-kiểm-tra)
+- [Giữ bằng chứng trước khi reload](#giữ-bằng-chứng-trước-khi-reload)
+- [Đối chiếu selection entry và chunk](#đối-chiếu-selection-entry-và-chunk)
+  - [Xác nhận release document đang dùng](#xác-nhận-release-document-đang-dùng)
+  - [Kiểm tra request thất bại đầu tiên](#kiểm-tra-request-thất-bại-đầu-tiên)
+- [Kiểm tra CDN và origin bằng curl](#kiểm-tra-cdn-và-origin-bằng-curl)
+  - [So sánh GET thường với request revalidation](#so-sánh-get-thường-với-request-revalidation)
+  - [Đọc headers và response 304](#đọc-headers-và-response-304)
+  - [Phân biệt thiếu artifact với negative caching](#phân-biệt-thiếu-artifact-với-negative-caching)
+- [Tách HTTP cache service worker và runtime](#tách-http-cache-service-worker-và-runtime)
+  - [Thử nghiệm có kiểm soát trong browser](#thử-nghiệm-có-kiểm-soát-trong-browser)
+  - [Kiểm tra service worker](#kiểm-tra-service-worker)
+  - [Không có request mới thì kiểm tra runtime](#không-có-request-mới-thì-kiểm-tra-runtime)
+- [Khôi phục theo nguyên nhân](#khôi-phục-theo-nguyên-nhân)
+  - [Chunk của release cũ bị xóa](#chunk-của-release-cũ-bị-xóa)
+  - [Selection hoặc entry mutable bị cache quá lâu](#selection-hoặc-entry-mutable-bị-cache-quá-lâu)
+  - [URL immutable đã bị ghi đè](#url-immutable-đã-bị-ghi-đè)
+  - [Service worker giữ graph cũ hoặc trộn graph](#service-worker-giữ-graph-cũ-hoặc-trộn-graph)
+- [Worked example tab r18 lỗi sau deploy r19](#worked-example-tab-r18-lỗi-sau-deploy-r19)
+- [Retry reload và rollback an toàn](#retry-reload-và-rollback-an-toàn)
+- [Ngăn lỗi tái diễn trong pipeline](#ngăn-lỗi-tái-diễn-trong-pipeline)
+- [Ma trận kiểm chứng sau khi sửa](#ma-trận-kiểm-chứng-sau-khi-sửa)
+- [Thông tin bàn giao incident](#thông-tin-bàn-giao-incident)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Xử lý nhanh khi đang có incident
 
-Bài này sẽ giúp bạn: debug entry cũ, artifacts đã bị xóa và chunk load errors sau deploy.
+Nếu nhiều người dùng đang bị ảnh hưởng, làm theo thứ tự này. Các phần sau giải thích cách kiểm chứng từng nhánh.
 
-[Xem các bài trong nhóm Xử lý sự cố](/docs/troubleshooting).
+1. **Giảm ảnh hưởng:** giữ fallback do shell sở hữu, dừng cleanup artifacts và pause rollout nếu lỗi xuất hiện cùng deploy. Đừng báo thao tác giỏ hàng thành công khi remote chưa chạy.
+2. **Giữ lần lỗi ban đầu:** ghi shell release, config revision, remote release được chọn, entry URL, chunk URL, status/body và nguồn response. Chưa reload hay xóa storage.
+3. **Kiểm tra chunk đúng URL ở origin:** nếu thiếu, ưu tiên phục hồi artifact gốc của release đó từ kho lưu trữ. Nếu origin đã có nhưng CDN vẫn trả lỗi, kiểm tra routing và negative cache rồi invalidation đúng key.
+4. **Đối chiếu document mới:** nếu document mới cũng nhận selection sai hoặc candidate lỗi, publish config revision mới chọn release tương thích đã kiểm chứng; xử lý cache của selection riêng. Tab cũ vẫn cần graph mà nó đã pin.
+5. **Kiểm chứng luồng lazy:** mở route chưa từng tải trước deploy, không chỉ GET entry. Giữ fallback/reload có kiểm soát cho client chưa phục hồi được.
+
+<Callout type="warn" title="Đừng biến thao tác chẩn đoán thành thay đổi diện rộng">
+  Không purge tất cả assets, xóa toàn bộ Cache Storage/localStorage, unregister mọi service worker hay tự động reload mọi tab. Các thao tác đó có thể mất dữ liệu chưa lưu, che bằng chứng và tạo đợt tải lớn về origin. Invalidation hoặc cập nhật worker production cần đúng owner và phạm vi đã xác nhận.
+</Callout>
+
+## Phân biệt code cũ hợp lệ với cache lỗi
+
+“Đang chạy release cũ” không đồng nghĩa “cache lỗi”. Nếu tab A pin catalog r18 trước deploy, việc nó tiếp tục dùng r18 sau khi tab B chuyển sang r19 là hành vi mong muốn. Điều sai là tab A không còn tải được chunks r18, hoặc nó nhận bytes r19 tại một URL vốn thuộc r18.
+
+Có ba yêu cầu cần kiểm tra riêng:
+
+| Yêu cầu | Đúng khi | Sai khi |
+| --- | --- | --- |
+| Freshness của selection | Document mới nhận config trong freshness budget đã chấp thuận | Document mới tiếp tục chọn release cũ ngoài budget hoặc sai cohort |
+| Consistency của graph | Entry và các dependency đều khớp release đã chọn | Entry r18 tải chunks/CSS bị ghi đè bằng nội dung khác |
+| Availability của graph cũ | Document cũ tải được lazy chunks trong cửa sổ hỗ trợ | Cleanup xóa file mà tab đang sống hoặc rollback target còn cần |
+
+HTTP gọi một response là *stale* khi freshness lifetime đã hết. Còn trong incident, team thường gọi mọi code không phải “latest” là stale. Một entry cũ có thể vẫn *fresh* theo header sai, và một entry r18 bất biến không hề sai chỉ vì r19 đã được publish. Dùng release identity và policy đã chốt để kết luận, không dùng tuổi file một mình.
+
+## Khoanh vùng theo triệu chứng
+
+`ChunkLoadError` chỉ nói chunk không tải hoặc không đăng ký được như runtime mong đợi; nó không tự chứng minh nguyên nhân là cache. Thông báo tương tự có thể xuất hiện do timeout, network, sai public path hoặc browser policy.
+
+| Triệu chứng | Giả thuyết đầu tiên | Bằng chứng cần có |
+| --- | --- | --- |
+| Tab cũ lỗi, document mới chạy | Graph cũ bị xóa hoặc runtime cũ không còn tương thích | Chunk URL của tab cũ, inventory origin, release metadata |
+| Document mới vẫn chọn r18 sau promote r19 | HTML/config/entry mutable bị cache, selection logic hoặc cohort | Snapshot thực dùng, response body, freshness budget và cache key |
+| Entry `200`, chunk `404` đúng prefix release | Upload thiếu hoặc cleanup sớm | Chunk có tồn tại tại origin không, thời điểm upload/delete |
+| Origin có chunk, CDN trả `404` | Negative caching, routing hoặc quyền đọc | Cùng URL/variant, status và cache trace ở edge |
+| Chunk tải từ shell thay vì remote | Sai `publicPath` hoặc base URL | Request URL và Initiator; xem [Remote không tải được](/docs/troubleshooting/remote-khong-tai) |
+| Chunk `200` nhưng response là HTML | SPA fallback, login hoặc error page bị cache | Body, MIME, redirect chain |
+| Tắt HTTP cache không đổi, response từ worker | Service worker đang trả Cache Storage | Controller, cache strategy và response source |
+| Bấm thử lại nhưng không có request | Loader/module/lazy Promise được giữ trong runtime | Network log đầy đủ, phase lỗi và loader behavior |
+| Chỉ một cohort hoặc một vùng CDN sai | Cache key/propagation/routing theo biến thể | Cohort, hostname, POP/request ID nếu CDN cung cấp |
+| Chunk bị CSP/CORS chặn hoặc timeout | Không nhất thiết liên quan deploy/cache | Console blocked reason, timing và headers của chunk |
+
+Đừng sửa React shared versions chỉ vì thấy chunk lỗi. Khi graph tải đủ nhưng `init`/render lỗi mới chuyển sang [Shared version mismatch](/docs/troubleshooting/shared-version-mismatch) hoặc [Duplicate React](/docs/troubleshooting/duplicate-react).
+
+## Các lớp cần kiểm tra
+
+Đường chọn release và đường lấy bytes không phải một đường duy nhất:
+
+```text
+Document → snapshot config → entry r18 → lazy chunk r18
+                                 │             │
+                                 └──────┬──────┘
+                                        ▼
+                      HTTP cache → CDN → origin
+```
+
+Sơ đồ lược bỏ service worker và những bước initialize của federation. Loader có thể không tạo request nếu code đã evaluate; service worker có thể trả response từ Cache Storage thay vì đi qua đường network này.
+
+| Lớp | Có thể giữ gì | Thao tác không xử lý được lớp đó |
+| --- | --- | --- |
+| CDN edge/shield | Selection, entry, chunks và cả response lỗi theo rules | Hard reload một browser không purge toàn bộ CDN |
+| Browser HTTP cache | Response memory/disk theo HTTP semantics | Purge CDN không thu hồi response browser còn fresh |
+| Service worker Cache Storage | Response do worker chủ động lưu và chọn | `Disable cache` không mặc nhiên bypass service worker |
+| Snapshot config trong shell | Release set của document | Đổi config trên server không sửa object đã pin |
+| Federation/ESM/React lazy runtime | Modules, references và Promise tải | Đổi HTTP headers không unload module đã chạy |
+| Back/forward cache | Document sống được khôi phục khi Back/Forward | Điều hướng lịch sử có thể không bootstrap document mới |
+
+Entry giống mục lục chỉ tới các phần code. Purge bản mục lục trên CDN không lấy bản đã đọc ra khỏi runtime, cũng không tạo lại phần code bị xóa. Phép so sánh dừng ở quan hệ tham chiếu: entry thực tế còn có JavaScript runtime và logic tải module.
+
+## Giữ bằng chứng trước khi reload
+
+Bật **Preserve log** trong Network và Console trước lần tái hiện tiếp theo. Với lần lỗi đã có, lưu các request hiện còn thấy trước khi mở document mới.
+
+Ghi tối thiểu:
+
+- Thời điểm kèm timezone, route, bước thao tác và tab mở trước hay sau deploy.
+- Shell release, config revision, cohort và remote release được chọn. Ghi riêng release đã xác nhận tải nếu có metadata.
+- Request URL của HTML/config, entry và chunk thất bại; Initiator, status, body/MIME, redirect và timing.
+- Nguồn response: network, memory cache, disk cache hay service worker.
+- `Cache-Control`, `Age`, `ETag`, `Last-Modified`, `Vary` và cache/request trace headers nếu có.
+- Deploy/promotion/cleanup gần nhất, phạm vi ảnh hưởng và kết quả document mới so với tab cũ.
+
+`Age` không cho biết tuổi document hay release; `ETag` cũng không mặc nhiên là release ID. Khi có thể, đối chiếu metadata hoặc digest của artifact với deployment record.
+
+<Callout type="warn" title="Bảo vệ dữ liệu khi chia sẻ log">
+  HAR, Copy as cURL và Console có thể chứa cookie, Authorization, signed URLs, query nhạy cảm hoặc response cá nhân hóa. Loại bỏ secrets trước khi gửi qua kênh nội bộ được phép; không đưa raw HAR vào ticket công khai. Không xóa storage của người dùng để “làm sạch” bằng chứng.
+</Callout>
+
+## Đối chiếu selection entry và chunk
+
+### Xác nhận release document đang dùng
+
+Lấy snapshot mà shell đã consume, không chỉ fetch config hiện tại rồi suy ra tab cũ cũng dùng nó. Config server có thể đang là revision 43 chọn r19, nhưng document cũ vẫn pin revision 42 chọn r18.
+
+Đối chiếu chuỗi sau trong một document:
+
+```text
+config revision 42
+  → catalog release r18
+  → /catalog/releases/r18/remoteEntry.js
+  → /catalog/releases/r18/assets/product.4e8a.js
+```
+
+Hash và tên chunk là minh họa. Một số topology đặt chunks ở prefix khác; điều cần xác nhận là URL resolve đúng và bytes thuộc cùng dependency graph, không phải mọi URL đều phải chứa chuỗi `r18`.
+
+Với remotes tĩnh trong webpack config, URL nằm trong shell artifact; đổi JSON trên server sẽ không thay nó. Với runtime enhanced, xem cả federation manifest được tải trước entry và các URL mà manifest resolve. Với SSR, kiểm tra snapshot nhúng trong HTML và cache/cohort của HTML, không chỉ JSON endpoint.
+
+Nếu URL entry đúng r18 nhưng body khác artifact r18 trong release record, có thể URL immutable đã bị ghi đè hoặc CDN trả sai variant. Một GET thành công chưa đủ xác nhận identity.
+
+### Kiểm tra request thất bại đầu tiên
+
+Mở request chunk gây lỗi, đọc **Request URL**, Initiator, status và body. Sau đó kiểm tra entry/runtime nào tạo request ấy.
+
+- **Đúng URL, `404`/`410`:** kiểm tra inventory origin và lịch sử cleanup trước khi purge.
+- **Sai origin/prefix:** sửa public path/routing của build tạo chunk; thêm query vào entry không sửa được base sai.
+- **`200` nhưng HTML hoặc MIME sai:** sửa asset route; file thiếu phải trả lỗi đúng nghĩa thay vì fallback HTML. Sau đó xử lý response sai đã cache.
+- **`403`, policy blocked hoặc timeout:** kiểm tra quyền, CORS/CSP, network và deadline; đây không tự động là lỗi freshness.
+- **Không thấy request:** bỏ bộ lọc Network, bảo đảm log đã bắt đầu trước thao tác, rồi kiểm tra runtime/worker thay vì suy ra CDN đã trả cache hit.
+
+Một CSS chunk lỗi cũng có thể làm route hỏng; ảnh/font sai release có thể làm UI lỗi mà không có `ChunkLoadError`. Kiểm tra graph cần cho journey thực tế, không chỉ JavaScript entry.
+
+## Kiểm tra CDN và origin bằng curl
+
+### So sánh GET thường với request revalidation
+
+Chạy từ môi trường được phép truy cập endpoint. Thay URL minh họa bằng **URL thực trong Network**, giữ nguyên variant cần điều tra nhưng bỏ credentials/secrets khỏi log chia sẻ.
+
+```bash title="Lưu hai GET của cùng URL để đối chiếu"
+ASSET_URL='https://assets.example.com/catalog/releases/r18/remoteEntry.js'
+CHECK_DIR="$(mktemp -d)"
+
+probe() {
+  label="$1"
+  shift
+  curl --silent --show-error --compressed \
+    --connect-timeout 5 --max-time 20 \
+    --dump-header "$CHECK_DIR/$label.headers" \
+    --output "$CHECK_DIR/$label.body" \
+    --write-out 'status=%{http_code}\nurl=%{url_effective}\n' \
+    "$@" "$ASSET_URL"
+}
+
+probe normal
+probe revalidate -H 'Cache-Control: no-cache'
+
+cat "$CHECK_DIR/normal.headers"
+cat "$CHECK_DIR/revalidate.headers"
+sha256sum "$CHECK_DIR/normal.body" "$CHECK_DIR/revalidate.body"
+printf 'Kết quả lưu tại: %s\n' "$CHECK_DIR"
+```
+
+Lệnh dùng GET thay vì chỉ HEAD vì cần kiểm tra body thật; curl không dùng HTTP cache/service worker của tab. Không có `--location` để redirect đầu tiên còn thấy được, và không có `--fail` để giữ body lỗi. Curl exit code thành công không đồng nghĩa HTTP `200`; đọc status và body. Timeout là giá trị minh họa cho probe, không phải SLO.
+
+`Cache-Control: no-cache` yêu cầu cache validate trước khi reuse, **không phải lệnh purge hoặc bảo đảm mọi CDN đều gọi origin**. CDN overrides, shield và routing vẫn cần đối chiếu với rules/trace thực tế. Nếu hai lần trả body khác nhau, kiểm tra status, variant và release record; không kết luận ngay bản thứ hai là đúng.
+
+`--compressed` giải nén response trước khi lưu nên SHA-256 ở đây tính trên body đã decode. Chỉ so với digest cùng representation/encoding trong kho artifact; nếu cần byte-for-byte digest của file nén, dùng quy trình digest tương ứng. Trên macOS có thể thay `sha256sum` bằng `shasum -a 256`.
+
+Muốn điều tra chunk, đổi `ASSET_URL` thành URL chunk đó rồi chạy lại. Nếu nhận HTML `200`, checksum chỉ là checksum của HTML sai, không chứng minh asset hợp lệ.
+
+### Đọc headers và response 304
+
+| Bằng chứng | Kết luận được | Không kết luận được |
+| --- | --- | --- |
+| `Cache-Control: max-age=31536000, immutable` | Publisher hứa URL không đổi khi fresh | File có đúng graph hay origin giữ file đủ lâu |
+| `Cache-Control: no-cache` | Cache có thể lưu nhưng phải validate trước reuse | Body luôn được tải mới hoặc CDN đã bypass |
+| `Cache-Control: no-store` | HTTP cache tuân thủ không lưu response này | Response cũ đã bị thu hồi; Cache Storage cũng bị xóa |
+| `Age` và cache hit headers | Hỗ trợ nhận biết response từ shared cache | Mọi tầng đều cùng state hoặc bytes là release mới |
+| `ETag` | Validator opaque cho representation | SHA, release ID hay chữ ký bảo mật |
+| `304 Not Modified` | Validator khớp representation được xử lý | Selection đó chắc chắn đúng với promotion mới nhất |
+
+Browser nhận `304` dùng lại body đã lưu; `304` không phải entry rỗng. Nếu cần probe conditional GET, lấy nguyên ETag từ GET trước đó, giữ cùng URL và headers chọn representation:
+
+```bash title="ETag dưới đây chỉ là ví dụ, phải thay bằng giá trị thực"
+curl --silent --show-error --compressed \
+  --connect-timeout 5 --max-time 20 \
+  --dump-header - --output /dev/null \
+  -H 'Cache-Control: no-cache' \
+  -H 'If-None-Match: "demo-r18-entry"' \
+  "$ASSET_URL"
+```
+
+Ở đây curl không có body cache để ghép với `304`; bạn phải đối chiếu body GET đã giữ. Nếu URL mutable đổi bytes mà validator vẫn không đổi, sửa việc sinh validator và validation path. Không tắt ETag chỉ để che nguyên nhân.
+
+### Phân biệt thiếu artifact với negative caching
+
+Dùng object inventory/logs hoặc endpoint origin được owner cho phép để kiểm tra **đúng path**. Không tự bypass access controls, mở origin ra public hay tắt TLS validation để thử.
+
+| Origin | CDN | Hướng điều tra |
+| --- | --- | --- |
+| Không có file | `404` | Upload thiếu hoặc cleanup; purge không tạo lại artifact |
+| Có đúng file | `404` | Negative cache, origin mapping, quyền đọc hoặc propagation |
+| Có đúng file | `200` nhưng bytes khác | Cache key/variant sai, bytes cũ hoặc transform ngoài dự kiến |
+| Có đúng file | `200` đúng bytes nhưng browser lỗi | HTTP cache/worker/runtime, MIME/policy hoặc lỗi execute |
+
+Negative caching là việc CDN giữ response lỗi như `404` theo error TTL. Giả sử request đến trước khi upload xong: dù bạn upload file sau đó, edge có thể tiếp tục trả `404`. **Sửa nguồn lỗi trước, rồi invalidation đúng key lỗi** và kiểm chứng qua CDN thật. Kiểm tra cả query, hostname, compression, cohort và tầng shield theo sản phẩm đang dùng; một URL purge chưa chắc phủ mọi variant.
+
+Headers tại origin không tự quyết định toàn bộ behavior ở CDN. Đọc error-cache rules riêng; đừng áp dụng TTL immutable một năm cho response `404` chỉ vì path nằm dưới `/releases/`.
+
+## Tách HTTP cache service worker và runtime
+
+### Thử nghiệm có kiểm soát trong browser
+
+Giữ log gốc và thay một yếu tố mỗi lần. Đây là phép đối chiếu trên máy test, không phải chỉ dẫn yêu cầu mọi người dùng xóa dữ liệu.
+
+| Phép thử | Giúp kiểm tra | Giới hạn |
+| --- | --- | --- |
+| Cùng URL trong một document mới, cùng cohort/profile | Bootstrap/selection mới so với runtime cũ | Vẫn có thể dùng HTTP cache và worker cũ |
+| Bật **Disable cache** khi DevTools đang mở, rồi tạo request lại | HTTP cache của browser có liên quan không | Không purge CDN hoặc mặc nhiên bypass worker |
+| Bypass service worker qua DevTools nếu browser hỗ trợ | Response do worker có liên quan không | Chỉ có ý nghĩa cho request đi qua worker; CDN vẫn còn |
+| Profile test sạch được phép dùng | Tách storage/extension/local state | Có thể đổi auth/cohort; không còn là cùng điều kiện ban đầu |
+| GET cùng URL bằng curl | Đường HTTP từ môi trường chạy lệnh | Không execute module hay áp dụng CORS/CSP như browser |
+
+Nếu chỉ tab mới hết lỗi, chưa thể kết luận HTTP cache là nguyên nhân. Tab mới cũng đã thay snapshot config và runtime. Muốn tách lớp, đọc response source và release identity ở từng phép thử.
+
+### Kiểm tra service worker
+
+Trong Application/Storage của DevTools, xem worker scope, script URL, trạng thái active/waiting, controller của trang và các caches liên quan. Có thể dùng probe chỉ đọc sau trong Console của đúng document:
+
+```js title="Chỉ quan sát, không xóa cache hoặc unregister worker"
+(async () => {
+  const supported = 'serviceWorker' in navigator;
+  console.log({
+    serviceWorkerSupported: supported,
+    controllerScript: supported
+      ? navigator.serviceWorker.controller?.scriptURL ?? null
+      : null,
+  });
+  if ('caches' in window) {
+    console.log('Cache Storage names:', await caches.keys());
+  }
+})();
+```
+
+Không có controller chỉ nói document này chưa được worker control; nó không chứng minh origin không có registration. Tên cache cũng không xác nhận bytes được dùng: đọc strategy và response của request cụ thể. Sanitize script URLs/cache names trước khi chia sẻ nếu chúng chứa thông tin nhạy cảm.
+
+Cache API không tự áp dụng `Cache-Control` như HTTP cache và không tự hết hạn entry theo TTL đó. Một worker có thể tiếp tục trả response nó đã lưu dù origin vừa chuyển sang `no-store`. Cần sửa code chọn cache/version và update lifecycle, không chỉ sửa header.
+
+Worker mới có thể ở trạng thái waiting trong khi worker cũ còn control clients. Ép `skipWaiting()`/`clients.claim()` có thể khiến document đang chạy code cũ chuyển sang worker mới; nếu graph hoặc cleanup không tương thích, bạn tạo lỗi trộn release. Chỉ dùng activation cưỡng bức khi đã thiết kế và kiểm thử client transition; với tab dài hạn, đừng mặc định xóa cache cũ chỉ vì worker mới đã activate.
+
+### Không có request mới thì kiểm tra runtime
+
+Shell có thể giữ config Promise, federation loader giữ container/module, còn ESM giữ module state theo cơ chế runtime. Với React, `lazy` cache Promise của hàm load và kết quả; reset Error Boundary không tự gọi load lại trên cùng lazy component đã reject.
+
+Vì vậy, “retry” trên UI phải nêu rõ nó retry bước nào. Webpack có thể retry một số chunk loads, nhưng loader riêng hoặc lazy wrapper vẫn có thể giữ rejection. Kiểm tra version/runtime cụ thể thay vì giả định bấm nút luôn tạo request.
+
+Không xóa global container rồi inject release khác vào cùng document để chữa cache. Module references, share scope, singleton và side effects từ release cũ có thể vẫn còn. SPA route navigation không tạo runtime mới; Back/Forward cũng có thể khôi phục document qua bfcache. Nếu cần code mới, dùng cơ chế tạo document mới với bảo vệ dữ liệu chưa lưu.
+
+## Khôi phục theo nguyên nhân
+
+### Chunk của release cũ bị xóa
+
+1. Pause cleanup và xác định những release còn được tab cũ/rollback target tham chiếu.
+2. Phục hồi **artifact gốc, đúng bytes** từ kho release/backup tại đúng URL cũ, gồm JS, CSS và assets cần thiết. Đối chiếu inventory/digests trước khi publish.
+3. Kiểm tra origin, rồi xử lý negative cache ở CDN nếu URL đã từng trả lỗi.
+4. Thử tab cũ mở route lazy chưa tải trước đó và một client cold cache cho graph này.
+
+Không build lại source rồi chép vào prefix r18 và gọi đó là phục hồi: môi trường build, dependencies hoặc hash có thể khác. Không thay chunk r18 bằng code r19 cùng tên. Nếu mất artifact gốc, ghi rõ không thể bảo đảm graph cũ; dùng fallback và chuyển client sang document mới có kiểm soát, đồng thời sửa retention.
+
+### Selection hoặc entry mutable bị cache quá lâu
+
+Sửa policy tại origin và CDN cho URL chọn release. Với shop trong series, `/runtime/config.json` dùng `no-store` và CDN bypass; HTML shell public thường dùng `no-cache` với validator. Entry mutable legacy cần revalidation đáng tin cậy; ưu tiên migrate sang entry dưới prefix release bất biến.
+
+Sau khi sửa, invalidation những key mutable đã xác nhận sai và kiểm chứng document mới thực sự consume config mới. Nếu selection logic/cohort sai, sửa logic trước; cache headers không sửa được mapping r18 được backend cố ý trả.
+
+Nếu browser từng cache một URL mutable rất lâu, header mới ở origin không lập tức cập nhật bản còn fresh trong browser. Có thể cần một URL mới được selection/HTML mới thực sự consume và đường cập nhật cho client cũ. Thêm `?t=Date.now()` không phải mặc định: CDN có thể bỏ query khỏi key, origin có thể vẫn trả cùng bytes, và chunks/runtime chưa đổi.
+
+### URL immutable đã bị ghi đè
+
+Ngừng overwrite và giữ lại evidence. Nếu có bản gốc đáng tin cậy, phục hồi bản gốc tại URL cũ rồi phối hợp xử lý edge variants bị nhiễm; vẫn phải tính tới browser/worker đã giữ bytes sai mà purge CDN không thu hồi được.
+
+Publish fix dưới **release ID/URL mới** và promote qua selection đã kiểm chứng. Nếu graph trong một document đã bị trộn, không cam kết retry tải script sẽ đưa nó về state sạch; cần fallback và document mới. Bản sửa dài hạn là enforce write-once ở kho artifacts, không chỉ thêm directive `immutable`.
+
+### Service worker giữ graph cũ hoặc trộn graph
+
+Sửa cache namespace, matching strategy, precache manifest và activation/cleanup sao cho worker phục vụ graph phù hợp với clients đang sống. Cache cũ còn được tab hỗ trợ tham chiếu phải tiếp tục có đường đáp ứng; chỉ đổi cache name chưa bảo đảm điều đó.
+
+Kiểm thử worker update với nhiều tab đang chạy release khác nhau. Đừng triển khai lệnh xóa mọi cache hoặc unregister hàng loạt như bản sửa mặc định. Với một máy test, cleanup chọn lọc có thể dùng để xác nhận giả thuyết sau khi giữ bằng chứng và có sự đồng ý; nó không thay update strategy cho người dùng thật.
+
+## Worked example tab r18 lỗi sau deploy r19
+
+Giả sử tab A đã tải entry r18 nhưng chưa mở trang sản phẩm. Tab B được mở sau deploy r19. Pipeline chỉ giữ release mới nhất và xóa thư mục r18; các tên và thời điểm dưới đây là giả định.
+
+```text
+Trước deploy: A pin config 42 → entry r18; chưa tải product chunk
+Sau deploy:  config 43 chọn r19; cleanup xóa r18
+Tab B:       entry r19 → product chunk r19 → chạy bình thường
+Tab A:       entry r18 trong runtime → product.4e8a.js r18 → 404
+```
+
+Entry của tab A không “sai” chỉ vì đã cũ. Cleanup đã phá availability của graph mà document còn cần.
+
+**Bằng chứng:** Network của A yêu cầu đúng `/catalog/releases/r18/assets/product.4e8a.js`, Initiator thuộc runtime r18, origin inventory thiếu file. Tab mới với cùng cohort chọn r19 và chạy. Không cần suy ra lỗi từ `Age` hay đoán HTTP cache.
+
+**Khôi phục:** dừng cleanup, restore artifact r18 nguyên bản từ kho lưu trữ. Giả sử CDN đã cache `404`: sau khi origin trả đúng JavaScript, invalidate key lỗi đó theo policy CDN. Với tab A, nút retry chỉ có tác dụng nếu loader thực sự tạo lại request; nếu lazy wrapper giữ rejection, dùng đường phục hồi đã thiết kế hoặc đề nghị reload sau khi bảo vệ thao tác chưa lưu.
+
+**Kiểm chứng:** dùng một tab mở trước deploy chưa từng tải route sản phẩm, xác nhận chunk r18 tải và route hoạt động sau restoration. Nếu tab A không thể retry, tái hiện bằng harness/document pin r18 để xác nhận graph đã phục hồi, rồi kiểm tra đường recovery của A riêng. Tab B vẫn phải tải r19 và không bị rollback nhầm.
+
+Chỉ đổi config 43 về r18 không sửa được ca này khi graph r18 còn thiếu. Purge entry r19 cũng không tác động tới entry r18 đã evaluate trong A. Bản sửa pipeline là retention cho clients/rollback cùng upload-before-promote, không phải tắt cache tất cả assets.
+
+## Retry reload và rollback an toàn
+
+Dùng retry có giới hạn cho lỗi transient đã xác định và chỉ sau khi nguồn lỗi có thể phục hồi. `404` do artifact bị xóa, CSP deny, body HTML hoặc URL sai không tự hết nhờ backoff. Sau restoration, kiểm tra request mới thật sự phát ra và không bị giữ bởi rejected Promise.
+
+Fallback và nút phục hồi phải nằm trong shell, không tải từ remote đang lỗi. Nếu cần reload:
+
+- Nói rõ cần tải phiên bản mới; ưu tiên để người dùng chủ động xác nhận sau khi lưu thao tác đang làm.
+- Nếu tự động reload, chỉ làm ở thời điểm an toàn và có attempt guard hữu hạn, không reload loop khi config/CDN vẫn sai.
+- Tạo document mới bằng full navigation/reload phù hợp, không chỉ reset boundary hoặc đổi route SPA. Kiểm tra nó nhận selection mới; worker/HTTP cache vẫn có thể trả graph cũ.
+- Không tự replay checkout, thanh toán hoặc thao tác ghi dữ liệu sau reload. Backend cần semantics an toàn của nghiệp vụ; frontend recovery không chứng minh request trước đã thất bại.
+
+Rollback publish một config revision mới chọn release tương thích, không unload code đang chạy trong tab cũ. Trước rollback, xác nhận target còn đủ graph và hoạt động với shell/backend hiện tại. Với ca thiếu chunks r18, phục hồi r18 có thể là mitigation đúng hơn rollback r19 đang hoạt động. Xem [Rollout và rollback](/docs/trien-khai/rollout-rollback) cho concurrency và compatibility.
+
+## Ngăn lỗi tái diễn trong pipeline
+
+Mặc định mình chọn **artifact bất biến, selection có freshness rõ ràng, graph cũ còn khả dụng**. Policy cache là một phần; pipeline phải giữ được các lời hứa ấy.
+
+| Vai trò URL | Policy khởi đầu | Điều kiện bắt buộc |
+| --- | --- | --- |
+| Config chọn release `/runtime/config.json` | `no-store`, CDN bypass | Schema/allowlist đúng, snapshot pin theo document; response cá nhân hóa không vào shared cache |
+| HTML shell public tại URL ổn định | `no-cache` và validator | ETag đổi theo representation, cohort/SSR cache đúng; HTML cá nhân hóa có policy riêng |
+| Entry mutable legacy | `no-cache` và validator | Giữ graph mà entry lịch sử còn tham chiếu; có kế hoạch versioned URL |
+| Entry/chunks/CSS dưới release bất biến | `public, max-age=31536000, immutable` | Static public assets, không overwrite, URLs/dependencies đều được pin |
+| Asset thiếu hoặc response lỗi | Không gắn policy immutable; error TTL riêng | Asset route trả lỗi thật, không SPA fallback; kiểm tra rules CDN |
+
+Retention phải bao phủ thời gian document còn được hỗ trợ, cửa sổ rollback và thời gian config/HTML cũ còn có thể chọn graph ấy. Không có con số “giữ hai releases là đủ” cho mọi hệ thống. Tab dài hạn và lazy routes có thể chưa request chunk nào của release cũ khi rollout đã đạt 100%.
+
+Một TTL một năm cũng không bảo đảm cache giữ file một năm: cache có thể evict rồi fetch lại. Origin/kho phục vụ vẫn phải giữ graph trong cửa sổ hỗ trợ. Nếu đặt maximum document age, cần đường cập nhật client và bảo vệ dữ liệu chưa lưu; không chỉ ghi tuổi vào policy rồi xóa artifacts.
+
+Checklist pipeline:
+
+- [ ] Upload đầy đủ graph dưới prefix mới, kiểm tra inventory/digests trước promotion.
+- [ ] Smoke test federated import và route lazy qua CDN thật, không chỉ GET entry tại origin.
+- [ ] Enforce write-once, bytes đổi thì URL đổi; không promote alias mutable với TTL immutable.
+- [ ] Publish selection atomically sau upload, tách cohort/environment trong cache behavior.
+- [ ] Giữ artifacts được clients và rollback targets hỗ trợ tham chiếu; cleanup có owner, dry run và khả năng restore.
+- [ ] Kiểm tra negative caching, shield và error-page fallback cho assets thiếu.
+- [ ] Test service worker update nếu có, không để cleanup làm mất graph của tab cũ.
+- [ ] Ghi shell/config/remote release và phase lỗi vào telemetry để nối incident với deploy/cleanup.
+
+Chi tiết policy và hosting nằm ở [Caching và cache invalidation](/docs/trien-khai/caching), [CDN và asset hosting](/docs/trien-khai/cdn-assets) và [CI/CD](/docs/trien-khai/ci-cd).
+
+## Ma trận kiểm chứng sau khi sửa
+
+Một hard reload thành công trên máy on-call chưa đủ đóng incident. Chạy các ca sau trong môi trường test phù hợp, rồi xác nhận trên delivery path production được phép kiểm tra.
+
+| Ca kiểm tra | Kết quả cần thấy |
+| --- | --- |
+| Document mới qua domain/CDN thật | Chọn config/release đúng cohort, đúng freshness budget; entry và journey chạy |
+| Tab mở trước deploy, route lazy chưa tải | Vẫn tải được graph cũ trong cửa sổ hỗ trợ, không bị ép ghép chunk mới |
+| Graph cũ với browser cache lạnh trong harness riêng | Origin/CDN thực sự còn phục vụ file, không chỉ thành công nhờ cache máy test |
+| URL từng nhận `404`, nay đã restore | GET qua edge trả đúng status, MIME và bytes; negative cache không còn giữ lỗi |
+| URL asset cố ý không tồn tại | Trả `404` đúng nghĩa, không HTML `200` hay TTL immutable |
+| Browser có service worker active/waiting, nhiều tab | Transition không trộn graph; response source và cache version đúng |
+| Back/Forward khôi phục document cũ nếu browser hỗ trợ | Graph cũ vẫn khả dụng hoặc có recovery an toàn theo policy |
+| Rollback đã diễn tập | Document mới chọn target tương thích, tab candidate cũ có graph/recovery của nó |
+| Network lỗi lặp lại hoặc remote vẫn lỗi | Fallback shell hoạt động, retry hữu hạn, không reload loop hoặc xác nhận nghiệp vụ giả |
+
+Đối chiếu error rate theo shell release, remote release/config revision và phase lỗi với traffic thực tế. Selection đã đổi không chứng minh tab cũ đã hết lỗi; graph đã restore cũng không chứng minh mọi rejected loader đã phục hồi. Ghi nhận riêng hai kết quả ấy trước khi đóng incident.
+
+## Thông tin bàn giao incident
+
+Dùng mẫu đã bỏ secrets sau để owner CDN, remote và shell cùng điều tra một graph:
+
+```text
+Environment / route / thời điểm + timezone:
+Tab mở trước hay sau deploy; có dùng Back/Forward không:
+Shell release / config revision / cohort:
+Remote release được chọn / release xác nhận đã tải:
+Entry URL / chunk URL đã sanitize:
+Request thất bại đầu tiên: status, MIME, body type, Initiator
+Response source: network / HTTP cache / service worker
+Cache-Control / Age / ETag / Vary / cache trace nếu có:
+Artifact inventory và digest đối chiếu:
+Origin result / CDN result của cùng path và variant:
+Worker controller / active hoặc waiting nếu có:
+Deploy / promotion / cleanup gần nhất:
+Kết quả tab cũ / document mới / probe curl:
+Mitigation đã áp dụng, owner và kết quả kiểm chứng:
+Release nào cần giữ và việc cần làm trước cleanup tiếp theo:
+```
+
+Giao rõ việc follow-up: remote/deployment owner phục hồi graph và retention; platform/CDN owner sửa cache keys/error TTL/routing; shell/PWA owner sửa snapshot, loader recovery và worker lifecycle. Kèm URL/status/identity cụ thể, không chỉ kết luận “browser bị cache”.
+
+## Tài liệu tham khảo
+
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) — freshness, revalidation, immutable và giới hạn của thay đổi headers.
+- [MDN — HTTP caching](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching) — validators, conditional requests và cache variants.
+- [MDN — Cache API](https://developer.mozilla.org/en-US/docs/Web/API/Cache) — Cache Storage không tự áp dụng HTTP cache headers hoặc expiration.
+- [MDN — Using Service Workers](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers) — lifecycle, update và clients đang được control.
+- [React — lazy](https://react.dev/reference/react/lazy) — Promise/kết quả load được cache và rejection chuyển tới Error Boundary.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Caching và cache invalidation" href="/docs/trien-khai/caching" description="Thiết kế policy cho selection, entry bất biến, graph và cửa sổ retention." />
+  <Card title="Remote không tải được" href="/docs/troubleshooting/remote-khong-tai" description="Khoanh vùng sai URL, publicPath, response HTML và browser policy." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Chọn rollback target tương thích và xử lý document đã pin release." />
+  <Card title="Resilience khi remote lỗi" href="/docs/production/resilience" description="Thiết kế fallback shell, retry budget và recovery theo nghiệp vụ." />
+</Cards>

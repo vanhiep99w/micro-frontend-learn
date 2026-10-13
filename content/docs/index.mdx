@@ -1,43 +1,215 @@
 ---
 title: "Lộ trình học micro-frontend"
-description: "Học micro-frontend từ nền tảng, kiến trúc và tích hợp đến triển khai, production và xử lý sự cố."
+description: "Học micro-frontend qua bài toán shop: đánh giá nhu cầu, thiết kế ranh giới, tích hợp, kiểm thử và kiểm chứng khả năng release độc lập."
 ---
 
-Bạn muốn chia một frontend lớn thành các phần mà từng team có thể tự phát triển và deploy? Lộ trình này giúp bạn học cách đánh giá bài toán đó trước khi chọn công cụ.
+Giả sử team catalog đã làm xong bộ lọc sản phẩm, nhưng chưa thể release vì phải chờ thay đổi giỏ hàng trong cùng một frontend. Tách thêm component có thể làm code dễ đọc hơn; nó chưa chắc giúp catalog đến tay người dùng sớm hơn. Nếu đây là điểm nghẽn bạn muốn giải quyết, hãy bắt đầu từ ranh giới phát hành trước khi chọn công cụ.
 
-<Callout type="info" title="Trạng thái tài liệu">
-  Đây là bộ khung học bằng tiếng Việt. Các bài chi tiết hiện là placeholder, chưa có hướng dẫn hoặc mã lab hoàn chỉnh.
+Lộ trình này giúp bạn đi từ câu hỏi **“có cần micro-frontend không?”** đến việc kiểm chứng một phần frontend có thể thay đổi riêng mà trải nghiệm đã ghép vẫn hoạt động. Bài toán xuyên suốt là shop gồm shell, catalog và cart; mục tiêu không phải tạo thật nhiều remote hay dùng hết mọi framework.
+
+<Callout type="info" title="Phạm vi của bộ tài liệu">
+  Đây là site tài liệu tiếng Việt, không phải ứng dụng shop chạy sẵn. Bạn tạo workspace thực hành riêng theo từng hướng dẫn; chạy `npm run dev` tại gốc repository này chỉ mở site docs. Các trang được hoàn thiện từng bài, nên trang tổng quan mô tả lộ trình và mục tiêu học, không bảo đảm mọi bài đã có lab hoàn chỉnh.
 </Callout>
 
 ## Mục lục
 
-- [Cách sử dụng](#cách-sử-dụng)
+- [Bạn sẽ học được gì](#bạn-sẽ-học-được-gì)
+- [Khi nào nên đi theo lộ trình này](#khi-nào-nên-đi-theo-lộ-trình-này)
+- [Kiến thức cần chuẩn bị](#kiến-thức-cần-chuẩn-bị)
+- [Shop mẫu và những ranh giới cần hiểu](#shop-mẫu-và-những-ranh-giới-cần-hiểu)
 - [Lộ trình học](#lộ-trình-học)
-- [Bắt đầu từ đâu](#bắt-đầu-từ-đâu)
+  - [Chặng 1 xác định bài toán và dựng lát cắt nhỏ](#chặng-1-xác-định-bài-toán-và-dựng-lát-cắt-nhỏ)
+  - [Chặng 2 chọn cơ chế tích hợp và giữ contract rõ ràng](#chặng-2-chọn-cơ-chế-tích-hợp-và-giữ-contract-rõ-ràng)
+  - [Chặng 3 kiểm chứng release và vận hành](#chặng-3-kiểm-chứng-release-và-vận-hành)
+  - [Chặng 4 thực hành và chẩn đoán lỗi](#chặng-4-thực-hành-và-chẩn-đoán-lỗi)
+- [Chọn điểm bắt đầu theo nhu cầu](#chọn-điểm-bắt-đầu-theo-nhu-cầu)
+- [Cách học bằng bằng chứng](#cách-học-bằng-bằng-chứng)
+- [Checklist hoàn thành lộ trình](#checklist-hoàn-thành-lộ-trình)
+- [Bài đọc tiếp theo](#bài-đọc-tiếp-theo)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Cách sử dụng
+## Bạn sẽ học được gì
 
-Bạn đi từ nhóm Nền tảng đến Bắt đầu, rồi học Kiến trúc trước khi vào Module Federation. Các nhóm tích hợp khác giúp bạn so sánh lựa chọn; không bắt buộc dùng tất cả công cụ trong cùng một hệ thống.
+Micro-frontend là cách tổ chức các phần frontend có thể phát hành độc lập rồi ghép chúng thành một sản phẩm. Điểm đáng học không chỉ là tải code từ một build khác, mà là giữ ranh giới thay đổi đủ rõ để team không phải phối hợp release cho mọi sửa đổi nội bộ.
 
-Bài toán xuyên suốt là một shop mẫu gồm shell, catalog và cart. Nhóm Thực hành hiện mới mô tả phạm vi các lab, chưa chứa ứng dụng chạy được.
+Sau lộ trình, bạn nên trả lời được các câu hỏi sau bằng thiết kế hoặc kết quả kiểm chứng:
+
+| Câu hỏi | Kết quả cần hướng tới |
+| --- | --- |
+| Có cần tách frontend không? | Nêu được điểm nghẽn cụ thể, lựa chọn đơn giản hơn và chi phí chấp nhận thêm |
+| Nên tách ở đâu? | Xác định domain, owner, giao diện công khai và trách nhiệm của shell |
+| Các phần gặp nhau bằng cách nào? | Giải thích được cơ chế composition, đường tải code và lifecycle |
+| Ai sở hữu dữ liệu? | Catalog, cart và shell giao tiếp qua contract, không tùy ý sửa state nội bộ của nhau |
+| Release riêng có thật không? | Thay đổi tương thích của catalog đến người dùng mà không cần đổi artifact shell và cart |
+| Khi có lỗi thì sao? | Nhận biết tổ hợp phiên bản đang chạy, giới hạn suy giảm và chọn cách khôi phục phù hợp |
+
+Một cấu hình host/remote chạy được là mốc hữu ích, nhưng chỉ trả lời một phần câu hỏi tích hợp. **Chạy được ở local chưa chứng minh phát hành độc lập ở production.** Bạn còn cần kiểm thử compatibility, publish assets, chọn phiên bản và xử lý các tab đang chạy code cũ.
+
+## Khi nào nên đi theo lộ trình này
+
+Lộ trình phù hợp nếu bạn đã phát triển frontend và muốn hiểu cách nhiều team cùng sở hữu một sản phẩm, hoặc đang cân nhắc migration từng phần của ứng dụng cũ. Nó cũng giúp bạn đánh giá một hệ thống đã có nhiều remote nhưng vẫn phải release mọi phần cùng nhau.
+
+Mặc định, mình bắt đầu bằng **modular frontend**: chia code theo nghiệp vụ, làm rõ public API và ownership, nhưng vẫn có thể build/deploy chung. Nếu vấn đề là component dài, CI chậm hoặc bundle lớn, hãy đo và xử lý đúng chỗ trước. Thêm ranh giới runtime không tự giải quyết những vấn đề đó.
+
+Micro-frontend đáng cân nhắc hơn khi các domain có nhu cầu thay đổi riêng, team có thể chịu trách nhiệm từ phát triển đến vận hành, và lợi ích release độc lập đủ lớn để trả chi phí tích hợp. Nếu team nhỏ, nghiệp vụ còn thay đổi liên tục hoặc gần như mọi tính năng đều cần sửa đồng thời nhiều phần, giữ một đơn vị deploy thường dễ quản lý hơn.
+
+<Callout type="warn" title="Đừng đồng nhất kiến trúc với công cụ">
+  Nhiều repository, lazy loading hoặc Module Federation không tự chứng minh hệ thống có ranh giới phát hành tốt. Tách frontend cũng không tự tạo security boundary, làm trang nhanh hơn hay cách ly mọi lỗi. Những khả năng đó phải được thiết kế và kiểm chứng riêng.
+</Callout>
+
+Nếu đang quyết định cho một dự án thật, đọc [Khi nào nên và không nên dùng?](/docs/nen-tang/khi-nao-nen-dung) trước khi mở cấu hình bundler.
+
+## Kiến thức cần chuẩn bị
+
+Bạn không cần biết microservices, Kubernetes hay nhiều framework. Một framework quen thuộc, kiến thức browser và khả năng đọc request mạng là điểm xuất phát đủ tốt.
+
+| Kiến thức | Vì sao cần |
+| --- | --- |
+| JavaScript modules, `import()` và Promise | Tải module là thao tác bất đồng bộ; phải phân biệt lỗi tải với lỗi chạy code |
+| Component, props, mount/unmount và cleanup | Phần UI được ghép cần nhận đúng dữ liệu và dọn subscription, listener hoặc side effect khi rời màn hình |
+| Build, bundle, chunk và deploy | Hiểu artifact nào được tạo, publish ở đâu và browser đang tải phiên bản nào |
+| URL, origin, HTTP status, CORS và cache | Khoanh vùng sai địa chỉ, lỗi quyền truy cập, assets thiếu hoặc code cũ còn trong cache |
+| Console và Network trong DevTools | Tìm bằng chứng thay vì đổi ngẫu nhiên cấu hình `shared` hoặc xóa cache mọi nơi |
+| Contract và tương thích phiên bản | Hiểu rằng hai artifact build đúng riêng lẻ vẫn có thể không làm việc được cùng nhau |
+
+Nhánh thực hành đầu tiên dùng **Node.js 22, npm workspaces, webpack 5 và React**. Đây là lựa chọn để giữ bài học nhất quán, không phải yêu cầu của mọi kiến trúc micro-frontend. Làm theo yêu cầu môi trường của từng bài; không cài toolchain lab vào site Fumadocs này.
+
+Nếu chưa tự giải thích được đường đi “source → build → URL assets → browser → UI”, hãy đọc [Kiến thức cần có](/docs/nen-tang/kien-thuc-can-co) rồi [Chuẩn bị môi trường](/docs/bat-dau/moi-truong).
+
+## Shop mẫu và những ranh giới cần hiểu
+
+Shop giữ cùng một bối cảnh nghiệp vụ để bạn so sánh các quyết định kiến trúc, thay vì đổi ví dụ ở mỗi nhóm bài:
+
+```text
+Shop: một trải nghiệm cho người dùng
+└── Shell: khung giao diện và composition
+    ├── Catalog: tìm, lọc và xem sản phẩm
+    └── Cart: trải nghiệm và state giỏ hàng
+```
+
+Đây là sơ đồ trách nhiệm, không phải cấu trúc folder hoặc yêu cầu cả hai màn hình phải cùng hiển thị. **Shell** là vai trò điều phối trải nghiệm; **host** là vai trò tiêu thụ module trong tích hợp Federation. Shell có thể làm host trong ví dụ này, nhưng hai thuật ngữ không đồng nghĩa ở mọi kiến trúc.
+
+| Phần | Sở hữu | Ranh giới cần giữ |
+| --- | --- | --- |
+| Shell | Layout, navigation, composition và wiring tích hợp | Không trở thành nơi chứa toàn bộ logic nghiệp vụ catalog/cart |
+| Catalog | UI tìm kiếm, lọc và xem sản phẩm | Không import implementation hoặc sửa trực tiếp store nội bộ của cart |
+| Cart | Quy tắc cập nhật giỏ và snapshot cho UI trong lab | Cung cấp public API; shell và catalog không duy trì bản giỏ riêng để tự đồng bộ |
+
+Hình dung người dùng bấm “Thêm vào giỏ” trong catalog. Trong lát cắt lab giỏ hàng, catalog gọi callback do shell cung cấp; shell chuyển yêu cầu tới public API của cart owner. Badge trên header đọc snapshot đã xác nhận từ cùng owner, thay vì tự tăng bộ đếm ngay khi click. Bạn sẽ học contract này ở nhóm Giao tiếp và trạng thái rồi kiểm chứng trong lab shop.
+
+Trong ứng dụng thật, backend vẫn phải kiểm tra quyền, giá, tồn kho và các thao tác nghiệp vụ. State giỏ in-memory hoặc auth fixture trong lab không thay thế nguồn dữ liệu và kiểm soát bảo mật production.
+
+Một thay đổi bộ lọc catalog không đổi contract là ứng viên để thử release riêng. Ngược lại, đổi signature của thao tác thêm hàng là thay đổi xuyên ranh giới: cần kế hoạch compatibility hoặc phối hợp migration. Độc lập phát hành không có nghĩa là không bao giờ cần phối hợp.
 
 ## Lộ trình học
 
-- [**Nền tảng**](/docs/nen-tang) — Hiểu bài toán, lợi ích và chi phí trước khi chọn micro-frontend.
-- [**Bắt đầu**](/docs/bat-dau) — Chuẩn bị môi trường và dựng ví dụ host/remote nhỏ nhất.
-- [**Kiến trúc và ranh giới**](/docs/kien-truc) — Chọn cách chia domain và ghép giao diện với mức coupling phù hợp.
-- [**Module Federation**](/docs/module-federation) — Học cơ chế runtime sharing và quản lý hợp đồng giữa host và remote.
-- [**Các cách tích hợp khác**](/docs/cac-cach-tich-hop) — Khảo sát những cách ghép frontend ngoài Module Federation.
-- [**Giao tiếp và trạng thái**](/docs/giao-tiep-va-trang-thai) — Giữ quyền sở hữu dữ liệu rõ ràng và giảm coupling giữa các frontend.
-- [**UI và framework**](/docs/ui-va-framework) — Tích hợp framework và giữ trải nghiệm người dùng nhất quán.
-- [**Kiểm thử và tooling**](/docs/kiem-thu-va-tooling) — Tổ chức phát triển, kiểm thử các ranh giới và quan sát hệ thống.
-- [**Triển khai**](/docs/trien-khai) — Release độc lập và giữ khả năng kiểm soát các phiên bản đang chạy.
-- [**Production**](/docs/production) — Cân bằng tính độc lập với hiệu năng, an toàn và độ tin cậy.
-- [**Thực hành**](/docs/thuc-hanh) — Áp dụng kiến thức vào shop mẫu qua các bài lab có tiêu chí đánh giá.
-- [**Xử lý sự cố**](/docs/troubleshooting) — Khoanh vùng lỗi bằng bằng chứng trước khi thay đổi cấu hình.
+Nếu mới học, đi theo các chặng dưới đây. Các nhóm trong mỗi chặng bổ sung cho nhau, nhưng bạn không cần đọc hết bộ tài liệu mới thử một ví dụ nhỏ. Sau mỗi phần lý thuyết, quay lại kiểm chứng một hành vi của shop.
 
-## Bắt đầu từ đâu
+### Chặng 1 xác định bài toán và dựng lát cắt nhỏ
 
-Mình đề xuất viết và học bài [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi) trước, rồi đến [Khi nào nên và không nên dùng?](/docs/nen-tang/khi-nao-nen-dung).
+Trước hết, phân biệt vấn đề tổ chức code với vấn đề release. Sau đó dựng lát cắt shell tải một module catalog; chưa thêm toàn bộ routing, auth và cart cùng lúc.
 
-Bạn có thể yêu cầu viết chi tiết từng trang bằng skill `fumadocs-technical-writer`; giữ các đường dẫn để lộ trình và sidebar không bị lệch.
+| Nhóm | Nội dung chính | Mốc để đi tiếp |
+| --- | --- | --- |
+| [Nền tảng](/docs/nen-tang) | Khái niệm, lợi ích/chi phí, thuật ngữ và team ownership | Nêu được một thay đổi cần release riêng và lý do modular frontend có thể chưa đủ |
+| [Bắt đầu](/docs/bat-dau) | Môi trường, bài toán shop, workspace và host/remote đầu tiên | Phân biệt standalone với integrated; chỉ ra request thực sự tải module remote |
+| [Kiến trúc và ranh giới](/docs/kien-truc) | Chia domain, application shell, build-time, runtime và server-side composition | Vẽ được ranh giới, public contract và giải thích vì sao chọn cách ghép đó |
+
+Thứ tự Bắt đầu trước Kiến trúc giúp người mới có một ví dụ cụ thể để hình dung. Nếu đang đánh giá hệ thống thật thay vì học cơ chế, bạn có thể đọc Kiến trúc ngay sau Nền tảng. Đừng coi cấu hình của ví dụ đầu tiên là quyết định mặc định cho dự án của bạn.
+
+### Chặng 2 chọn cơ chế tích hợp và giữ contract rõ ràng
+
+Khi đã biết phần nào cần tách, hãy học cách các phần gặp nhau. Module Federation là nhánh thực hành chính; các cách tích hợp khác là nơi đối chiếu lựa chọn, không phải danh sách công cụ cần cài cùng lúc.
+
+| Nhóm | Nội dung chính | Mốc để đi tiếp |
+| --- | --- | --- |
+| [Module Federation](/docs/module-federation) | Host/remote, exposes, shared dependencies, dynamic remotes và compatibility | Giải thích được đường tải module; phân biệt shared runtime với shared state |
+| [Các cách tích hợp khác](/docs/cac-cach-tich-hop) | single-spa, import maps, Web Components, iframe và so sánh | Phân biệt module loading, lifecycle, UI contract và isolation trước khi chọn giải pháp |
+| [Giao tiếp và trạng thái](/docs/giao-tiep-va-trang-thai) | Contracts, events, state ownership, data fetching, routing và authentication | Xác định ai có quyền thay đổi dữ liệu và ai chỉ đọc/gửi yêu cầu qua public API |
+| [UI và framework](/docs/ui-va-framework) | React, Vue, Angular, Next.js/SSR, CSS isolation, design system và accessibility | Giữ lifecycle và trải nghiệm toàn trang nhất quán, không chỉ render được từng remote |
+
+Mình giữ một framework ở lần học đầu để tập trung vào ranh giới. Chỉ khảo sát tích hợp đa framework khi có nhu cầu, chẳng hạn chuyển dần ứng dụng cũ. Khác biệt framework làm tăng chi phí lifecycle, dependency và UX; bản thân nó không phải mục tiêu của micro-frontend.
+
+### Chặng 3 kiểm chứng release và vận hành
+
+Từ đây, đơn vị cần đánh giá là trải nghiệm đã ghép và tổ hợp artifact, không chỉ từng app standalone. Một pipeline xanh chưa đủ nếu shell cũ không dùng được remote mới.
+
+| Nhóm | Nội dung chính | Mốc để đi tiếp |
+| --- | --- | --- |
+| [Kiểm thử và tooling](/docs/kiem-thu-va-tooling) | Local development, repo strategy, unit/component, contract, integration/E2E và observability | Có kiểm thử ranh giới cùng luồng quan trọng; truy được lỗi về artifact đang chạy |
+| [Triển khai](/docs/trien-khai) | CI/CD, CDN/assets, caching, runtime configuration, preview, rollout/rollback | Publish artifact có kiểm soát; chọn phiên bản và khôi phục mà không phá assets tab cũ còn cần |
+| [Production](/docs/production) | Performance, resilience, security, dependency governance và migration | Nêu được budget, failure policy, trust boundary và người chịu trách nhiệm vận hành |
+
+Hai tình huống cần giữ trong đầu: người dùng mở document mới sau release, và người dùng vẫn giữ tab cũ rồi mới tải thêm chunk. Đổi cấu hình chọn remote hoặc rollback không nhất thiết thay thế code đã chạy trong tab cũ. Vì thế, thử nghiệm phải nêu rõ đang kiểm tra phiên mới hay phiên đang mở.
+
+### Chặng 4 thực hành và chẩn đoán lỗi
+
+Bạn nên xen kẽ lab từ sớm, rồi dùng chặng này để kiểm chứng cả chuỗi: tích hợp, state, session, release và recovery.
+
+| Nhóm | Nội dung chính | Mốc để đi tiếp |
+| --- | --- | --- |
+| [Thực hành](/docs/thuc-hanh) | Shop shell–catalog–cart, routing/auth, deploy độc lập, remote lỗi và checklist | Có bằng chứng cho từng contract và mốc nghiệm thu, không chỉ ảnh UI chạy thành công |
+| [Xử lý sự cố](/docs/troubleshooting) | Lỗi tải remote, duplicate React, shared version, routing/CSS và stale cache | Khoanh vùng bằng URL, status, Console và version trước khi đổi cấu hình |
+
+Các lab không phải tất cả đều nối tiếp bằng cách chép code vào cùng một app. Lab deploy độc lập dùng lát cắt native ESM riêng để kiểm chứng artifact và release selection; kết quả đó không tự chứng minh shop webpack đã có cùng năng lực. Đọc điểm xuất phát của từng lab và giữ checkpoint trước khi chuyển lát cắt.
+
+## Chọn điểm bắt đầu theo nhu cầu
+
+Nếu bạn không đọc tuần tự, dùng bảng này để chọn đường ngắn nhất nhưng vẫn đủ ngữ cảnh:
+
+| Bạn đang cần gì | Bắt đầu ở đâu | Sau đó kiểm chứng gì |
+| --- | --- | --- |
+| Lần đầu nghe về micro-frontend | [Micro-frontend là gì?](/docs/nen-tang/micro-frontend-la-gi) → [Khi nào nên và không nên dùng?](/docs/nen-tang/khi-nao-nen-dung) | Nêu được bài toán cần giải quyết trước khi chọn công cụ |
+| Muốn thấy host tải remote | [Chuẩn bị môi trường](/docs/bat-dau/moi-truong) → [Cấu trúc workspace](/docs/bat-dau/workspace) → [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien) | UI đã ghép và request tải code từ đúng remote |
+| Đang đề xuất kiến trúc cho team | [Team ownership](/docs/nen-tang/team-ownership) → [Chia domain](/docs/kien-truc/chia-domain) → [Chọn kiến trúc](/docs/kien-truc/chon-kien-truc) | Owner, contract, thay đổi phát hành riêng và chi phí vận hành có rõ không |
+| Có nhiều remote nhưng release vẫn ràng buộc | [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) → [Contract tests](/docs/kiem-thu-va-tooling/contract-tests) → [Triển khai](/docs/trien-khai) | Phụ thuộc nằm ở state, contract, artifact selection hay quy trình phê duyệt |
+| Cần đưa tích hợp lên production | [Triển khai](/docs/trien-khai) → [Production](/docs/production) → [Checklist đánh giá](/docs/thuc-hanh/checklist-danh-gia) | Compatibility, quan sát phiên bản, cache, fallback và recovery |
+| Đang gặp lỗi tích hợp | [Checklist debug](/docs/troubleshooting/debug-checklist) → bài theo triệu chứng | Baseline và bằng chứng lỗi trước/sau một thay đổi có kiểm soát |
+
+Với người mới, mình chọn đường đầu tiên. Một demo tải remote rất dễ khiến bạn tưởng phần khó nhất đã xong; học cách đánh giá nhu cầu trước giúp bạn không biến ví dụ học tập thành kiến trúc mặc định.
+
+## Cách học bằng bằng chứng
+
+Sau mỗi bài, làm một vòng ngắn thay vì tích lũy cấu hình:
+
+1. **Viết câu hỏi cần kiểm chứng.** Chẳng hạn: “Chuyển từ catalog sang cart có giữ cùng giỏ không?”.
+2. **Nêu kết quả mong đợi.** Badge và cart đọc cùng snapshot; navigation không tạo controller mới.
+3. **Chạy ca thành công và một ca lỗi có kiểm soát.** Với tải remote, thử baseline rồi chặn request chưa tải trong document mới.
+4. **Lưu bằng chứng.** Ghi thao tác, URL/status, Console, phiên bản artifact và kết quả UI; không đưa token hoặc dữ liệu nhạy cảm vào log chia sẻ.
+5. **Giải thích kết quả và giới hạn.** Phân biệt điều đã chứng minh với giả định chưa thử, rồi mới thêm một ranh giới khác.
+
+Ví dụ, dừng server catalog sau khi code đã tải không làm component đang chạy biến mất. Nếu muốn thử lỗi download, hãy tạo document mới hoặc chặn request code chưa tải. Ngược lại, muốn thử lỗi render thì cần làm component throw ở đúng phạm vi; đó không phải cùng một ca với server trả `404`.
+
+Với release độc lập, giữ lại nhận dạng artifact shell và cart, phát hành catalog tương thích rồi kiểm tra lại luồng người dùng. Nếu phải build lại shell chỉ để nhúng code catalog mới, bạn chưa chứng minh được mục tiêu runtime release của lát cắt đó. Nếu vẫn cần cập nhật release selection, hãy ghi rõ ai cập nhật, policy kiểm tra và đường rollback.
+
+## Checklist hoàn thành lộ trình
+
+Không cần thuộc mọi option của bundler. Bạn có thể tự đánh giá bằng những việc làm được sau đây:
+
+- [ ] Mô tả được điểm nghẽn bằng một tình huống cụ thể và giải thích khi nào không nên tách frontend.
+- [ ] Phân biệt được component, package, artifact và đơn vị deploy.
+- [ ] Vẽ được ranh giới shell–catalog–cart, owner và public contract mà không dựa vào tên folder.
+- [ ] Chỉ ra được browser lấy code từ đâu và phân biệt lỗi download, khởi tạo, render với lỗi command/API.
+- [ ] Giữ state theo owner; navigation và cleanup không tạo dữ liệu trùng hoặc subscription thừa.
+- [ ] Kiểm thử được contract, luồng xuyên ứng dụng và trải nghiệm đã ghép, kể cả deep link và Back/Forward.
+- [ ] Chứng minh một thay đổi tương thích có thể release riêng; nêu kế hoạch cho thay đổi không tương thích.
+- [ ] Quan sát được tổ hợp phiên bản, giữ assets cần thiết và kiểm chứng recovery cho phiên mới lẫn tab đang mở.
+- [ ] Nêu rõ giới hạn của fallback, isolation, security và dữ liệu mock trong lab.
+
+Nếu một mục chưa có bằng chứng, quay về nhóm tương ứng và làm một ca nhỏ. Đừng bù chỗ trống bằng thêm remote hoặc đổi framework.
+
+## Bài đọc tiếp theo
+
+Bắt đầu bằng **Micro-frontend là gì?**, rồi viết một giả thuyết ngắn: phần nào cần thay đổi riêng, ai sở hữu nó và hành vi nào chứng minh việc tách có ích. Khi có giả thuyết đó, chuyển sang Bắt đầu để thử một ranh giới nhỏ.
+
+<Cards>
+  <Card title="Micro-frontend là gì?" href="/docs/nen-tang/micro-frontend-la-gi" description="Phân biệt ranh giới phát hành với tách component qua bài toán shop." />
+  <Card title="Khi nào nên và không nên dùng?" href="/docs/nen-tang/khi-nao-nen-dung" description="Đánh giá lợi ích, chi phí và lựa chọn đơn giản hơn trước khi tách." />
+  <Card title="Bắt đầu" href="/docs/bat-dau" description="Chuẩn bị workspace riêng và dựng lát cắt host/remote đầu tiên." />
+  <Card title="Thực hành" href="/docs/thuc-hanh" description="Chọn lab theo mục tiêu và kiểm chứng kết quả bằng bằng chứng." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [Micro Frontends — Cam Jackson, trên martinfowler.com](https://martinfowler.com/articles/micro-frontends.html): tư duy chia frontend theo ownership, independent deployment và các đánh đổi của kiến trúc.
+- [Module Federation — webpack](https://webpack.js.org/concepts/module-federation/): cơ chế chia sẻ và tiêu thụ module giữa các build riêng; đây là cơ chế tích hợp, không thay thế thiết kế ranh giới và quy trình release.

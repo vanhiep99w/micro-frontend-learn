@@ -1,18 +1,397 @@
 ---
 title: "Checklist đánh giá bài thực hành"
-description: "Đánh giá coupling, independent deployment, test coverage, UX và observability."
+description: "Nghiệm thu shop micro-frontend bằng bằng chứng về coupling, deploy độc lập, kiểm thử, UX khi có lỗi và observability."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Catalog và cart đã hiện trong shell, nút thêm giỏ cũng chạy. Nhưng nếu đổi catalog vẫn phải rebuild shell, logout vẫn để lộ cart của user trước, hoặc remote lỗi làm trắng toàn bộ trang, thì một demo chạy được chưa đủ để kết luận kiến trúc đạt yêu cầu.
+
+Trang này giúp bạn đánh giá **hành vi ở boundary**, không chỉ nhìn cấu trúc thư mục. Mỗi dấu tick cần có cách tái hiện và bằng chứng: public contract, test result, artifact digest, browser trace hoặc telemetry đã redact. Mình ưu tiên những bằng chứng này hơn số ứng dụng hay số repository bạn tạo.
+
+<Callout type="info" title="Đánh giá workspace thực hành, không phải site docs">
+  Các thao tác dưới đây dành cho workspace lab riêng. Bạn không cần thêm code, dependency hay hệ thống telemetry vào repository Fumadocs này. Checklist là rubric học tập; đạt checklist không đồng nghĩa ứng dụng đã sẵn sàng cho production.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chốt phạm vi đánh giá](#chốt-phạm-vi-đánh-giá)
+- [Cách dùng checklist](#cách-dùng-checklist)
+- [Các gate bắt buộc](#các-gate-bắt-buộc)
+- [Coupling và ownership](#coupling-và-ownership)
+  - [Checklist coupling](#checklist-coupling)
+  - [Cách kiểm chứng ranh giới](#cách-kiểm-chứng-ranh-giới)
+- [Deploy độc lập và tương thích](#deploy-độc-lập-và-tương-thích)
+  - [Checklist release](#checklist-release)
+  - [Bằng chứng release và rollback](#bằng-chứng-release-và-rollback)
+- [Kiểm thử theo rủi ro](#kiểm-thử-theo-rủi-ro)
+  - [Checklist kiểm thử](#checklist-kiểm-thử)
+  - [Ma trận test tối thiểu](#ma-trận-test-tối-thiểu)
+- [UX routing auth và khả năng phục hồi](#ux-routing-auth-và-khả-năng-phục-hồi)
+  - [Checklist trải nghiệm](#checklist-trải-nghiệm)
+  - [Kịch bản nghiệm thu bằng browser](#kịch-bản-nghiệm-thu-bằng-browser)
+- [Observability và chẩn đoán](#observability-và-chẩn-đoán)
+  - [Checklist observability](#checklist-observability)
+  - [Bài kiểm tra từ lỗi đến artifact](#bài-kiểm-tra-từ-lỗi-đến-artifact)
+- [Chấm điểm và kết luận](#chấm-điểm-và-kết-luận)
+- [Mẫu biên bản đánh giá](#mẫu-biên-bản-đánh-giá)
+- [Ưu tiên sửa sau buổi review](#ưu-tiên-sửa-sau-buổi-review)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chốt phạm vi đánh giá
 
-Bài này sẽ giúp bạn: đánh giá coupling, independent deployment, test coverage, UX và observability.
+Trước khi chạy test, ghi rõ bạn đang đánh giá bài nào, commit nào và implementation nào. Các lab trong nhóm minh họa những vấn đề khác nhau, **không phải các bước nối tiếp tạo thành một codebase hoàn chỉnh**.
 
-[Xem các bài trong nhóm Thực hành](/docs/thuc-hanh).
+| Phạm vi | Implementation và hành vi cần giữ đúng |
+| --- | --- |
+| [Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart) | React + webpack Module Federation; một cart controller cho mỗi document của shell; giỏ in-memory, reload tạo giỏ rỗng |
+| [Lab routing và authentication](/docs/thuc-hanh/routing-auth) | Một browser router và auth owner trong shell; `SessionCartPage` là module riêng; session do backend fixture xác nhận |
+| [Lab deploy độc lập](/docs/thuc-hanh/deploy-doc-lap) | Native ESM với mount API trong `independent-deploy-lab`; dùng runtime config để chọn release, không dùng Federation |
+| Bài tổng hợp tự mở rộng | Bạn tự chốt contract, lifecycle và policy khi nối các phần; phải kiểm thử lại boundary sau khi ghép |
+
+Không yêu cầu `apiVersion` của cart controller React xuất hiện trong mount API của lab ESM. Tương tự, test reload giỏ in-memory không được đòi giữ hàng như giỏ từ backend. Đánh giá một implementation theo contract đã công bố, không theo kỳ vọng ngầm của người review.
+
+Nếu chỉ nghiệm thu lab ghép shop, các mục session và release có thể là `N/A` — không áp dụng. Nhưng kết luận phải là “đạt lab ghép shop”, không phải “đạt deploy độc lập”. Nếu nghiệm thu bài tổng hợp đủ năm nhóm, không được loại cả nhóm deploy hay observability để tăng điểm.
+
+Trong bài tổng hợp có auth, controller sống suốt document chưa đủ an toàn: bạn cần reset hoặc tạo lại state giỏ theo session scope khi đổi user. Đây là yêu cầu bổ sung khi ghép hai bài, không phải tính năng sẵn có của controller in-memory ở lab đầu tiên.
+
+## Cách dùng checklist
+
+Chốt phạm vi trước rồi mới chạy checklist, vì sau khi thấy lỗi rất dễ đổi một mục thành “không cần”. Quy trình có thể giữ đơn giản:
+
+```text
+Chốt phạm vi → Chạy kịch bản → Lưu bằng chứng → Kiểm tra gate và kết luận
+```
+
+1. Ghi commit/build, danh sách release, config revision, môi trường và những mục `N/A` kèm lý do.
+2. Chạy happy path trước để xác nhận fixture và app sẵn sàng. Sau đó chủ động tạo lỗi ở từng boundary.
+3. Với mỗi mã tiêu chí, lưu trạng thái, bằng chứng, lỗi còn tồn tại và owner sửa.
+4. Kiểm tra gate trước khi tính điểm. Gate chưa có bằng chứng được coi là chưa đạt.
+5. Sau khi sửa, chạy lại kịch bản lỗi và một journey liên quan; không chỉ kiểm tra dòng code đã đổi.
+
+Checkbox dưới đây là bản nghiệm thu tĩnh, không phải dữ liệu lưu trạng thái trong site. Sao chép danh sách vào biên bản của bạn; chỉ đổi thành `[x]` khi tiêu chí đạt đầy đủ. Mục đạt một phần vẫn để trống và ghi rõ trong biên bản.
+
+| Trạng thái | Cách ghi |
+| --- | --- |
+| Đạt | Có hành vi đúng và bằng chứng tái hiện được; tick checkbox |
+| Đạt một phần | Happy path đúng nhưng còn thiếu failure case, automation hoặc evidence cần thiết |
+| Chưa đạt | Hành vi sai, test fail, hoặc chưa kiểm tra |
+| `N/A` | Ngoài phạm vi đã thống nhất; ghi lý do và người chấp thuận |
+
+Một ảnh chụp UI đẹp chứng minh được trạng thái tại thời điểm chụp. Nó không tự chứng minh cleanup, khả năng rollback hay response đến muộn không làm sai state.
+
+## Các gate bắt buộc
+
+Gate là điều kiện không được bù bằng điểm ở nhóm khác. Các gate dưới đây áp dụng theo phạm vi đã chốt; mỗi gate cần bằng chứng trực tiếp, không chỉ dựa trên điểm của checklist.
+
+| Gate | Điều kiện đạt | Khi nào áp dụng |
+| --- | --- | --- |
+| G1 — Ownership dữ liệu | Badge và cart đọc cùng nguồn; thao tác thất bại không báo thành công hoặc làm lệch state | Có luồng mua sắm |
+| G2 — Session isolation | Logout/đổi user không để dữ liệu private của phiên trước xuất hiện; backend từ chối request không có quyền | Có auth và dữ liệu private |
+| G3 — Release độc lập | Đổi catalog không rebuild/redeploy shell hoặc cart; checksum không đổi; rollback đúng selection hoạt động | Nghiệm thu deploy độc lập |
+| G4 — Cô lập lỗi | Lỗi tải/render remote có fallback phù hợp, không làm mất navigation public và không tạo retry loop | Có runtime composition |
+| G5 — Có thể tái hiện | Reviewer chạy được journey chính và ít nhất một failure case; evidence gắn đúng commit/artifact | Mọi phạm vi |
+
+Nếu một remote cung cấp dependency thiết yếu như cart controller và không tải được, bạn có thể phải khóa thao tác thêm giỏ. G4 không yêu cầu giả vờ chức năng đó vẫn hoạt động; nó yêu cầu shell giải thích đúng tình trạng và giữ các chức năng không phụ thuộc còn dùng được. Với lab ESM không có navigation của shop React, kiểm tra phần shell và sibling remote còn khả dụng theo contract của lab đó.
+
+<Callout type="warn" title="Không dùng điểm tổng để bỏ qua lỗi an toàn">
+  Lộ cart Alice sau khi Bob login, báo thêm hàng thành công khi command thất bại, hoặc rollback không còn tải được asset cũ đều phải chặn nghiệm thu ở phạm vi liên quan. Test coverage cao không bù được những lỗi này.
+</Callout>
+
+## Coupling và ownership
+
+Coupling đáng lo không phải là “các app có gọi nhau không”. Shell luôn phải nối các domain. Vấn đề là shell hoặc remote có phụ thuộc vào chi tiết nội bộ mà owner có thể đổi mà không báo hay không.
+
+### Checklist coupling
+
+- [ ] **C1 — Ranh giới domain:** shell sở hữu composition, navigation cấp ứng dụng và wiring; catalog sở hữu UI sản phẩm; cart sở hữu mutation và snapshot giỏ. Có bảng owner cho public boundary.
+- [ ] **C2 — Chỉ dùng public contract:** không import source, reducer, private store hay đường dẫn nội bộ của app khác. Shared package không chứa mutable domain store mà mọi app cùng sửa.
+- [ ] **C3 — Một nguồn state:** badge và cart đọc cùng snapshot/controller trong cùng session scope. Shell không tự cộng badge sau click rồi đồng bộ ngược với cart.
+- [ ] **C4 — Kết quả command rõ ràng:** caller phân biệt thành công và thất bại; dữ liệu đi qua boundary theo contract. Trong lab React, `onAddToCart` gửi SKU và quantity, không gửi giá để shell tự tính tiền.
+- [ ] **C5 — Lifecycle có cleanup:** subscription được hủy khi consumer unmount; route change không vô tình tạo lại controller. Với mount API, `unmount()` dọn listener và không sửa DOM ngoài container đã nhận.
+- [ ] **C6 — Remote kiểm thử được riêng:** entry standalone hoặc harness dùng cùng public component/module với integrated mode; adapter/fixture có shape rõ ràng, không cần chạy source của mọi app để test logic domain.
+
+### Cách kiểm chứng ranh giới
+
+Đọc import graph trước, rồi quan sát runtime. Không có cross-import chưa đủ để kết luận ít coupling: một global event với payload lấy từ reducer nội bộ vẫn có thể buộc hai app đổi cùng nhau.
+
+| Thử nghiệm | Kết quả cần thấy | Evidence |
+| --- | --- | --- |
+| Đổi cấu trúc private state cart, giữ public snapshot | Shell/catalog không phải sửa theo | Diff và tests của consumer |
+| Thêm hàng trước khi mở cart | Badge đổi từ controller; mở cart thấy đúng các dòng | Browser trace và snapshot assertion |
+| Mount/unmount consumer nhiều lần | Listener từ consumer đã unmount không được gọi nữa | Test subscription/cleanup |
+| Mount consumer muộn | Đọc được snapshot hiện tại, không cần phát lại event thêm hàng | Component hoặc integration test |
+| Chạy remote qua standalone/harness | Dùng cùng export, không phải bản component chép riêng | Entry code và test result |
+
+Mặc định mình giữ shared package ở mức public types/schema hoặc utility không có domain state. Monorepo giúp phối hợp source, nhưng không tự tạo release coupling; multi-repo cũng không ngăn một global store trở thành điểm nối cứng. Xem [state ownership](/docs/giao-tiep-va-trang-thai/state-ownership) và [hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) khi một boundary chưa rõ owner.
+
+## Deploy độc lập và tương thích
+
+Chạy được ba dev server không chứng minh deploy độc lập. Bạn cần một thay đổi được phục vụ cho document mới trong khi artifact của consumer hiện tại giữ nguyên, cùng bằng chứng rằng tổ hợp đó vẫn chạy đúng.
+
+### Checklist release
+
+- [ ] **D1 — Định danh artifact:** shell, catalog, cart có release ID và URL/digest tương ứng; config revision được ghi riêng, không nhầm với version code.
+- [ ] **D2 — Không rebuild consumer:** publish và promote catalog mới không rebuild/redeploy shell, cart hoặc HTML bootstrap của shell. Có log pipeline và checksum đầy đủ trước/sau.
+- [ ] **D3 — Tương thích có kiểm chứng:** candidate được test với shell/cart đang phục vụ; breaking contract bị chặn trước promotion, dù build candidate thành công.
+- [ ] **D4 — Đủ asset graph:** entry và lazy chunks của mỗi release được publish đầy đủ; bytes tại URL release không bị overwrite; thiếu asset trả lỗi thật, không trả HTML app dưới status `200`.
+- [ ] **D5 — Rollback chỉ đổi selection cần thiết:** revision mới chọn lại catalog tương thích; không phục hồi mù toàn bộ config cũ hoặc làm lùi release cart không liên quan. Document mới và tab đang sống được kiểm tra riêng.
+- [ ] **D6 — Config và cache có policy:** selection được validate và pin theo document như contract; cache headers phù hợp; stale candidate bị từ chối; artifact cũ được giữ trong cửa sổ hỗ trợ đã công bố.
+
+### Bằng chứng release và rollback
+
+Nếu dùng [lab deploy độc lập](/docs/thuc-hanh/deploy-doc-lap), bộ evidence tối thiểu có thể lấy ngay từ các bước của bài đó:
+
+| Giai đoạn | Điều phải chứng minh |
+| --- | --- |
+| Baseline | Stable config chọn catalog `r18`, shell `s17`, cart `r7`; lưu digest HTML/shell/cart |
+| Publish | Artifact `r19` tải được; stable selection chưa đổi |
+| Candidate | Preview `r19` pass mount, command sang cart, lazy module và cleanup |
+| Promote | Document mới ở URL stable, không có `preview`, chạy `s17 + r19 + r7` |
+| Breaking change | Candidate `r20` bị chặn vì contract, không phải do server chưa chạy; stable config không đổi |
+| Rollback | Revision mới chọn `r18`; tab mới chạy `r18`, tab cũ đã pin `r19` vẫn dùng được lazy module `r19` |
+
+Trong **`independent-deploy-lab`**, sau khi đã ghi digest và promotion theo bài lab, kiểm tra hai file evidence:
+
+```bash
+diff -u evidence/before.sha256 evidence/after.sha256
+```
+
+Kết quả đạt là không có output và exit code `0`. So sánh này chỉ chứng minh tập artifact đã đưa vào manifest không đổi. Bạn vẫn cần log để chứng minh pipeline không chạy lại bước rebuild/redeploy consumer: cùng bytes không có nghĩa không build lại.
+
+Đừng chỉ hash file JavaScript chính. HTML bootstrap, CSS và các chunk thuộc shell/cart cũng nằm trong boundary deployment. Với app tự mở rộng, tạo manifest toàn bộ output tương ứng thay vì dùng đường dẫn của lab ESM một cách máy móc.
+
+Giữ cả tab mới lẫn tab cũ khi rollback. Config đổi trên server không thay module đã chạy trong document; chỉ chuyển route không bảo đảm bootstrap lại. Nếu app của bạn hỗ trợ hot switch, phải có contract và test riêng cho cleanup, state migration và recovery — không mặc định runtime loader đã giải quyết chúng.
+
+## Kiểm thử theo rủi ro
+
+Một test chỉ render catalog không kiểm tra được command sang cart. Một E2E chỉ chạy tất cả app ở HEAD cũng không chứng minh consumer cũ chịu được provider mới. Chọn test theo boundary có thể hỏng, rồi đo coverage như công cụ tìm khoảng trống.
+
+### Checklist kiểm thử
+
+- [ ] **T1 — Unit test logic owner:** mutation, quantity không hợp lệ, SKU không tồn tại, snapshot identity và no-op được assert theo contract của controller.
+- [ ] **T2 — Component test trạng thái UI:** pending, thành công, lỗi, empty state và cleanup có assertion; không chỉ kiểm tra component mount không throw.
+- [ ] **T3 — Contract test hai phía:** test shape/schema và semantics của callback, snapshot hoặc mount API; breaking payload và sai major bị phát hiện ở boundary.
+- [ ] **T4 — Integration trên artifact:** chạy tổ hợp release/config thực tế trước promotion, gồm lazy module và lifecycle; không chỉ import source local cùng version.
+- [ ] **T5 — Browser E2E journey và failure:** có happy path, deep link/reload nếu có routing, remote load failure, render failure và session race nếu có auth.
+- [ ] **T6 — Kết quả chạy lại được:** lệnh test, fixture, setup và artifact IDs được ghi; test độc lập state, có điều khiển timing; failure làm CI/gate thất bại, không bị bỏ qua bằng retry vô hạn.
+
+### Ma trận test tối thiểu
+
+| Boundary hoặc rủi ro | Test phù hợp | Assertion chính |
+| --- | --- | --- |
+| Cart mutation | Unit | Command thành công cập nhật snapshot; command lỗi giữ state; hai command được xử lý theo contract thứ tự |
+| Snapshot/subscription | Unit + component | Snapshot stable khi chưa đổi; consumer mount muộn đọc đúng state; unsubscribe thực sự ngừng nhận update |
+| Catalog → cart | Contract + integration | SKU/quantity đúng shape; failure không hiện thành công; badge khớp snapshot |
+| Remote artifact → shell hiện tại | Contract + browser integration | Export/metadata hợp lệ và hành vi mount/command/lazy/unmount đúng |
+| History/deep link | E2E | URL và UI đồng bộ; query/fragment được giữ; refresh không trả 404 Document |
+| Session và quyền | Unit + component + HTTP/E2E | `401`, `403`, network/`5xx` có hành vi khác nhau; backend không dựa vào guard UI để cấp quyền |
+| Response phiên cũ | Component dùng deferred Promise + E2E | Alice resolve sau Bob không cập nhật UI Bob, kể cả adapter bỏ qua abort |
+| Lỗi tải/render | Browser integration | Fault đã được kích hoạt thật; fallback đúng boundary; sibling còn hoạt động |
+| Release/rollback | Artifact verification + browser | Checksum consumer giữ nguyên; stable/tab cũ chọn đúng release theo policy |
+| Telemetry lỗi | Unit + integration | Sink lỗi không làm command/load đổi kết quả và không tạo unhandled rejection |
+
+Với lab cart đã tạo test file, chạy từ root **`shop-workspace`**:
+
+```bash
+node --test tests/cart-controller.test.mjs
+npm run build
+```
+
+Đây chỉ là bằng chứng unit test của controller và build. Bạn vẫn phải thực hiện test browser và boundary còn thiếu; `npm run build` không thay E2E.
+
+Không đặt một con số coverage chung rồi coi đó là điều kiện đủ. Nếu team dùng coverage threshold, ghi rõ statement/branch coverage của phần nào và những ca rủi ro bắt buộc. Một test bỏ qua race logout có thể để lộ dữ liệu dù coverage tổng nhìn rất cao.
+
+Test timing nên dùng deferred response, chờ request thực sự bắt đầu hoặc chờ trạng thái có ý nghĩa. Tăng `sleep` chỉ làm test lâu hơn, không bảo đảm bạn đã đi qua đúng race. Khi một test fail rồi pass ở lần retry, giữ evidence lần fail và điều tra; không tự gọi đó là đã đạt.
+
+## UX routing auth và khả năng phục hồi
+
+Một micro-frontend có fallback nhưng người dùng không biết thao tác đã thành công hay chưa vẫn là UX lỗi. Đánh giá cả màn hình đang chờ, lúc boundary hỏng và sau khi người dùng thử lại.
+
+### Checklist trải nghiệm
+
+- [ ] **U1 — Journey mua sắm nhất quán:** thêm, tăng/giảm, xóa và empty state đúng contract; badge là tổng quantity; chuyển route không mất giỏ ngoài policy đã công bố.
+- [ ] **U2 — URL có một owner:** integrated mode không tạo router/root ngoài contract; direct link, reload, Back/Forward và not-found đồng bộ UI/URL, không làm mất query/fragment.
+- [ ] **U3 — Loading và failure đúng nghĩa:** pending khóa thao tác có thể gây trùng; thành công chỉ hiện sau acknowledgement; fallback phân biệt lỗi remote với auth failure và có lối đi tiếp.
+- [ ] **U4 — Phục hồi có giới hạn:** load/render failure được xử lý riêng; retry có giới hạn và policy rõ; retry không tự gửi lại mutation có thể đã được thực thi. Chunk lỗi đã cache reject không bị “retry” bằng cách chỉ render lại cùng loader.
+- [ ] **U5 — Session isolation:** private UI không mount khi session còn checking; logout khóa dữ liệu ngay; response cũ không hồi sinh phiên trước; `403` không thành login loop, network/`5xx` không thành anonymous; backend enforce quyền.
+- [ ] **U6 — Accessibility và không phá sibling:** navigation/nút dùng được bằng keyboard, focus hợp lý khi đổi màn hình hoặc lỗi, status được thông báo; CSS remote không làm đổi control của app khác; không layout shift lớn do thiếu vùng loading đã dự trù.
+
+### Kịch bản nghiệm thu bằng browser
+
+Các hàng dưới đây có phạm vi riêng. Không chạy dữ liệu fixture của lab React vào lab ESM, và không coi dấu tick ở một implementation là bằng chứng cho implementation khác.
+
+| Mã | Phạm vi và thao tác | Kết quả cần quan sát |
+| --- | --- | --- |
+| B1 | Lab ghép shop: thêm hai áo thun đen và một túi vải, rồi mở cart | Hai dòng, badge `3`, subtotal `380000` VND theo fixture; không tạo controller mới khi mở cart |
+| B2 | Lab ghép shop: xóa túi rồi reload document | Trước reload: badge `2`, subtotal `300000`; sau reload: giỏ rỗng theo policy in-memory |
+| B3 | Lab routing/auth: mở `/cart?step=delivery#summary` khi anonymous, login rồi reload | Trở lại đúng URL; reload kiểm tra cookie/session trước khi render private UI, không redirect login trong checking |
+| B4 | Lab routing/auth: Back/Forward qua catalog và cart | URL và màn hình cùng thay đổi; login completion không tạo history loop |
+| B5 | Lab routing/auth: thử session `503`, cart `403`, session `401` riêng biệt | `503` có retry, không ép logout; `403` báo thiếu quyền; `401` dẫn vào flow xác nhận session hết hạn |
+| B6 | Lab routing/auth: request cart Alice đang pending, logout rồi login Bob | UI Alice biến mất; response Alice đến muộn không xuất hiện; chỉ dữ liệu Bob được render |
+| B7 | App runtime composition: chặn entry remote trước bootstrap | Có load fallback đúng boundary; navigation/phần public không phụ thuộc vẫn dùng được; không có request storm |
+| B8 | App runtime composition: fixture remote throw khi render/mount | Có render/mount fallback; không suy luận rằng Error Boundary sẽ bắt mọi lỗi async command |
+| B9 | Lab deploy: promote rồi rollback với tab cũ đang mở | Tab mới nhận selection đã rollback; tab cũ vẫn tải lazy module của release đã pin |
+| B10 | App có telemetry: chặn endpoint thu telemetry | UI và command vẫn chạy; không tạo vòng lặp report lỗi transport |
+
+Để B7 có ý nghĩa, chặn request từ trước khi tải module, thường bằng browser context mới và request interception. Chặn entry sau khi module đã nằm trong module cache không kích hoạt load failure. Dừng dev server cũng có thể chưa làm remote hỏng nếu artifact cần thiết đã được tải.
+
+Render failure cần fixture chủ động throw trong vùng muốn kiểm tra. Error Boundary của React không tự bắt lỗi của callback async hoặc Promise rejection; những đường đó cần xử lý tại command/loader boundary. Xem [resilience](/docs/production/resilience) để tách cơ chế xử lý, thay vì dùng một fallback cho mọi nguyên nhân.
+
+Khi kiểm tra retry mutation, phân biệt “server chắc chắn chưa nhận” với “chưa biết kết quả”. Timeout không có nghĩa mutation chưa chạy. Nếu chưa có idempotency/reconciliation contract, đừng tự động gửi lại yêu cầu thêm hàng như cách retry một read.
+
+## Observability và chẩn đoán
+
+Mục tiêu của nhóm này là reviewer trả lời được: **boundary nào hỏng, tổ hợp release nào đang chạy và user bị ảnh hưởng thế nào?** Console có stack trace nhưng thiếu release context thường không đủ để nối lỗi với artifact.
+
+### Checklist observability
+
+- [ ] **O1 — Context có định danh:** event ghi app báo lỗi, target remote, phase, release thực chạy nếu đã biết, shell release và config revision. Khi module chưa tải, candidate release được phân biệt với release đã thực thi.
+- [ ] **O2 — Có outcome và duration:** quan sát load/ready/failure theo contract; ghi success lẫn failure để tính tỷ lệ; retry attempt không bị đếm thành nhiều journey độc lập.
+- [ ] **O3 — Theo được operation:** command/API có correlation ID; nếu dùng tracing, kiểm chứng propagation và spans backend thực sự nối được, không chỉ thấy header trong DevTools.
+- [ ] **O4 — Error attribution đúng:** mỗi lỗi có report owner để tránh capture trùng; stack/source map khớp đúng build, không gán release deploy gần nhất cho mọi tab.
+- [ ] **O5 — Telemetry không phá app:** sink throw/reject hoặc endpoint bị chặn không đổi kết quả nghiệp vụ, không tạo unhandled rejection hay queue tăng vô hạn; không bootstrap global SDK trùng trong cùng runtime.
+- [ ] **O6 — Privacy và hành động rõ:** payload được allowlist/redact; không log credential, raw query hoặc toàn bộ cart; dữ liệu quan sát có owner, cách query và hành động xử lý khi regression.
+
+### Bài kiểm tra từ lỗi đến artifact
+
+Tạo một lỗi có chủ đích trong preview hoặc môi trường local, rồi nhờ reviewer điều tra chỉ từ evidence. Không tạo lỗi trên traffic production để nghiệm thu bài học.
+
+1. Tải một tổ hợp shell/catalog/cart đã ghi release và config revision.
+2. Tạo load failure hoặc render failure; xác nhận fault đã thực sự xảy ra bằng Network/fixture.
+3. Tìm event và xác định đúng phase, target, artifact đã chọn và artifact thực chạy nếu có.
+4. Đối chiếu event với manifest/config, mở stack đã symbolicate nếu là lỗi code; kiểm tra URL/status/cache nếu là lỗi tải.
+5. Giải thích ảnh hưởng lên journey và chọn hành động: retry an toàn, kiểm tra hosting hoặc pause/rollback đúng release.
+6. Chặn telemetry transport rồi lặp lại thao tác; xác nhận xử lý lỗi UI không phụ thuộc việc gửi event thành công.
+
+Trong lab local, một structured event sink ghi JSON vào file hoặc Console có thể đủ để kiểm tra context/outcome. Nó không chứng minh ingestion production, dashboard hay alert đã hoạt động. Nếu chưa có source map/tracing, ghi phần đó chưa đạt hoặc `N/A` theo scope đã chốt, không dùng một dòng Console để tick toàn bộ O3/O4.
+
+Ở bài tổng hợp, chỉ số khởi đầu nên là load outcome, journey outcome và thời gian từ navigation đến ready theo định nghĩa rõ ràng. Đừng tự chọn ngưỡng performance rồi gọi đó là chuẩn micro-frontend; ghi budget do bạn/team đặt và môi trường đo. Nếu có field measurement, tách nó khỏi số đo trên máy local.
+
+Telemetry browser là best effort. Không nhận event không chứng minh không có lỗi; kiểm tra sức khỏe ingestion và dùng synthetic/browser tests bổ sung. Xem [observability](/docs/kiem-thu-va-tooling/observability) để thiết kế denominator, cancellation, sampling và metric labels trước khi tính SLI.
+
+<Callout type="warn" title="Evidence cũng cần redact">
+  HAR, trace, screenshot và test report có thể chứa cookie, token, user profile hoặc request body. Chỉ dùng identity fixture, kiểm tra nội dung trước khi chia sẻ và giữ bản nhạy cảm ở nơi có quyền truy cập phù hợp. Không đưa raw HAR có credential vào repository.
+</Callout>
+
+## Chấm điểm và kết luận
+
+Nếu chỉ cần nghiệm thu pass/fail, dùng gate và checkbox là đủ. Bảng điểm sau giúp so sánh tiến bộ qua các lần review; đây là **rubric đề xuất cho bài học**, không phải chuẩn chứng nhận kiến trúc.
+
+Với mỗi tiêu chí áp dụng trong C1–C6, D1–D6, T1–T6, U1–U6 và O1–O6:
+
+| Điểm | Ý nghĩa |
+| --- | --- |
+| `0` | Sai hành vi, chưa làm hoặc chưa có evidence |
+| `1` | Đạt một phần, thiếu một điều kiện hoặc thiếu evidence cần thiết |
+| `2` | Đạt đầy đủ và reviewer tái hiện được |
+| `N/A` | Loại khỏi mẫu số, có lý do đã thống nhất trước |
+
+Mỗi nhóm quy đổi tối đa 10 điểm:
+
+```text
+Điểm nhóm = 10 × tổng điểm tiêu chí áp dụng / (2 × số tiêu chí áp dụng)
+Điểm tổng = tổng điểm của các nhóm có tiêu chí áp dụng
+```
+
+Giữ kết quả đến một chữ số thập phân để báo cáo, nhưng dùng giá trị chưa làm tròn khi xét ngưỡng. Nhóm không có tiêu chí áp dụng ghi `N/A`, không tự nhận 10 điểm. Báo cả số tiêu chí áp dụng, chẳng hạn “10/12 trên 6 tiêu chí”, để người đọc biết độ bao phủ scope.
+
+Ví dụ minh họa: coupling có sáu tiêu chí với điểm `2, 2, 2, 1, 1, 2`, tổng `10/12`, nên điểm nhóm là khoảng `8,3/10`. Đây không phải kết quả của repository hay một lab đã chạy trong trang này.
+
+Với bài tổng hợp đủ năm nhóm, đề xuất kết luận như sau:
+
+| Kết luận | Điều kiện |
+| --- | --- |
+| Chưa nghiệm thu | Có gate áp dụng chưa đạt/chưa kiểm tra, hoặc có nhóm dưới `6/10` |
+| Đạt mức cơ bản | Mọi gate áp dụng đạt và mọi nhóm đạt ít nhất `6/10`, nhưng chưa đủ mức vững |
+| Đạt mức vững | Mọi gate áp dụng đạt, mọi nhóm ít nhất `8/10` và tổng ít nhất `42/50` |
+
+Với một lab hẹp, áp dụng ngưỡng theo nhóm còn trong scope và ghi kết luận đúng tên lab; không quy đổi một nhóm đã làm thành “42/50 tương đương”. Điểm nhóm cao cũng không có nghĩa mọi checkbox đạt — những tiêu chí còn thiếu vẫn phải xuất hiện trong phần hạn chế.
+
+Một số sai lệch cần tránh khi review:
+
+- “Có ba repo nên độc lập”: chưa có bằng chứng release.
+- “Build pass nên tương thích”: chưa test runtime contract và semantics.
+- “Có fallback nên resilient”: chưa test lỗi thực, recovery và retry limits.
+- “Coverage cao nên an toàn”: chưa kiểm tra ownership, session race và artifact cũ/mới.
+- “Có Console log nên observability đạt”: chưa biết attribution, release context hay privacy.
+
+## Mẫu biên bản đánh giá
+
+Sao chép mẫu vào nơi lưu evidence của workspace lab, không cần tạo file trong site docs. Dùng link tới test report hoặc artifact đã redact thay cho mô tả “đã test OK”.
+
+```md title="Mẫu assessment.md — điền sau khi chạy"
+**Đánh giá bài thực hành**
+
+- Phạm vi: [lab ghép shop / routing-auth / deploy / bài tổng hợp]
+- Ngày review:
+- Reviewer:
+- Commit/build:
+- Môi trường và browser:
+- Implementation: [React + Federation / native ESM / khác]
+- Release set: shell=..., catalog=..., cart=...
+- Config revision: ... hoặc N/A
+- Policy state/session/cache:
+- Mục N/A và lý do đã chấp thuận:
+
+## Gate
+
+| Gate | Trạng thái | Evidence |
+| --- | --- | --- |
+| G1 | Chưa kiểm tra | |
+| G2 | Chưa kiểm tra | |
+| G3 | Chưa kiểm tra | |
+| G4 | Chưa kiểm tra | |
+| G5 | Chưa kiểm tra | |
+
+## Tiêu chí
+
+Ghi từng mã áp dụng C1–O6, không gộp cả nhóm thành một dấu tick.
+
+| Mã | Điểm | Evidence / bước tái hiện | Hạn chế | Owner |
+| --- | --- | --- | --- | --- |
+| C1 | | | | |
+| D2 | | | | |
+| T5 | | | | |
+| U5 | | | | |
+| O1 | | | | |
+
+## Evidence chính
+
+- Setup, fixture và lệnh chạy lại:
+- Unit/component/contract report:
+- Browser journey và failure trace đã redact:
+- Digest before/after và pipeline log:
+- Config trước promotion / sau promotion / rollback:
+- Kết quả tab mới và tab cũ:
+- Telemetry event/query và fault đã tạo:
+
+## Kết luận
+
+- Gate còn chặn nghiệm thu:
+- Điểm từng nhóm và số tiêu chí áp dụng:
+- Kết luận trong phạm vi đã chốt:
+- Hạn chế chưa triển khai:
+- Việc cần sửa, owner, điều kiện retest:
+```
+
+Không đưa record giả vào evidence để lấp ô trống. Nếu chưa chạy được một ca, ghi “chưa kiểm tra” cùng lý do; sự thiếu bằng chứng là thông tin cần dùng khi kết luận.
+
+## Ưu tiên sửa sau buổi review
+
+Sửa theo mức ảnh hưởng trước, không theo mục nào dễ tăng điểm nhất. Thứ tự khởi đầu hợp lý là lỗi gate về dữ liệu/session, lỗi làm mất shell hoặc sai kết quả command, coupling buộc release chung, rồi khoảng trống test và chẩn đoán.
+
+Nếu badge và cart lệch nhau, sửa ownership thay vì thêm một event đồng bộ nữa. Nếu shell checksum đổi khi release catalog, tìm bước pipeline hoặc cấu hình URL tạo coupling. Nếu response Alice xuất hiện sau khi Bob login, sửa session scope và lifecycle trước khi thêm loading spinner.
+
+Mỗi việc sửa nên gắn một mã tiêu chí và điều kiện retest cụ thể, ví dụ: “U5/G2 — resolve request Alice sau khi Bob đã mount; DOM chỉ chứa dữ liệu Bob”. Thêm regression test đúng boundary, chạy lại journey liên quan và cập nhật evidence của lần review mới.
+
+Bắt đầu buổi đánh giá với một happy path, một remote load failure và một thay đổi release. Nếu có auth, thêm race logout. Những ca này nhanh chóng cho thấy boundary nào cần làm rõ trước khi bạn mở rộng bộ test.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Lab shell, catalog và cart" href="/docs/thuc-hanh/shop-shell-catalog-cart" description="Kiểm chứng controller ownership, snapshot và journey mua sắm." />
+  <Card title="Lab routing và authentication" href="/docs/thuc-hanh/routing-auth" description="Kiểm tra deep link, session lifecycle và response đến muộn." />
+  <Card title="Lab deploy độc lập" href="/docs/thuc-hanh/deploy-doc-lap" description="Lấy evidence checksum, compatibility gate và rollback theo selection." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Phát hiện breaking change ở public boundary trước promotion." />
+  <Card title="Integration và E2E tests" href="/docs/kiem-thu-va-tooling/integration-e2e" description="Chạy journey và failure case với artifact trong browser thật." />
+  <Card title="Observability" href="/docs/kiem-thu-va-tooling/observability" description="Nối lỗi với app, release, operation và ảnh hưởng lên người dùng." />
+</Cards>

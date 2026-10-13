@@ -1,18 +1,787 @@
 ---
 title: "Lab giả lập remote lỗi"
-description: "Giả lập network failures và version mismatch để kiểm tra fallback cùng rollback."
+description: "Chặn entry và lazy chunk, giả lập timeout cùng version mismatch, rồi kiểm chứng fallback, state giỏ hàng và rollback bằng browser test."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Catalog không tải được, nhưng người dùng đã có hàng trong giỏ. Bạn muốn họ vẫn xem được cart, biết chức năng nào đang lỗi và không phải reload chỉ để thoát một skeleton đứng mãi. Một fallback có text đúng chưa đủ: nó phải xuất hiện đúng lúc, không bị response đến muộn ghi đè và không làm mất state của vùng còn hoạt động.
+
+Bài này cho bạn tạo lỗi có chủ đích rồi kiểm chứng đường phục hồi. **Rollback chỉ đổi release cho document mới; nó không thay code đã chạy trong tab cũ.** Bạn sẽ quan sát cả hai, thay vì chỉ sửa config rồi kết luận đã phục hồi.
+
+<Callout type="info" title="Hai workspace, không thêm code vào site docs">
+  Phần chính tiếp nối workspace `independent-deploy-lab` của [Lab deploy độc lập](/docs/thuc-hanh/deploy-doc-lap), dùng native ESM và mount API. Cần Node.js 22 trở lên, npm, Playwright với Chromium đã cài và server local ở `http://127.0.0.1:4173`.
+
+  Phần shared-version mismatch dùng `shop-workspace` của [Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart), với webpack 5 và React 19. Hai loader không thay thế cho nhau: không dùng native `import()` để tải classic-script `remoteEntry.js`.
+
+  Tất cả file và lệnh trong bài thuộc workspace thực hành tương ứng, không phải repository Next.js + Fumadocs. Sơ đồ text không cần cấu hình Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Kết quả cần đạt](#kết-quả-cần-đạt)
+- [Phân biệt các failure boundary](#phân-biệt-các-failure-boundary)
+- [Chuẩn bị release và baseline](#chuẩn-bị-release-và-baseline)
+- [Bước 1 tạo slot có deadline](#bước-1-tạo-slot-có-deadline)
+  - [State machine và policy phục hồi](#state-machine-và-policy-phục-hồi)
+  - [Loader bỏ kết quả đến muộn](#loader-bỏ-kết-quả-đến-muộn)
+- [Bước 2 tách bootstrap catalog và cart](#bước-2-tách-bootstrap-catalog-và-cart)
+  - [Tạo shell release mới](#tạo-shell-release-mới)
+  - [Pin config và khởi động hai slot độc lập](#pin-config-và-khởi-động-hai-slot-độc-lập)
+- [Bước 3 chạy ma trận fault injection](#bước-3-chạy-ma-trận-fault-injection)
+  - [Browser test với context mới](#browser-test-với-context-mới)
+  - [Đọc kết quả và kiểm tra bằng tay](#đọc-kết-quả-và-kiểm-tra-bằng-tay)
+- [Bước 4 diễn tập rollback](#bước-4-diễn-tập-rollback)
+  - [Promote release đang gặp lỗi](#promote-release-đang-gặp-lỗi)
+  - [Đổi selection về release tốt](#đổi-selection-về-release-tốt)
+  - [Kiểm chứng tab cũ và document mới](#kiểm-chứng-tab-cũ-và-document-mới)
+- [Bước 5 giả lập shared version mismatch](#bước-5-giả-lập-shared-version-mismatch)
+  - [Tạo requirement không thể thỏa](#tạo-requirement-không-thể-thỏa)
+  - [Quan sát fallback và phục hồi](#quan-sát-fallback-và-phục-hồi)
+- [Những bẫy dễ làm test xanh giả](#những-bẫy-dễ-làm-test-xanh-giả)
+- [Chẩn đoán theo bằng chứng](#chẩn-đoán-theo-bằng-chứng)
+- [Checklist nghiệm thu](#checklist-nghiệm-thu)
+- [Tài liệu tham khảo và đọc tiếp](#tài-liệu-tham-khảo-và-đọc-tiếp)
 
-## Phạm vi dự kiến
+## Kết quả cần đạt
 
-Bài này sẽ giúp bạn: giả lập network failures và version mismatch để kiểm tra fallback cùng rollback.
+| Fault | Bằng chứng cần có |
+| --- | --- |
+| Catalog entry bị chặn | Catalog fallback; shell và cart vẫn hoạt động |
+| Entry đến sau deadline | Fallback không tự biến thành catalog; không có lần mount muộn |
+| Promise import reject sau deadline | Không có unhandled rejection; không phát thêm failure cho cùng slot |
+| Lazy module trả 404 | Catalog vẫn usable, chỉ phần chi tiết báo lỗi; cart giữ số lượng |
+| Contract major không khớp | Không gọi mount; không retry cùng release tự động |
+| Evaluation hoặc mount throw | Slot lỗi được cô lập; telemetry phân biệt phase |
+| Cart entry không tải | Không hiển thị cart rỗng giả; thêm hàng không được báo thành công |
+| Rollback r19 về r18 | Document mới chọn r18; tab cũ vẫn pin r19 |
+| Shared React requirement sai | Có lỗi compatibility thật của webpack, không chỉ warning hay lỗi network |
 
-[Xem các bài trong nhóm Thực hành](/docs/thuc-hanh).
+Mình không bật auto-retry trong lab. Browser có thể dùng `TypeError` cho nhiều lỗi import khác nhau, nên chỉ nhìn tên exception không đủ kết luận “network transient”. Với lỗi contract, evaluation hoặc shared version, thử lại cùng release thường không giúp gì. Với timeout, operation cũ còn có thể đang chạy.
+
+Các deadline `2000 ms` và delay `2600 ms` bên dưới chỉ là số minh họa để phân biệt hai nhánh test, không phải khuyến nghị cho production.
+
+## Phân biệt các failure boundary
+
+```text
+Shell → config snapshot
+         ├─ catalog entry → validate → mount → lazy details
+         └─ cart entry    → validate → mount → add command
+
+Lỗi catalog entry/mount: thay slot catalog, giữ slot cart
+Lỗi lazy details:       catalog tự báo lỗi phần chi tiết
+Lỗi add command:        thông báo thao tác, không tải lại code
+Lỗi config bắt buộc:    bootstrap dừng, không giả vờ đã chọn release
+```
+
+Entry trả 200 chưa chứng minh remote hoạt động: nó có thể import một chunk thiếu, throw lúc evaluation hoặc expose sai API. Ngược lại, một API/command thất bại không có nghĩa code remote cần tải lại.
+
+Lab ESM dùng `try/catch` quanh import, validation và **mount đồng bộ**. Đây không phải React Error Boundary. Trong shop React, boundary chỉ bắt lỗi render/lifecycle trong cùng React tree và lỗi mà `lazy()` đưa vào render; event handler và Promise tùy ý vẫn cần xử lý riêng. Remote có React root riêng cần boundary riêng bên trong root đó.
+
+## Chuẩn bị release và baseline
+
+Hoàn thành phần tạo artifact, server, `candidate.mjs` và `promote.mjs` của [Lab deploy độc lập](/docs/thuc-hanh/deploy-doc-lap). Workspace cần có:
+
+- Shell `s17`, cart `r7`, catalog `r18` và `r19` đã build.
+- `public/runtime/config.json` có schema v1 và selection hợp lệ.
+- Server phục vụ `/runtime/*.json` với `no-store`, artifacts theo release path với cache dài.
+- Playwright và Chromium đã cài; không có service worker trong lab.
+
+Nếu r19 chưa tồn tại, chạy **một lần**:
+
+```bash
+node build-catalog.mjs r19
+```
+
+Không chạy lại lệnh này trên thư mục r19 đã publish: build script phải từ chối overwrite. Với workspace đã dùng trong bài trước, giữ artifact hiện có và chọn revision config mới.
+
+Tạo preview cho hai release. Trong bài này mình dùng dải revision `cfg-101` đến `cfg-104`; nếu đã dùng các ID đó, chọn ID chưa dùng và thay nhất quán trong các lệnh:
+
+```bash
+node candidate.mjs r18 cfg-101
+node candidate.mjs r19 cfg-102
+```
+
+Hai lệnh chỉ tạo candidate và preview, chưa promote. Trước khi fault injection, mở preview r19, thêm hàng và mở chi tiết để xác nhận release vốn hoạt động. Nếu baseline chưa chạy thì lỗi sau đó chưa phải bằng chứng resilience.
+
+## Bước 1 tạo slot có deadline
+
+### State machine và policy phục hồi
+
+```text
+idle → loading → ready
+          │
+          └─ load / timeout / contract / mount failure → failed
+
+loading → dispose → disposed
+ready   → dispose → disposed + unmount
+
+Kết quả import đến sau failed/disposed → bỏ qua, không mount
+```
+
+Deadline giới hạn thời gian slot chờ import và validation; nó **không hủy native import**, không ngắt synchronous evaluation/mount và không cứu được module khóa main thread. Browser timer chỉ chạy khi event loop có cơ hội xử lý.
+
+Mỗi slot có một generation. Dispose tăng generation để phần async cũ không mount vào instance đã hết vòng đời. Policy của lab là một attempt cho mỗi slot/document, không retry tại chỗ. Khi dùng router thật, tạo slot mới theo lifecycle route và bổ sung budget ở document scope nếu không muốn navigation reset giới hạn thử lại.
+
+### Loader bỏ kết quả đến muộn
+
+Tạo file mới dưới release shell `s18`. Không sửa bytes của s17 đã publish.
+
+```js title="independent-deploy-lab/public/shell/s18/remote-slot.mjs"
+export function createSlot({ name, root, spec, revision, report, deadlineMs = 2000 }) {
+  let generation = 0;
+  let state = 'idle';
+  let handle;
+
+  function showFailure() {
+    const message = document.createElement('p');
+    message.setAttribute('role', 'alert');
+    message.textContent = name === 'catalog'
+      ? 'Catalog tạm thời không khả dụng. Giỏ hàng vẫn có thể dùng nếu đã sẵn sàng.'
+      : 'Chưa lấy được thông tin giỏ hàng. Không thể xác nhận thao tác thêm hàng.';
+    root.replaceChildren(message);
+  }
+
+  function emit(phase, kind, started, actualRelease = null) {
+    report({
+      shell: 's18', remote: name, config: revision,
+      selectedRelease: spec.release, actualRelease,
+      phase, kind, state,
+      durationMs: Math.round(performance.now() - started),
+    });
+  }
+
+  return {
+    async start(props) {
+      if (state !== 'idle') throw new Error('SLOT_ALREADY_STARTED');
+      const mine = ++generation;
+      const started = performance.now();
+      let timer;
+      let phase = 'load';
+      let actualRelease = null;
+      state = root.dataset.state = 'loading';
+      const loading = document.createElement('p');
+      loading.setAttribute('role', 'status');
+      loading.textContent = `Đang tải ${name}…`;
+      root.replaceChildren(loading);
+
+      try {
+        const remote = await Promise.race([
+          import(spec.entry),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              const error = new Error('REMOTE_DEADLINE');
+              error.code = 'DEADLINE';
+              reject(error);
+            }, deadlineMs);
+          }),
+        ]);
+        clearTimeout(timer);
+        if (mine !== generation) return null;
+
+        phase = 'contract';
+        if (remote.release !== spec.release || remote.contractVersion !== 1 ||
+            typeof remote.mount !== 'function') {
+          throw new Error('REMOTE_CONTRACT_INVALID');
+        }
+        actualRelease = remote.release;
+        phase = 'mount';
+        handle = remote.mount(root, props);
+        if (typeof handle?.unmount !== 'function' ||
+            (name === 'cart' && typeof handle.add !== 'function')) {
+          throw new Error('REMOTE_HANDLE_INVALID');
+        }
+        state = root.dataset.state = 'ready';
+        emit('ready', null, started, actualRelease);
+        return handle;
+      } catch (error) {
+        if (mine !== generation) return null;
+        // Với handle hợp lệ đã trả về, cleanup trước khi thay DOM.
+        try { handle?.unmount?.(); } catch { /* Fallback vẫn phải hiện. */ }
+        handle = undefined;
+        state = root.dataset.state = 'failed';
+        const kind = error.code === 'DEADLINE' ? 'timeout' :
+          phase === 'contract' ? 'contract' :
+          phase === 'mount' ? 'mount' : 'load-or-evaluate';
+        root.dataset.kind = kind;
+        showFailure();
+        emit(phase, kind, started, actualRelease);
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    dispose() {
+      if (state === 'disposed') return;
+      ++generation;
+      try { handle?.unmount?.(); } catch { /* Cleanup best-effort trong lab. */ }
+      handle = undefined;
+      state = root.dataset.state = 'disposed';
+      root.replaceChildren();
+    },
+  };
+}
+```
+
+`Promise.race` gắn rejection handler lên Promise import, kể cả khi timeout thắng trước. Khi import resolve muộn, đoạn code sau `await` không chạy lần hai, nên không mount muộn. Khi dispose trước khi import hoàn thành, generation check ngăn mount.
+
+Tuy vậy, import vẫn có thể **evaluate top-level code** sau timeout. Remote phải không tự mount ở module scope; timers/listeners/subscriptions thuộc lifecycle mount/unmount. Metadata validation diễn ra sau evaluation, không phải sandbox hay security gate.
+
+Nếu `mount()` throw sau khi tạo listener nhưng trước khi trả handle, shell không thể tự tìm hết tài nguyên đó. Provider phải cleanup khi mount thất bại một phần. Xóa DOM chỉ là fallback UI, không thay thế cleanup contract. Ví dụ throw trong test dưới đây cố ý không tạo tài nguyên trước khi throw.
+
+## Bước 2 tách bootstrap catalog và cart
+
+### Tạo shell release mới
+
+Tạo `public/shell/s18/` rồi lưu loader ở trên. Thay HTML bootstrap để chọn shell mới; đây là **một lần release shell để bổ sung resilience**, không phải một bước rollback remote:
+
+```html title="independent-deploy-lab/public/index.html"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Remote failure lab</title>
+  </head>
+  <body>
+    <h1>Shop — shell s18</h1>
+    <nav aria-label="Điều hướng shop">
+      <a href="#catalog-region">Catalog</a>
+      <a href="#cart-region">Giỏ hàng</a>
+    </nav>
+    <p id="status" role="status">Đang khởi động…</p>
+    <p id="command-status" role="status"></p>
+    <section id="cart-region" aria-label="Cart"><div id="cart"></div></section>
+    <section id="catalog-region" aria-label="Catalog"><div id="catalog"></div></section>
+    <script type="module" src="/shell/s18/main.mjs"></script>
+  </body>
+</html>
+```
+
+Hai links chỉ điều hướng đến vùng trong cùng document, không reload và không đổi cart instance. Đây không phải SPA router hoặc bản shop đầy đủ.
+
+### Pin config và khởi động hai slot độc lập
+
+Validator giữ policy của bài trước: chỉ chọn URL same-origin theo release path đã biết, config fetch một lần cho mỗi document. Cart lỗi không ngăn catalog browse; catalog lỗi không ngăn cart mount.
+
+```js title="independent-deploy-lab/public/shell/s18/main.mjs"
+import { createSlot } from './remote-slot.mjs';
+
+const status = document.querySelector('#status');
+const commandStatus = document.querySelector('#command-status');
+let snapshot;
+let cart;
+const slots = [];
+
+function parseConfig(raw) {
+  if (raw?.schemaVersion !== 1 || typeof raw.revision !== 'string' ||
+      !raw.revision.trim()) throw new Error('CONFIG_SCHEMA_INVALID');
+  const remotes = {};
+  for (const name of ['catalog', 'cart']) {
+    const spec = raw.remotes?.[name];
+    if (!spec || !/^r[1-9]\d*$/.test(spec.release) ||
+        spec.contractVersion !== 1 || typeof spec.entry !== 'string') {
+      throw new Error(`CONFIG_REMOTE_INVALID:${name}`);
+    }
+    const url = new URL(spec.entry, location.origin);
+    if (url.origin !== location.origin ||
+        url.pathname !== `/${name}/${spec.release}/entry.mjs` ||
+        url.search || url.hash || url.username || url.password) {
+      throw new Error(`CONFIG_URL_INVALID:${name}`);
+    }
+    remotes[name] = Object.freeze({ ...spec, entry: url.href });
+  }
+  return Object.freeze({ revision: raw.revision, remotes: Object.freeze(remotes) });
+}
+
+function report(event) {
+  // Console thay cho telemetry transport; không log query/token hay payload cart.
+  console.info('remote-state ' + JSON.stringify(event));
+}
+
+function onAdd(item) {
+  if (!cart) {
+    commandStatus.textContent = 'Chưa xác nhận thêm hàng: giỏ chưa sẵn sàng.';
+    return;
+  }
+  try {
+    cart.add(item);
+    commandStatus.textContent = 'Đã thêm hàng vào giỏ.';
+  } catch {
+    commandStatus.textContent = 'Không thêm được hàng vào giỏ.';
+  }
+}
+
+async function bootstrap() {
+  const preview = new URL(location.href).searchParams.get('preview');
+  if (preview !== null && !['r18', 'r19'].includes(preview)) {
+    throw new Error('PREVIEW_INVALID');
+  }
+  const path = preview ? `/runtime/preview-${preview}.json` : '/runtime/config.json';
+  const response = await fetch(path, {
+    cache: 'no-store', signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`CONFIG_HTTP_${response.status}`);
+  snapshot = parseConfig(await response.json());
+  status.textContent = `s18 | config ${snapshot.revision} | ` +
+    `selected catalog ${snapshot.remotes.catalog.release} | ` +
+    `selected cart ${snapshot.remotes.cart.release}`;
+
+  const makeSlot = (name) => {
+    const slot = createSlot({
+      name, root: document.querySelector(`#${name}`),
+      spec: snapshot.remotes[name], revision: snapshot.revision, report,
+    });
+    slots.push(slot);
+    return slot;
+  };
+  const cartSlot = makeSlot('cart');
+  const catalogSlot = makeSlot('catalog');
+  // Cùng khởi động; không await catalog rồi mới yêu cầu cart.
+  const cartTask = cartSlot.start().then((handle) => { cart = handle; });
+  const catalogTask = catalogSlot.start({ onAdd });
+  await Promise.all([cartTask, catalogTask]);
+}
+
+bootstrap().catch(() => {
+  status.textContent = 'Không đọc được cấu hình hợp lệ. Shop chưa sẵn sàng.';
+  status.setAttribute('role', 'alert');
+  for (const slot of slots) slot.dispose();
+  cart = null;
+  console.error('bootstrap-failed', { config: snapshot?.revision ?? null });
+});
+```
+
+Trong dòng status, `selected` nghĩa là config đã chọn release đó, **không có nghĩa release đã chạy**. `remote-state` chỉ ghi `actualRelease` sau khi kiểm tra metadata thành công. Với module throw lúc evaluation, loader không biết release thực nên để `null`.
+
+Lab giữ cart r7 theo bài trước. Callback thêm hàng ở đây là synchronous contract của cart fixture, không phải xác nhận backend và không có durable queue. Chưa có cart thì thao tác bị từ chối rõ ràng, không được tự replay khi cart tải xong.
+
+`dispose()` phục vụ integration lifecycle và test riêng; HTML này không có route unmount. Không gọi nó trên mọi `pagehide` rồi kỳ vọng trang phục hồi từ back/forward cache vẫn usable. Khi thêm router, integration layer phải gắn dispose vào lifecycle thực của slot.
+
+Chạy server ở terminal riêng, từ root `independent-deploy-lab`:
+
+```bash
+node server.mjs
+```
+
+Mở `http://127.0.0.1:4173/?preview=r19`. Bạn phải thấy shell s18, cart r7 và catalog r19. Bấm thêm hàng rồi mở chi tiết: cart tăng và module chi tiết tải được. Nếu s18 đã được phục vụ với cache immutable trong lần thử trước, dùng workspace sạch hoặc shell release ID mới khi sửa code; không sửa rồi dựa vào cache busting ngẫu nhiên.
+
+## Bước 3 chạy ma trận fault injection
+
+### Browser test với context mới
+
+Test dùng interception của Playwright, không sửa artifact đã publish. Mỗi ca có context riêng và chặn service worker. Routing của Playwright vô hiệu hóa HTTP cache cho các request bị routing trong context; context mới cũng tránh module cache của document cũ. Interception này không chứng minh CSP/CORS hoặc CDN policy production.
+
+Tạo script dưới đây. Nó dùng preview r18 hoặc r19, nên **không sửa config stable** khi chạy fault matrix.
+
+```js title="independent-deploy-lab/fault-tests.mjs"
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+
+const release = process.argv[2] ?? 'r19';
+if (!['r18', 'r19'].includes(release)) throw new Error('RELEASE_INVALID');
+const base = 'http://127.0.0.1:4173';
+const entry = `${base}/catalog/${release}/entry.mjs`;
+const browser = await chromium.launch();
+
+async function textAt(page, selector, pattern) {
+  await page.waitForFunction(({ selector, source }) => {
+    return new RegExp(source).test(document.querySelector(selector)?.textContent ?? '');
+  }, { selector, source: pattern.source });
+}
+
+async function stateAt(page, selector, state) {
+  await page.waitForFunction(({ selector, state }) => {
+    return document.querySelector(selector)?.dataset.state === state;
+  }, { selector, state });
+}
+
+async function run(name, setup, check) {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const page = await context.newPage();
+  const errors = [];
+  const events = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+    const value = message.text();
+    if (value.startsWith('remote-state ')) {
+      events.push(JSON.parse(value.slice('remote-state '.length)));
+    }
+  });
+  try {
+    await setup(page);
+    await page.goto(`${base}/?preview=${release}`);
+    await check(page, events);
+    assert.deepEqual(errors, [], 'Unexpected pageerror/unhandled rejection');
+    console.log(`PASS ${name}`);
+  } finally {
+    await context.close();
+  }
+}
+
+const noFault = async () => {};
+const assertCart = page => stateAt(page, '#cart', 'ready');
+const assertCatalogFailed = page => stateAt(page, '#catalog', 'failed');
+const catalogEvents = events => events.filter(event => event.remote === 'catalog');
+
+try {
+  await run('baseline', noFault, async page => {
+    await assertCart(page);
+    await stateAt(page, '#catalog', 'ready');
+    await page.getByRole('button', { name: 'Thêm vào giỏ' }).click();
+    await textAt(page, '#cart', /1 sản phẩm/);
+    await page.getByRole('button', { name: 'Xem chi tiết' }).click();
+    await textAt(page, '#catalog', new RegExp(`Chi tiết từ ${release}`));
+  });
+
+  await run('entry bị chặn', async page => {
+    await page.route(entry, route => route.abort('failed'));
+  }, async (page, events) => {
+    await assertCatalogFailed(page);
+    await assertCart(page);
+    await page.getByRole('link', { name: 'Giỏ hàng', exact: true }).click();
+    assert.equal(new URL(page.url()).hash, '#cart-region');
+    assert.equal(catalogEvents(events).length, 1);
+    assert.equal(catalogEvents(events)[0].kind, 'load-or-evaluate');
+  });
+
+  await run('entry resolve muộn', async page => {
+    await page.route(entry, async route => {
+      const response = await route.fetch();
+      await new Promise(resolve => setTimeout(resolve, 2600));
+      await route.fulfill({ response });
+    });
+  }, async (page, events) => {
+    await assertCatalogFailed(page);
+    await assertCart(page);
+    // Chờ có chủ đích trong test late result, không phải readiness assertion.
+    await page.waitForTimeout(3200);
+    assert.equal(await page.locator('#catalog').getAttribute('data-state'), 'failed');
+    assert.equal(await page.locator('#catalog button').count(), 0);
+    assert.equal(catalogEvents(events).length, 1);
+    assert.equal(catalogEvents(events)[0].kind, 'timeout');
+  });
+
+  await run('entry reject muộn', async page => {
+    await page.route(entry, async route => {
+      await new Promise(resolve => setTimeout(resolve, 2600));
+      await route.abort('failed');
+    });
+  }, async (page, events) => {
+    await assertCatalogFailed(page);
+    await page.waitForTimeout(3200);
+    assert.equal(catalogEvents(events).length, 1);
+    assert.equal(catalogEvents(events)[0].kind, 'timeout');
+  });
+
+  await run('lazy details 404 giữ cart', async page => {
+    await page.route(`${base}/catalog/${release}/details.mjs`, route => route.fulfill({
+      status: 404, contentType: 'text/plain', body: 'Injected missing chunk',
+    }));
+  }, async page => {
+    await assertCart(page);
+    await stateAt(page, '#catalog', 'ready');
+    await page.getByRole('button', { name: 'Thêm vào giỏ' }).click();
+    await textAt(page, '#cart', /1 sản phẩm/);
+    await page.getByRole('button', { name: 'Xem chi tiết' }).click();
+    await textAt(page, '#catalog', /Không tải được chi tiết/);
+    assert.equal(await page.locator('#catalog').getAttribute('data-state'), 'ready');
+    await page.getByRole('button', { name: 'Thêm vào giỏ' }).click();
+    await textAt(page, '#cart', /2 sản phẩm/);
+  });
+
+  await run('contract major mismatch không mount', async page => {
+    await page.route(entry, route => route.fulfill({
+      contentType: 'text/javascript',
+      body: `export const release = '${release}';
+        export const contractVersion = 2;
+        export function mount() { throw new Error('MUST_NOT_MOUNT'); }`,
+    }));
+  }, async (page, events) => {
+    await assertCatalogFailed(page);
+    await assertCart(page);
+    assert.equal(catalogEvents(events)[0].phase, 'contract');
+    assert.equal(catalogEvents(events)[0].actualRelease, null);
+    assert.equal(await page.locator('#catalog button').count(), 0);
+  });
+
+  await run('evaluation throw', async page => {
+    await page.route(entry, route => route.fulfill({
+      contentType: 'text/javascript', body: `throw new Error('INJECTED_EVALUATION');`,
+    }));
+  }, async (page, events) => {
+    await assertCatalogFailed(page);
+    await assertCart(page);
+    assert.equal(catalogEvents(events)[0].phase, 'load');
+    assert.equal(catalogEvents(events)[0].actualRelease, null);
+  });
+
+  await run('mount throw', async page => {
+    await page.route(entry, route => route.fulfill({
+      contentType: 'text/javascript',
+      body: `export const release = '${release}';
+        export const contractVersion = 1;
+        export function mount() { throw new Error('INJECTED_MOUNT'); }`,
+    }));
+  }, async (page, events) => {
+    await assertCatalogFailed(page);
+    await assertCart(page);
+    assert.equal(catalogEvents(events)[0].phase, 'mount');
+    assert.equal(catalogEvents(events)[0].actualRelease, release);
+  });
+
+  await run('cart lỗi không báo thêm thành công', async page => {
+    await page.route(`${base}/cart/r7/entry.mjs`, route => route.abort('failed'));
+  }, async page => {
+    await stateAt(page, '#cart', 'failed');
+    await stateAt(page, '#catalog', 'ready');
+    await page.getByRole('button', { name: 'Thêm vào giỏ' }).click();
+    await textAt(page, '#command-status', /Chưa xác nhận thêm hàng/);
+    assert(!/0 sản phẩm/.test(await page.locator('#cart').innerText()));
+  });
+
+  await run('dispose trước khi entry resolve', noFault, async (page, events) => {
+    await assertCart(page);
+    await stateAt(page, '#catalog', 'ready');
+    // Slot riêng để test lifecycle, không dispose slot thật đang dùng.
+    const result = await page.evaluate(async release => {
+      const { createSlot } = await import('/shell/s18/remote-slot.mjs');
+      const root = document.createElement('div');
+      document.body.append(root);
+      const records = [];
+      const slot = createSlot({
+        name: 'catalog', root, revision: 'lifecycle-fixture',
+        spec: { release, entry: `/catalog/${release}/entry.mjs` },
+        report: event => records.push(event),
+      });
+      const pending = slot.start({ onAdd() {} });
+      slot.dispose(); // Ngay trước continuation của import, kể cả module đã cache.
+      await pending;
+      slot.dispose();
+      const result = { state: root.dataset.state, children: root.childElementCount,
+        records: records.length };
+      root.remove();
+      return result;
+    }, release);
+    assert.deepEqual(result, { state: 'disposed', children: 0, records: 0 });
+  });
+} finally {
+  await browser.close();
+}
+```
+
+Chạy ở terminal thứ hai, vẫn tại root workspace:
+
+```bash
+node fault-tests.mjs r19
+node fault-tests.mjs r18
+```
+
+Mỗi invocation phải in **10 dòng `PASS`**. Hai ca late result cố ý chờ thêm vài giây để quan sát sau deadline. Các ca còn lại chờ state/UI, không dùng sleep để đoán khi nào app đã sẵn sàng.
+
+### Đọc kết quả và kiểm tra bằng tay
+
+Một log timeout có dạng minh họa:
+
+```json
+{
+  "shell": "s18",
+  "remote": "catalog",
+  "config": "cfg-102",
+  "selectedRelease": "r19",
+  "actualRelease": null,
+  "phase": "load",
+  "kind": "timeout",
+  "state": "failed",
+  "durationMs": 2001
+}
+```
+
+`durationMs` thực tế dao động theo scheduler. Không assert đúng `2000` hay dùng con số minh họa trên như benchmark. `load-or-evaluate` là phân loại có chủ đích còn thô: loader không suy diễn mọi `TypeError` là network error; Network và stack trace giúp điều tra sâu hơn.
+
+Kiểm tra thêm bằng browser:
+
+1. Mở document mới, DevTools → Network → Disable cache.
+2. Chặn URL `/catalog/r19/entry.mjs` **trước khi navigation/reload**. Header và vùng cart phải còn usable.
+3. Bỏ block, mở document mới: catalog phải phục hồi. Giỏ memory reset theo contract; không gọi đó là giữ state qua reload.
+4. Chỉ chặn `/catalog/r19/details.mjs`, thêm một hàng rồi mở chi tiết. Cart phải giữ số lượng, catalog chỉ báo lỗi chi tiết.
+5. Dùng keyboard đến links shell và buttons catalog. Thông báo lỗi phải đọc được, không xuất hiện nút retry/reload tự kích hoạt hay focus trap.
+
+Trong HTML tối giản này không có button bên trong loading slot, nên không mất focus của một retry button khi fallback thay DOM. Nếu thêm retry UI, test focus restoration riêng; `role="alert"` không tự giải quyết việc focus bị mất.
+
+## Bước 4 diễn tập rollback
+
+### Promote release đang gặp lỗi
+
+Đây là fault drill local, không phải quy trình cho phép promote artifact đã biết lỗi lên production. Tất cả artifacts r18/r19 ở disk vẫn tốt; browser bị tiêm lỗi cho r19 để mô phỏng sự cố theo release.
+
+Sau khi fault matrix pass, tạo candidate **mới từ config hiện tại**, không dùng lại cfg-102 nếu base revision đã đổi:
+
+```bash
+node candidate.mjs r19 cfg-103
+node fault-tests.mjs r19
+node promote.mjs cfg-103
+curl -fsS http://127.0.0.1:4173/runtime/config.json
+```
+
+`candidate.mjs` guard metadata trước khi tạo preview. `fault-tests.mjs` kiểm tra normal journey cùng failure handling trên shell s18. Script `verify.mjs` nguyên bản của bài trước assert shell s17, nên không dùng nguyên xi cho shell mới; nếu mở rộng pipeline, cập nhật consumer fixture chứ không bỏ assertion release.
+
+Mở một tab stable **không có `preview`**, thấy selected r19/cfg-103, thêm một hàng và giữ tab đó. Nó là tab khỏe trước rollback. Trong tab stable thứ hai, dùng DevTools request blocking chặn entry r19 rồi reload để có tab đang fallback. Đây là hai cohort giả lập, không phải mọi client đều gặp lỗi.
+
+### Đổi selection về release tốt
+
+Ghi checksum sau khi shell s18 đã được thiết lập. Trong rollback, không sửa HTML, shell, cart hoặc bytes r19:
+
+```bash
+find public/index.html public/shell public/cart -type f -exec sha256sum {} + | sort > evidence/resilience-before.sha256
+cp public/runtime/config.json evidence/incident-config.json
+
+node candidate.mjs r18 cfg-104
+node fault-tests.mjs r18
+node promote.mjs cfg-104
+
+find public/index.html public/shell public/cart -type f -exec sha256sum {} + | sort > evidence/resilience-after.sha256
+diff -u evidence/resilience-before.sha256 evidence/resilience-after.sha256
+cp public/runtime/config.json evidence/recovered-config.json
+```
+
+`diff` phải exit 0, không có output. Trên macOS dùng `shasum -a 256` thay `sha256sum` ở cả hai lệnh. Nếu promotion báo `BASE_REVISION_CHANGED`, tạo candidate với revision mới từ current config rồi test lại, không force ghi đè candidate cũ.
+
+### Kiểm chứng tab cũ và document mới
+
+| Document | Kết quả phải quan sát |
+| --- | --- |
+| Tab khỏe r19/cfg-103 giữ mở | Vẫn r19; cart vẫn có một hàng |
+| Tab đang fallback do entry r19 bị chặn | Vẫn fallback; config snapshot không tự refresh |
+| Document stable mới sau cfg-104 | Chọn r18; cart r7 khởi tạo mới theo contract memory-only |
+| Tab `?preview=r19` | Vẫn r19; preview override không đo rollback stable |
+
+Trong tab khỏe r19, mở chi tiết chưa tải trước đó: request vẫn đi đến `/catalog/r19/details.mjs`. Giữ graph r19 trên server để tab này còn hoạt động. **Rollback selection không phải xóa release lỗi.** Artifact retention cần xét cả tabs đang chạy và lazy chunks chưa tải.
+
+Trong tab fallback, bỏ block rồi reload sẽ đọc cfg-104 và chọn r18, nhưng cũng tạo giỏ mới. Sản phẩm thật phải có policy cho draft/state chưa lưu trước khi yêu cầu reload; không tự reload mọi tab theo timer.
+
+Lab chưa có backend. Trong hệ thống thật, rollback frontend không hoàn tác mutation đã ghi, không đảo schema migration và không tự phục hồi API cũ. Gate phải xác nhận r18 vẫn tương thích với backend hiện hành.
+
+## Bước 5 giả lập shared version mismatch
+
+Phần này chuyển sang **`shop-workspace`**, không chạy trong `independent-deploy-lab`. Native ESM không có webpack share scope nên contract major mismatch ở phần trước không thay thế test shared React.
+
+### Tạo requirement không thể thỏa
+
+Cần baseline của [Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart): shell ở `localhost:3000`, catalog ở `:3001`, cart ở `:3002`, async bootstrap và React shared strict singleton. Làm trên branch/worktree riêng, giữ bản config tốt để phục hồi.
+
+Trong `apps/catalog/webpack.config.cjs`, chỉ thay entry `shared.react` của ModuleFederationPlugin đang có bằng:
+
+```js title="shop-workspace/apps/catalog/webpack.config.cjs — chỉ entry shared.react"
+react: {
+  singleton: true,
+  strictVersion: true,
+  requiredVersion: '^99.0.0', // Fault fixture: cố ý không khớp React 19 của lab.
+  import: false,            // Catalog không cung cấp local fallback React.
+},
+```
+
+Không cài React 99 và không khai gian `version: '99.0.0'`. Đây là **requirement sai có chủ đích**, không phải một package release thật hay ví dụ migration hợp lệ. `import: false` giúp fault không vô tình được che bởi provider local của catalog. Shell/cart vẫn cung cấp React 19.
+
+Giữ các entries `react-dom`, `react-dom/client`, JSX runtime `classic`, expose `./CatalogPage`, container names và `publicPath: 'auto'`. Không thêm plugin Federation thứ hai. Restart dev server catalog để nhận config mới; giữ shell và cart chạy:
+
+```bash
+npm run dev:catalog
+```
+
+### Quan sát fallback và phục hồi
+
+Mở document shell mới ở `http://localhost:3000/cart` để shell render và cart controller khởi tạo trước. Sau đó chuyển sang catalog bằng link trong shell. Cần quan sát:
+
+- Shell header và navigation còn hoạt động.
+- Boundary catalog hiện “Màn hình chưa khả dụng”.
+- Console có lỗi shared version chứa requirement `^99.0.0` và provider React 19, không chỉ một warning.
+- Network entry/chunks catalog đã tải thành công; đây không phải entry 404 hay server chưa chạy.
+- Chuyển lại cart trong cùng document vẫn usable; controller không được khởi tạo lại vì lỗi catalog.
+
+Webpack có thể đăng ký remote providers trước thời điểm route import; không coi thứ tự click là bảo đảm thứ tự share-scope initialization. Fixture này dùng range không thể thỏa và không có provider local catalog, nên không phụ thuộc vào việc React 19 nào được chọn. Với lỗi thật giữa hai version hợp lệ, phải kiểm tra cả load order và version đã consume.
+
+Dev overlay có thể che app khi lỗi runtime; đóng overlay để đọc fallback và kiểm chứng lại trên production build khi nghiệm thu. Stack trace và boundary UI phải cùng chỉ ra lỗi compatibility; chỉ thấy overlay không chứng minh failure đã được cô lập.
+
+Khôi phục entry React của catalog về policy baseline:
+
+```js title="Khôi phục shared.react của catalog"
+react: {
+  singleton: true,
+  strictVersion: true,
+  requiredVersion: dependencies.react,
+},
+```
+
+Restart catalog rồi mở **document mới** của shell. Shell phải tải catalog, thêm hàng và mở cart được như baseline. Component/lazy type hoặc federation runtime trong tab đã lỗi có thể giữ kết quả cũ; reset boundary không đồng nghĩa reset mọi cache.
+
+Đây là phục hồi config trong **development**, có rebuild remote và URL dev mutable. Không gọi nó là rollback production. Rollback production phải chọn artifact tốt đã kiểm chứng theo cơ chế selection của hệ thống, giữ bytes bất biến và kiểm chứng tab cũ/document mới như bước 4. Nếu fixed remote URL của shop chưa hỗ trợ selection, bạn chưa có cơ chế rollback độc lập chỉ bằng đổi runtime config.
+
+<Callout type="warn" title="Đừng làm version check im lặng">
+  Không chữa bằng `strictVersion: false`, bỏ singleton, thêm `eager: true` hoặc sửa metadata provider cho “đúng” version mong muốn. Các cách đó có thể che lỗi mà vẫn đưa component vào renderer không tương thích. Lỗi compatibility cần release set hợp lệ; lỗi network cần sửa đường tải. Hai loại không dùng cùng một cách phục hồi.
+</Callout>
+
+## Những bẫy dễ làm test xanh giả
+
+**Dừng server sau khi code đã tải.** Module/controller đang trong memory vẫn hoạt động. Muốn test download failure, chặn request trước khi document mới tải entry hoặc trước lazy import chưa xảy ra.
+
+**Bật offline toàn trang để test catalog.** Shell/config/cart cũng có thể lỗi, nên không chứng minh isolation của catalog. Bắt đầu bằng một URL entry cụ thể; thêm global offline như một scenario khác nếu cần.
+
+**Đổi key nhưng dùng cùng lazy type đã reject.** React cache Promise cho lazy type; boundary reset không bắt lazy gọi loader lại. Tạo attempt type mới mới có loader invocation mới, nhưng federation/module cache vẫn là một lớp khác. Không thêm nút “Thử lại” trước khi có policy cache và budget đã test.
+
+**Coi timeout là cancellation.** Slot chỉ ngừng chờ và không mount muộn; module vẫn có thể evaluate. Không mở attempt song song tùy tiện hoặc đổi release ngay trong window đã có singleton/share scope đang chạy.
+
+**Dùng query timestamp để ép tải code.** URL mới có thể tạo module identity mới, lặp top-level side effects và không xử lý root cause. Dùng release path bất biến cùng snapshot config, không `?t=Date.now()` như recovery mặc định.
+
+**Assert chỉ có text fallback.** Bạn còn phải assert slot cart, số lượng hàng, phase telemetry, không mount muộn và không report trùng. Vùng cart hiện `0` vì chưa tải được không phải graceful degradation.
+
+**Thấy test fault matrix pass rồi coi release an toàn mọi mặt.** Matrix này không bao phủ backend outcome mơ hồ, cross-origin policies, main-thread lockup, React root isolation, CSS, memory leaks lâu dài hay full accessibility. Bổ sung tests theo boundary thật trước production.
+
+## Chẩn đoán theo bằng chứng
+
+| Triệu chứng | Kiểm tra | Hướng xử lý |
+| --- | --- | --- |
+| Test baseline fail | Server, preview file, shell s18 có được phục vụ không | Sửa baseline trước fault injection |
+| Skeleton không kết thúc | Slot có dùng deadline không; main thread có bị block không | Phân biệt Promise pending với synchronous lockup |
+| Entry 200 nhưng slot failed | MIME, imports, evaluation stack, metadata | Không chỉ xem status của entry |
+| `phase: contract` | Selected release và exports thực | Chặn candidate, rollback tới contract tương thích |
+| `phase: mount` | Lỗi mount và cleanup tài nguyên đã tạo | Sửa lifecycle; không chỉ xóa DOM |
+| Chi tiết lỗi, cart vẫn tăng | Request `details.mjs`, local error state | Restore graph/mapping đúng release; không reset cart |
+| Rollback mà tab vẫn r19 | Document có mới không, có preview không | Đây có thể là pinning đúng contract, không phải CDN stale |
+| Shared mismatch chỉ có warning | `strictVersion`, requirement, provider và local fallback | Xác nhận fault đúng policy, không tắt strict check |
+| Lỗi lặp sau “Thử lại” | Lazy/module/runtime caches và release có đổi không | Không retry lỗi xác định; chọn target tốt trong document mới |
+| Cart mất sau phục hồi | Có reload/remount owner không; persistence policy | Không hứa giữ memory state qua document mới |
+
+Khi đưa telemetry ra production, transport phải best-effort: SDK report lỗi không được làm fallback throw. Deduplicate ở đúng boundary; không dùng config revision, URL đầy đủ hoặc attempt ID làm metric label có cardinality không kiểm soát. Đo degraded journey riêng với load attempts, vì một journey có thể tạo nhiều attempts.
+
+## Checklist nghiệm thu
+
+- [ ] Baseline r18/r19 chạy được trước khi tiêm lỗi.
+- [ ] Fault matrix in 10 `PASS` cho mỗi release trên shell s18.
+- [ ] Catalog entry lỗi không ngăn cart khởi tạo và navigation shell dùng được.
+- [ ] Lazy details 404 không xóa cart state; thêm hàng tiếp vẫn đúng.
+- [ ] Late resolve không mount; late reject không có unhandled rejection/report trùng.
+- [ ] Dispose trước continuation không mount slot cũ; dispose lặp không lỗi.
+- [ ] Contract mismatch bị chặn trước mount; evaluation/mount failures có phase phù hợp.
+- [ ] Cart unavailable không hiện giỏ rỗng giả hoặc thông báo thêm hàng thành công.
+- [ ] Checksum HTML/shell/cart trước và sau rollback giống nhau.
+- [ ] Document stable mới chọn r18/cfg-104, tab cũ vẫn pin r19/cfg-103.
+- [ ] Shared-version fixture tạo strict compatibility error thật, rồi baseline được phục hồi.
+- [ ] Lưu Console, Network request lỗi, config trước/sau và ảnh các document vào `evidence/`.
+
+Bài tập tiếp theo: viết một incident note từ evidence vừa thu được, gồm release set bị ảnh hưởng, phase lỗi, capability vẫn dùng được, selection rollback và cách xử lý tab cũ. Nếu note phải dùng câu “có lẽ cache” mà không chỉ ra URL, response hoặc document lifecycle, hãy chạy lại đúng ca đó để bổ sung bằng chứng.
+
+## Tài liệu tham khảo và đọc tiếp
+
+- [MDN — Dynamic import](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import): loading/evaluation failures và module cache.
+- [Webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): `requiredVersion`, `strictVersion`, `singleton` và local fallback.
+- [Playwright — Network](https://playwright.dev/docs/network): interception, abort và mock responses.
+- [Playwright — Page routing](https://playwright.dev/docs/api/class-page#page-route): routing và HTTP cache/service worker caveats.
+- [React — lazy](https://react.dev/reference/react/lazy): Promise caching theo lazy type.
+- [React — Error Boundaries](https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary): phạm vi bắt lỗi render.
+
+<Cards>
+  <Card title="Resilience và fallback" href="/docs/production/resilience" description="Đưa deadline, retry budget, state ownership và degraded journeys vào thiết kế thật." />
+  <Card title="Remote không tải được" href="/docs/troubleshooting/remote-khong-tai" description="Khoanh vùng entry, chunks, policy và public path từ bằng chứng network." />
+  <Card title="Shared version mismatch" href="/docs/troubleshooting/shared-version-mismatch" description="Đối chiếu provider, consumer requirement và share scope khi lỗi compatibility." />
+  <Card title="Lab deploy độc lập" href="/docs/thuc-hanh/deploy-doc-lap" description="Ôn lại candidate, promotion gate và rollback bằng runtime selection." />
+  <Card title="Checklist đánh giá" href="/docs/thuc-hanh/checklist-danh-gia" description="Tổng hợp bằng chứng để đánh giá kiến trúc shop và release process." />
+</Cards>

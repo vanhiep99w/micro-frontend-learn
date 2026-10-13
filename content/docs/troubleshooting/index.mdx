@@ -1,24 +1,249 @@
 ---
 title: "Xử lý sự cố"
-description: "Khoanh vùng lỗi bằng bằng chứng trước khi thay đổi cấu hình."
+description: "Khoanh vùng lỗi micro-frontend bằng release thực chạy, request thất bại và integration boundary; chọn đúng runbook và phục hồi an toàn."
 ---
 
-Đây là trang khung cho nhóm **Xử lý sự cố**; nội dung chi tiết của từng bài sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Shell vẫn hiện header nhưng catalog trắng trang. Hoặc tab mới chạy bình thường, còn tab mở từ trước deploy báo `ChunkLoadError`. Cùng một màn hình hỏng có thể bắt nguồn từ config, tải assets, shared runtime, routing, CSS hoặc API. Nếu bắt đầu bằng xóa cache hay đổi `singleton`, bạn có thể làm mất dấu lỗi mà chưa sửa được nguyên nhân.
+
+Trang này là điểm bắt đầu để tìm **boundary đầu tiên bị lỗi**, giữ bằng chứng và chọn đúng bài xử lý chi tiết. Mình ưu tiên Network, Console và release thực chạy trước khi thay đổi cấu hình; khi người dùng đang bị ảnh hưởng, giảm tác động song song với điều tra.
+
+<Callout type="info" title="Phạm vi và ví dụ">
+  Các ví dụ dùng shop giả định gồm shell, catalog và cart. Phần remote entry/shared dependencies chủ yếu áp dụng cho Webpack 5 Module Federation chạy trong browser; với Vite/ESM, runtime enhanced, iframe hoặc SSR, cần kiểm tra cơ chế của đúng loader/framework.
+
+  Release IDs, URL và incident record dưới đây chỉ là minh họa. Repo này chứa site tài liệu, không có hệ thống shop hay CDN production để chạy thao tác phục hồi. Sơ đồ dùng ASCII, không cần cấu hình Mermaid.
+</Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Nếu người dùng đang bị ảnh hưởng](#nếu-người-dùng-đang-bị-ảnh-hưởng)
+- [Chọn runbook theo triệu chứng](#chọn-runbook-theo-triệu-chứng)
+- [Tìm boundary đầu tiên bị lỗi](#tìm-boundary-đầu-tiên-bị-lỗi)
+- [Quy trình khoanh vùng](#quy-trình-khoanh-vùng)
+  - [Bước 1 Ghi phạm vi và release thực chạy](#bước-1-ghi-phạm-vi-và-release-thực-chạy)
+  - [Bước 2 Giữ bằng chứng ban đầu](#bước-2-giữ-bằng-chứng-ban-đầu)
+  - [Bước 3 Tìm điểm thất bại đầu tiên](#bước-3-tìm-điểm-thất-bại-đầu-tiên)
+  - [Bước 4 Kiểm chứng một giả thuyết mỗi lần](#bước-4-kiểm-chứng-một-giả-thuyết-mỗi-lần)
+- [Những bằng chứng dễ bị hiểu nhầm](#những-bằng-chứng-dễ-bị-hiểu-nhầm)
+- [Ví dụ tab cũ lỗi sau deploy](#ví-dụ-tab-cũ-lỗi-sau-deploy)
+- [Phục hồi và xác nhận đã sửa](#phục-hồi-và-xác-nhận-đã-sửa)
+- [Thông tin bàn giao cho owner](#thông-tin-bàn-giao-cho-owner)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 - [Các bài trong nhóm](#các-bài-trong-nhóm)
 
-## Phạm vi dự kiến
+## Nếu người dùng đang bị ảnh hưởng
 
-Khoanh vùng lỗi bằng bằng chứng trước khi thay đổi cấu hình.
+Đừng chờ biết mọi chi tiết mới bảo vệ journey đang lỗi. Nhưng cũng đừng retry hay reload hàng loạt khi chưa biết một thao tác ghi đã thành công hay chưa.
+
+1. **Xác định ảnh hưởng.** Journey nào hỏng, người dùng nào bị ảnh hưởng, còn đường nào dùng được? Phân biệt một remote optional mất với checkout không thể hoàn tất.
+2. **Dừng mở rộng thay đổi liên quan.** Pause rollout của candidate nghi vấn và ghi selection revision hiện tại. Deploy gần thời điểm lỗi là đầu mối, chưa phải kết luận nguyên nhân.
+3. **Giữ shell và fallback hoạt động.** Cô lập vùng lỗi theo failure policy; thông báo rõ phần không khả dụng. Không hiển thị “giỏ hàng trống” nếu thực ra chưa tải được giỏ hàng.
+4. **Bảo toàn kết quả nghiệp vụ.** Với request đặt hàng/thanh toán chưa rõ outcome, kiểm tra trạng thái qua API theo contract trước khi retry. Lỗi UI không chứng minh backend chưa xử lý.
+5. **Dùng đường phục hồi đã kiểm chứng.** Rollback đúng remote/config hoặc khôi phục artifact bị thiếu khi có bằng chứng; xác nhận target còn tương thích và còn tải được.
+
+<Callout type="warn" title="Rollback selection không thay code đã chạy">
+  Document có thể giữ config snapshot, module đã evaluate và shared instance đã consume. Đổi pointer về release cũ không đảm bảo tab đang mở tự chuyển sang release đó. Cần kế hoạch riêng cho document mới và tab cũ; không hot-swap hay ép reload khi còn state chưa lưu hoặc pending writes.
+</Callout>
+
+Nếu thấy nguồn code lạ, artifact bị sửa ngoài quy trình hoặc publish credentials bị lộ, chuyển sang security incident response. Rollback UI chưa đủ để xác nhận session, dữ liệu và chuỗi publish vẫn an toàn. Xem [Security và trust boundaries](/docs/production/security) và [Resilience khi remote lỗi](/docs/production/resilience).
+
+## Chọn runbook theo triệu chứng
+
+Bảng này chỉ ra nơi bắt đầu, không ánh xạ chắc chắn một error string sang một nguyên nhân. Giữ nguyên lỗi đầu tiên và request tương ứng; thông báo của runtime có thể khác theo plugin/version.
+
+| Triệu chứng bạn thấy | Bằng chứng nên kiểm tra trước | Runbook |
+| --- | --- | --- |
+| Remote không xuất hiện, entry không tải được, `ScriptExternalLoadError` | Route đã gọi import chưa; URL thực tế, status/body, policy browser, container name và format | [Remote không tải được](/docs/troubleshooting/remote-khong-tai) |
+| Entry `200` nhưng báo `Unexpected token '<'` hoặc MIME error | Response có phải HTML từ SPA fallback/login/proxy không | [Remote không tải được](/docs/troubleshooting/remote-khong-tai) |
+| `Invalid hook call`, standalone chạy nhưng tích hợp lỗi | Rules of Hooks, React–renderer compatibility và module identity | [Duplicate React và Invalid Hook Call](/docs/troubleshooting/duplicate-react) |
+| `Unsatisfied version`, shared singleton mismatch hoặc lỗi eager consumption | Consumer range, provider version, share scope, bootstrap và thứ tự load | [Shared version mismatch](/docs/troubleshooting/shared-version-mismatch) |
+| Refresh deep link `404`, Back/Forward lệch màn hình | Document response, base path, route contract và writer của browser history | [Lỗi routing và CSS](/docs/troubleshooting/routing-css) |
+| Style lan sang remote khác, modal sai style, font/ảnh mất | CSS request, asset base, computed styles, selector và portal target | [Lỗi routing và CSS](/docs/troubleshooting/routing-css) |
+| `ChunkLoadError`, lỗi sau deploy hoặc chỉ tab cũ lỗi | Chunk URL/status/body, release graph, nguồn response và artifact retention | [Cache lỗi thời và chunk errors](/docs/troubleshooting/stale-cache) |
+| UI đã render nhưng API lỗi hoặc state nghiệp vụ sai | API request/outcome, auth, payload contract và event flow | [Giao tiếp và trạng thái](/docs/giao-tiep-va-trang-thai) cùng runbook backend tương ứng |
+| Không biết browser đang dùng tổ hợp release nào | Selected/loaded/ready signals, config revision và correlation ID | [Observability](/docs/kiem-thu-va-tooling/observability) |
+
+Một chunk tải nhầm origin thường cần kiểm tra `publicPath`/asset base; chunk đúng URL nhưng bị xóa sau deploy cần kiểm tra retention. Đừng mặc định mọi `ChunkLoadError` đều do cache.
+
+## Tìm boundary đầu tiên bị lỗi
+
+Dùng đường đi này làm bản đồ điều tra:
+
+```text
+Selection/config → Entry và chunks → Runtime/contract → UI tích hợp → Domain action
+```
+
+Đây là các nhóm kiểm tra, không phải thứ tự nội bộ tuyệt đối. Trong federation, initialize sharing, lấy module và tải shared chunks có thể xen kẽ. Runtime dùng manifest có thêm request manifest; iframe có document riêng; SSR còn có bước tải/evaluate phía server.
+
+| Boundary | Câu hỏi cần trả lời | Owner thường cần phối hợp |
+| --- | --- | --- |
+| Selection/config | Document chọn alias, URL và release nào? Config có hợp lệ và được consume không? | Shell/loader và config publisher |
+| Entry và chunks | Browser nhận đúng artifact không? Request đầu tiên fail do network, policy hay file thiếu? | Remote publisher, CDN/platform và shell loader |
+| Runtime/contract | Container/module key/export có đúng không? Shared dependency nào thực sự được dùng? | Consumer/provider owners và platform runtime |
+| UI tích hợp | Render/mount, router, CSS và cleanup có đúng khi ghép vào shell không? | Shell và remote owner |
+| Domain action | API/event có đúng contract, quyền và outcome không? | Domain frontend cùng backend/API owner |
+
+Tìm nơi hợp đồng bị phá vỡ trước khi giao ticket. Catalog sở hữu source không có nghĩa catalog team có quyền sửa CDN headers; shell nhận exception không có nghĩa shell là nguồn gây lỗi.
+
+## Quy trình khoanh vùng
+
+<Steps>
+<Step>
+
+### Bước 1 Ghi phạm vi và release thực chạy
+
+Ghi route, thời điểm kèm timezone, đường tái hiện, môi trường và hành vi mong đợi. So sánh tab cũ với document mới, navigation nội bộ với deep link/refresh, standalone với tích hợp qua shell. Những phép so sánh này giúp tách lỗi deploy, integration và state trong runtime.
+
+Với mỗi remote, tách ba mốc:
+
+- **Selected:** config chọn release nào.
+- **Loaded:** loader đã tải/evaluate module thành công theo định nghĩa telemetry của hệ thống.
+- **Ready:** UI đã sẵn sàng theo contract, chẳng hạn catalog render được vùng sản phẩm.
+
+Config chọn catalog r19 nhưng tải entry thất bại thì chỉ biết r19 được chọn, chưa biết r19 đã chạy. Nếu không có tín hiệu loaded/ready, ghi “chưa xác định” thay vì suy đoán từ tên branch hoặc source mới nhất.
+
+</Step>
+<Step>
+
+### Bước 2 Giữ bằng chứng ban đầu
+
+Chụp hoặc lưu lỗi Console đầu tiên, stack/component stack và request liên quan trước khi reload. Bật **Preserve log** ở Network và Console cho lần tái hiện tiếp theo.
+
+Với request entry, manifest, chunk hoặc CSS nghi vấn, giữ:
+
+- Request URL, method, status hoặc lý do blocked.
+- Response headers và phần body đủ để phân biệt artifact với HTML/error page.
+- Initiator, redirect chain và nguồn response: network, memory/disk cache hay service worker.
+- Release/config revision và correlation ID liên quan nếu đã có instrumentation.
+
+<Callout type="warn" title="Chỉ chia sẻ bằng chứng đã loại dữ liệu nhạy cảm">
+  HAR, Copy as cURL, URL và response body có thể chứa cookie, Authorization, signed query, thông tin tài khoản hoặc dữ liệu nghiệp vụ. Loại bỏ chúng trước khi gửi qua kênh được phép; không đưa HAR nguyên bản vào ticket công khai. Không xóa toàn bộ storage người dùng chỉ để debug.
+</Callout>
+
+</Step>
+<Step>
+
+### Bước 3 Tìm điểm thất bại đầu tiên
+
+Bắt đầu từ lỗi sớm nhất trong cùng lần tái hiện, không phải exception cuối cùng của fallback.
+
+1. **Chưa có request remote:** kiểm tra route/lazy import đã chạy, config đã resolve và policy browser có chặn trước khi gửi không. Remote lazy chưa được mở có thể chưa cần tải.
+2. **Có request nhưng thất bại:** đọc URL, status, headers và body. Phân biệt DNS/TLS, quyền truy cập, CORS/CSP, redirect và asset thiếu.
+3. **Assets nhận được nhưng module không dùng được:** kiểm tra execute, container format/name, public module key, export contract và sharing initialization.
+4. **Module dùng được nhưng UI sai:** kiểm tra render/mount, provider hierarchy, router, CSS và lifecycle cleanup.
+5. **UI ready nhưng thao tác sai:** kiểm tra API/event và outcome nghiệp vụ; không tiếp tục đổi remote URL nếu đường tải code đã được xác nhận tốt.
+
+Với SSR, dùng server logs/traces để kiểm tra phần request không xuất hiện trong DevTools. Một lỗi hydration cũng cần đối chiếu HTML server với render client; runbook client-side không bao phủ toàn bộ trường hợp này. Xem [Next.js, SSR và giới hạn](/docs/ui-va-framework/nextjs-ssr).
+
+</Step>
+<Step>
+
+### Bước 4 Kiểm chứng một giả thuyết mỗi lần
+
+Viết giả thuyết kèm dấu hiệu có thể bác bỏ nó. Ví dụ: “chunk đang tải từ origin shell thay vì catalog” phải được kiểm chứng bằng Request URL và config asset base của artifact, không chỉ bằng việc thêm `publicPath: 'auto'` rồi thấy hết lỗi.
+
+Giữ nguyên release set, route và thứ tự thao tác khi đối chiếu; thay một yếu tố mỗi lần trong môi trường được phép. Không đồng thời upgrade React, đổi remote URL và purge cache vì bạn sẽ không biết điều gì đã tạo ra khác biệt.
+
+Sau khi giữ bằng chứng, có thể thử **Disable cache** khi DevTools mở và một document mới. Đây là phép đối chiếu HTTP cache của browser, không tự purge CDN, loại bỏ module đã evaluate hay bypass mọi service worker. Nếu có service worker, kiểm tra riêng cơ chế intercept/cache của nó.
+
+Chọn runbook ở bảng trên khi đã biết boundary; các bài chi tiết có lệnh và cấu hình cho từng trường hợp. Nếu vẫn chưa rõ, quay lại request đầu tiên và release inventory thay vì thử thêm config ngẫu nhiên.
+
+</Step>
+</Steps>
+
+## Những bằng chứng dễ bị hiểu nhầm
+
+| Điều đã quan sát | Điều nó thực sự chứng minh | Điều chưa được chứng minh |
+| --- | --- | --- |
+| `remoteEntry.js` trả `200` | Request nhận được một response thành công ở lớp HTTP | Body đúng JavaScript, script execute được, shared init và mọi chunk đều tốt |
+| Standalone remote chạy được | Đường bootstrap riêng của remote hoạt động trong môi trường đó | Federated import, contract, provider/router và CSS khi ghép vào shell tương thích |
+| Shell và remote khai báo cùng React version | Metadata/version giống nhau tại nơi được kiểm tra | Component và renderer dùng cùng module instance |
+| Đã bật `singleton` | Có policy chọn shared singleton theo runtime/plugin | Rules of Hooks đúng hoặc mọi consumer đều tương thích với version được chọn |
+| Hard reload hết lỗi | Document/runtime mới không tái hiện trong lần thử đó | Root cause đã được sửa hoặc tab cũ vẫn tải được chunks |
+| `curl` nhận đúng JavaScript | HTTP endpoint dùng được từ môi trường chạy lệnh | Browser vượt CORS/CSP, service worker không can thiệp và JavaScript chạy được |
+| Không còn exception sau rollback | Kênh quan sát chưa thấy exception tương ứng | Remote đã ready, journey đã thành công hay tab cũ đã rời candidate lỗi |
+
+Đừng tắt version checks, thêm `eager: true` hàng loạt, mở CORS cho mọi origin hoặc chèn `!important` chỉ để thông báo biến mất. Những thay đổi đó có thể che lỗi hoặc mở rộng rủi ro; chỉ áp dụng khi đã xác định nguyên nhân và kiểm thử đúng boundary.
+
+## Ví dụ tab cũ lỗi sau deploy
+
+Giả sử shell s17 chọn catalog r18 trong tab A. Sau khi publish r19, document mới B dùng r19 và hoạt động bình thường. Tab A mở trang sản phẩm lazy thì báo `ChunkLoadError`.
+
+Nếu chỉ nhìn selection hiện tại là r19, bạn dễ điều tra nhầm artifact. Trình tự hữu ích hơn là:
+
+1. Giữ lỗi, Request URL và nguồn response của A. Xác nhận A đang giữ entry/runtime r18, chưa chuyển sang r19.
+2. Thấy request tới `/catalog/releases/r18/product.a1b2.js` trả `404`; đây là URL đúng release cũ, không phải request bị trỏ nhầm về shell.
+3. Đối chiếu inventory ở origin và log pipeline: giả sử có bằng chứng job cleanup đã xóa chunk r18 trong khi entry/runtime còn tham chiếu nó.
+4. Khôi phục artifact r18 chính xác từ nguồn build tin cậy theo quy trình. Không đặt bytes của r19 vào URL r18 vì sẽ phá tính bất biến và graph của release cũ.
+5. Kiểm tra origin/CDN trả đúng file; nếu CDN còn cache response `404`, xử lý đúng object theo policy. Xác minh lần tải lại trên client theo cơ chế retry được loader hỗ trợ; không mặc định import lỗi sẽ tự retry thành công.
+6. Sửa retention và deploy gate để giữ graph cho tab cũ cùng target rollback, rồi kiểm thử lại chu trình deploy.
+
+Đổi pointer về r18 một mình không phục hồi file đã bị xóa. Purge cache cũng không tạo lại artifact thiếu ở origin. Ca này đi tiếp ở [Cache lỗi thời và chunk errors](/docs/troubleshooting/stale-cache), không cần sửa React sharing.
+
+## Phục hồi và xác nhận đã sửa
+
+Chọn hành động theo bằng chứng, không theo mức độ quen thuộc của thao tác:
+
+| Nguyên nhân đã xác nhận | Hướng phục hồi | Điều cần tránh |
+| --- | --- | --- |
+| Config chọn sai URL/release | Publish revision hợp lệ, tương thích và xác nhận loader consume nó | Sửa source config nhưng quên document/bundle vẫn giữ giá trị cũ |
+| Artifact bị thiếu | Khôi phục đúng artifact, sửa publish/retention và cache response lỗi khi cần | Overwrite URL bất biến bằng bytes của release khác |
+| Shared runtime hoặc public contract không tương thích | Chọn release set đã kiểm chứng; sửa policy/contract và rebuild qua pipeline | Tắt `strictVersion` để hợp thức hóa tổ hợp chưa được test |
+| Routing hoặc CSS regression | Rollback bản gây lỗi hoặc sửa đúng route/style boundary | Redirect mọi URL về trang chủ, dùng CSS override toàn cục để che lỗi |
+| API/write outcome chưa rõ | Đối chiếu trạng thái backend; retry theo idempotency contract | Coi timeout hoặc UI trắng là thao tác chưa được thực hiện |
+
+Sau phục hồi, tối thiểu kiểm tra:
+
+- [ ] Document mới chọn, load và ready đúng release set dự kiến.
+- [ ] Tab cũ vẫn tải được lazy assets hoặc có recovery flow an toàn đã kiểm chứng.
+- [ ] Journey lỗi ban đầu hoạt động, gồm kết quả API/state chứ không chỉ render giao diện.
+- [ ] Deep link, refresh, navigation và Back/Forward đúng nếu boundary đó bị tác động.
+- [ ] Mount/unmount/remount không để lại listeners, history writers hoặc styles gây lỗi.
+- [ ] Không có retry/reload loop; fallback không báo sai state và shell vẫn dùng được.
+- [ ] Telemetry xác nhận journey success và mức degraded giảm, không chỉ exception giảm.
+- [ ] Có regression test gắn với nguyên nhân cùng owner cho phần sửa lâu dài.
+
+Chạy qua shell với artifacts/release set thực cần hỗ trợ. Chỉ test HEAD của mọi app có thể bỏ sót tổ hợp mà người dùng đang chạy; xem [Integration và E2E](/docs/kiem-thu-va-tooling/integration-e2e) và [Rollout và rollback](/docs/trien-khai/rollout-rollback).
+
+## Thông tin bàn giao cho owner
+
+Một ticket hữu ích cần đủ để owner tái hiện và phân biệt điều đã biết với giả thuyết. Dùng mẫu dưới đây, bỏ các trường không có và ghi rõ “chưa xác định” ở dữ kiện quan trọng còn thiếu.
+
+```text title="Mẫu incident record đã loại dữ liệu nhạy cảm"
+Journey/route: mở sản phẩm từ catalog
+Môi trường/thời điểm: production, <timestamp kèm timezone>
+Phạm vi: tab cũ lỗi; document mới chưa tái hiện
+Shell release / config revision: s17 / cfg42
+Remote selected / loaded / ready: ghi riêng cho từng remote
+Loader/plugin và version: <giá trị từ build/runtime metadata>
+Đường tái hiện: <route ban đầu → thao tác → lỗi>
+Mong đợi / thực tế: <hành vi cần có> / <hành vi quan sát>
+Lỗi đầu tiên và phase: <error + load/evaluate/mount/action>
+Request liên quan: <URL đã làm sạch, status, initiator, nguồn response>
+Correlation ID: <nếu có và được phép chia sẻ>
+Bằng chứng: <stack, headers/body tối thiểu, release inventory>
+Giả thuyết / phép kiểm chứng: <tách khỏi kết luận đã xác nhận>
+Giảm tác động: <hành động, thời điểm, kết quả>
+Owner cần phối hợp: <shell, remote, CDN, runtime hoặc backend>
+Phục hồi đã kiểm tra: <document mới, tab cũ, journey outcome>
+Việc còn lại: <regression test, policy, owner và tiêu chí hoàn tất>
+```
+
+Nếu release chưa load được, không điền selected release vào cột loaded. Nếu không có Console error nhưng UI sai, vẫn ghi hành vi và network/event evidence; troubleshooting không chỉ dành cho exception.
+
+## Tài liệu tham khảo
+
+- [Webpack — Module Federation](https://webpack.js.org/concepts/module-federation/): mô hình remote modules, container initialization, async bootstrap và các lỗi integration thường gặp.
+- [React — Invalid Hook Call Warning](https://react.dev/warnings/invalid-hook-call-warning): phân biệt vi phạm Rules of Hooks, React–renderer mismatch và duplicate React.
 
 ## Các bài trong nhóm
 
-- [Remote không tải được](/docs/troubleshooting/remote-khong-tai) — Kiểm tra URL, network, CORS, public path và remote entry khi loading thất bại.
-- [Duplicate React và Invalid Hook Call](/docs/troubleshooting/duplicate-react) — Phân biệt React bị nạp trùng với vi phạm Rules of Hooks và runtime không tương thích.
-- [Shared version mismatch](/docs/troubleshooting/shared-version-mismatch) — Debug share scope, requiredVersion và host/remote có dependency versions lệch nhau.
-- [Lỗi routing và CSS](/docs/troubleshooting/routing-css) — Khoanh vùng deep links, history conflicts, style leakage và các assets không tìm thấy.
-- [Cache lỗi thời và chunk errors](/docs/troubleshooting/stale-cache) — Debug entry cũ, artifacts đã bị xóa và chunk load errors sau deploy.
-- [Checklist debug và FAQ](/docs/troubleshooting/debug-checklist) — Tổng hợp trình tự kiểm tra network, console, manifests, release versions và telemetry.
+<Cards>
+  <Card title="Remote không tải được" href="/docs/troubleshooting/remote-khong-tai" description="Đi từ URL và response đến container, publicPath và chunks." />
+  <Card title="Duplicate React và Invalid Hook Call" href="/docs/troubleshooting/duplicate-react" description="Kiểm tra Hooks, renderer compatibility và React module identity." />
+  <Card title="Shared version mismatch" href="/docs/troubleshooting/shared-version-mismatch" description="Đối chiếu consumer range, provider, share scope và bootstrap." />
+  <Card title="Lỗi routing và CSS" href="/docs/troubleshooting/routing-css" description="Khoanh vùng deep links, history conflicts, asset base và style leakage." />
+  <Card title="Cache lỗi thời và chunk errors" href="/docs/troubleshooting/stale-cache" description="Phân biệt selection, cache, runtime và release graph bị thiếu." />
+  <Card title="Checklist debug và FAQ" href="/docs/troubleshooting/debug-checklist" description="Trang dự kiến cho checklist và FAQ; hiện chưa có nội dung chi tiết." />
+</Cards>

@@ -1,18 +1,1048 @@
 ---
 title: "Lab routing và authentication"
-description: "Thêm deep links, session và navigation xuyên các frontend của shop."
+description: "Thêm deep links, navigation xuyên catalog và cart, cookie session và route guard; kiểm chứng login, logout và response đến muộn."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Bạn mở sản phẩm từ catalog, chuyển sang cart rồi bấm Back: URL đã đổi nhưng màn hình chưa đổi. Bạn sửa được navigation, nhưng refresh `/cart` lại bị đẩy về login dù cookie session còn hợp lệ. Lab này nối hai phần thường bị làm riêng: **URL có một owner, session có một owner, và màn hình chỉ mở khi cả hai đã có kết luận phù hợp**.
+
+Mình chọn một `BrowserRouter` trong shell và một auth runtime được shell khởi tạo. Catalog cung cấp nhánh route; cart nhận session projection và API adapter qua props. Bạn sẽ dùng một backend fixture nhỏ để quan sát cookie, reload và logout thật ở mức HTTP, thay vì persist `isLoggedIn` trong browser storage.
+
+<Callout type="info" title="Làm trong workspace thực hành">
+  Tất cả đường dẫn code và lệnh bên dưới thuộc `shop-workspace`, không phải repository Next.js + Fumadocs đang chứa tài liệu. Cần hoàn thành [Cấu trúc workspace](/docs/bat-dau/workspace) và [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien): Node.js 22, npm workspaces, webpack 5, React và async bootstrap.
+
+  Nếu đã làm [Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart), giữ nguyên `CartPage({ controller })`, `createCartController` và callback thêm giỏ. Bài này bổ sung một public module riêng `SessionCartPage` để kiểm tra dữ liệu private, không đổi signature của module cũ. Nếu mới có shell và catalog, bước cấu hình dưới đây bổ sung cart tối thiểu để bạn vẫn làm được lab.
+
+  Shell mẫu bên dưới là lát cắt routing/auth riêng, chưa nối badge và mutation thêm giỏ của bài trước. Nên làm trên branch lab riêng; khi ghép lại luồng mua sắm, bạn phải thêm cleanup cho cart controller theo session scope, không chỉ chép guard vào app cũ.
+</Callout>
+
+<Callout type="warn" title="Fixture không phải hệ thống đăng nhập production">
+  Backend cho phép chọn Alice hoặc Bob mà không nhập password. Nó chỉ mô phỏng session và authorization trên máy local, không có OIDC, MFA, refresh token hay session storage bền vững. Không deploy backend này, không dùng identity hay dữ liệu thật. Bài không thêm bất kỳ implementation nào vào site docs.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Kết quả cần đạt](#kết-quả-cần-đạt)
+- [Bản đồ route và contract](#bản-đồ-route-và-contract)
+- [Bước 1 chuẩn bị router và Federation](#bước-1-chuẩn-bị-router-và-federation)
+  - [Cài dependency](#cài-dependency)
+  - [Cập nhật điểm expose và shared](#cập-nhật-điểm-expose-và-shared)
+  - [Cho shell phục vụ deep link và proxy API](#cho-shell-phục-vụ-deep-link-và-proxy-api)
+- [Bước 2 dựng backend fixture](#bước-2-dựng-backend-fixture)
+- [Bước 3 tạo auth owner trong shell](#bước-3-tạo-auth-owner-trong-shell)
+  - [Transport chỉ gọi endpoint đã biết](#transport-chỉ-gọi-endpoint-đã-biết)
+  - [Snapshot ổn định và epoch](#snapshot-ổn-định-và-epoch)
+- [Bước 4 ghép route và login trong shell](#bước-4-ghép-route-và-login-trong-shell)
+  - [Validate điểm đến sau login](#validate-điểm-đến-sau-login)
+  - [Guard và màn hình login](#guard-và-màn-hình-login)
+  - [Cây route và bootstrap](#cây-route-và-bootstrap)
+- [Bước 5 thêm route cho catalog](#bước-5-thêm-route-cho-catalog)
+- [Bước 6 tải cart theo session scope](#bước-6-tải-cart-theo-session-scope)
+- [Chạy lab và quan sát](#chạy-lab-và-quan-sát)
+  - [Deep link trước và sau login](#deep-link-trước-và-sau-login)
+  - [Navigation Back và Forward](#navigation-back-và-forward)
+  - [Session hết hạn lỗi mạng và thiếu quyền](#session-hết-hạn-lỗi-mạng-và-thiếu-quyền)
+  - [Logout khi response cart còn pending](#logout-khi-response-cart-còn-pending)
+- [Kiểm thử tự động](#kiểm-thử-tự-động)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Tiêu chí hoàn thành](#tiêu-chí-hoàn-thành)
+- [Mở rộng sang authentication thật](#mở-rộng-sang-authentication-thật)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Kết quả cần đạt
 
-Bài này sẽ giúp bạn: thêm deep links, session và navigation xuyên các frontend của shop.
+| Tình huống | Kết quả mong đợi |
+| --- | --- |
+| Mở trực tiếp `/catalog/products/ao-thun-den?from=email#details` | Shell tải catalog, hiển thị sản phẩm; query và fragment không bị mất |
+| Mở `/cart?step=delivery#summary` khi chưa login | Chờ kiểm tra session, rồi chuyển tới login với điểm đến ban đầu |
+| Login Alice | Trở lại đúng cart bằng `replace`, header và cart dùng cùng session |
+| Reload cart khi cookie còn hợp lệ | Thấy trạng thái chờ rồi cart; không redirect login tạm thời |
+| API session lỗi mạng hoặc `5xx` | Hiện retry, không kết luận user đã logout |
+| Cart API trả `403` | Hiện thiếu quyền, không bắt login lại |
+| Logout trong lúc tải cart | Private UI biến mất ngay; response của phiên cũ không cập nhật UI mới |
+| Login Bob sau Alice | Chỉ hiển thị cart của Bob; không tái sử dụng cart Alice |
 
-[Xem các bài trong nhóm Thực hành](/docs/thuc-hanh).
+Lab dùng basename `/`: shell ở `http://localhost:3000`, catalog ở `:3001`, cart ở `:3002`; backend fixture bind `127.0.0.1:4000`. Chỉ mở shop qua `localhost:3000` khi kiểm thử integrated mode. Đổi sang `127.0.0.1:3000` là đổi origin và không còn khớp chính sách fixture.
+
+## Bản đồ route và contract
+
+| Route hoặc API | Owner | Public hay private |
+| --- | --- | --- |
+| `/` | Shell redirect tới `/catalog` | Public |
+| `/catalog/*` | Shell chọn domain, catalog chọn màn hình | Public |
+| `/cart` | Shell guard, cart hiển thị dữ liệu | Private |
+| `/login` | Shell/auth UI | Public, không đặt sau guard |
+| `/api/session`, `/api/dev-login`, `/api/logout` | Backend auth fixture | Theo contract bên dưới |
+| `/api/cart` | Backend cart fixture | Backend kiểm tra session và quyền |
+
+```text
+BrowserRouter của shell
+├── /catalog/* → CatalogRoutes từ remote
+├── /login     → LoginPage của shell
+└── /cart      → RequireSession → CartPage từ remote
+                                  ↑
+                       snapshot + API adapter
+                                  ↑
+                         Auth owner của shell
+                                  │
+                    /api/* qua proxy cùng origin
+                                  ↓
+                       Backend fixture :4000
+```
+
+Router context đi theo React tree, không đi theo DOM hay shared package. Vì vậy, module được expose **không gọi `createRoot` và không tạo `BrowserRouter` mới**. Entry standalone của remote có thể tạo router riêng, vì entry đó chạy trong một document khác.
+
+Contract cho `SessionCartPage` ở lab này là `{ session, api, onSessionExpired }`. `session` chứa trạng thái, epoch và user projection; `api.getCart(signal)` trả dữ liệu đã parse. Không prop nào chứa cookie, token hoặc quyền sửa auth store. Shell subscribe auth owner rồi chuyển snapshot hiện tại xuống remote, nên remote mount sau login vẫn nhận đúng trạng thái.
+
+## Bước 1 chuẩn bị router và Federation
+
+### Cài dependency
+
+Từ root `shop-workspace`, dừng ba dev server trước khi thay config:
+
+```bash
+npm install --save-exact react@19 react-dom@19 react-router@7 \
+  --workspace=@shop/shell --workspace=@shop/catalog --workspace=@shop/cart
+
+npm install --save-dev --save-exact @babel/core@7 @babel/preset-react@7 babel-loader@9 \
+  --workspace=@shop/shell --workspace=@shop/catalog --workspace=@shop/cart
+
+npm ls react react-dom react-router \
+  --workspace=@shop/shell --workspace=@shop/catalog --workspace=@shop/cart
+```
+
+Các lệnh chọn major rồi ghi version chính xác đã resolve. Kiểm tra cả ba workspace dùng version tương thích; đừng bỏ qua warning shared dependency. Ví dụ dùng API declarative React Router v7, import từ `react-router`, và JSX classic runtime như bài host/remote đầu tiên.
+
+### Cập nhật điểm expose và shared
+
+Trong `apps/catalog/webpack.config.cjs`, **giữ** expose `./CatalogPage` nếu còn consumer cũ, rồi bổ sung:
+
+```js title="Fragment trong ModuleFederationPlugin của catalog"
+exposes: {
+  './CatalogPage': './src/CatalogPage.jsx',
+  './CatalogRoutes': './src/CatalogRoutes.jsx',
+},
+```
+
+Nếu cart chưa có React/Federation, sao chép config catalog sang `apps/cart/webpack.config.cjs`, rồi thay đúng các giá trị này. Không sao chép source hay manifest catalog sang cart.
+
+| Field trong config cart | Giá trị |
+| --- | --- |
+| `output.uniqueName` | `_shop_cart` |
+| `ModuleFederationPlugin.name` | `shop_cart` |
+| `exposes` khi tạo cart mới | `{ './SessionCartPage': './src/SessionCartPage.jsx' }` |
+| `HtmlWebpackPlugin.title` | `Shop cart standalone` |
+| `devServer.port` | `3002` |
+
+Nếu cart đã có Federation, giữ nguyên config và mọi expose cũ, chỉ thêm `./SessionCartPage` trỏ tới `./src/SessionCartPage.jsx`. Không đổi `./CartPage` từ contract `controller` sang contract session; consumer cũ vẫn cần chạy được.
+
+Giữ `context: __dirname`, loader Babel, `resolve.extensions`, `publicPath: 'auto'`, các shared React/React DOM và CORS cho asset như config catalog. Trong **cả ba** config, bổ sung entry dưới đây vào `shared` hiện có, không thay thế các entry React:
+
+```js title="Entry bổ sung vào shared của shell, catalog và cart"
+'react-router': {
+  singleton: true,
+  requiredVersion: dependencies['react-router'],
+  strictVersion: true,
+},
+```
+
+`dependencies` là object đã đọc từ `./package.json` trong config bài trước. Không cần `eager: true`; giữ async boundary `index.js → import('./bootstrap')`.
+
+Trong plugin của shell, dùng hai remote:
+
+```js title="Fragment remotes trong apps/shell/webpack.config.cjs"
+remotes: {
+  catalog: 'shop_catalog@http://localhost:3001/remoteEntry.js',
+  cart: 'shop_cart@http://localhost:3002/remoteEntry.js',
+},
+```
+
+Sharing router giữ cùng context object cho mô hình một cây React. Nó không tự tạo auth instance dùng chung: auth owner vẫn phải được shell tạo và inject rõ ràng.
+
+### Cho shell phục vụ deep link và proxy API
+
+Bổ sung vào `devServer` của shell, giữ các option hiện có:
+
+```js title="Fragment devServer của shell, webpack-dev-server 5"
+historyApiFallback: true,
+proxy: [
+  {
+    context: ['/api'],
+    target: 'http://127.0.0.1:4000',
+  },
+],
+```
+
+Bật `historyApiFallback: true` cho dev server catalog/cart nếu muốn refresh standalone ở URL sâu. Proxy `/api` thuộc shell; integrated remote dùng URL tương đối `/api/cart`, không gọi backend theo asset origin của remote.
+
+Dev server giải quyết document request ở local, không giải quyết hosting production. Khi deploy SPA, cần fallback document tới shell nhưng **không** rewrite API hoặc asset thiếu thành `index.html`. Kiểm tra riêng `remoteEntry.js` và chunk missing; xem [Lỗi routing và CSS](/docs/troubleshooting/routing-css).
+
+## Bước 2 dựng backend fixture
+
+Backend cần duy trì session qua reload, nên state nằm ở process server, không ở `localStorage`. Tạo file sau tại root workspace. Chỉ có endpoint login fixture lựa chọn Alice/Bob; cart là dữ liệu minh họa, không có mutation checkout.
+
+```js title="shop-workspace/lab/server.mjs"
+import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
+
+if (process.env.SHOP_LAB !== '1' || process.env.NODE_ENV === 'production') {
+  throw new Error('Chỉ chạy fixture với SHOP_LAB=1 ngoài production');
+}
+
+const origin = 'http://localhost:3000';
+const cookieName = 'shop_lab_session';
+const sessions = new Map();
+const users = {
+  alice: { subject: 'alice', displayName: 'Alice', uiPermissions: ['cart.read'] },
+  bob: { subject: 'bob', displayName: 'Bob', uiPermissions: ['cart.read'] },
+};
+const carts = {
+  alice: [{ sku: 'ao-thun-den', quantity: 1 }],
+  bob: [{ sku: 'tui-vai', quantity: 2 }],
+};
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sessionDelay = Math.max(0, Number(process.env.SESSION_DELAY_MS) || 0);
+const cartDelay = Math.max(0, Number(process.env.CART_DELAY_MS) || 0);
+const denyCart = process.env.DENY_CART === '1';
+
+function sessionId(req) {
+  return (req.headers.cookie ?? '').split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${cookieName}=`))
+    ?.slice(cookieName.length + 1);
+}
+
+function reply(res, status, data) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(data === undefined ? undefined : JSON.stringify(data));
+}
+
+createServer(async (req, res) => {
+  try {
+    const path = new URL(req.url, 'http://127.0.0.1:4000').pathname;
+    const id = sessionId(req);
+    const user = sessions.get(id);
+
+    // Mọi mutation của fixture chỉ nhận POST từ origin của shell.
+    // Thiếu Origin hoặc Origin: null cũng bị từ chối.
+    if (req.method !== 'GET' && req.headers.origin !== origin) {
+      return reply(res, 403, { error: 'origin-rejected' });
+    }
+
+    if (req.method === 'GET' && path === '/api/session') {
+      await delay(sessionDelay);
+      const current = sessions.get(id);
+      return current ? reply(res, 200, current) : reply(res, 401);
+    }
+
+    if (req.method === 'POST' && path === '/api/dev-login') {
+      let body = '';
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 1024) return reply(res, 413);
+      }
+      const fixture = JSON.parse(body).fixture;
+      if (fixture !== 'alice' && fixture !== 'bob') return reply(res, 400);
+      if (id) sessions.delete(id);
+      const nextId = randomUUID();
+      sessions.set(nextId, users[fixture]);
+      res.setHeader('Set-Cookie',
+        `${cookieName}=${nextId}; Path=/; HttpOnly; SameSite=Lax`);
+      return reply(res, 204);
+    }
+
+    if (req.method === 'POST' && path === '/api/logout') {
+      if (id) sessions.delete(id);
+      res.setHeader('Set-Cookie',
+        `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+      return reply(res, 204);
+    }
+
+    if (req.method === 'GET' && path === '/api/cart') {
+      if (!user) return reply(res, 401);
+      if (denyCart || !user.uiPermissions.includes('cart.read')) {
+        return reply(res, 403);
+      }
+      // Cố ý giữ kết quả phiên cũ để tái hiện response đến muộn.
+      const result = { items: carts[user.subject] };
+      await delay(cartDelay);
+      return reply(res, 200, result);
+    }
+
+    reply(res, 404, { error: 'not-found' });
+  } catch {
+    if (!res.headersSent) reply(res, 400, { error: 'invalid-request' });
+    else res.end();
+  }
+}).listen(4000, '127.0.0.1', () => {
+  console.log('Shop lab fixture: http://127.0.0.1:4000');
+});
+```
+
+Backend chỉ lấy user từ session cookie; `/api/cart` không nhận `userId` do browser tự gửi. Session endpoint trả `401` khi không còn session, còn permission failure của cart trả `403`. Restart server làm mất toàn bộ session, kể cả khi browser vẫn giữ cookie cũ.
+
+<Callout type="warn" title="HTTP local và cookie scope">
+  Cookie trên cố ý không có `Secure` vì fixture dùng HTTP local. Production cần HTTPS, cookie attributes phù hợp, timeout, session rotation và CSRF protection đã được review. Strict Origin check của fixture là một lớp bảo vệ cho phạm vi lab, không phải implementation CSRF tổng quát.
+
+  Cookie không được cô lập theo port: các app `localhost:3001` và `localhost:3002` có thể nhận cookie cùng host/path. Không đặt credential thật lên các origin dev này và không suy ra chúng là security boundary riêng chỉ vì khác port.
+</Callout>
+
+## Bước 3 tạo auth owner trong shell
+
+### Transport chỉ gọi endpoint đã biết
+
+Tạo transport của shell. Endpoint được viết cố định để không vô tình gửi credential tới URL do remote cung cấp. `credentials: 'same-origin'` đủ vì browser chỉ gọi origin shell; dev server proxy chuyển request tới fixture.
+
+```js title="shop-workspace/apps/shell/src/api.js"
+export class HttpError extends Error {
+  constructor(status) {
+    super(`HTTP ${status}`);
+    this.status = status;
+  }
+}
+
+async function request(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    credentials: 'same-origin',
+    cache: 'no-store',
+  });
+  if (!response.ok) throw new HttpError(response.status);
+  return response;
+}
+
+async function getSession() {
+  try {
+    const response = await request('/api/session');
+    const user = await response.json();
+    if (typeof user?.subject !== 'string'
+      || typeof user?.displayName !== 'string'
+      || !Array.isArray(user?.uiPermissions)
+      || !user.uiPermissions.every((value) => typeof value === 'string')) {
+      throw new Error('Session response không đúng contract');
+    }
+    return Object.freeze({
+      subject: user.subject,
+      displayName: user.displayName,
+      uiPermissions: Object.freeze([...user.uiPermissions]),
+    });
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 401) return null;
+    throw error;
+  }
+}
+
+export const authApi = {
+  getSession,
+  async devLogin(fixture) {
+    await request('/api/dev-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fixture }),
+    });
+  },
+  async logout() {
+    await request('/api/logout', { method: 'POST' });
+  },
+};
+
+export const cartApi = {
+  async getCart(signal) {
+    const response = await request('/api/cart', { signal });
+    const cart = await response.json();
+    if (!Array.isArray(cart?.items)
+      || !cart.items.every((item) => typeof item?.sku === 'string'
+        && Number.isInteger(item.quantity) && item.quantity > 0)) {
+      throw new Error('Cart response không đúng contract');
+    }
+    return cart;
+  },
+};
+```
+
+`401` của session endpoint có nghĩa đã xác nhận anonymous. Network error, response sai schema và `5xx` không có nghĩa đó; chúng phải đưa UI tới trạng thái chưa xác nhận được. Cart adapter không tự refresh hoặc redirect: shell/auth owner quyết định lifecycle, domain quyết định cách trình bày lỗi nghiệp vụ.
+
+### Snapshot ổn định và epoch
+
+Auth owner giữ snapshot bất biến, subscription và commands. `epoch` tăng **trước** khi bắt đầu thao tác đổi hoặc xác nhận lại scope, khiến private subtree của scope cũ mất hiệu lực ngay.
+
+```js title="shop-workspace/apps/shell/src/auth.js"
+export function createAuth(api) {
+  let snapshot = Object.freeze({ status: 'checking', epoch: 0 });
+  let pending = null;
+  const listeners = new Set();
+
+  function publish(next) {
+    snapshot = Object.freeze(next);
+    for (const listener of listeners) listener();
+  }
+
+  function confirmed(user) {
+    publish(user
+      ? { status: 'authenticated', epoch: snapshot.epoch, user }
+      : { status: 'anonymous', epoch: snapshot.epoch });
+  }
+
+  function run(status, work, failureReason) {
+    // Một operation auth tại một thời điểm trong runtime của tab này.
+    if (pending) return pending;
+    publish({ status, epoch: snapshot.epoch + 1 });
+    pending = Promise.resolve()
+      .then(work)
+      .catch((error) => {
+        publish({
+          status: 'unavailable',
+          epoch: snapshot.epoch,
+          reason: failureReason ?? (error.status ? 'server' : 'network'),
+        });
+      })
+      .finally(() => { pending = null; });
+    return pending;
+  }
+
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    revalidate() {
+      // Không phục hồi phiên sau một logout chưa được xác nhận.
+      if (snapshot.status === 'signing-out'
+        || snapshot.reason === 'logout-unconfirmed') return Promise.resolve();
+      return run('checking', async () => confirmed(await api.getSession()));
+    },
+    devLogin(fixture) {
+      if (snapshot.status !== 'anonymous') return Promise.resolve();
+      return run('checking', async () => {
+        await api.devLogin(fixture);
+        confirmed(await api.getSession());
+      });
+    },
+    logout() {
+      return run('signing-out', async () => {
+        await api.logout();
+        confirmed(null);
+      }, 'logout-unconfirmed');
+    },
+  };
+}
+```
+
+`getSnapshot()` trả cùng object cho tới lần publish kế tiếp; điều này cần cho `useSyncExternalStore`. Đây là owner duy nhất, không phải singleton mà mỗi remote import rồi tự khởi tạo.
+
+Lab chọn chính sách đơn giản: revalidate khóa private UI, và không cho login đua với logout. Các command dùng chung promise đang pending, không có hai request auth đồng thời từ một owner. UI phải chờ operation hiện tại kết thúc rồi thử lại command khác; đây không phải queue command và không giải quyết concurrency giữa nhiều tab.
+
+Logout lỗi sẽ giữ `unavailable` với `logout-unconfirmed`. Private UI vẫn bị khóa; nút retry phải gọi logout lại, không gọi revalidate rồi âm thầm khôi phục session mà user muốn kết thúc.
+
+## Bước 4 ghép route và login trong shell
+
+### Validate điểm đến sau login
+
+`returnTo` lấy từ query là input không tin cậy. Lab chỉ cho quay lại những route được công bố; `/login`, URL khác origin và protocol-relative URL không được chấp nhận.
+
+```js title="shop-workspace/apps/shell/src/destinations.js"
+import { matchPath } from 'react-router';
+
+export function safeReturnTo(raw) {
+  const fallback = '/catalog';
+  if (typeof raw !== 'string' || !raw.startsWith('/')
+    || raw.startsWith('//') || /[\\\u0000-\u0020\u007f]/.test(raw)) {
+    return fallback;
+  }
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.origin !== window.location.origin || url.username || url.password) {
+      return fallback;
+    }
+    const allowed = ['/catalog', '/catalog/products/:productId', '/cart']
+      .some((path) => matchPath({ path, end: true }, url.pathname));
+    return allowed ? `${url.pathname}${url.search}${url.hash}` : fallback;
+  } catch {
+    return fallback;
+  }
+}
+```
+
+Ví dụ `/cart?step=delivery#summary` được giữ nguyên, còn `//evil.example`, `/login` và `/api/logout` trở thành `/catalog`. Query và fragment dùng cho navigation, không được chứa token hay dữ liệu nhạy cảm. Nếu sau này thêm basename `/shop`, sửa builder, matcher và hosting cùng nhau; đừng chỉ prepend string vào một chỗ.
+
+Mặc định mình dùng destination có cấu trúc cho command xuyên domain; ở đây dùng URL string để bạn kiểm chứng deep link và return URL. Khi chuyển sang login redirect thật, **backend phải validate lại destination trước khi redirect**, không tin validation trong browser.
+
+### Guard và màn hình login
+
+Guard chờ `checking`, phân biệt lỗi xác nhận và anonymous. Màn hình login nằm ngoài guard để không tạo redirect loop.
+
+```jsx title="shop-workspace/apps/shell/src/AuthUI.jsx"
+import React from 'react';
+import { Navigate, useLocation } from 'react-router';
+import { safeReturnTo } from './destinations';
+
+export function SessionUnavailable({ session, auth }) {
+  const logoutFailed = session.reason === 'logout-unconfirmed';
+  return (
+    <section role="alert">
+      <p>{logoutFailed
+        ? 'Chưa xác nhận được logout. Dữ liệu riêng tư đã bị khóa.'
+        : 'Chưa xác nhận được session. Kiểm tra kết nối rồi thử lại.'}</p>
+      <button onClick={() => void (logoutFailed ? auth.logout() : auth.revalidate())}>
+        {logoutFailed ? 'Thử logout lại' : 'Thử lại'}
+      </button>
+    </section>
+  );
+}
+
+export function RequireSession({ session, auth, children }) {
+  const location = useLocation();
+  if (session.status === 'checking' || session.status === 'signing-out') {
+    return <p role="status">Đang xác nhận session…</p>;
+  }
+  if (session.status === 'unavailable') {
+    return <SessionUnavailable session={session} auth={auth} />;
+  }
+  if (session.status === 'anonymous') {
+    const destination = location.pathname + location.search + location.hash;
+    return <Navigate replace to={`/login?returnTo=${encodeURIComponent(destination)}`} />;
+  }
+  if (!session.user.uiPermissions.includes('cart.read')) {
+    return <p role="alert">Bạn không có quyền xem cart.</p>;
+  }
+  return children;
+}
+
+export function LoginPage({ session, auth }) {
+  const location = useLocation();
+  const destination = safeReturnTo(
+    new URLSearchParams(location.search).get('returnTo'),
+  );
+  if (session.status === 'authenticated') {
+    return <Navigate replace to={destination} />;
+  }
+  if (session.status === 'unavailable') {
+    return <SessionUnavailable session={session} auth={auth} />;
+  }
+  if (session.status !== 'anonymous') {
+    return <p role="status">Đang xác nhận session…</p>;
+  }
+  return (
+    <section aria-labelledby="login-title">
+      <h2 id="login-title">Đăng nhập lab</h2>
+      <p>Chọn identity fixture; không nhập credential thật.</p>
+      <button onClick={() => void auth.devLogin('alice')}>Login Alice</button>
+      <button onClick={() => void auth.devLogin('bob')}>Login Bob</button>
+    </section>
+  );
+}
+```
+
+`replace` có hai mục đích: guard thay entry cart chưa được phép bằng login; login thành công thay entry login bằng destination. Nhờ vậy Back không quay lại một login page vô ích. Back vẫn có thể gặp một route private cũ khác trong history; guard phải xử lý nó, không thể “xóa sạch lịch sử browser” khi logout.
+
+Guard chỉ là UX. Ngay cả khi `cart.read` trong snapshot còn đúng, backend có thể trả `403` vì quyền vừa bị thu hồi. Ngược lại, bỏ qua guard để gọi API trực tiếp cũng không được phép vượt qua kiểm tra backend.
+
+### Cây route và bootstrap
+
+Shell lazy-load hai module công khai. Boundary sau phân biệt remote load/render failure với session failure; lỗi remote không redirect sang login.
+
+```jsx title="shop-workspace/apps/shell/src/App.jsx"
+import React, { Component, Suspense, lazy, useCallback, useSyncExternalStore } from 'react';
+import { BrowserRouter, Link, Navigate, Route, Routes, useNavigate } from 'react-router';
+import { LoginPage, RequireSession } from './AuthUI';
+
+const CatalogRoutes = lazy(() => import('catalog/CatalogRoutes'));
+const SessionCartPage = lazy(() => import('cart/SessionCartPage'));
+
+class RemoteBoundary extends Component {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    return this.state.failed
+      ? <p role="alert">Không tải được frontend. Kiểm tra remote rồi reload trang.</p>
+      : this.props.children;
+  }
+}
+
+function RemoteSlot({ children }) {
+  return (
+    <RemoteBoundary>
+      <Suspense fallback={<p role="status">Đang tải frontend…</p>}>
+        {children}
+      </Suspense>
+    </RemoteBoundary>
+  );
+}
+
+function ShopRoutes({ auth, api }) {
+  const session = useSyncExternalStore(auth.subscribe, auth.getSnapshot);
+  const navigate = useNavigate();
+  const onSessionExpired = useCallback(() => { void auth.revalidate(); }, [auth]);
+
+  async function logout() {
+    await auth.logout();
+    if (auth.getSnapshot().status === 'anonymous') {
+      navigate('/catalog', { replace: true });
+    }
+  }
+
+  return (
+    <>
+      <header>
+        <h1>Shop shell</h1>
+        <nav aria-label="Shop navigation">
+          <Link to="/catalog">Catalog</Link>{' | '}
+          <Link to="/cart">Giỏ hàng</Link>{' | '}
+          <Link to="/login">Đăng nhập</Link>
+        </nav>
+        {session.status === 'authenticated' && (
+          <p>
+            {session.user.displayName}{' '}
+            <button onClick={() => void logout()}>Logout</button>
+          </p>
+        )}
+      </header>
+      <main>
+        <Routes>
+          <Route path="/" element={<Navigate replace to="/catalog" />} />
+          <Route path="/login" element={<LoginPage session={session} auth={auth} />} />
+          <Route path="/catalog/*" element={
+            <RemoteSlot><CatalogRoutes /></RemoteSlot>
+          } />
+          <Route path="/cart" element={
+            <RequireSession session={session} auth={auth}>
+              <RemoteSlot>
+                <SessionCartPage
+                  key={session.epoch}
+                  session={session}
+                  api={api}
+                  onSessionExpired={onSessionExpired}
+                />
+              </RemoteSlot>
+            </RequireSession>
+          } />
+          <Route path="*" element={<p>Không tìm thấy trang trong shop.</p>} />
+        </Routes>
+      </main>
+    </>
+  );
+}
+
+export default function App({ auth, api }) {
+  return <BrowserRouter><ShopRoutes auth={auth} api={api} /></BrowserRouter>;
+}
+```
+
+Tạo owner ở bootstrap, không tạo trong `App` hay remote render. `cartApi` cũng là một object ổn định; nếu tạo adapter mới mỗi render, effect tải cart có thể chạy lại ngoài ý muốn.
+
+```jsx title="shop-workspace/apps/shell/src/bootstrap.jsx"
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import { createAuth } from './auth';
+import { authApi, cartApi } from './api';
+
+const auth = createAuth(authApi);
+const container = document.createElement('div');
+container.id = 'root';
+document.body.appendChild(container);
+
+createRoot(container).render(<App auth={auth} api={cartApi} />);
+void auth.revalidate();
+```
+
+Giữ `apps/shell/src/index.js` là `import('./bootstrap');`. Khi reload `/cart`, React render trạng thái `checking` trước; private remote chưa mount nên không gửi cart request cho tới khi session được xác nhận. Catalog public vẫn render được nếu session đang chậm hoặc backend unavailable.
+
+Boundary ở đây chỉ cho reload để thử lại. `React.lazy` có thể giữ promise đã reject, nên nút “reset boundary” đơn thuần không bảo đảm retry import; recovery chi tiết thuộc [Lab giả lập remote lỗi](/docs/thuc-hanh/remote-loi).
+
+## Bước 5 thêm route cho catalog
+
+Catalog export nhánh route tương đối dưới điểm gắn `/catalog/*`. Shell không cần biết các subroute ngoài những URL đã được công bố để navigation xuyên domain.
+
+```jsx title="shop-workspace/apps/catalog/src/CatalogRoutes.jsx"
+import React from 'react';
+import { Link, Route, Routes, useParams } from 'react-router';
+
+const products = [
+  { sku: 'ao-thun-den', name: 'Áo thun đen' },
+  { sku: 'tui-vai', name: 'Túi vải' },
+  { sku: 'binh-nuoc', name: 'Bình nước' },
+];
+
+function ProductList() {
+  return (
+    <section>
+      <h2>Catalog</h2>
+      <ul>
+        {products.map((product) => (
+          <li key={product.sku}>
+            <Link to={`/catalog/products/${encodeURIComponent(product.sku)}`}>
+              {product.name}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ProductDetail() {
+  const { productId } = useParams();
+  const product = products.find((item) => item.sku === productId);
+  if (!product) return <p>Không tìm thấy sản phẩm này.</p>;
+  return (
+    <section>
+      <h2>{product.name}</h2>
+      <p id="details">SKU: {product.sku}</p>
+      <Link to="/cart?step=delivery#summary">Đi tới giỏ hàng</Link>
+    </section>
+  );
+}
+
+export default function CatalogRoutes() {
+  return (
+    <Routes>
+      <Route index element={<ProductList />} />
+      <Route path="products/:productId" element={<ProductDetail />} />
+      <Route path="*" element={<p>Không tìm thấy trang trong catalog.</p>} />
+    </Routes>
+  );
+}
+```
+
+`/catalog/products/not-a-product` là resource not found của catalog; `/catalog/unknown/path` là subroute not found; `/unknown` là app not found của shell. Không biến các tình huống này thành remote load error hoặc redirect về home.
+
+Cập nhật entry standalone catalog để nó dùng cùng component trong router của riêng document standalone:
+
+```jsx title="shop-workspace/apps/catalog/src/bootstrap.jsx"
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
+import CatalogRoutes from './CatalogRoutes';
+
+const container = document.createElement('div');
+document.body.appendChild(container);
+createRoot(container).render(
+  <BrowserRouter>
+    <h1>Catalog standalone</h1>
+    <Routes>
+      <Route path="/" element={<Navigate replace to="/catalog" />} />
+      <Route path="/catalog/*" element={<CatalogRoutes />} />
+      <Route path="*" element={<p>Không tìm thấy trang.</p>} />
+    </Routes>
+  </BrowserRouter>,
+);
+```
+
+Link `/cart` trong catalog là contract của shop integrated. Trong standalone catalog, nó sẽ tới trang not found; harness này chỉ kiểm thử route catalog. Nếu muốn preview xuyên domain khi standalone, inject navigation adapter riêng thay vì dựng một shell giả trong production component.
+
+## Bước 6 tải cart theo session scope
+
+Cart đọc dữ liệu sau khi guard cho mount. Khi đổi epoch, `key={session.epoch}` tạo subtree mới; state cart cũ không được dùng làm placeholder cho user mới. Effect vẫn cần cleanup và kiểm tra lần tải hiện tại, vì abort không bảo đảm mọi promise đã resolve đều ngừng callback.
+
+```jsx title="shop-workspace/apps/cart/src/SessionCartPage.jsx"
+import React, { useEffect, useState } from 'react';
+
+export default function SessionCartPage({ session, api, onSessionExpired }) {
+  const [view, setView] = useState({ status: 'loading' });
+  const { epoch } = session;
+  const subject = session.status === 'authenticated' ? session.user.subject : null;
+
+  useEffect(() => {
+    if (!subject) return;
+    const controller = new AbortController();
+    let active = true;
+    setView({ status: 'loading' });
+
+    void api.getCart(controller.signal).then((cart) => {
+      if (active && !controller.signal.aborted) {
+        setView({ status: 'ready', cart });
+      }
+    }).catch((error) => {
+      if (!active || controller.signal.aborted) return;
+      if (error.status === 401) {
+        setView({ status: 'expired' });
+        onSessionExpired();
+      } else {
+        setView({ status: error.status === 403 ? 'forbidden' : 'error' });
+      }
+    });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [api, subject, epoch, onSessionExpired]);
+
+  if (!subject) return <p>Cart cần một session đã xác nhận.</p>;
+  if (view.status === 'loading') return <p role="status">Đang tải cart…</p>;
+  if (view.status === 'expired') return <p role="status">Session đã hết hiệu lực…</p>;
+  if (view.status === 'forbidden') return <p role="alert">API từ chối quyền xem cart.</p>;
+  if (view.status === 'error') return <p role="alert">Không tải được cart. Thử reload trang.</p>;
+  return (
+    <section aria-labelledby="cart-title">
+      <h2 id="cart-title">Giỏ hàng của {session.user.displayName}</h2>
+      <ul id="summary">
+        {view.cart.items.map((item) => (
+          <li key={item.sku}>{item.sku}: {item.quantity}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+Shell giữ `onSessionExpired` ổn định bằng `useCallback`, nên effect không tải lại chỉ vì header render lại. Trong production, thêm retry UI riêng cho domain; lỗi cart không bắt người dùng reload toàn ứng dụng.
+
+Nếu cart chưa có entry React, tạo hai file sau. Harness truyền projection Alice giả và data adapter local, không gọi `/api/dev-login` và không cố chia auth owner với shell. Nếu đã có standalone dùng cart controller từ lab trước, giữ entry đó; chỉ cần module `SessionCartPage` mới cho integrated lab này.
+
+```js title="shop-workspace/apps/cart/src/index.js"
+import('./bootstrap');
+```
+
+```jsx title="shop-workspace/apps/cart/src/bootstrap.jsx"
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import SessionCartPage from './SessionCartPage';
+
+const session = {
+  status: 'authenticated', epoch: 1,
+  user: { subject: 'alice', displayName: 'Alice fixture', uiPermissions: ['cart.read'] },
+};
+const api = {
+  async getCart() { return { items: [{ sku: 'ao-thun-den', quantity: 1 }] }; },
+};
+const container = document.createElement('div');
+document.body.appendChild(container);
+createRoot(container).render(
+  <>
+    <h1>Cart standalone — dữ liệu giả</h1>
+    <SessionCartPage session={session} api={api} onSessionExpired={() => {}} />
+  </>,
+);
+```
+
+<Callout type="warn" title="Cleanup của component chưa đủ cho mọi loại cache">
+  Lab giữ cart trong component state, nên unmount và epoch key loại bỏ private state. Nếu cart thật có query cache, store ngoài React, optimistic update hoặc persisted draft, domain phải hủy request, dọn cache theo scope và kiểm tra epoch tại thời điểm commit vào store. Không chỉ xóa badge trong header.
+</Callout>
+
+## Chạy lab và quan sát
+
+Mở bốn terminal từ root `shop-workspace`:
+
+```bash title="Terminal 1 — backend fixture"
+SHOP_LAB=1 SESSION_DELAY_MS=1000 CART_DELAY_MS=3000 node lab/server.mjs
+```
+
+```bash title="Terminal 2"
+npm run dev:catalog
+```
+
+```bash title="Terminal 3"
+npm run dev:cart
+```
+
+```bash title="Terminal 4"
+npm run dev:shell
+```
+
+Độ trễ là tham số fixture để quan sát race, không phải benchmark. Mở DevTools Network với Preserve log; không chép cookie/session ID vào ảnh chụp hay báo cáo. Trong Application, kiểm tra cookie là `HttpOnly`; code UI không cần đọc giá trị cookie.
+
+### Deep link trước và sau login
+
+1. Mở trực tiếp `http://localhost:3000/catalog/products/ao-thun-den?from=email#details`. Phải thấy sản phẩm, query và fragment vẫn còn. Đây là route public, không phải chờ session API xong.
+2. Trong browser context chưa có session, mở `http://localhost:3000/cart?step=delivery#summary`. Trong khoảng fixture delay, phải thấy “Đang xác nhận session…”, **không** thấy login ngay.
+3. Sau khi `/api/session` trả `401`, URL chuyển tới `/login?returnTo=...`. Giá trị decode phải là `/cart?step=delivery#summary`.
+4. Chọn Login Alice. `/api/dev-login` trả cookie, rồi `/api/session` trả projection Alice. Shell quay lại đúng URL cart và mới tải `/api/cart`.
+5. Reload URL này. `/api/session` trả `200`; không có navigation tới login trong lúc kiểm tra.
+
+Test HTTP cơ bản khi cả shell và backend đang chạy:
+
+```bash
+curl -i -H 'Accept: text/html' http://localhost:3000/catalog/products/ao-thun-den
+curl -i http://localhost:3000/api/cart
+curl -i http://localhost:3000/api/not-a-route
+curl -i http://localhost:3000/missing.js
+```
+
+Lần lượt mong đợi document shell `200`, API cart `401` vì curl không có cookie, API không tồn tại `404` JSON và asset thiếu `404` thay vì HTML fallback. Không chỉ nhìn status của document; browser còn phải tải đúng remote và render sản phẩm.
+
+### Navigation Back và Forward
+
+Từ catalog, mở sản phẩm rồi dùng link “Đi tới giỏ hàng”. Sau login nếu cần, bấm Back: phải về màn hình sản phẩm và URL sản phẩm. Forward phải về cart. Header không bị reload vì các link đi qua router shell.
+
+`Link` thực hiện navigation mới bằng push theo mặc định. Guard, login completion và redirect `/ → /catalog` dùng replace. Không gọi `history.pushState` thủ công trong remote và không phát lại navigation khi nhận location từ shell.
+
+Đừng dùng Back như một phép kiểm tra logout: history có thể lưu route private, nhưng guard vẫn phải chặn dữ liệu. Tiêu chí là không render private content của phiên cũ, không phải URL `/cart` biến mất khỏi history.
+
+### Session hết hạn lỗi mạng và thiếu quyền
+
+Kiểm tra ba kết quả khác nhau:
+
+| Cách tạo tình huống | Quan sát |
+| --- | --- |
+| Restart backend rồi reload `/cart` | Cookie cũ không còn trỏ tới session; `401` dẫn tới login |
+| Dừng backend hoặc chặn `/api/session`, rồi reload `/cart` | Snapshot `unavailable`, có retry; không chuyển thành anonymous |
+| Restart backend với `DENY_CART=1`, login lại | Session Alice vẫn authenticated, nhưng cart API trả `403` và UI hiện thiếu quyền |
+
+Proxy có thể chuyển lỗi kết nối backend thành một response `5xx`; điều đó vẫn phải là unavailable, không phải `401`. Để tạo `403` fixture:
+
+```bash
+SHOP_LAB=1 DENY_CART=1 node lab/server.mjs
+```
+
+Restart đã xóa session, nên login lại trước khi kết luận `403` đang được xử lý đúng. Tắt `DENY_CART` sau bài kiểm tra.
+
+### Logout khi response cart còn pending
+
+1. Chạy backend với `CART_DELAY_MS=5000`, login Alice rồi mở cart.
+2. Khi `/api/cart` còn pending, bấm Logout. Header Alice và subtree cart phải biến mất ngay, trước khi backend xác nhận.
+3. Sau acknowledgement logout, shell tới catalog. Chờ quá độ trễ fixture: không có cart Alice xuất hiện lại.
+4. Login Bob rồi mở cart: chỉ có `tui-vai: 2` dưới heading Bob.
+5. Thử dừng backend trước khi bấm Logout từ một cart đã mở. UI phải khóa private content và báo “Chưa xác nhận được logout”; không báo thành công. Khởi động lại backend rồi bấm “Thử logout lại”.
+
+Abort có thể khiến Network hiển thị request bị canceled; điều đó không chứng minh callback đến muộn sẽ luôn an toàn. Test adapter cố tình bỏ qua abort để kiểm tra `active` guard ở mức component, như gợi ý trong phần kiểm thử.
+
+## Kiểm thử tự động
+
+Ma trận tối thiểu nên kết hợp unit/component test và browser E2E:
+
+| Lớp test | Ca cần có |
+| --- | --- |
+| Unit destination | Giữ `/cart?step=delivery#summary`; từ chối `//evil.example`, URL tuyệt đối, backslash, `/login` và `/api/logout` |
+| Unit auth owner | Snapshot stable giữa các publish; subscribe cleanup; epoch tăng trước logout; `401` anonymous; network/`5xx` unavailable |
+| Unit command lifecycle | Hai revalidate dùng một pending operation; login không chạy lúc checking; logout lỗi không tự revalidate phục hồi session |
+| Component guard | Checking không redirect, anonymous redirect có return URL, unavailable có retry, permission thiếu không render cart |
+| Component cart | API deferred bỏ qua abort; unmount Alice, mount Bob, resolve Alice sau Bob; chỉ UI Bob được cập nhật |
+| E2E | Deep link, reload có cookie, login return URL, Back/Forward, `403`, logout pending và lỗi logout |
+| HTTP/backend | Gọi cart không cookie nhận `401`; mutation thiếu/sai Origin nhận `403`; logout rồi dùng cookie cũ vẫn bị từ chối |
+
+Ví dụ Playwright sau chạy **sau khi bốn process đã sẵn sàng**, với test runner được cấu hình base URL `http://localhost:3000`. Mỗi test dùng browser context riêng để không mang cookie từ test trước.
+
+```js title="Ví dụ shop-workspace/tests/routing-auth.spec.js"
+import { test, expect } from '@playwright/test';
+
+test('login giữ deep link và reload giữ session', async ({ page }) => {
+  await page.goto('/cart?step=delivery#summary');
+  await expect(page.getByRole('heading', { name: 'Đăng nhập lab' })).toBeVisible();
+  await page.getByRole('button', { name: 'Login Alice' }).click();
+  await expect(page).toHaveURL(/\/cart\?step=delivery#summary$/);
+  await expect(page.getByRole('heading', { name: 'Giỏ hàng của Alice' })).toBeVisible();
+
+  const sessionRequest = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/session');
+  await page.reload();
+  expect((await sessionRequest).status()).toBe(200);
+  await expect(page.getByRole('heading', { name: 'Giỏ hàng của Alice' })).toBeVisible();
+});
+
+test('không chấp nhận return URL ngoài app', async ({ page }) => {
+  await page.goto('/login?returnTo=' + encodeURIComponent('//evil.example'));
+  await page.getByRole('button', { name: 'Login Alice' }).click();
+  await expect(page).toHaveURL('http://localhost:3000/catalog');
+});
+
+test('session 503 không bị xử lý thành anonymous', async ({ page }) => {
+  await page.route('**/api/session', (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: 'unavailable' }),
+  }));
+  await page.goto('/cart');
+  await expect(page.getByRole('button', { name: 'Thử lại', exact: true })).toBeVisible();
+  await expect(page).toHaveURL('http://localhost:3000/cart');
+  await expect(page.getByRole('heading', { name: 'Đăng nhập lab' })).toHaveCount(0);
+});
+```
+
+Nếu workspace chưa có Playwright, cài ở root và tạo config tối thiểu:
+
+```bash
+npm install --save-dev --save-exact @playwright/test
+npx playwright install chromium
+```
+
+```js title="shop-workspace/playwright.config.mjs"
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests',
+  use: { baseURL: 'http://localhost:3000', browserName: 'chromium' },
+});
+```
+
+```bash
+npx playwright test tests/routing-auth.spec.js
+npm run build
+```
+
+Test reload trên xác nhận cookie/session được dùng lại; nó chưa tự chứng minh không có redirect thoáng qua trong checking. Thêm assertion có kiểm soát độ trễ hoặc ghi navigation timeline để bắt lỗi đó. Tương tự, test logout lúc pending cần chờ request cart thật sự bắt đầu, không dùng `waitForTimeout` tùy ý rồi hy vọng gặp race.
+
+Với fixture backend shared giữa test, tránh restart server giữa các test đang chạy song song. Các session riêng theo cookie vẫn tách nhau, nhưng restart và `DENY_CART` là thay đổi toàn process.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Kiểm tra đầu tiên | Sửa ở đâu |
+| --- | --- | --- |
+| Refresh URL sâu trả 404 | Request Document có tới shell không? | Dev server hoặc hosting fallback |
+| URL đúng nhưng catalog hiện not found | Shell có `/catalog/*`, remote dùng path tương đối không? | Shell route và catalog route |
+| Hook router báo thiếu context | Remote có root riêng hoặc bản router context khác không? | Component integration và shared config |
+| Login loop ngay khi mở cart | `checking` có bị coi là anonymous, `/login` có bị guard không? | Auth guard |
+| Login xong nhưng API vẫn `401` | Cookie, proxy, host `localhost`/`127.0.0.1`, session process có restart không? | Transport/backend fixture |
+| Login/logout bị `403` | Browser Origin có đúng `http://localhost:3000` không? | Origin policy; không sửa bằng allow mọi origin |
+| `403` làm user quay lại login | Có gom mọi API error thành auth expired không? | Mapping lỗi của domain |
+| Đổi user thấy cart cũ | Remote có remount theo epoch, cleanup và cache scope không? | Cart owner và shell wiring |
+| Backend lỗi nhưng UI báo đã logout | Chỉ dọn frontend mà không đợi acknowledgement? | Auth lifecycle và error UI |
+| Remote thiếu bị hiểu là chưa login | Boundary tải remote có tách khỏi auth failure không? | Shell composition |
+
+Khi debug, ghi timeline gồm pathname, session status, epoch và HTTP status. Không log cookie, token hoặc toàn bộ response session. Nếu symptom là asset nhận HTML, sửa hosting trước; thay guard không giải quyết MIME error của JavaScript.
+
+## Tiêu chí hoàn thành
+
+- [ ] Shell là browser-history owner duy nhất trong integrated document.
+- [ ] Catalog chạy cùng route component ở standalone và trong shell; không tạo router/root trong export.
+- [ ] Deep link và refresh hoạt động; API và asset missing không bị biến thành HTML fallback.
+- [ ] Public catalog không chờ authentication, nhưng cart chưa mount khi session còn checking.
+- [ ] Snapshot và auth commands có một owner; remote không tự tạo auth store hoặc đọc credential.
+- [ ] Login giữ pathname, query và fragment; return URL được parse và allowlist.
+- [ ] Back/Forward đồng bộ UI và URL; login completion dùng replace.
+- [ ] `401`, `403` và lỗi network/`5xx` tạo hành vi khác nhau.
+- [ ] Logout khóa private UI ngay, revoke session phía backend và có trạng thái chưa xác nhận khi lỗi.
+- [ ] Response Alice đến muộn không cập nhật cart Bob; private cache ngoài component có cleanup riêng nếu dùng.
+- [ ] Có bằng chứng kiểm thử bằng browser, HTTP và ít nhất một test chống race dùng deferred response.
+
+Lưu một navigation timeline đã redact cho luồng `/cart → login → cart → logout`, cùng kết quả test và các giới hạn chưa triển khai. Đó là bằng chứng hữu ích hơn một ảnh chụp cart đang hoạt động ở happy path.
+
+## Mở rộng sang authentication thật
+
+Lab dừng ở cookie session fixture. Để chuyển sang auth thật mà không đổi mọi remote, giữ session projection, subscription và API boundary; thay backend fixture và command `devLogin` bằng auth flow đã được review.
+
+| Phần fixture | Phần cần thay khi làm thật |
+| --- | --- |
+| `/api/dev-login` chọn Alice/Bob | OIDC SDK/provider flow, transaction validation và callback owner duy nhất |
+| Cookie HTTP local | HTTPS, attributes và scope phù hợp, idle/absolute timeout, rotation/revocation |
+| Map session trong một process | Session storage và lifecycle phù hợp hạ tầng |
+| Strict Origin check của lab | CSRF integration của backend cho login/logout và mọi mutation, theo threat model |
+| Permission `cart.read` cố định | Projection UI từ backend; enforce authorization/ownership trên từng API request |
+| Epoch cục bộ trong một tab | Cross-tab notification và revalidation, tenant/scope policy nếu sản phẩm cần |
+| Cart component state | Query cache theo scope, cancellation, stale-commit checks và draft cleanup |
+
+Với BFF dùng OIDC, callback backend kiểm tra transaction và tạo app session rồi đưa browser về destination đã validate. Shell bootstrap/revalidate session trước khi mở private content. Không tự thêm form password hoặc phát token qua event bus để “hoàn thiện” fixture.
+
+Nếu remote khác framework hoặc gọi `createRoot` riêng, đừng cố share thêm router để giải quyết context: chuyển sang navigation port và session reader qua mount contract. Nếu cần SSR, tạo auth scope theo request, không dùng mutable user singleton cấp process. Những thay đổi đó vượt phạm vi lab nhưng phải giữ nguyên ownership đã kiểm chứng ở đây.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Routing và navigation" href="/docs/giao-tiep-va-trang-thai/routing" description="Navigation port, basename, URL state và browser history." />
+  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="BFF, login callback, refresh, cross-tab và cleanup theo scope." />
+  <Card title="Lab deploy độc lập" href="/docs/thuc-hanh/deploy-doc-lap" description="Kiểm tra contract khi shell và remote không release cùng lúc." />
+  <Card title="Lab giả lập remote lỗi" href="/docs/thuc-hanh/remote-loi" description="Tách failure tải remote khỏi lỗi session và kiểm tra recovery." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [React Router — Declarative routing](https://reactrouter.com/start/declarative/routing): `Routes`, nested routes, dynamic segments và `Outlet`.
+- [React Router — Navigate](https://reactrouter.com/api/components/Navigate): redirect và option `replace`.
+- [React — useSyncExternalStore](https://react.dev/reference/react/useSyncExternalStore): snapshot ổn định và subscription cleanup.
+- [OWASP — Unvalidated Redirects and Forwards](https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html): destination allowlist và rủi ro return URL.
+- [OWASP — CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html): token validation, source-origin checks và giới hạn của SameSite.

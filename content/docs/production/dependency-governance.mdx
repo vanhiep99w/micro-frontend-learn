@@ -1,18 +1,467 @@
 ---
 title: "Dependency governance"
-description: "Đặt quy tắc ownership, dependency upgrades, deprecation và compatibility windows."
+description: "Quản lý ownership, shared dependencies, nâng cấp, compatibility windows và deprecation để micro-frontend release độc lập mà không phá các phiên đang chạy."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử catalog nâng React và deploy thành công, nhưng shell đang mở trong browser vẫn dùng runtime cũ. Hoặc cart bỏ một callback vì mọi app trên nhánh main đã chuyển sang API mới, trong khi shell production chưa chuyển. Build riêng của từng team có thể xanh; tổ hợp người dùng thực sự chạy lại không tương thích.
+
+Dependency governance giúp bạn trả lời **ai được thay đổi dependency nào, phải chứng minh tương thích với những release nào, và khi nào được bỏ hỗ trợ bản cũ**. Mục tiêu không phải bắt mọi team dùng cùng một version. Mục tiêu là giữ quyền release độc lập ở những chỗ có thể độc lập, và làm rõ các boundary buộc phải phối hợp.
+
+<Callout type="info" title="Phạm vi và cách dùng ví dụ">
+  Bài dùng shop giả định gồm shell, catalog và cart. Config webpack, package manifests, policy records và lệnh npm là ví dụ cho workspace ứng dụng riêng, không phải thay đổi cần áp dụng vào repository Next.js + Fumadocs này. Version, release ID và thời hạn bên dưới đều minh họa, không phải khuyến nghị về version mới nhất hay SLA mặc định. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Governance bảo vệ boundary nào](#governance-bảo-vệ-boundary-nào)
+  - [Phân loại dependency trước khi đặt quy tắc](#phân-loại-dependency-trước-khi-đặt-quy-tắc)
+  - [Tách package version contract version và release ID](#tách-package-version-contract-version-và-release-id)
+- [Đặt owner và quyền quyết định](#đặt-owner-và-quyền-quyết-định)
+- [Lập inventory có thể kiểm chứng](#lập-inventory-có-thể-kiểm-chứng)
+- [Chọn local shared hay singleton](#chọn-local-shared-hay-singleton)
+  - [Giữ dependency local khi không cần identity chung](#giữ-dependency-local-khi-không-cần-identity-chung)
+  - [Singleton là cam kết platform](#singleton-là-cam-kết-platform)
+- [Quản lý package nội bộ và peer dependencies](#quản-lý-package-nội-bộ-và-peer-dependencies)
+- [Build có thể tái hiện và kiểm soát transitive dependencies](#build-có-thể-tái-hiện-và-kiểm-soát-transitive-dependencies)
+- [Thiết kế compatibility window](#thiết-kế-compatibility-window)
+  - [Xác định release còn được hỗ trợ](#xác-định-release-còn-được-hỗ-trợ)
+  - [Ma trận tương thích và rollback](#ma-trận-tương-thích-và-rollback)
+  - [Tab cũ cache và thời gian giữ artifacts](#tab-cũ-cache-và-thời-gian-giữ-artifacts)
+- [Quy trình nâng cấp dependency](#quy-trình-nâng-cấp-dependency)
+  - [Phân loại rủi ro và chuẩn bị candidate](#phân-loại-rủi-ro-và-chuẩn-bị-candidate)
+  - [Release gate gắn với artifact](#release-gate-gắn-với-artifact)
+  - [Canary và kiểm chứng rollback](#canary-và-kiểm-chứng-rollback)
+- [Ví dụ migration contract theo ba giai đoạn](#ví-dụ-migration-contract-theo-ba-giai-đoạn)
+  - [Expand provider hỗ trợ cả hai contract](#expand-provider-hỗ-trợ-cả-hai-contract)
+  - [Migrate consumer chuyển dần sang contract mới](#migrate-consumer-chuyển-dần-sang-contract-mới)
+  - [Contract bỏ hỗ trợ sau khi đóng window](#contract-bỏ-hỗ-trợ-sau-khi-đóng-window)
+- [Nâng framework major cần kế hoạch riêng](#nâng-framework-major-cần-kế-hoạch-riêng)
+- [Deprecation có deadline và điều kiện kết thúc](#deprecation-có-deadline-và-điều-kiện-kết-thúc)
+- [Security updates và ngoại lệ có thời hạn](#security-updates-và-ngoại-lệ-có-thời-hạn)
+- [Telemetry và vận hành policy](#telemetry-và-vận-hành-policy)
+- [Những cách quản lý dễ tạo coupling](#những-cách-quản-lý-dễ-tạo-coupling)
+- [Checklist áp dụng cho shop](#checklist-áp-dụng-cho-shop)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Governance bảo vệ boundary nào
 
-Bài này sẽ giúp bạn: đặt quy tắc ownership, dependency upgrades, deprecation và compatibility windows.
+Một utility chỉ được dùng bên trong catalog và React component được shell render không có cùng mức rủi ro. Utility có thể đổi implementation mà shell không biết. React component phải chạy với renderer, module identity và public props mà shell đang cung cấp. Nếu đặt cùng một quy trình phê duyệt cho cả hai, bạn vừa làm chậm thay đổi nhỏ, vừa không kiểm soát đủ thay đổi nguy hiểm.
 
-[Xem các bài trong nhóm Production](/docs/production).
+Mình mặc định quản lý theo **boundary và vùng ảnh hưởng**, không theo tên team hay việc dependency nằm trong cùng repository. Cùng monorepo không có nghĩa các app deploy cùng lúc; khác repository cũng không có nghĩa chúng độc lập về runtime.
+
+### Phân loại dependency trước khi đặt quy tắc
+
+| Nhóm | Ví dụ trong shop | Quy tắc mặc định |
+| --- | --- | --- |
+| Local implementation | Utility format tiền chỉ dùng trong catalog | Domain owner tự nâng; giữ public contract và bundle budget |
+| Build tooling | webpack, TypeScript, Babel, test runner | App owner nâng; kiểm tra output và đường tải production, không chỉ test source |
+| Shared runtime | React trong tree của shell, context module dùng chung | Platform policy về identity, version range, provider và load order |
+| Public contract | Props, mount API, cart capability, event schema | Provider và consumer cùng thống nhất compatibility window |
+| Shared UI package | Design system, CSS tokens, component library | Package owner version API; app owner kiểm tra peer dependencies và visual behavior |
+| External service | Backend API, auth SDK, config endpoint | Service/SDK owner phối hợp với consumer; frontend rollback vẫn phải dùng được API |
+
+Một dependency có thể thuộc nhiều nhóm. Design system vừa có React peer dependency, vừa xuất CSS global: runtime tương thích chưa đủ để kết luận layout của mọi remote không bị ảnh hưởng. Tooling nằm trong `devDependencies` cũng không tự động là ít rủi ro; build plugin có thể chạy trong CI với quyền đọc secrets và thay bytes của artifact.
+
+### Tách package version contract version và release ID
+
+Ba loại version phục vụ ba câu hỏi khác nhau:
+
+| Định danh | Trả lời câu hỏi | Ví dụ minh họa |
+| --- | --- | --- |
+| Package version | Build đã resolve package nào? | `@shop/ui@4.2.0`, `react@18.3.1` |
+| Contract version | Consumer và provider hiểu boundary nào? | `cart.addItem.v1`, `cart.addItem.v2` |
+| Release ID hoặc build ID | Browser đang chạy artifact nào? | `shell-s41`, `cart-r18` cùng digest |
+
+Cart r18 có thể giữ contract v1 và bổ sung v2 mà không đổi React. Ngược lại, nâng một package nội bộ có thể kéo theo breaking change ở exposed module. Không suy ra compatibility của remote chỉ từ package major, và không dùng một URL `latest` làm bằng chứng về release đã kiểm thử.
+
+SemVer chỉ hữu ích khi public API được công bố rõ. Đổi ý nghĩa `itemCount` từ tổng quantity thành số dòng hàng là breaking change dù TypeScript vẫn thấy `number`. Với package theo SemVer từ `1.0.0`, thay đổi không tương thích cần major; đánh dấu public API deprecated cần minor. Với `0.x`, đừng giả định API đã ổn định.
+
+## Đặt owner và quyền quyết định
+
+Một package có maintainer nhưng không có người quyết định version production vẫn là khoảng trống ownership. Bạn cần cả owner của code lẫn owner của policy sử dụng code đó.
+
+| Vai trò | Trách nhiệm | Không nên làm thay |
+| --- | --- | --- |
+| Domain/app owner | Nâng local dependencies, kiểm thử app, khai báo consumer requirements, vận hành release | Tự nới range singleton để bỏ qua mismatch |
+| Platform/shell owner | Shared runtime policy, config selection, kiểm tra release set và đường fallback | Phê duyệt mọi utility local của mọi domain |
+| Package/contract owner | Công bố API, changelog, peer ranges, migration guide và deprecation | Tự kết luận mọi consumer đã migrate vì main branch đã xanh |
+| Security owner | Phân loại advisory, chốt risk acceptance và deadline khắc phục | Tự merge upgrade khi chưa có bằng chứng runtime tương thích |
+| Release/on-call owner | Quyết định promote, dừng rollout, rollback và lưu audit record | Chọn artifact cũ chỉ vì từng chạy tốt trước đây |
+
+Với một thay đổi shared runtime, chỉ định một người chịu trách nhiệm cuối cùng cho quyết định policy, thường thuộc platform team. Consumer owners xác nhận compatibility của app mình; security owner tham gia nếu có advisory. `CODEOWNERS` có thể yêu cầu review đúng người, nhưng không thay thế kiểm thử và release gate.
+
+Quy tắc phê duyệt nên ngắn: local upgrade không đổi boundary do app owner quyết định; shared runtime hoặc public contract upgrade cần boundary owner review; ngoại lệ security cần người có quyền chấp nhận rủi ro. Ghi rõ kênh liên hệ và người thay thế để policy không chặn toàn bộ release khi một maintainer vắng mặt.
+
+## Lập inventory có thể kiểm chứng
+
+`package.json` chỉ cho biết dependency được khai báo. Inventory cần nối khai báo ấy với version thực sự resolve, artifact đã build và runtime browser chọn. Một package có thể xuất hiện transitively hoặc bị bundle sẵn trong thư viện khác dù không có entry trực tiếp trong manifest app.
+
+Bắt đầu từ các boundary rủi ro cao. Mỗi record nên có:
+
+- Package hoặc contract key, owner và consumer/provider liên quan.
+- Chế độ local/shared/singleton, share scope/key nếu có và các subpath imports thực tế.
+- Version range được hỗ trợ, resolved versions và nguồn bằng chứng kiểm thử.
+- Release IDs/digests, release sets đang active và các rollback targets.
+- End-of-support, deprecation record, exception có ngày hết hạn nếu có.
+
+Ví dụ policy record viết tay để review:
+
+```json title="dependency-policy.json — schema nội bộ minh họa"
+{
+  "policyRevision": "dep-12",
+  "dependency": "react",
+  "owner": "web-platform",
+  "consumers": ["shell", "catalog", "cart"],
+  "mode": "singleton",
+  "shareScope": "default",
+  "requiredRange": ">=18.2.0 <19.0.0",
+  "testedRuntimeVersions": ["18.2.0", "18.3.1"],
+  "rendererPolicy": "react-dom cùng version đã kiểm chứng",
+  "evidenceRecord": "react-18-matrix-12",
+  "exception": null
+}
+```
+
+Đây **không phải schema của Module Federation** và không tự ảnh hưởng runtime. Pipeline của bạn cần validate record, đối chiếu shared config và đọc evidence record tương ứng. `testedRuntimeVersions` cũng không chứng minh mọi tổ hợp consumer đều pass; evidence phải chỉ rõ artifacts, load order và scenarios đã kiểm thử.
+
+Lấy resolved versions từ lockfile/dependency tree; lấy modules được bundle từ build stats; lấy selected version từ diagnostics của runtime khi có. Với module đã evaluate, runtime policy đổi sau đó không có nghĩa dependency trong document cũng đổi. Nếu có SSR, inventory thêm dependency graph phía server và worker/process release; đừng suy ra chúng giống graph client.
+
+## Chọn local shared hay singleton
+
+### Giữ dependency local khi không cần identity chung
+
+Mình giữ utility local trước, rồi chỉ share khi có lợi ích đo được hoặc yêu cầu identity thật sự. Hai bản utility trong hai remote có thể là chi phí hợp lý để mỗi domain tự nâng, rollback và test. Đưa mọi dependency vào `shared` thường biến một tối ưu bundle thành cuộc thương lượng version giữa các team.
+
+Muốn share vì giảm bytes, đo tổng bytes và waterfall của journey qua các remote trên cold/warm cache. Muốn share vì identity, kiểm tra boundary nào cần cùng module object. Không quyết định dựa vào kích thước một entry file hay chỉ vì package đó “nhiều app đều dùng”.
+
+### Singleton là cam kết platform
+
+Nếu shell render React component của catalog trong cùng tree, React identity và cặp React–renderer phải được kiểm soát. Trong lab webpack 5, một shared policy minh họa là:
+
+```js title="Phần shared trong config webpack của các app liên quan"
+const shared = {
+  react: {
+    singleton: true,
+    requiredVersion: '>=18.2.0 <19.0.0',
+    strictVersion: true,
+  },
+  'react-dom': {
+    singleton: true,
+    requiredVersion: '>=18.2.0 <19.0.0',
+    strictVersion: true,
+  },
+};
+
+// Truyền shared vào new ModuleFederationPlugin({ ...config, shared }).
+// Giữ async bootstrap; đây không phải config webpack đầy đủ.
+```
+
+`singleton` giới hạn shared module trong scope; nó không bảo đảm mọi React import trên trang đều đi qua scope đó. `requiredVersion` là range consumer chấp nhận, không phải version bắt runtime phải chọn. Với singleton và required range trong ví dụ, `strictVersion` cho phép runtime reject version không hợp lệ thay vì chỉ cảnh báo và chạy tiếp.
+
+Range rộng không phải bằng chứng tương thích. Nếu catalog bắt đầu dùng API chỉ có ở `18.3.1`, lower bound `18.2.0` không còn đúng cho candidate đó. Bạn phải nâng yêu cầu và xử lý shell cũ trước khi promote, hoặc chưa dùng API mới trong window hiện tại.
+
+Hai entry `react` và `react-dom` được thương lượng riêng; cùng range không ép chúng chọn cùng version. Cần kiểm tra cặp resolved/selected versions, peer requirements, subpaths như `react-dom/client`, context identity và thứ tự tải. Local fallback mặc định ở các build cũng có thể khiến nhiều build cung cấp dependency; policy phải ghi rõ điều đó. Nếu dùng `import: false` để chỉ consume, bạn phải bảo đảm có provider trước khi consume và thiết kế standalone support tương ứng.
+
+<Callout type="warn" title="Đừng chữa mismatch bằng cách tắt guardrail">
+  `strictVersion: false`, `requiredVersion: false` hoặc range `*` không làm code trở nên tương thích. Chúng có thể chỉ biến lỗi rõ ràng lúc load thành lỗi hành vi ở một nhánh ít dùng. Khi mismatch xảy ra, chọn release set đã kiểm chứng hoặc sửa migration; chỉ đổi policy khi có bằng chứng mới.
+</Callout>
+
+Semantics trên dành cho webpack 5 gốc. Nếu dùng plugin/runtime khác, đối chiếu cấu hình của implementation đó. Chi tiết runtime, subpath sharing và provider selection nằm ở [Shared dependencies](/docs/module-federation/shared-dependencies); governance ở đây quyết định ai sở hữu policy và bằng chứng cần có trước khi đổi nó.
+
+## Quản lý package nội bộ và peer dependencies
+
+Một design system xuất React component nên thể hiện rằng consumer cung cấp React tương thích, thay vì vô tình ship một bản React riêng. Manifest dưới là trích đoạn minh họa, không phải package publish-ready:
+
+```json title="packages/ui/package.json — trích đoạn"
+{
+  "name": "@shop/ui",
+  "version": "4.2.0",
+  "peerDependencies": {
+    "react": ">=18.2.0 <19.0.0",
+    "react-dom": ">=18.2.0 <19.0.0"
+  },
+  "devDependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}
+```
+
+Peer range công bố consumer requirements; `devDependencies` phục vụ build/test package. **Peer dependency không tự ngăn bundler nhúng React**, và không tự cấu hình federation. Package build vẫn cần externalize các entry/subpath React mà nó import; app cần kiểm tra output và identity. Package phải test những version mà peer range hứa hỗ trợ, không chỉ version ở `devDependencies`.
+
+Giữ package dùng chung nhỏ: UI primitives, tokens, public schemas hoặc types có owner rõ. Đừng gộp cart store, catalog fetcher, auth singleton và routing vào một package `@shop/common` rồi yêu cầu mọi team upgrade cùng nhau. Một schema package có thể share ở build-time mà không cần thành singleton runtime; chọn theo identity và behavior của boundary.
+
+Khi public API đổi, publish version mới bất biến kèm changelog và migration guide. Không sửa bytes của version đã publish. Với type-only contract package, nhớ rằng typecheck chỉ kiểm tra app lúc build; shell cũ trong browser không đọc declarations mới. Runtime payload và exposed exports vẫn cần validation/contract tests.
+
+## Build có thể tái hiện và kiểm soát transitive dependencies
+
+Lockfile giúp cố định dependency tree của một build. Nó không cố định version shared mà browser cuối cùng consume từ một build khác. Vì vậy, governance cần cả build reproducibility lẫn runtime compatibility.
+
+Với npm workspace giả định, chạy từ root workspace ứng dụng:
+
+```bash title="Kiểm tra dependency tree và cài đặt từ lockfile"
+node --version
+npm --version
+npm ci
+npm ls react react-dom --all
+npm explain react
+```
+
+`npm ci` cần lockfile khớp manifest, không tự sửa lockfile và xóa `node_modules` hiện có trước khi cài. Ghi lại Node/npm version cùng `.npmrc` và các flags ảnh hưởng dependency tree. Nếu lockfile đã tạo bằng flag như `--legacy-peer-deps`, clean install cũng cần cấu hình phù hợp; tốt hơn là xử lý xung đột peer requirements thay vì coi bỏ qua chúng là policy mặc định.
+
+Để nâng một cặp version cụ thể trong catalog, ví dụ:
+
+```bash title="Thao tác trên nhánh upgrade của workspace ứng dụng"
+npm install --workspace @shop/catalog --save-exact \
+  react@18.3.1 react-dom@18.3.1
+
+npm ci
+npm ls react react-dom --all
+```
+
+Review cả `apps/catalog/package.json` và `package-lock.json`, rồi clean install và kiểm tra lại graph trước khi build candidate. Version ở đây chỉ phục vụ bài tập. Nếu workspace của bạn đã dùng major khác, không hạ framework để chạy snippet. Trong npm workspaces, lockfile chung và hoisting có thể thay dependency resolution của workspace khác; phạm vi kiểm thử cần theo **graph thay đổi thực tế**, không chỉ app được truyền qua `--workspace`.
+
+Với transitive dependency có lỗi, ưu tiên nâng direct dependency kéo nó vào. `overrides` ở root `package.json` của npm có thể là biện pháp tạm thời, nhưng ép version không chứng minh direct dependency dùng được API mới. Ghi owner, lý do, evidence, hạn gỡ và kiểm tra tree sau override. Override cũng không sửa bytes đã nằm trong artifact remote đang deploy: bạn phải rebuild, test và promote artifact mới.
+
+Lockfile, integrity hashes và version pinning không tự chứng minh package an toàn. Lưu thêm nguồn registry, dependency inventory/SBOM nếu pipeline hỗ trợ, toolchain, source commit và artifact digest. Build-time scripts, môi trường và dữ liệu bên ngoài vẫn có thể ảnh hưởng output; gọi build “reproducible” chỉ sau khi đã kiểm chứng mức tái hiện mà bạn yêu cầu.
+
+## Thiết kế compatibility window
+
+### Xác định release còn được hỗ trợ
+
+Compatibility window là tập release/contract mà bạn cam kết cho phép cùng tồn tại, cùng điều kiện thời gian để rút chúng ra khỏi tập đó. Nó giống lịch bàn giao: provider chưa thể tháo lối vào cũ khi consumer vẫn được phép dùng nó. Giới hạn của phép so sánh này là browser có cache và tab tồn tại lâu; merge migration không có nghĩa consumer cũ đã rời hệ thống.
+
+Tránh policy mơ hồ như “hỗ trợ N và N-1”. Shell release mỗi tháng, catalog release nhiều lần mỗi ngày thì N-1 có ý nghĩa khác nhau. Nếu dùng quy tắc đó, phải định nghĩa N theo contract line hay app release, thời gian tối thiểu và cách xử lý rollback.
+
+Một policy cần ghi rõ:
+
+| Nội dung | Câu hỏi phải trả lời |
+| --- | --- |
+| Admission | Document mới được chọn những release sets nào? |
+| Active documents | Document đã mở được tiếp tục dùng contract nào và đến khi nào? |
+| Rollback | Artifact nào còn là target hợp lệ với remotes/backend hiện tại? |
+| Retirement | Consumer nào phải migrate trước, ai xác nhận hoàn tất? |
+| Retention | Giữ entry/chunks/CSS đến khi nào và theo record nào? |
+| Exception | Nếu chưa migrate kịp thì gia hạn hay dừng tính năng, ai quyết định? |
+
+Ví dụ một tổ chức có thể hỗ trợ contract v1 ít nhất 30 ngày từ lúc công bố deprecation, rồi chỉ retire sau khi consumer owners hoàn tất migration và policy cho document cũ đã được thực thi. **30 ngày là số minh họa**, không thay việc đo vòng đời session, xử lý offline clients và bảo vệ dữ liệu người dùng.
+
+### Ma trận tương thích và rollback
+
+Giả sử shell s41 chỉ gọi cart capability v1, shell s42 chuyển sang v2. Cart r17 cung cấp v1; r18 cung cấp cả v1 và v2; r19 chỉ cung cấp v2.
+
+| Consumer / provider | Cart r17 — v1 | Cart r18 — v1 và v2 | Cart r19 — v2 |
+| --- | --- | --- | --- |
+| Shell s41 — dùng v1 | Hỗ trợ | Hỗ trợ | Từ chối |
+| Shell s42 — dùng v2 | Từ chối | Hỗ trợ | Hỗ trợ sau khi gate pass |
+
+Đây là ma trận **contract**, giả sử runtime/framework và các dependency khác đã tương thích. Release gate còn phải kiểm tra chúng, artifact availability và backend requirements. Với nhiều remotes, kiểm thử từng cặp shell–remote không luôn chứng minh release set đầy đủ hoạt động: catalog và cart có thể cùng consume một singleton hoặc tương tác qua events.
+
+Hai target rollback minh họa là `s41 + r17` và `s42 + r18`. Sau khi shell s42 đã lên, rollback riêng cart về r17 là không hợp lệ. Bạn có thể quay cart về r18, hoặc rollback shell kèm một tổ hợp đã kiểm chứng; đừng mặc định “previous remote” luôn là lựa chọn an toàn.
+
+Giữ evidence cho những cặp đang active, candidate, consumer cũ còn hỗ trợ và rollback targets. Cặp không có evidence được xem là **chưa kiểm chứng**, không phải tự động tương thích. Chỉ đưa cặp ấy vào admission sau khi gate chứng minh nó đáp ứng policy.
+
+### Tab cũ cache và thời gian giữ artifacts
+
+Document đã consume React hoặc tải cart r17 không tự chuyển thành document mới khi config được publish. Native module cache, federation runtime và object đã tạo vẫn có thể giữ code cũ. Lazy chunk của r17 cũng có thể chỉ được request khi người dùng mở cart sau đó.
+
+Vì vậy, tách ba thao tác: ngừng chọn release cũ cho document mới, kết thúc hỗ trợ document cũ, rồi dọn artifact khi không còn nghĩa vụ retention/rollback. Không dùng CDN TTL làm thời hạn tồn tại của tab; cache hết hạn không unload JavaScript đã evaluate.
+
+Nếu sản phẩm giới hạn tuổi document, phải có implementation: kiểm tra tuổi/revision ở những điểm phù hợp, thông báo cập nhật, lưu draft nếu có và chuyển sang session mới an toàn. Timer trong background tab có thể chạy muộn; kiểm tra lại khi tab resume hoặc trước thao tác quan trọng. Reload cưỡng bức mà không bảo vệ input đang nhập không phải migration strategy hoàn chỉnh.
+
+Giữ artifacts theo lifetime tối đa đã hỗ trợ của document cũ, lazy loading, cache/offline policy và rollback commitments. Telemetry không thấy request trong một khoảng thời gian chưa đủ để xóa asset: user có thể đang offline, không gửi telemetry hoặc chưa mở route đó. Xem [Caching và invalidation](/docs/trien-khai/caching) và [CDN và assets](/docs/trien-khai/cdn-assets) cho retention của artifact graph.
+
+## Quy trình nâng cấp dependency
+
+```text
+Inventory và impact → Candidate bất biến → Compatibility gate
+                                                  │
+                                                  ▼
+                                      Canary → Promote hoặc rollback
+```
+
+Quy trình này áp dụng theo boundary bị ảnh hưởng. Local utility không cần xin phép cả platform; framework singleton không được coi là local upgrade chỉ vì PR nằm trong catalog.
+
+### Phân loại rủi ro và chuẩn bị candidate
+
+Đọc changelog và graph diff trước khi quyết định scope test. Patch thường nhỏ hơn major, nhưng một bug fix có thể thay behavior mà app đang phụ thuộc. Security fix cũng có thể chạm API. Không dùng nhãn patch/minor như giấy miễn kiểm thử.
+
+1. **Xác định lý do nâng:** advisory, tính năng, end-of-support hay maintenance; ghi owner và deadline nếu có.
+2. **Lập impact map:** direct/transitive changes, peer requirements, public API, shared scope, CSS và build output bị ảnh hưởng.
+3. **Chốt window:** consumer nào còn chạy, rollback target nào phải giữ và contract nào chưa được bỏ.
+4. **Build candidate:** lưu manifests, lockfile, toolchain, source commit và artifact digest; upload vào URL release bất biến.
+5. **Chuẩn bị mitigation:** fallback/kill switch, rollout cohort và target rollback tương thích.
+
+Dependency bots như Renovate hoặc Dependabot giúp phát hiện và mở PR. Mình cho phép auto-merge chỉ với nhóm local, rủi ro thấp và gate đủ mạnh; shared runtime, major upgrade và thay đổi public contract cần owner review. Có thể group React–React DOM hoặc bộ tooling phụ thuộc nhau, nhưng đừng group mọi dependency của toàn shop thành một PR khó phân tích.
+
+### Release gate gắn với artifact
+
+PR tests trả lời code trong checkout có đúng không. Promotion gate phải trả lời artifact sắp chọn có chạy với các releases còn được phép không.
+
+| Gate | Bằng chứng tối thiểu |
+| --- | --- |
+| Dependency tree | Resolved versions, peer conflicts, unexpected duplicates và graph diff đã review |
+| Public contract | Candidate đáp ứng expectations của consumers còn hỗ trợ; consumer mới dùng được providers còn hỗ trợ |
+| Shared runtime | Selected versions/identity, React–renderer, load order và standalone mode nếu được hỗ trợ |
+| Artifact integration | Entry/chunks/CSS tải từ hosting production-like; exports và lifecycle đúng |
+| Journey và UI | Các flow chính, error/fallback, visual/a11y checks theo scope thay đổi |
+| Performance và security | Bundle/network budget không bị phá; advisory và nguồn dependency đã triage |
+| Rollback | Target còn đủ assets, contract/backend tương thích, đường selection đã diễn tập |
+
+Gắn kết quả với artifact digest, policy revision, consumer/provider build IDs, environment và test suite revision. Rebuild candidate sau khi test cần evidence mới; “cùng git commit” không bảo đảm bytes giống nhau khi toolchain hoặc đầu vào build đổi.
+
+Một gate fail phải chặn promotion. Evidence thiếu hoặc quá cũ so với policy hiện hành cũng không được coi là pass. Với config có nhiều người ghi, validate proposed release set trên trạng thái mới nhất rồi publish có kiểm soát revision; nếu snapshot thay đổi trong lúc chờ, kiểm tra lại thay vì ghi đè thay đổi của team khác.
+
+Cách triển khai consumer/provider verification nằm ở [Contract tests](/docs/kiem-thu-va-tooling/contract-tests). Không sửa tất cả fixture cũ cho khớp candidate rồi dùng kết quả xanh để tuyên bố backward compatibility.
+
+### Canary và kiểm chứng rollback
+
+Canary chỉ bắt đầu sau compatibility gate, không dùng người dùng thật để thử một tổ hợp đã biết mismatch. Chọn cohort ổn định, pin release set cho document và theo dõi load/evaluate errors, contract failures cùng outcome như thêm hàng thành công.
+
+Dừng mở rộng khi có regression theo guardrails đã chốt trước. Nếu rollback, chọn lại artifact tốt **còn tương thích với trạng thái hiện tại**, không chỉ artifact trước upgrade. Document đã load candidate có thể cần fallback hoặc chuyển session có kiểm soát; đổi manifest chỉ tác động những lần selection sau đó.
+
+Một feature flag bên trong remote không bảo vệ lỗi evaluate/shared dependency xảy ra trước khi code đọc flag. Kill switch ở shell có thể tránh tải remote cho document chưa tải nó, nhưng không thu hồi code đã chạy. Xem [Rollout và rollback](/docs/trien-khai/rollout-rollback) để thiết kế selection, cohort và đường quay về.
+
+## Ví dụ migration contract theo ba giai đoạn
+
+Dùng ma trận s41/s42 và r17/r18/r19 ở trên. Giả sử v1 nhận `{ productId, quantity }`, còn v2 nhận `{ sku, quantity, requestId }` để hỗ trợ một command contract mới. `productId` và `sku` không mặc định tương đương; migration cần quy tắc mapping rõ và backend hỗ trợ tương ứng.
+
+### Expand provider hỗ trợ cả hai contract
+
+Cart owner publish r18 cung cấp cả `addItemV1` và `addItemV2`, giữ semantics của v1. Provider verification chạy expectations của s41 cùng expectations v2. Sau khi gate pass, promote r18 trong khi shell vẫn là s41.
+
+Nếu dùng adapter v1 sang implementation mới, adapter phải giữ outcome và retry/idempotency semantics đã hứa. Thêm một `requestId` tự sinh cho mỗi lần retry không tự làm request v1 idempotent. Không gọi v2 bằng phép đổi tên field khi mapping nghiệp vụ chưa được xác nhận.
+
+### Migrate consumer chuyển dần sang contract mới
+
+Shell owner publish s42 gọi v2 và chỉ cho s42 chọn providers đã verify v2, ở đây là r18. Trong window, s41 vẫn dùng v1 và r18 phục vụ được cả hai.
+
+Nếu catalog trực tiếp gọi cart capability, catalog cũng là consumer phải migrate và có build IDs riêng trong evidence. Nếu catalog chỉ phát intent cho shell, shell adapter có thể là consumer tại boundary này. Inventory quyết định ai cần chuyển; không suy ra điều đó chỉ từ tên app.
+
+Giữ rollback của s42 về s41 nếu tổ hợp đó vẫn được hỗ trợ. Cart r17 không còn là target rollback độc lập cho s42. Backend phải tiếp tục phục vụ cả contract paths và dữ liệu mà releases rollback cần.
+
+### Contract bỏ hỗ trợ sau khi đóng window
+
+Sau khi mọi consumer còn được hỗ trợ đã chuyển, policy cho documents v1 đã kết thúc và owner xác nhận, mới promote r19 chỉ cung cấp v2. S41 không được chọn r19; release selector phải từ chối tổ hợp này trước load.
+
+Không xóa r17/r18 hay backend path cũ chỉ vì r19 đã publish. Artifact retention và rollback obligations cần review riêng. Nếu còn cho phép tab s41 dùng r18 đã pin, bạn vẫn đang có nghĩa vụ với v1 trên đường ấy; việc r19 bỏ v1 chỉ an toàn khi admission và active-document policy phân biệt được hai nhóm.
+
+**Expand → migrate → contract tránh yêu cầu mọi team deploy cùng một thời điểm**, đổi lại có chi phí duy trì hai contract trong window. Nếu không thể duy trì hai behavior an toàn, dùng migration phối hợp với admission/reload policy rõ, không gọi nó là release độc lập.
+
+## Nâng framework major cần kế hoạch riêng
+
+Migration public API có thể dùng adapter. Chuyển React major cho component render trong tree của shell không được giải quyết bằng một adapter payload hay range `>=18 <20`. Provider/consumer dùng chung renderer có ràng buộc runtime khác.
+
+Mình chọn một trong hai hướng, theo boundary thực tế:
+
+- **Coordinated runtime wave:** build và test một release set dùng major mới, đảm bảo selection không trộn consumer/runtime ngoài hỗ trợ. Document cũ tiếp tục dùng tổ hợp cũ trong window; document mới vào tổ hợp mới sau bootstrap/reload phù hợp. Đây là phối hợp ở boundary framework, không bắt mọi local dependency cùng nâng.
+- **Boundary độc lập:** dùng mount/lifecycle contract với React root riêng hoặc iframe khi phù hợp, cho phép runtimes coexist nếu test chứng minh isolation cần thiết. Chi phí là truyền dữ liệu/events, style/lifecycle và accessibility giữa các vùng; không truyền component của React mới vào renderer cũ như thể cùng tree.
+
+Share scope riêng chỉ là namespace riêng, không tự tạo DOM, CPU hoặc security isolation. Root riêng cũng không nối context của shell sang remote. Nếu cần isolation mạnh hơn, đánh giá [iframe](/docs/cac-cach-tich-hop/iframe); nếu cần context/component composition sâu, coordinated wave thường đơn giản hơn.
+
+Với SSR, thêm cặp server runtime–client runtime và hydration vào gate. Một graph client đúng không chứng minh server render tương thích. Rollback shell/server/remote phải giữ cùng admission policy và backend compatibility.
+
+## Deprecation có deadline và điều kiện kết thúc
+
+“Deprecated” nhưng không có replacement và owner thường chỉ là một comment tồn tại lâu hơn API. Một deprecation record nên đủ để consumer owner lập kế hoạch mà không hỏi lại provider mỗi tuần.
+
+| Trường | Ví dụ minh họa |
+| --- | --- |
+| Boundary | `cart.addItem.v1` |
+| Provider owner | Cart team |
+| Replacement | `cart.addItem.v2`, mapping guide và semantic differences |
+| Thời điểm thông báo | Khi r18 dual-support được publish và verify |
+| Window tối thiểu | 30 ngày trong policy ví dụ |
+| Consumer cần migrate | Shell s41 và mọi consumer v1 được inventory ghi nhận |
+| Điều kiện removal | Consumers active chuyển xong, old-document policy thực thi, rollback targets còn hợp lệ |
+| Ngoại lệ | Owner, lý do, hạn gia hạn và mitigation; không để mở vô thời hạn |
+
+Công bố trong changelog và kênh owners dùng để theo dõi release, kèm test/fixture cũ phải giữ. Với package SemVer, đánh dấu deprecation trong minor release và removal không tương thích trong major release. Với remote artifact, release ID có thể không theo SemVer, nhưng contract version và cam kết window vẫn phải rõ.
+
+Dùng telemetry để tìm consumer còn gọi v1, không dùng nó làm bằng chứng duy nhất rằng v1 đã biến mất. Kết hợp deployment inventory, owner sign-off, active-document/session policy và rollback records. Không thấy traffic từ một tenant không chứng minh tenant ấy không còn browser/offline client cũ.
+
+Đến deadline mà consumer chưa chuyển, chọn công khai: gia hạn có hạn, hỗ trợ adapter thêm thời gian hoặc dừng capability theo product policy. Không âm thầm xóa API rồi để team chưa migrate tự xử lý incident. Window kết thúc mới cho phép removal; retention và security status vẫn quyết định artifact nào được giữ/chọn.
+
+## Security updates và ngoại lệ có thời hạn
+
+Advisory cần triage theo version bị ảnh hưởng, đường code reachable, môi trường và khả năng khai thác; severity score không thay phân tích này. Dependency build-time có thể nguy hiểm dù không xuất hiện trong browser bundle. Ngược lại, scan source manifest không phát hiện đầy đủ package đã nhúng trong prebuilt remote hoặc design system.
+
+Quy trình xử lý nên rõ:
+
+1. Xác định impacted lockfiles, artifacts, release sets, providers và rollback targets.
+2. Security owner chốt urgency; app/platform owners chốt patch path và scope test.
+3. Build bản vá, chạy gate phù hợp; muốn rút ngắn gate phải có ngoại lệ được phê duyệt, không tự bỏ qua.
+4. Dừng admission cho release bị cấm, cập nhật rollback allowlist và theo dõi rollout.
+5. Xử lý documents đã tải code lỗi theo threat model; mapping mới không thu hồi JavaScript đã evaluate.
+
+<Callout type="warn" title="Rollback không được quay lại bản đã bị cấm">
+  Một artifact từng ổn định về behavior vẫn có thể không còn hợp lệ sau advisory. Nếu không có rollback target an toàn, cân nhắc disable capability, patch-forward hoặc tổ hợp thay thế đã kiểm chứng. Đừng kéo dài một lỗ hổng chỉ vì compatibility window thông thường chưa hết.
+</Callout>
+
+Trường hợp phải thu hồi artifact sớm vì security có thể xung đột với cam kết lazy-load của tab cũ. Đây là quyết định emergency: owner cần chọn mức ảnh hưởng chấp nhận được, chặn capability hoặc yêu cầu chuyển phiên an toàn, và thông báo rõ. Không mô tả xóa files trên CDN như thể việc đó unload code hoặc vá mọi browser.
+
+Ngoại lệ nên gắn với advisory/package, impacted artifacts, approver, lý do, compensating controls, deadline và exit criteria. Ví dụ “chờ vendor patch” cần thêm mitigation và ngày review tiếp theo. Gate phải chặn exception đã hết hạn; một issue chưa đóng không tự cho phép tiếp tục promote release không đạt policy.
+
+## Telemetry và vận hành policy
+
+Governance cần feedback từ releases thực chạy, không chỉ từ PR đã merge. Với lỗi dependency/contract, ghi shell build ID, remote build ID, config snapshot/policy revision, phase lỗi, contract key và shared version quan sát được nếu runtime hỗ trợ. Selected runtime version có giá trị chẩn đoán hơn range trong manifest, nhưng chỉ phản ánh phạm vi đã quan sát.
+
+Không log token, user input, cart contents hay PII để truy tìm consumer cũ. Tách audit records đầy đủ trong hệ thống nội bộ khỏi metrics labels: build IDs và tập tổ hợp quá lớn có thể gây cardinality cao. Ghi sampling/coverage để team không diễn giải “không có event” thành “không có consumer”.
+
+Một dashboard vận hành có thể theo dõi:
+
+- Release sets active và rollback targets còn qua policy/security gate.
+- Consumer dùng contract deprecated, cùng coverage của telemetry.
+- Shared-version mismatch, duplicate-runtime symptoms và remote load failures theo phase.
+- Dependency/exception quá hạn, migrations chưa có owner hoặc chưa có evidence.
+- Regression bundle/journey sau upgrade, để xem lợi ích sharing có còn đúng.
+
+Dành một nhịp review định kỳ cho boundary risks và những ngoại lệ sắp hết hạn. Không cần họp phê duyệt từng patch; cần xử lý record không owner, contract sắp retire và rollback target đã mất hiệu lực. Mỗi lần policy thay đổi, xác định evidence nào còn dùng được và release sets nào phải verify lại.
+
+## Những cách quản lý dễ tạo coupling
+
+| Cách làm | Vì sao dễ hỏng | Hướng thay thế |
+| --- | --- | --- |
+| Ép mọi app dùng cùng mọi package version | Khóa local upgrade không liên quan vào một đợt release chung | Chỉ đồng bộ ở boundary có identity/compatibility requirement |
+| Share toàn bộ `dependencies` | Mở thêm runtime negotiations và che chi phí coupling | Allowlist shared có owner, lý do và evidence |
+| Auto-merge mọi patch | Không đọc graph/behavior change, có thể phá peer/runtime | Auto-merge theo nhóm rủi ro và gate, không chỉ semver label |
+| Test toàn bộ app mới trên HEAD | Bỏ qua consumer production và documents cũ | Giữ expectations/artifacts của releases trong window |
+| Dùng `latest` và manifest mutable không lưu revision | Không tái hiện được tổ hợp đã test | Immutable artifacts, snapshot và evidence gắn digest |
+| Dùng override hoặc tắt strict để “sửa” peer mismatch | Ép resolution mà chưa chứng minh tương thích | Sửa requirement/migration; ngoại lệ tạm phải có test và hạn gỡ |
+| Bỏ API khi không còn request trong dashboard | Thiếu coverage, bỏ quên lazy/offline clients và rollback | Kết hợp inventory, session policy và owner sign-off |
+| Coi rollback là quay remote về N-1 | Previous artifact có thể lệch shell/backend hoặc bị cấm vì security | Chọn target từ allowlist tương thích hiện hành |
+
+Nếu mọi upgrade cần cả shop deploy lại, xem lại public boundary và shared package scope trước khi bổ sung thêm bước phê duyệt. Governance nên phát hiện coupling thật, không biến mọi dependency thành coupling mới.
+
+## Checklist áp dụng cho shop
+
+- [ ] Inventory phân biệt local implementation, shared runtime, contracts và tooling; có resolved versions cùng artifact evidence.
+- [ ] Mỗi shared entry/public boundary có owner, reviewer và quyền quyết định rõ.
+- [ ] React–renderer, subpaths, identity và provider/standalone policy được kiểm chứng, không chỉ khai báo singleton.
+- [ ] Package nội bộ có public API, peer requirements, build externalization và changelog phù hợp.
+- [ ] CI dùng lockfile/toolchain có ghi nhận; graph diff và transitive overrides được review theo scope thực tế.
+- [ ] Compatibility window ghi rõ admission, active documents, rollback, retirement và retention.
+- [ ] Candidate pass với consumers/providers còn hỗ trợ; evidence gắn artifact digest và policy revision.
+- [ ] Rollback targets còn đủ assets, hợp contract/backend và không bị cấm vì advisory.
+- [ ] Deprecation có replacement, consumer owners, deadline và điều kiện removal kiểm chứng được.
+- [ ] Canary, fallback/kill switch và xử lý tab cũ không làm mất input đang nhập.
+- [ ] Security exceptions có approver, mitigation, expiry và exit criteria.
+
+Bắt đầu bằng một boundary: ghi inventory cho React và `cart.addItem`, chỉ định owners, liệt kê release sets đang active cùng rollback targets, rồi thêm gate chặn một tổ hợp cố ý không tương thích. Khi gate đó chặn đúng và tổ hợp hợp lệ vẫn release độc lập được, bạn đã có cơ chế governance kiểm chứng được thay vì chỉ một danh sách quy tắc.
+
+## Tài liệu tham khảo
+
+- [Webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): semantics của `singleton`, `requiredVersion`, `strictVersion`, provider/fallback và share scope trong webpack gốc.
+- [Semantic Versioning 2.0.0](https://semver.org/): public API, immutable versions, major/minor/patch và quy tắc deprecation.
+- [npm — npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci/): clean install từ lockfile và yêu cầu cấu hình ảnh hưởng dependency tree.
+- [npm — package.json](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/): `peerDependencies`, `devDependencies` và phạm vi áp dụng `overrides`.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Shared dependencies" href="/docs/module-federation/shared-dependencies" description="Đi sâu vào identity, provider, singleton và share scope." />
+  <Card title="Version compatibility" href="/docs/module-federation/version-compatibility" description="Thiết kế và kiểm chứng tổ hợp host–remote trong compatibility window." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Giữ expectations của consumers đã release và verify provider candidate." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Promote theo cohort và chọn lại release set còn tương thích." />
+</Cards>

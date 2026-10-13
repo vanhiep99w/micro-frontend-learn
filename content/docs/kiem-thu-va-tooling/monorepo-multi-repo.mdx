@@ -1,18 +1,490 @@
 ---
 title: "Monorepo và multi-repo"
-description: "So sánh repository strategy, workspace tooling và quyền sở hữu pipeline."
+description: "Chọn repository strategy, workspace tooling và quyền sở hữu CI/CD để các micro-frontend giữ được ranh giới và deploy độc lập."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+import { File, Folder, Files } from 'fumadocs-ui/components/files';
+
+Giả sử team catalog muốn release cách lọc sản phẩm mới, còn team cart đang sửa lỗi giỏ hàng. Đặt cả hai trong một repository có buộc chúng deploy cùng nhau không? Tách thành hai repository có tự giải quyết chuyện đó không? Câu trả lời cho cả hai là **không**: repository quyết định cách tổ chức source và phối hợp thay đổi, còn khả năng release độc lập nằm ở boundary, artifact, contract và pipeline.
+
+Bài này giúp bạn chọn giữa monorepo, multi-repo và cách kết hợp cả hai cho shop gồm shell, catalog và cart. Mình ưu tiên một cấu trúc dễ vận hành hơn là một cấu trúc trông giống sơ đồ micro-frontend.
+
+<Callout type="info" title="Phạm vi và ví dụ">
+  Đây là tài liệu kiến trúc và tooling, không phải hướng dẫn tạo thêm app trong site docs. Các cấu hình bên dưới dành cho workspace shop riêng. Bài [Cấu trúc workspace](/docs/bat-dau/workspace) dùng npm workspaces và webpack 5; phần pnpm/Turborepo ở đây là phương án mở rộng riêng, không phải lệnh chạy trực tiếp trên lab npm đó. Sơ đồ dùng ASCII, không cần cấu hình Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Tách bốn quyết định trước khi chọn repo](#tách-bốn-quyết-định-trước-khi-chọn-repo)
+- [So sánh monorepo multi-repo và hybrid](#so-sánh-monorepo-multi-repo-và-hybrid)
+- [Chọn theo nhu cầu của team](#chọn-theo-nhu-cầu-của-team)
+- [Monorepo vẫn cần boundary](#monorepo-vẫn-cần-boundary)
+  - [Cấu trúc workspace và public entry](#cấu-trúc-workspace-và-public-entry)
+  - [Dependency graph không phải runtime graph](#dependency-graph-không-phải-runtime-graph)
+  - [Một commit không phải một lần deploy](#một-commit-không-phải-một-lần-deploy)
+- [Workspace tooling giải quyết phần nào](#workspace-tooling-giải-quyết-phần-nào)
+  - [Bắt đầu bằng npm workspaces](#bắt-đầu-bằng-npm-workspaces)
+  - [Khi chọn pnpm và workspace protocol](#khi-chọn-pnpm-và-workspace-protocol)
+  - [Khi thêm Turborepo hoặc Nx](#khi-thêm-turborepo-hoặc-nx)
+- [CI theo tác động thay vì chỉ theo thư mục](#ci-theo-tác-động-thay-vì-chỉ-theo-thư-mục)
+  - [Phân biệt affected và integration impact](#phân-biệt-affected-và-integration-impact)
+  - [Ví dụ task graph với Turborepo](#ví-dụ-task-graph-với-turborepo)
+  - [Cache đúng đầu vào và đầu ra](#cache-đúng-đầu-vào-và-đầu-ra)
+- [Multi-repo cần nền tảng phối hợp](#multi-repo-cần-nền-tảng-phối-hợp)
+  - [Shared packages được publish và pin](#shared-packages-được-publish-và-pin)
+  - [Integration environment tái lập được](#integration-environment-tái-lập-được)
+- [Quyền sở hữu pipeline và release](#quyền-sở-hữu-pipeline-và-release)
+  - [Ai chịu trách nhiệm phần nào](#ai-chịu-trách-nhiệm-phần-nào)
+  - [Luồng release catalog độc lập](#luồng-release-catalog-độc-lập)
+- [Nâng cấp contract mà không khóa release](#nâng-cấp-contract-mà-không-khóa-release)
+- [Chuyển repository strategy có kiểm soát](#chuyển-repository-strategy-có-kiểm-soát)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+- [Checklist quyết định](#checklist-quyết-định)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Tách bốn quyết định trước khi chọn repo
 
-Bài này sẽ giúp bạn: so sánh repository strategy, workspace tooling và quyền sở hữu pipeline.
+Rất dễ gom câu hỏi “source nằm ở đâu?” và “frontend có độc lập không?” thành một. Bạn sẽ chọn chính xác hơn nếu tách chúng thành bốn lớp:
 
-[Xem các bài trong nhóm Kiểm thử và tooling](/docs/kiem-thu-va-tooling).
+| Quyết định | Câu hỏi cần trả lời | Ví dụ trong shop |
+| --- | --- | --- |
+| Repository topology | Source được lưu và review ở đâu? | Một repo chứa ba app, hoặc mỗi app một repo |
+| Build boundary | Một lần build tạo artifact của phần nào? | Catalog tạo entry và chunks riêng |
+| Composition | Các phần được ghép lúc build, ở server hay ở browser? | Shell tải catalog qua Module Federation ở runtime |
+| Release ownership | Ai quyết định promote và rollback artifact nào? | Team catalog promote release của catalog mà không rebuild cart |
+
+**Monorepo** là một repository chứa nhiều project/package. **Multi-repo** đặt các project liên quan ở nhiều repository riêng. Cả hai đều có thể phục vụ một frontend thống nhất hoặc một hệ thống micro-frontend.
+
+Nếu shell import source catalog rồi đóng vào bundle của shell, catalog không thể cập nhật phần code đó trên browser bằng cách deploy riêng. Tách source sang repo catalog nhưng vẫn cài catalog như dependency lúc build shell không đổi kết luận này. Đó vẫn là build-time composition.
+
+Ngược lại, ba app trong một monorepo có artifact riêng và tải nhau ở runtime vẫn có thể release độc lập, nếu contract tương thích và pipeline không ép deploy cả ba. Repository chỉ là một lớp tổ chức, không phải bằng chứng về kiến trúc runtime.
+
+## So sánh monorepo multi-repo và hybrid
+
+| Tiêu chí | Monorepo | Multi-repo |
+| --- | --- | --- |
+| Thay đổi xuyên nhiều app | Một PR có thể chứa mọi thay đổi source | Cần nhiều PR, theo dõi thứ tự merge và release |
+| Dependency và tooling | Dễ thống nhất lockfile, lint và task graph | Từng repo tự quản; cần template và automation để tránh drift |
+| Shared packages | Có thể link local khi build | Thường publish lên registry hoặc dùng dependency versioned tương đương |
+| Quyền truy cập source | Thường cấp ở mức repo; review theo thư mục | Dễ tách quyền đọc/ghi theo repo |
+| CI | Có thể chọn task theo graph, nhưng phải cấu hình đúng | CI app gọn hơn; tích hợp liên repo cần cơ chế riêng |
+| Local development | Dễ checkout các app cùng revision | Cần dev orchestration, mocks hoặc remote overrides |
+| Release độc lập | Làm được nếu artifact và pipeline riêng | Làm được nếu contract và pipeline riêng |
+| Chi phí coordination | Dễ sửa chung nhưng dễ import vượt boundary | Boundary hữu hình hơn nhưng dễ lệch version và thiếu integration tests |
+
+Hybrid là cách kết hợp: chẳng hạn shell/catalog/cart ở các repo domain riêng, còn tokens, UI adapters và tooling ở một platform monorepo. Bạn cũng có thể gom vài app thường xuyên phối hợp vào một repo, để app có yêu cầu truy cập khác ở repo riêng.
+
+Mình chọn hybrid khi có boundary tổ chức thật sự, không chỉ vì muốn cân bằng hai cột trong bảng. Nó vẫn phải vận hành cả task graph trong repo và dependency/version giữa repo; không phải cách lấy mọi ưu điểm mà bỏ mọi chi phí.
+
+## Chọn theo nhu cầu của team
+
+Với shop học tập hoặc vài team cùng quyền truy cập, cùng quy tắc tooling và thường xuyên review contract chung, mình mặc định chọn **monorepo với artifact và release tách biệt**. Bạn giảm được công việc bootstrap mà vẫn luyện được boundary cần cho micro-frontend.
+
+Mình nghiêng về multi-repo khi có yêu cầu tách quyền đọc source, đối tác chỉ được truy cập một app, hoặc các domain đã có đội vận hành và pipeline riêng ổn định. Đừng kéo chúng về một repo chỉ để dùng Module Federation: remote loading không yêu cầu chung repository.
+
+Nếu một team nhỏ luôn release cả giao diện cùng lúc, frontend có module rõ ràng thường là điểm bắt đầu đơn giản hơn. Không cần tạo nhiều repo và một integration platform chỉ để chứng minh mỗi thư mục có owner.
+
+Trước khi chọn, thử một tình huống cụ thể: đổi payload “thêm vào giỏ” và release catalog trước cart. Nếu phương án của bạn chỉ hoạt động khi cả hai deploy cùng lúc, vấn đề cần sửa là compatibility và release process, không phải vị trí của Git repository.
+
+## Monorepo vẫn cần boundary
+
+### Cấu trúc workspace và public entry
+
+Đây là cấu trúc đề xuất khi lab đã có nhu cầu packages dùng chung. Các package dưới đây không mặc định đã tồn tại trong bài workspace ban đầu.
+
+<Files>
+  <Folder name="shop-workspace" defaultOpen>
+    <Folder name="apps" defaultOpen>
+      <Folder name="shell" />
+      <Folder name="catalog" />
+      <Folder name="cart" />
+    </Folder>
+    <Folder name="packages" defaultOpen>
+      <Folder name="contracts" />
+      <Folder name="ui" />
+      <Folder name="tooling" />
+    </Folder>
+    <Folder name=".github" defaultOpen>
+      <File name="CODEOWNERS" />
+      <Folder name="workflows" />
+    </Folder>
+    <File name="package.json" />
+    <File name="package-lock.json" />
+  </Folder>
+</Files>
+
+`apps` chứa các đơn vị build và deploy. `packages/contracts` chỉ chứa public types/schema; `packages/ui` chứa UI primitives; `packages/tooling` chứa cấu hình dùng chung có owner. Đừng biến `packages/shared` thành nơi gom store, router và API client của mọi domain.
+
+Một quy tắc import đủ rõ cho shop:
+
+| Nơi import | Cho phép | Cấm |
+| --- | --- | --- |
+| Shell | Public contracts, UI package, remote public module theo cấu hình runtime | `catalog/src/...`, `cart/src/...` |
+| Catalog/cart | Public contracts, UI primitives, code nội bộ cùng app | Store hoặc component nội bộ của app khác |
+| Contracts | Types/schema phục vụ giao tiếp | Domain implementation, router, framework runtime không cần thiết |
+| UI | Tokens và dependency giao diện đã công bố | Cart store, catalog API, authentication state của shop |
+
+Dùng package `exports` để giới hạn public entry. Kèm lint rule hoặc boundary rule của tooling để chặn relative imports và TypeScript path aliases đi thẳng vào app khác; `exports` không chặn được mọi đường vòng qua filesystem.
+
+Hoisting có thể khiến app chạy được dù không khai báo dependency trong manifest của mình. Vì thế mỗi app/package phải khai báo dependency thực sự dùng, kể cả khi package manager đặt dependency vật lý ở `node_modules` root.
+
+### Dependency graph không phải runtime graph
+
+Bạn cần nhìn hai graph khác nhau. Graph thứ nhất phục vụ build, graph thứ hai mô tả các phần giao tiếp khi ứng dụng chạy:
+
+```text
+Build/package graph — mũi tên nghĩa là "phụ thuộc vào"
+
+shell   ──► contracts, ui
+catalog ──► contracts, ui
+cart    ──► contracts, ui
+
+Runtime composition
+
+shell ──tải remote──► catalog
+shell ──tải remote──► cart
+```
+
+Shell không cần khai báo `@shop/catalog` trong npm dependencies chỉ vì nó tải catalog qua URL remote. Ngược lại, dependency `@shop/contracts` không nói cho CI biết catalog đang giao tiếp với version cart nào trên production.
+
+Một lockfile chung chốt dependency của checkout lúc build; nó không chốt tổ hợp artifact browser đang tải. React được cài một version trong workspace cũng không tự đảm bảo chỉ có một React instance tại runtime: bundling và Federation sharing là các cơ chế khác.
+
+### Một commit không phải một lần deploy
+
+Một PR có thể đổi cả producer lẫn consumer của contract và làm toàn bộ test trên HEAD pass. Nhưng production vẫn có thể chạy shell cũ với catalog mới, hoặc user đang mở tab còn giữ code cũ.
+
+Vì vậy, atomic commit chỉ giúp thay đổi **source** đồng bộ. Nó không tạo atomic deployment cho nhiều artifact, và cũng không loại bỏ version skew — tình trạng các phần đang chạy khác thế hệ contract hoặc dependency.
+
+Nếu bắt mọi app deploy cùng lúc để che vấn đề này, monorepo đang trở thành một release unit lớn. Hãy thừa nhận trade-off đó thay vì gọi pipeline ấy là deploy độc lập.
+
+## Workspace tooling giải quyết phần nào
+
+Có ba tầng thường bị gọi chung là “monorepo tool”: package manager quản lý dependencies, task orchestrator sắp xếp/caching công việc, còn CI/CD quản lý checks, secrets và promotion. Một công cụ có thể chạm nhiều tầng, nhưng không công cụ nào tự thiết kế contract cho bạn.
+
+### Bắt đầu bằng npm workspaces
+
+Lab ban đầu dùng npm, nên giữ npm nếu các lệnh vẫn dễ quản lý. Từ root workspace shop đã có lockfile và các app `@shop/shell`, `@shop/catalog`, `@shop/cart`:
+
+```bash title="Chạy trong shop-workspace, không phải repo docs"
+npm ci
+npm run build --workspace=@shop/catalog
+npm run build --workspace=@shop/shell --workspace=@shop/catalog --workspace=@shop/cart
+```
+
+Lệnh đầu cài theo lockfile; lệnh thứ hai chỉ build catalog. Lệnh thứ ba build ba app theo thứ tự workspace được chọn trong lệnh, không tự suy luận dependency graph. Nếu thêm package phải build trước consumer, bạn cần khai báo và điều phối bước đó.
+
+`npm run ... --workspaces` tiện để chạy cùng một script ở nhiều package, nhưng không thay cho affected analysis. Tránh dùng `--if-present` cho check bắt buộc vì thiếu script có thể bị bỏ qua thay vì làm CI fail.
+
+### Khi chọn pnpm và workspace protocol
+
+Nếu bạn chọn pnpm cho một workspace mới hoặc một lần chuyển đổi có kế hoạch, khai báo workspace bằng file riêng:
+
+```yaml title="pnpm-workspace.yaml — phương án pnpm"
+packages:
+  - 'apps/*'
+  - 'packages/*'
+```
+
+Một consumer có thể yêu cầu dependency phải resolve từ workspace local:
+
+```json title="Trích dependencies của một app dùng pnpm"
+{
+  "dependencies": {
+    "@shop/contracts": "workspace:*",
+    "@shop/ui": "workspace:*"
+  }
+}
+```
+
+`workspace:*` không có nghĩa “lấy latest trên registry”. Nó yêu cầu package local tương ứng; `workspace:^1.0.0` còn yêu cầu version local thỏa range đó. Khi pack/publish bằng pnpm, workspace specs được chuyển thành version/range thích hợp cho consumer ngoài repo.
+
+Sau khi chọn và pin version pnpm phù hợp với Node của project, dùng một lockfile pnpm làm nguồn cài đặt cho CI:
+
+```bash title="Chỉ dành cho phương án pnpm"
+pnpm install --frozen-lockfile
+pnpm --filter '@shop/catalog' run build
+pnpm --filter '@shop/catalog...' run build
+pnpm --filter '...@shop/contracts' run test
+```
+
+Dấu `...` **sau** tên package chọn package đó và các dependencies của nó. Dấu `...` **trước** tên chọn package đó và các dependents — những package phụ thuộc vào nó, kể cả gián tiếp. Hai hướng này khác nhau: build catalog có thể cần build contracts trước, còn đổi contracts cần kiểm tra consumers.
+
+Các script `build`/`test` phải tồn tại trong các package được chọn; đây không phải scaffold hoàn chỉnh. Khi đổi package manager, sinh và review lockfile mới, cập nhật CI, rồi bỏ lockfile cũ khỏi vai trò nguồn cài đặt. Đừng dùng npm và pnpm luân phiên trong cùng workspace để “lệnh nào chạy được thì dùng”.
+
+### Khi thêm Turborepo hoặc Nx
+
+Thêm task orchestrator khi bạn cần chạy prerequisites đúng thứ tự, tránh build lại công việc không đổi, hoặc chọn project bị tác động. Đo thời gian CI trước; với ba app nhỏ không có shared package cần build, scripts npm thường đủ.
+
+| Công cụ | Phần hữu ích | Cần tự quyết định |
+| --- | --- | --- |
+| npm/pnpm workspaces | Package discovery, linking, install và chọn package để chạy script | Build prerequisites, integration impact, release policy |
+| Turborepo | Task graph từ scripts, prerequisites và task cache | Inputs/outputs/env, boundary rules, runtime integration checks |
+| Nx | Project graph, affected tasks, generators và boundary rules qua plugins/config phù hợp | Graph chính xác, policy, runtime contracts và quyền release |
+
+Mình chọn Turborepo khi workspace đã có scripts rõ ràng và cần điều phối/cache chúng. Nx phù hợp hơn khi team muốn chuẩn hóa project conventions, generators và rules ở quy mô lớn hơn. Không cần chạy hai orchestrator cho cùng một tập tasks nếu chưa có lý do cụ thể.
+
+## CI theo tác động thay vì chỉ theo thư mục
+
+Path filter kiểu “đổi `apps/catalog/**` thì chạy catalog” là bước đầu, không phải impact analysis đầy đủ. Nó bỏ sót thay đổi shared package, cấu hình root, lockfile và runtime contracts.
+
+### Phân biệt affected và integration impact
+
+Affected analysis thường kết hợp file diff với dependency/project graph để chọn task cần chạy. Nó chỉ biết các quan hệ được biểu diễn trong graph; URL remote hoặc payload sự kiện không tự trở thành dependency của shell.
+
+Vì vậy, CI nên có hai lớp: checks theo graph cho code/build, và integration checks theo public relationships giữa các app. Ma trận dưới đây là policy đề xuất, không phải hành vi mặc định của npm, Turborepo hay Nx.
+
+| Thay đổi | Checks theo build graph | Checks tích hợp cần thêm | Release bắt buộc? |
+| --- | --- | --- | --- |
+| UI nội bộ catalog | Lint, unit/component test và build catalog | Smoke shell với catalog candidate | Chỉ catalog nếu tương thích |
+| Public module hoặc event của catalog | Checks catalog và contract tests | Shell/current consumers với candidate; version skew theo policy | Theo thay đổi contract, không tự suy từ path |
+| `contracts` | Kiểm tra package và consumers bị tác động | Producer mới/consumer cũ và chiều ngược lại nếu được hỗ trợ | Consumers chỉ release khi cần đổi hành vi hoặc artifact |
+| `ui` | Checks UI và consumers build-time | Visual/a11y hoặc integration checks của vùng bị ảnh hưởng | Chạy checks không có nghĩa phải promote mọi app |
+| Lockfile hoặc root tooling | Tính lại impact; chạy rộng nếu không chắc | Smoke suite tối thiểu | Không auto deploy toàn hệ thống |
+| Mapping remote/manifest | Validate mapping và artifact references | Test tổ hợp artifact đích | Có thể là config-only promotion |
+
+Chọn Git base/head đúng cũng quan trọng như chọn công cụ. PR cần so với điểm phân nhánh phù hợp; pipeline sau merge có thể cần so với commit CI thành công gần nhất để không bỏ sót thay đổi từng fail. Fetch đủ Git history hoặc các refs cần thiết; khi không xác định được phạm vi an toàn, chạy rộng thay vì trả về “không có app nào bị ảnh hưởng”.
+
+### Ví dụ task graph với Turborepo
+
+Ví dụ sau dành cho một workspace đã cài và pin Turborepo major 2, có scripts `build`, `lint`, `typecheck`, `test`, `dev` tương ứng. Output build ở mỗi app/package là `dist`; test tạo coverage nếu bạn muốn cache thư mục đó.
+
+```json title="turbo.json — cấu hình tham khảo"
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "env": ["SHOP_API_BASE_URL", "SHOP_REMOTE_MANIFEST_URL"]
+    },
+    "lint": {
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}
+```
+
+`^build` yêu cầu build dependencies trước task hiện tại, dựa trên package graph. Nó không có nghĩa build mọi app khác và không phát hiện quan hệ remote loading. Với package chỉ expose source hoặc types, task graph cần điều chỉnh theo cách consumer thực sự dùng package đó; đừng thêm một build rỗng chỉ để graph trông đồng nhất.
+
+Hai biến trong `env` là ví dụ về giá trị có thể được bundler nhúng vào artifact. Nếu app không đọc chúng hoặc có biến khác ảnh hưởng build, sửa danh sách cho đúng. Tương tự, đổi `outputs` nếu project sinh `build/` hoặc `.next/` thay vì `dist/`.
+
+### Cache đúng đầu vào và đầu ra
+
+Một task cache tái sử dụng kết quả của công việc có cùng inputs; nó không biết mọi tác động bên ngoài. Nếu build tải cấu hình từ một URL mutable, URL không đổi nhưng nội dung đổi thì cache có thể trả artifact cũ. Tốt hơn là tải snapshot có version/checksum, đưa snapshot vào inputs, hoặc tắt cache cho bước đó.
+
+Các điểm cần kiểm tra:
+
+- Biến môi trường ảnh hưởng output phải tham gia cache key. Với Turborepo, `passThroughEnv` cho task đọc biến nhưng không đưa giá trị đó vào hash; dùng `env`/`globalEnv` khi giá trị cần làm cache invalidation.
+- Custom `inputs` không được vô tình loại source, schema hay shared config có ảnh hưởng. Khai báo global dependencies hoặc task inputs phù hợp cho file ngoài thư mục package.
+- Output phải đủ để khôi phục artifact, không chỉ logs. Đừng cache token, secrets, `.env` hoặc files chứa credential.
+- Unit tests deterministic có thể cache. E2E phụ thuộc backend sống, deploy, publish và promotion có side effects thì không nên dùng cache task thông thường.
+- Remote cache là một trust boundary: giới hạn ai được ghi/đọc, kiểm soát nội dung artifact/logs và không cấp secret cho code PR không tin cậy.
+
+<Callout type="warn" title="Cache hit không chứng minh runtime compatibility">
+  Restore build catalog từ cache chỉ nói task inputs tương ứng đã có kết quả. Nó không chứng minh catalog tương thích với shell đang deploy. Integration smoke phải chạy trên tổ hợp artifact cụ thể mà bạn định promote.
+</Callout>
+
+## Multi-repo cần nền tảng phối hợp
+
+Multi-repo làm ranh giới source dễ thấy hơn, nhưng chuyển nhiều công việc sang registry, templates và integration infrastructure. Nếu từng team copy workflow rồi sửa riêng, vài tháng sau bạn có thể có nhiều cách build/test khác nhau mà không có ai chịu trách nhiệm chung.
+
+Một platform tối thiểu thường gồm package registry, workflow template có version, artifact storage, danh mục owners, integration environment và automation tạo dependency-update PR. Local development cần chạy một app với mocks hoặc remotes đã pin, không yêu cầu clone mọi repository mới sửa được một màn hình.
+
+### Shared packages được publish và pin
+
+Trong multi-repo, public contracts/UI packages thường được publish qua registry. Consumer chọn version, commit lockfile và kiểm tra bằng install reproducible:
+
+```json title="Trích dependencies của catalog ở repo riêng"
+{
+  "dependencies": {
+    "@shop/contracts": "1.4.0",
+    "@shop/ui": "2.3.1"
+  }
+}
+```
+
+Các số trên chỉ là version minh họa. Exact pin giúp update manifest dễ review; range SemVer kèm lockfile cũng có thể tái lập build nếu CI tuân thủ lockfile. Điều cần tránh là build tự lấy bản mới mà không có PR, test và provenance.
+
+Publish `contracts@1.5.0` không tự thay contracts đã build vào catalog đang chạy. Một bot có thể tạo update PR cho consumers; mỗi team review, chạy checks rồi release artifact mới khi cần. Release notes và migration guide giúp việc nâng cấp không biến thành đoán payload giữa các repo.
+
+Đừng dùng Git submodule như cách mặc định để giả lập workspace chung. Nó có thể pin source revision, nhưng không thay package publishing, task graph hoặc quy trình compatibility. Chỉ chọn nó khi team thật sự muốn vận hành thêm lifecycle của submodule.
+
+### Integration environment tái lập được
+
+Nếu smoke test luôn trỏ vào “latest catalog” và “latest cart”, test pass hôm nay có thể không tái lập được ngày mai. Pin bộ artifact đích trong một release set hoặc cấu hình triển khai tương đương:
+
+```json title="integration-release-set.json — schema minh họa, không phải chuẩn Federation"
+{
+  "shell": {
+    "releaseId": "shell-s17",
+    "entry": "https://assets.example.com/shell/releases/s17/index.html"
+  },
+  "remotes": {
+    "catalog": {
+      "releaseId": "catalog-c42",
+      "entry": "https://assets.example.com/catalog/releases/c42/remoteEntry.js"
+    },
+    "cart": {
+      "releaseId": "cart-k09",
+      "entry": "https://assets.example.com/cart/releases/k09/remoteEntry.js"
+    }
+  }
+}
+```
+
+Cấu hình này không tự được webpack đọc. Bạn cần loader/runtime config hoặc deployment layer của shell áp dụng mapping tương ứng. Nếu URL remote được hard-code lúc build shell, cập nhật mapping có thể vẫn cần rebuild shell; đừng gọi đó là config-only promotion khi chưa có cơ chế hỗ trợ.
+
+Release URL nên giữ immutable **toàn bộ** entry và chunks liên quan. Mapping chọn release có thể thay đổi có kiểm soát; artifact tại URL versioned không nên bị ghi đè. Khi có SSR, release set phải bao quát cả artifact phía server/client tương thích, không chỉ remote entry trên browser.
+
+## Quyền sở hữu pipeline và release
+
+### Ai chịu trách nhiệm phần nào
+
+Một workflow chung không có nghĩa một team phải quyết định mọi release. Mình chia trách nhiệm theo lớp: platform duy trì đường chạy an toàn, domain team chịu trách nhiệm nội dung và release của app mình, còn composition owner quản lý tổ hợp được tích hợp.
+
+| Phần việc | Owner đề xuất | Cần phối hợp với |
+| --- | --- | --- |
+| Scripts và tests của catalog/cart | Domain team | Platform khi đổi toolchain |
+| Workflow templates, cache, registry | Platform/tooling maintainers | Domain teams dùng template |
+| UI package và public contracts | Maintainers được chỉ định | Producers và consumers bị tác động |
+| Shell integration checks, remote mapping | Shell/composition owner | Team của remote candidate |
+| Promote và rollback app artifact | Team sở hữu app, theo policy môi trường | Composition owner nếu mapping có approval gate |
+| Sự cố xuyên boundary | Owners liên quan theo runbook | Platform hỗ trợ hạ tầng và diagnostics |
+
+Trong monorepo, `CODEOWNERS` có thể biểu diễn người review:
+
+```text title=".github/CODEOWNERS — team names minh họa"
+/apps/shell/          @shop/shell-team
+/apps/catalog/        @shop/catalog-team
+/apps/cart/           @shop/cart-team
+/packages/contracts/  @shop/contract-maintainers
+/packages/ui/         @shop/design-system
+/packages/tooling/    @shop/platform
+/.github/             @shop/platform
+```
+
+Trên GitHub, muốn bắt buộc code-owner approval phải bật rule phù hợp cho branch. `CODEOWNERS` không phải ACL theo thư mục và không ngăn người có quyền đọc repo xem source của app khác. Khi cần tách quyền đọc thật sự, multi-repo hoặc cơ chế access isolation khác phù hợp hơn.
+
+Deploy credentials cũng cần boundary: job catalog chỉ được ghi artifact/catalog mapping theo policy, không có quyền tùy ý deploy cart. Dùng environment protection và credential scope thích hợp; tách file workflow nhưng vẫn dùng một credential toàn quyền chưa phải isolation.
+
+### Luồng release catalog độc lập
+
+Luồng dưới đây áp dụng cho cả monorepo lẫn multi-repo:
+
+```text
+Catalog candidate
+  → app checks + contract checks
+  → build artifact immutable
+  → smoke với shell/cart đang được hỗ trợ
+  → promote mapping hoặc release catalog
+  → theo dõi, rollback về release trước nếu cần
+```
+
+1. **Xác định candidate:** ghi source commit, lockfile/toolchain và contract version. Trong monorepo, cùng commit có thể tạo nhiều artifact; lưu identity riêng cho từng artifact.
+2. **Chạy checks:** kiểm tra catalog và các consumers/build dependencies bị tác động. Với thay đổi public boundary, chạy compatibility checks theo policy, không chỉ test tất cả source tại HEAD.
+3. **Build một lần:** tạo artifact immutable và metadata/checksum. Nếu môi trường dùng runtime config, có thể promote cùng artifact; nếu bundler nhúng cấu hình từng môi trường, ghi rõ đó là các artifact khác nhau, không giả định chúng giống nhau.
+4. **Tích hợp candidate:** dùng catalog candidate với shell/cart thuộc release set mục tiêu; kiểm tra tải remote, hành trình mua hàng và fallback khi remote lỗi.
+5. **Promote có kiểm soát:** cập nhật routing/mapping hoặc cơ chế triển khai tương ứng. Không tự động rebuild/deploy shell chỉ vì catalog nằm cùng repo.
+6. **Quan sát và rollback:** theo dõi lỗi load/runtime và chỉ số hành trình liên quan, lưu mapping cũ, giữ artifact cũ đủ lâu cho client còn mở tab. Kiểm tra rollback không trỏ vào chunks đã bị xóa.
+
+Deploy độc lập không có nghĩa bỏ mọi approval hoặc integration gate. Nghĩa là một thay đổi tương thích có thể được release mà không buộc các app không liên quan rebuild/redeploy. Với breaking change, coordination vẫn cần thiết.
+
+## Nâng cấp contract mà không khóa release
+
+Giả sử event thêm giỏ đang dùng `sku`, còn bản mới muốn đổi sang `productId`. Sửa producer và consumer trong cùng PR rồi deploy catalog trước sẽ khiến cart cũ không đọc được payload. Multi-repo cũng gặp đúng lỗi đó, chỉ khác là thay đổi nằm trong hai PR.
+
+Mặc định mình chọn chiến lược **expand rồi contract** — mở rộng khả năng tương thích trước, thu hẹp sau:
+
+1. Cart chấp nhận payload cũ và payload mới, hoặc thêm public API/event v2 trong khi giữ v1.
+2. Release cart tương thích; kiểm tra các consumers cũ vẫn hoạt động.
+3. Catalog chuyển sang payload/API mới và được release riêng.
+4. Theo dõi release inventory và client còn dùng contract cũ. Đến hết cửa sổ hỗ trợ đã chốt, mới bỏ v1 bằng một thay đổi được công bố rõ.
+
+Đây là thay đổi hành vi, không chỉ đổi TypeScript type. Types giúp phát hiện lỗi lúc compile; runtime schema/validation và integration tests mới kiểm tra dữ liệu đến từ artifact được build ở thời điểm khác.
+
+Với contract được xem là tương thích hai chiều, ma trận minh họa nên kiểm tra:
+
+| Producer | Consumer | Ý nghĩa |
+| --- | --- | --- |
+| Hiện hành | Hiện hành | Baseline không bị hỏng |
+| Candidate | Hiện hành | Producer mới không phá consumer chưa nâng cấp |
+| Hiện hành | Candidate | Consumer mới còn đọc dữ liệu cũ khi cần rollout độc lập |
+| Candidate | Candidate | Luồng mới hoạt động |
+
+Không phải mọi breaking change đều hỗ trợ cả bốn ô. Nếu chỉ cho phép consumer nâng cấp trước, ghi rõ thứ tự, thời gian coexist và khả năng rollback. Rollback consumer về bản quá cũ sau khi producer đã bỏ v1 có thể không an toàn.
+
+SemVer và contract tests hỗ trợ quy trình này, nhưng không thay thế nhau. Version package, version public contract và release ID của remote cần được phân biệt; một remote patch vẫn có thể phá runtime contract nếu người viết phân loại sai thay đổi.
+
+## Chuyển repository strategy có kiểm soát
+
+Chuyển repo nên giải quyết một vấn đề đã xác định: quyền truy cập, thời gian CI, ownership hoặc dependency drift. Đừng đổi topology cùng lúc với framework, bundler và event contracts; khi lỗi xuất hiện, bạn sẽ khó biết lớp nào gây ra.
+
+| Hướng chuyển | Làm trước | Rủi ro cần kiểm tra |
+| --- | --- | --- |
+| Monorepo sang multi-repo | Loại deep imports; khai báo đủ dependencies; publish shared packages; giữ public entry | App phụ thuộc ngầm hoisting/root config; thiếu package version; mất integration checks |
+| Multi-repo sang monorepo | Giữ artifact/release IDs; thống nhất lockfile có review; gắn owners và task graph | Pipeline mới ép deploy chung; dependency resolution đổi; imports bắt đầu vượt boundary |
+| Sang hybrid | Chọn nhóm project có lifecycle liên quan; định nghĩa registry/contracts giữa nhóm | Không rõ owner ở ranh giới, phải duy trì hai cơ chế coordination |
+
+Thử chuyển một app ít rủi ro trước. Build và chạy app đó từ checkout sạch, với các dependencies được khai báo, rồi kiểm tra cùng release set đang dùng. Giữ nguyên URL/runtime contract khi đổi nơi lưu source để giới hạn phạm vi thay đổi.
+
+Sau chuyển đổi, so sánh thời gian CI, số lần release phải đợi team khác, tỷ lệ checks bị bỏ sót và công sức local setup. Repo ít hơn hoặc nhiều hơn không phải chỉ số thành công; khả năng làm một thay đổi an toàn với ít phối hợp không cần thiết mới là điều cần đo.
+
+## Các lỗi thường gặp
+
+| Triệu chứng | Hiểu nhầm hoặc nguyên nhân | Cách xử lý |
+| --- | --- | --- |
+| Một app đổi nhưng tất cả đều deploy | Gắn repo với release unit | Tách candidate, artifact và promotion của từng app |
+| CI xanh ở HEAD nhưng production lỗi | Chỉ test các app cùng revision | Test candidate với artifacts hiện hành và version skew được hỗ trợ |
+| Đổi contracts nhưng CI chỉ chạy package contracts | Affected dựa mỗi path hoặc graph thiếu consumer | Khai báo graph đúng và bổ sung runtime impact policy |
+| Cache hit nhưng artifact mang cấu hình cũ | Env/file từ xa không tham gia cache key | Khai báo inputs/env, pin snapshot hoặc tắt cache bước không deterministic |
+| App chỉ build được khi ở repo cũ | Dependency ngầm, deep import hoặc root config không đóng gói | Build từ checkout sạch, sửa manifest và public entries |
+| Multi-repo phải update mọi consumer cùng ngày | Contract breaking hoặc shared package bị ép dùng latest | Coexist versions, update PR và compatibility window |
+| Rollback remote vẫn bị lỗi tải chunk | Release cũ bị xóa hoặc entry URL bị ghi đè | Giữ artifact immutable, retention và mapping rollback |
+| CODEOWNERS có nhưng không chặn merge | Thiếu branch rule hoặc hiểu nhầm review là access control | Bật approval rule; tách repo nếu cần tách quyền đọc |
+
+## Checklist quyết định
+
+Trước khi chốt strategy, thử trả lời bằng bằng chứng thay vì chỉ ghi “có”:
+
+- [ ] Source ownership, quyền đọc và người review của mỗi app/package đã rõ.
+- [ ] Mỗi app có thể build từ checkout sạch với dependencies được khai báo.
+- [ ] Build/package graph và runtime integration relationships được phân biệt.
+- [ ] Artifact của từng app có release ID, provenance và URL immutable phù hợp.
+- [ ] Một thay đổi catalog tương thích có thể promote mà không rebuild/redeploy cart.
+- [ ] Shared package change chọn đúng consumers để kiểm tra, không auto deploy tất cả.
+- [ ] Integration checks biết chính xác tổ hợp artifact đang test.
+- [ ] Cache key bao quát inputs/config ảnh hưởng output; side effects không bị cache.
+- [ ] Public contract có compatibility window, thứ tự rollout và rollback đã kiểm chứng.
+- [ ] CI credentials và deployment permissions đúng phạm vi app/môi trường.
+
+Một bài kiểm chứng cụ thể để bắt đầu: sửa text hiển thị nội bộ catalog, tạo candidate, chạy smoke với shell/cart hiện hành rồi promote chỉ catalog. Sau đó thử thêm một field optional vào event contract. Nếu bước đầu buộc deploy cả shop hoặc bước sau chỉ test HEAD, bạn đã tìm được chỗ cần sửa trong pipeline trước khi cân nhắc đổi repository.
+
+## Tài liệu tham khảo
+
+- [npm workspaces](https://docs.npmjs.com/cli/v11/using-npm/workspaces) — chọn workspace và quy tắc chạy scripts.
+- [pnpm workspaces](https://pnpm.io/workspaces) — workspace protocol và chuyển dependency specs khi pack/publish.
+- [pnpm filtering](https://pnpm.io/filtering) — chọn dependencies/dependents và packages có thay đổi.
+- [Turborepo configuration](https://turborepo.com/docs/reference/configuration) — task graph, `dependsOn`, `outputs`, `env` và cache.
+- [GitHub CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners) — code-owner review và liên hệ với branch protection.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cấu trúc workspace" href="/docs/bat-dau/workspace" description="Bắt đầu lab bằng npm workspaces, build riêng từng app và tránh import vượt boundary." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Phần tiếp theo về kiểm tra public contracts giữa producer và consumer." />
+  <Card title="Local development nhiều ứng dụng" href="/docs/kiem-thu-va-tooling/local-development" description="Phần tiếp theo về orchestration, mocks và remote overrides." />
+  <Card title="Deploy độc lập" href="/docs/thuc-hanh/deploy-doc-lap" description="Lab tiếp theo để kiểm chứng release và rollback từng remote." />
+</Cards>

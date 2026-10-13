@@ -1,18 +1,358 @@
 ---
 title: "So sánh các cách tích hợp"
-description: "Chọn giữa federation, single-spa, Web Components và iframe theo tình huống."
+description: "Chọn Module Federation, single-spa, Web Components hay iframe theo boundary, mức độ tin cậy, trải nghiệm và yêu cầu vận hành."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử bạn cần ghép catalog mới vào shell của shop, trong khi cart vẫn chạy trên stack cũ. Module Federation, single-spa, Web Components và iframe đều có thể giúp giao diện xuất hiện, nhưng mỗi cách giải quyết một phần khác nhau. Nếu chỉ so bằng câu hỏi “cái nào hỗ trợ nhiều framework?”, bạn dễ chọn đúng công cụ tải code nhưng thiếu lifecycle, hoặc chọn đúng boundary UI nhưng không có isolation cần thiết.
+
+Bài này giúp bạn chốt cách tích hợp theo yêu cầu thực tế: phần nào cần deploy độc lập, code có đáng tin cậy không, hai phía cần chia sẻ gì và ai chịu trách nhiệm khi một phần lỗi. Mình ưu tiên cơ chế ít nhất đủ đáp ứng yêu cầu, thay vì đưa cả bốn vào cùng một hệ thống ngay từ đầu.
+
+<Callout type="info" title="Phạm vi so sánh">
+  Bài tập trung vào browser-side integration của shop giả định gồm shell, catalog và cart. Module Federation được xét theo mô hình container và shared dependencies của webpack 5; runtime/plugin khác có thể có hành vi khác. single-spa được xét ở vai trò orchestrator, Web Components ở boundary DOM, còn iframe ở boundary document và browsing context. Đây không phải hướng dẫn cấu hình các cơ chế này trong site Next.js hiện tại. Sơ đồ text không cần plugin bổ sung.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Đừng so các cơ chế như thể chúng cùng một lớp](#đừng-so-các-cơ-chế-như-thể-chúng-cùng-một-lớp)
+  - [Bốn câu hỏi cần tách riêng](#bốn-câu-hỏi-cần-tách-riêng)
+  - [Import maps nằm ở đâu](#import-maps-nằm-ở-đâu)
+- [Ma trận so sánh](#ma-trận-so-sánh)
+  - [Boundary và khả năng tích hợp](#boundary-và-khả-năng-tích-hợp)
+  - [Chi phí trải nghiệm và vận hành](#chi-phí-trải-nghiệm-và-vận-hành)
+- [Isolation là tiêu chí loại trừ trước tiên](#isolation-là-tiêu-chí-loại-trừ-trước-tiên)
+  - [Cùng document là cùng vùng tin cậy](#cùng-document-là-cùng-vùng-tin-cậy)
+  - [iframe cần policy chứ không chỉ một tag](#iframe-cần-policy-chứ-không-chỉ-một-tag)
+- [Chọn theo tình huống](#chọn-theo-tình-huống)
+  - [Cùng React và cần ghép sâu trong một trang](#cùng-react-và-cần-ghép-sâu-trong-một-trang)
+  - [Migration nhiều framework theo route](#migration-nhiều-framework-theo-route)
+  - [Widget cần dùng trong nhiều stack](#widget-cần-dùng-trong-nhiều-stack)
+  - [Ứng dụng bên ngoài hoặc legacy khó sửa](#ứng-dụng-bên-ngoài-hoặc-legacy-khó-sửa)
+  - [Một team hoặc trang phụ thuộc SSR](#một-team-hoặc-trang-phụ-thuộc-ssr)
+- [Giữ cùng contract khi đổi cách tích hợp](#giữ-cùng-contract-khi-đổi-cách-tích-hợp)
+  - [Luồng thêm sản phẩm vào giỏ](#luồng-thêm-sản-phẩm-vào-giỏ)
+  - [Transport thay đổi nhưng ownership không đổi](#transport-thay-đổi-nhưng-ownership-không-đổi)
+- [Kết hợp cơ chế khi có nhu cầu rõ ràng](#kết-hợp-cơ-chế-khi-có-nhu-cầu-rõ-ràng)
+- [Deploy độc lập cần nhiều hơn một loader](#deploy-độc-lập-cần-nhiều-hơn-một-loader)
+- [Kiểm chứng lựa chọn bằng một lát cắt shop](#kiểm-chứng-lựa-chọn-bằng-một-lát-cắt-shop)
+  - [Các ca thử bắt buộc](#các-ca-thử-bắt-buộc)
+  - [Đo performance trên cùng kịch bản](#đo-performance-trên-cùng-kịch-bản)
+- [Ghi quyết định kiến trúc](#ghi-quyết-định-kiến-trúc)
+- [Đọc tiếp](#đọc-tiếp)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phạm vi dự kiến
+## Đừng so các cơ chế như thể chúng cùng một lớp
 
-Bài này sẽ giúp bạn: chọn giữa federation, single-spa, Web Components và iframe theo tình huống.
+Bạn có thể hình dung việc ghép frontend như ghép các gian hàng vào một khu chung: cần đưa hàng đến, quyết định gian nào mở, thống nhất cổng giao tiếp và xác định khu vực nào có quyền truy cập riêng. Nhưng trong browser, “vách ngăn giao diện” không mặc nhiên là “vách ngăn bảo mật”. Shadow DOM ngăn nhiều selector CSS đi xuyên boundary; nó không ngăn JavaScript của widget đọc dữ liệu của shell.
 
-[Xem các bài trong nhóm Các cách tích hợp khác](/docs/cac-cach-tich-hop).
+### Bốn câu hỏi cần tách riêng
+
+| Câu hỏi | Cơ chế phù hợp để xem xét | Phần vẫn phải thiết kế |
+| --- | --- | --- |
+| Code ở build khác được tải và dependency được chia sẻ thế nào? | Module Federation | Public API, mount/unmount, routing, CSS và fallback |
+| Ứng dụng nào hoạt động theo URL, khi nào render và cleanup? | single-spa | Loader, dependency policy, state và CSS boundary |
+| Shell giao tiếp với UI đa framework qua API nào? | Web Components | Tải bundle, versioning, routing và policy bảo mật |
+| Có cần document và môi trường JavaScript riêng không? | iframe | Origin, sandbox, quyền được cấp và protocol giao tiếp |
+
+Module Federation có thể expose một React component, một hàm `mount()` hoặc một module đăng ký custom element. Nó không bắt buộc bạn chọn một UI contract cụ thể. single-spa nhận lifecycle từ loader rồi điều phối chúng; loader có thể dùng federation hoặc ESM.
+
+Vì vậy, đây không phải bốn lựa chọn luôn loại trừ nhau. Bạn đang chọn cơ chế cho từng lớp, nhưng cũng không cần lắp đủ mọi lớp bằng một thư viện riêng. Shell nhỏ có thể tự quản lý một lifecycle contract mà chưa cần orchestrator.
+
+### Import maps nằm ở đâu
+
+[Import maps](/docs/cac-cach-tich-hop/import-maps) ánh xạ module specifier sang URL cho ESM. Chúng giúp shell resolve `@shop/catalog` tới một release cụ thể; bản thân map không gọi mount, cô lập CSS hay kiểm tra version range như cấu hình shared dependency của federation.
+
+Native ESM có thể tái sử dụng module khi các import resolve về cùng module identity, nhưng không tự loại bỏ React đã được bundle bên trong từng artifact. Nếu muốn chia sẻ dependency qua URL, build phải externalize đúng dependency và map phải thống nhất graph cần chia sẻ. Một map cũng không tự chứng minh các exports tương thích.
+
+Khi so lựa chọn thực tế, hãy ghi cả tổ hợp: “single-spa + ESM/import maps” rõ nghĩa hơn chỉ ghi “single-spa”. Tương tự, “custom element + Shadow DOM + ESM loader” rõ hơn “Web Components”.
+
+## Ma trận so sánh
+
+Các bảng dưới mô tả cơ chế nền tảng, không chấm điểm một implementation cụ thể. “Cần tự thiết kế” không có nghĩa là không làm được; nó cho biết trách nhiệm chưa được công cụ đó giải quyết.
+
+### Boundary và khả năng tích hợp
+
+| Tiêu chí | Module Federation | single-spa | Web Components | iframe |
+| --- | --- | --- | --- | --- |
+| Boundary chính | Exposed module giữa các build | Application/parcel và lifecycle | Custom element với DOM contract | Document và browsing context riêng |
+| Document và JavaScript | Chạy trong document/realm của shell khi tải vào trang | Các application thông thường cùng document/realm | Element cùng document/realm với shell | Document và realm riêng; quyền truy cập phụ thuộc origin/sandbox |
+| Tải code | Runtime tải container và module/chunk | Gọi loading function do bạn cung cấp | Cần loader hoặc script để đăng ký element | Điều hướng `src` tới một document |
+| Chia sẻ dependency | Có share scope và policy version theo cấu hình | Không tự deduplicate hay chọn version | Không có registry quản lý dependency dùng chung | Không tự dùng chung module instance với shell |
+| Lifecycle UI | Module/adapter phải cung cấp | Điều phối bootstrap, mount, unmount | Callbacks như connected/disconnected; cleanup do element viết | Lifecycle của document; readiness nghiệp vụ cần protocol |
+| Nhiều framework | Có thể expose adapter thay vì component cùng framework | Phù hợp điều phối app với adapter cho từng framework | DOM contract giúp consumer không phụ thuộc framework bên trong | Framework bên trong không cần tích hợp trực tiếp với shell |
+| CSS boundary | Không tự cô lập CSS | Không tự cô lập CSS | Shadow DOM nếu dùng; custom element light DOM thì không | Stylesheet không cascade qua hai document |
+| Security boundary | Không | Không | Không, kể cả closed Shadow DOM | Có thể tạo boundary với origin và sandbox phù hợp |
+
+### Chi phí trải nghiệm và vận hành
+
+| Tiêu chí | Module Federation | single-spa | Web Components | iframe |
+| --- | --- | --- | --- | --- |
+| Ghép UI sâu | Thuận lợi nếu consumer hiểu API component; cùng React tree còn cần runtime tương thích | Application thường có root riêng; parcels cần adapter | Props/properties, slots và events; cần adapter ở consumer | Layout, modal và focus xuyên document khó hơn |
+| Routing | Shell/remote tự phân quyền router | Route activation cấp application; router nội bộ xử lý route con | Không tự điều phối URL cấp trang | URL của frame riêng; shell phải đồng bộ nếu muốn deep link cấp trang |
+| State dùng chung | Có thể truyền service/props; shared library không tự tạo đúng ownership | Truyền qua contract như custom props hoặc utility module | Properties, methods và DOM events | Thường dùng message protocol hoặc backend; không truyền function trực tiếp bằng structured clone |
+| Theme và accessibility | Dùng nền tảng UI chung thuận lợi nếu contract thống nhất | Phải thống nhất giữa các app/root | Theme qua CSS variables/parts; kiểm tra focus và semantics qua Shadow DOM | Cần title, focus flow, resize và giao tiếp qua boundary |
+| Fallback | Loader boundary và UI boundary do shell/remote cung cấp | Có status/error handling; UI fallback vẫn cần thiết kế | Lỗi tải/đăng ký và lỗi bên trong element cần xử lý riêng | Dùng handshake/timeout; sự kiện load không chứng minh app đã sẵn sàng |
+| Version/rollback | Pin remote và dependency policy; không mặc định hot-swap tab cũ | Theo loader và release config, không do lifecycle quyết định | Version artifact và tên tag; global registry không cho redefine cùng tên | Version URL document và protocol; reload frame cần tính đến state |
+| SSR | Phụ thuộc runtime, framework và pipeline hỗ trợ | Không tự cung cấp pipeline SSR của toàn trang | Cần chiến lược render/hydration; có tag không nghĩa có nội dung SSR | Frame có thể tự SSR, nhưng không hợp nhất HTML đó thành nội dung shell |
+
+Đừng đọc hàng “nhiều framework” như lời khuyên dùng nhiều framework. Có thể tích hợp không có nghĩa là ít chi phí: mỗi framework vẫn có runtime, tooling, accessibility conventions và lifecycle cần bảo trì.
+
+## Isolation là tiêu chí loại trừ trước tiên
+
+Trước khi cân nhắc bundle size hay developer experience, hãy xác định code có được phép chạy với quyền của shell hay không. Nếu câu trả lời là không, những cơ chế cùng document không trở thành an toàn chỉ vì thêm error boundary hoặc prefix CSS.
+
+### Cùng document là cùng vùng tin cậy
+
+Trong cách dùng browser thông thường, code tải bằng federation, application single-spa và custom element có thể truy cập `window`, sửa DOM và gọi API mà trang được phép gọi. Việc tải JavaScript từ CDN khác origin không chuyển nó sang một sandbox của CDN: code vẫn chạy trong ngữ cảnh trang đã tải nó.
+
+CSS Modules, prefix và Shadow DOM là các cách hạn chế xung đột style. Chúng không bảo vệ token, không ngăn sửa global và không chặn vòng lặp đồng bộ làm nghẽn main thread. React Error Boundary cũng không bắt mọi lỗi event handler, asynchronous task hoặc lỗi mạng của loader.
+
+<Callout type="warn" title="Đừng dùng UI encapsulation thay security isolation">
+  Nếu code bên thứ ba không được phép đọc dữ liệu hoặc điều khiển DOM của shell, đừng chỉ bọc nó bằng custom element hoặc single-spa parcel. Hãy đánh giá iframe trên origin riêng với quyền tối thiểu, hoặc không nhúng code đó. Code supply chain và quyền promote release vẫn cần được kiểm soát.
+</Callout>
+
+### iframe cần policy chứ không chỉ một tag
+
+iframe có document và JavaScript realm riêng, nhưng frame cùng origin không bị same-origin policy ngăn truy cập DOM của parent. Cross-origin frame hạn chế truy cập trực tiếp; `sandbox` bổ sung các hạn chế về script, navigation, form và những khả năng khác theo token được cấp.
+
+Với nội dung không đáng tin cậy, mình ưu tiên origin riêng và chỉ cấp quyền thực sự cần. Tránh ghép `allow-scripts` với `allow-same-origin` cho frame cùng origin với parent: nội dung có thể truy cập frame element để gỡ sandbox, làm mất ý nghĩa hạn chế đó. `allow-same-origin` giữ origin thực của document, không biến một URL cross-origin thành cùng origin với shell.
+
+Message bridge cũng là nơi cấp quyền. Với frame có origin xác định, bên gửi dùng `targetOrigin` cụ thể; bên nhận kiểm tra `event.origin`, `event.source` và schema payload. Origin hợp lệ chưa đủ để cho phép mọi command. Không tạo API kiểu “frame gửi URL bất kỳ, shell đính kèm token rồi fetch hộ”.
+
+Nếu sandbox không cấp `allow-same-origin`, frame thường có opaque origin và message gửi về mang origin `"null"`. Không coi chuỗi đó là danh tính đáng tin cậy. Bạn cần protocol riêng, kiểm tra source và kiểm soát capability; đừng giải quyết bằng cách bật mọi quyền hoặc truyền bí mật với `targetOrigin: '*'`.
+
+Ngoài ra, cần kiểm tra CSP `frame-src` của shell, `frame-ancestors` hoặc `X-Frame-Options` của nội dung nhúng, Permissions Policy và chính sách cookie/storage của browser. iframe không đảm bảo một process riêng hay miễn nhiễm vấn đề performance; khả năng phân tách tài nguyên phụ thuộc browser và môi trường chạy.
+
+## Chọn theo tình huống
+
+Mình chọn theo thứ tự: mức độ tin cậy → boundary route hay widget → yêu cầu giao tiếp → khả năng release và vận hành. Công cụ chỉ đến sau khi các điều kiện đó đã rõ.
+
+### Cùng React và cần ghép sâu trong một trang
+
+Giả sử shell và catalog đều dùng React, catalog cần release riêng, còn shell cần render public component của catalog trong cùng React tree. **Module Federation là ứng viên mặc định** nếu bundler/runtime được chọn hỗ trợ mô hình này và team sẵn sàng quản lý shared dependencies.
+
+Lợi thế là shell nhận exports JavaScript thay vì phải chuyển mọi tương tác sang DOM events. Nhưng dùng React Context xuyên boundary chỉ hoạt động khi component thực sự nằm trong cùng tree, React/runtime tương thích và hai bên dùng cùng identity của context object. `singleton: true` không tự biến hai `createRoot()` riêng thành một tree hay hợp nhất mọi store.
+
+Mình không chọn federation chỉ để chia một frontend nhỏ thành nhiều build. Nếu hai phần vẫn phải đổi và deploy cùng lúc vì import nội bộ của nhau, package/module boundary thường đơn giản hơn. Đọc [shared dependencies](/docs/module-federation/shared-dependencies) trước khi quyết định chia sẻ React, router hoặc design system.
+
+### Migration nhiều framework theo route
+
+Giả sử `/catalog` đã chuyển sang React, còn `/cart` vẫn ở framework cũ. Bạn muốn chuyển từng nhóm route mà không bắt shell trực tiếp hiểu cách khởi tạo và dọn từng framework. **single-spa là ứng viên mặc định** cho lớp orchestration.
+
+Mỗi application cung cấp lifecycle và vùng DOM riêng; root config quyết định application nào active. Loader có thể là ESM/import maps hoặc federation, tùy artifact và dependency policy. Việc chọn single-spa không đồng nghĩa phải chọn SystemJS.
+
+Mình không dùng application-level orchestration cho từng nút hay mỗi product card. Nếu cùng framework, component composition thường tự nhiên hơn. Trong migration, vẫn cần quy định route prefix, deep-link fallback phía server, CSS scope và cleanup; single-spa không giải quyết những phần đó thay team.
+
+### Widget cần dùng trong nhiều stack
+
+Giả sử một vùng catalog cần được nhúng vào shell React, portal Vue và một trang HTML thuần. **Custom element với contract nhỏ là ứng viên mặc định**, thêm Shadow DOM khi cần boundary style rõ ràng.
+
+Consumer biết properties, methods và events thay vì API nội bộ của framework. Đổi lại, bạn phải thống nhất cách truyền object, thời điểm element đã ready, event có đi qua Shadow DOM hay không, theme và overlay. Tooltip hoặc modal được đưa ra `document.body` không còn nằm trong boundary style của shadow root.
+
+Mình không bọc component React bằng custom element nếu mọi consumer đều là React và cần chia sẻ Context sâu. Khi đó DOM adapter thêm một lớp chuyển đổi mà không đem lại giá trị tương xứng. Cũng không tách mỗi instance product card thành một remote: nhiều element có thể dùng chung một bundle của vùng catalog.
+
+### Ứng dụng bên ngoài hoặc legacy khó sửa
+
+Giả sử bạn phải nhúng công cụ của đối tác, hoặc một ứng dụng cũ chỉ cung cấp URL trang và chưa thể viết lifecycle adapter. **iframe là ứng viên mặc định để giữ boundary document**, miễn là sản phẩm chấp nhận giới hạn UX và phía cung cấp cho phép embedding.
+
+Cách này tránh để stylesheet và framework của ứng dụng đó trộn trực tiếp vào shell. Nhưng bạn phải giải quyết chiều cao, nested scrolling, focus, modal trong phạm vi frame, auth và protocol khi cần báo “đã hoàn tất”. Cookie bên thứ ba có thể bị chặn hoặc partition; đừng suy ra “mở riêng được” thì “nhúng vào cũng login được”.
+
+Mình không dùng iframe cho luồng catalog/cart cần tương tác dày đặc và trải nghiệm như một trang duy nhất nếu không có yêu cầu isolation. Khi protocol ngày càng nhiều message để mô phỏng component API, hãy xem lại boundary. Với legacy nội bộ đáng tin cậy, iframe có thể là bước tạm thời rồi chuyển sang adapter theo route; kế hoạch đó cần mốc tháo bỏ cụ thể.
+
+### Một team hoặc trang phụ thuộc SSR
+
+Nếu một team sở hữu toàn bộ shop và chấp nhận cùng lịch release, mặc định mình chọn frontend modular hoặc [build-time composition](/docs/kien-truc/build-time-composition). Đó là phương án đối chứng, không phải phương án “kém hiện đại”. Nó giảm số release graph, loader và tổ hợp version phải vận hành.
+
+Nếu catalog phụ thuộc SSR/SEO, hãy quyết định cách tạo HTML trước khi quyết định browser loader. Không cơ chế nào trong bảng tự đảm bảo nội dung sản phẩm, metadata và hydration đúng cho toàn trang. Nội dung SSR bên trong iframe không tương đương nội dung sản phẩm được render trong document shell; cũng không nên kết luận tuyệt đối rằng crawler không thể thấy iframe.
+
+Với Next.js hoặc framework có server/client boundary, cần kiểm tra chính xác router, version, runtime và plugin định dùng. Thành công trong demo webpack client-side không chứng minh hỗ trợ React Server Components hoặc SSR. Khi yêu cầu chính là HTML hợp nhất từ server, hãy đánh giá [server-side composition](/docs/kien-truc/server-side-composition) và [Next.js, SSR và RSC](/docs/ui-va-framework/nextjs-ssr) riêng.
+
+## Giữ cùng contract khi đổi cách tích hợp
+
+Để so công bằng, giữ nguyên ownership của shop: shell quản lý navigation và trạng thái tích hợp; catalog sở hữu trải nghiệm chọn sản phẩm; cart sở hữu thao tác giỏ và summary. Chọn loader không nên làm catalog được quyền sửa reducer nội bộ của cart.
+
+### Luồng thêm sản phẩm vào giỏ
+
+Contract dưới đây là minh họa nghiệp vụ, không phải API có sẵn trong repository:
+
+```ts title="Public contract minh họa của cart"
+type AddItemCommand = {
+  requestId: string;
+  sku: string;
+  quantity: number;
+};
+
+type CartSummary = {
+  revision: number;
+  totalQuantity: number;
+};
+
+type AddItemResult =
+  | { ok: true; summary: CartSummary }
+  | { ok: false; code: 'INVALID_ITEM' | 'UNAVAILABLE' };
+
+interface CartApi {
+  addItem(command: AddItemCommand): Promise<AddItemResult>;
+  getSummary(): Promise<CartSummary>;
+  subscribe(listener: (summary: CartSummary) => void): () => void;
+}
+```
+
+Catalog chỉ yêu cầu thêm SKU và quantity. Cart xác nhận kết quả, sau đó summary mới được dùng để cập nhật badge; catalog không tự coi một click là thao tác đã thành công. `requestId` phục vụ đối chiếu request/response và có thể hỗ trợ idempotency nếu phía xử lý triển khai nó, không tự ngăn thao tác trùng.
+
+```text
+Catalog ── yêu cầu addItem ──► Cart domain
+Catalog ◄── kết quả thao tác ── Cart domain
+Shell   ◄── summary đã xác nhận ── Cart domain
+```
+
+Nếu cart UI chưa mount, cart domain vẫn phải nhận được command theo contract đã chọn. Đừng đăng ký listener xử lý giỏ chỉ bên trong trang `/cart` rồi để thao tác từ catalog biến mất khi trang đó inactive.
+
+### Transport thay đổi nhưng ownership không đổi
+
+| Cách tích hợp | Cách mang contract qua boundary | Bẫy cần tránh |
+| --- | --- | --- |
+| Module Federation | Tải public module hoặc truyền một `CartApi` qua props/lifecycle API | Import store/reducer nội bộ vì “đều là JavaScript” |
+| single-spa | Root config truyền service qua custom props hoặc loader tải utility module | Coi custom props là kênh reactive tự cập nhật mọi state |
+| Web Components | Truyền property/method qua adapter; dùng event cho yêu cầu hoặc notification | Cho rằng `CustomEvent` tự trả về Promise kết quả; cần callback hoặc response protocol |
+| iframe | Adapter chuyển call thành message có request ID, response và summary notification | Gửi function qua `postMessage`, thiếu timeout/validation hoặc chấp nhận mọi sender |
+
+TypeScript interface chỉ kiểm tra code trong phạm vi typecheck của bạn. Các release độc lập vẫn cần runtime validation ở boundary phù hợp và contract tests, nhất là payload DOM events hoặc messages. Một frame trả summary hợp lệ về schema cũng không được mặc nhiên có quyền thực hiện mọi thao tác giỏ.
+
+Với iframe, `subscribe()` trong interface là API của adapter phía shell: adapter nghe messages và trả disposer. Nó không phải truyền nguyên một function vào frame. Với mọi cách, UI teardown cần unsubscribe; unmount UI không có nghĩa là xóa state của cart domain.
+
+## Kết hợp cơ chế khi có nhu cầu rõ ràng
+
+Một tổ hợp hợp lý có từng thành phần giải quyết một yêu cầu cụ thể:
+
+| Tổ hợp | Khi đáng dùng | Trách nhiệm cần giữ rõ |
+| --- | --- | --- |
+| single-spa + Module Federation | Route-level lifecycle và artifact loading/sharing đều cần cơ chế riêng | single-spa sở hữu activation; federation tải module export lifecycle |
+| single-spa + ESM/import maps | App theo route, artifact là ESM và muốn chọn dependency URL rõ ràng | Chốt map snapshot và external dependencies; single-spa không kiểm tra compatibility |
+| Web Components + ESM hoặc federation | Cần DOM contract đa framework cùng artifact deploy riêng | Một đường tải/đăng ký mỗi element; version tag không do loader tự giải quyết |
+| Shell + iframe cho một vùng riêng | Chỉ một khu vực cần document/security boundary khác | Giới hạn message protocol và capability; không mở lại toàn bộ quyền của shell |
+
+Mình không đặt một single-spa application, một custom element rồi một React root cho cùng vùng UI nếu chỉ cần một adapter đơn giản. Mỗi wrapper phải có lý do và người sở hữu cleanup; nếu không, lỗi “đã unmount nhưng listener còn chạy” sẽ khó truy ngược.
+
+Với các module cùng document, cần chọn một đường resolve rõ ràng cho mỗi entry. Tải cùng implementation qua cả native ESM lẫn một loader khác không đảm bảo cùng module instance. Với custom elements dùng global registry, `customElements.define()` không cho redefine cùng tên; guard “đã có tag thì bỏ qua” tránh lỗi đăng ký nhưng không nâng cấp implementation cũ.
+
+## Deploy độc lập cần nhiều hơn một loader
+
+Build riêng là điều kiện hữu ích, nhưng deploy độc lập còn cần artifact discovery, contract tương thích và khả năng chọn lại một release đã biết. Web Components không tự cung cấp release registry; single-spa không tự canary; federation không tự bảo đảm shell cũ dùng được remote mới.
+
+Một policy tối thiểu nên trả lời được các câu hỏi sau:
+
+| Câu hỏi | Quyết định cần ghi |
+| --- | --- |
+| Shell lấy release ở đâu? | Remote config, import map, URL bundle đăng ký element hoặc URL document frame |
+| Tổ hợp nào được phép chạy? | Shell version, remote release, dependency snapshot và protocol/contract version |
+| Promote khi nào? | Upload đủ entry, chunk, CSS và asset trước; validate tổ hợp rồi mới đổi con trỏ |
+| Rollback tác động tới ai? | Document mới, tab cũ hay frame được reload; cách giữ state đang thao tác |
+| Ai biết phần nào đã lỗi? | Log phase, route, shell/remote release và config revision; fallback có owner |
+
+Mặc định mình chọn release snapshot nhất quán cho một document, dùng URL artifact bất biến và giữ artifact cũ đủ lâu cho lazy chunks của tab cũ. Những thứ có thể đổi như HTML hoặc runtime config cần cache policy riêng.
+
+<Callout type="warn" title="Rollback không đồng nghĩa hot-swap">
+  Đổi con trỏ remote hoặc import map thường tác động tới document mới. Module đã evaluate, dependency đã chọn và element đã đăng ký trong tab cũ không tự bị thay. iframe có thể điều hướng lại document riêng, nhưng thao tác đó có thể mất state và cần handshake lại. Hãy chốt recovery policy thay vì hứa thay release ngay trong mọi tab.
+</Callout>
+
+Thiết kế fallback theo phase: tải code/document, mount hoặc readiness, rồi thao tác nghiệp vụ. Timeout chỉ hết thời gian chờ; không mặc nhiên hủy module import hay command đang chạy. Tránh retry một mutation chỉ vì response chậm nếu chưa có policy idempotency. Xem thêm [rollout và rollback](/docs/trien-khai/rollout-rollback).
+
+## Kiểm chứng lựa chọn bằng một lát cắt shop
+
+Đừng làm bốn demo “Hello world” rồi so số dòng cấu hình. Hãy dùng cùng một lát cắt: mở `/catalog`, thêm một SKU, thấy badge đổi, đi `/cart`, quay lại và kiểm tra quantity. Artifact phải được phát hành theo mô hình định dùng; chạy tất cả từ một dev build chưa kiểm chứng deploy độc lập.
+
+Bạn không nhất thiết thử cả bốn. Loại phương án vi phạm yêu cầu bắt buộc trước, rồi so các ứng viên còn lại với frontend modular làm baseline nếu phù hợp.
+
+### Các ca thử bắt buộc
+
+| Ca thử | Cách tạo tình huống | Bằng chứng cần thấy |
+| --- | --- | --- |
+| Deep link và history | Mở URL con trực tiếp; Back/Forward giữa catalog và cart | Đúng UI, đúng owner của URL, không rewrite asset lỗi thành HTML |
+| UI chưa mount | Thêm sản phẩm từ catalog trước lần mở cart đầu tiên | Cart domain xử lý được; UI sau đó đọc đúng summary |
+| Load/readiness lỗi | Làm thiếu entry/chunk hoặc frame không gửi ready | Fallback cục bộ; shell vẫn điều hướng được; log đúng phase |
+| Điều hướng nhanh | Làm loader chậm rồi rời route trước khi hoàn tất | Không mount kết quả cũ, không cập nhật vùng UI đã bị tháo |
+| Cleanup | Mount/unmount nhiều lần, kiểm tra listeners và subscriptions | Không nhân đôi thao tác; không có update sau teardown |
+| Release tương thích | Promote catalog mới mà không rebuild shell | Luồng chính chạy với shell hiện tại và shell cũ còn được hỗ trợ |
+| Rollback và tab cũ | Giữ một tab mở trước release, rồi đổi con trỏ về bản trước | Tab mới nhận snapshot đúng; tab cũ còn tải được lazy asset |
+| Dependency và CSS | Kiểm tra runtime thực tải; đưa selector rộng vào remote | Không có dependency instance ngoài policy; boundary style đúng như cam kết |
+| Accessibility | Dùng keyboard đi qua header, vùng nội dung và modal | Focus không mất/kẹt; thông báo pending/error đọc được; frame có title phù hợp |
+| Boundary bảo mật | Với message bridge, gửi sai origin/source và payload không hợp lệ | Bị từ chối, không có mutation; capability không vượt contract |
+
+Nếu candidate dùng iframe, thêm ca cookie/storage theo browser target, frame đổi URL, resize và child lỗi sau sự kiện load. Nếu candidate dùng custom element, thêm ca mount trước khi bundle đăng ký, disconnect/reconnect và xung đột tên tag giữa release. Nếu dùng federation, thử dependency mismatch chứ không chỉ lỗi tải entry.
+
+### Đo performance trên cùng kịch bản
+
+Không có thứ hạng tốc độ cố định giữa bốn cơ chế. Federation có thể giảm dependency trùng khi cấu hình đúng, nhưng cũng có thêm bước entry/chunk loading. Widget đa framework có thể mang nhiều runtime; iframe có document và resource graph riêng. Kết quả phụ thuộc nhiều hơn vào artifact, cache, preloading và cách chia boundary.
+
+Giữ cùng dữ liệu, môi trường mạng/CPU, chức năng và điều kiện cache. Đo cold load và warm navigation riêng, ghi ít nhất:
+
+- JavaScript/CSS bytes thực tải, gồm dependency bị bundle lặp hoặc fallback copy.
+- Waterfall từ shell tới entry/document, chunk và request dữ liệu.
+- Thời gian tới UI có thể thao tác, long tasks và độ phản hồi khi thêm vào giỏ.
+- Memory và tài nguyên còn sống sau nhiều vòng mount/unmount.
+- Thời gian và hành vi recovery khi một phần bị chặn mạng hoặc release lỗi.
+
+Với iframe, đừng chỉ đọc metric của parent rồi kết luận child nhẹ: cần quan sát cả document bên trong bằng công cụ phù hợp. Ngưỡng pass/fail nên lấy từ ngân sách của sản phẩm; không đặt một con số minh họa rồi coi đó là benchmark chung.
+
+## Ghi quyết định kiến trúc
+
+Sau PoC, ghi một ADR ngắn để team hiểu vì sao chọn phương án đó và khi nào phải xét lại. Ví dụ dưới là quyết định giả định cho shop cùng React, không có code đối tác:
+
+```text title="ADR minh họa"
+Bối cảnh:
+  Catalog và cart thuộc hai team, cần release riêng.
+  Shell và các remote dùng React; code cùng vùng tin cậy.
+  Phạm vi hiện tại là client-side, chưa yêu cầu SSR.
+
+Quyết định:
+  Dùng Module Federation cho artifact loading và shared React policy.
+  Shell sở hữu router và truyền public cart service qua contract.
+  Chưa thêm single-spa, custom elements hay iframe.
+
+Lý do:
+  Cần ghép UI cùng React tree, không cần DOM contract đa framework
+  hoặc security boundary riêng; shell có thể quản lý lifecycle hiện tại.
+
+Chi phí chấp nhận:
+  Quản lý shared versions, CSS scope, contract tests và release snapshot.
+
+Điều kiện xét lại:
+  Migration nhiều framework theo nhóm route, thêm code không đáng tin cậy,
+  hoặc yêu cầu SSR làm thay đổi pipeline.
+
+Bằng chứng bắt buộc trước production:
+  Hoàn tất luồng shop, thử lỗi tải, cleanup, release tương thích và rollback;
+  lưu kết quả đo theo ngân sách performance của sản phẩm.
+```
+
+Trước khi chấp nhận ADR, kiểm tra:
+
+- [ ] Có nhu cầu deploy/ownership độc lập thực sự, hoặc lý do khác đủ rõ để không chọn frontend modular.
+- [ ] Đã xác định vùng tin cậy và loại isolation cần thiết.
+- [ ] Có owner cho loader, routing, lifecycle, CSS, state và fallback.
+- [ ] Contract không phụ thuộc implementation store/router nội bộ của domain khác.
+- [ ] Browser target, framework/runtime và yêu cầu SSR đã được kiểm chứng trên stack định dùng.
+- [ ] Có release snapshot, retention, rollback và recovery cho tab/frame cũ.
+- [ ] PoC có bằng chứng cho failure paths, accessibility và performance, không chỉ happy path.
+
+Bước tiếp theo là chọn một ứng viên còn phù hợp, thực hiện lát cắt catalog → cart và lưu kết quả các ca thử vào ADR. Chỉ bổ sung một cơ chế nữa khi có yêu cầu cụ thể mà phương án hiện tại chưa giải quyết.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Cơ chế Module Federation" href="/docs/module-federation/co-che" description="Hiểu container, share scope và các phase của một federated import." />
+  <Card title="single-spa và lifecycle" href="/docs/cac-cach-tich-hop/single-spa" description="Kiểm chứng route activation, mount/unmount và cleanup qua lab shop." />
+  <Card title="Web Components" href="/docs/cac-cach-tich-hop/web-components" description="Thiết kế DOM contract, Shadow DOM và adapter đa framework." />
+  <Card title="ES modules và import maps" href="/docs/cac-cach-tich-hop/import-maps" description="Chọn module URL, dependency graph và release snapshot cho native ESM." />
+  <Card title="iframe isolation" href="/docs/cac-cach-tich-hop/iframe" description="Trang trong lộ trình dành cho sandbox, postMessage và giới hạn UX của iframe." />
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Giữ boundary nghiệp vụ ổn định khi thay loader hoặc UI framework." />
+</Cards>
+
+## Tài liệu tham khảo
+
+- [webpack — Module Federation](https://webpack.js.org/concepts/module-federation/): container, remote loading và shared modules; không phải cam kết cho mọi runtime/plugin federation.
+- [single-spa — Microfrontends overview](https://single-spa.js.org/docs/microfrontends-concept/): application theo route, parcels và utility modules.
+- [MDN — Using Shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM): CSS encapsulation và giới hạn của closed shadow root.
+- [MDN — iframe](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe): browsing context, sandbox tokens và lưu ý bảo mật khi ghép quyền.
+- [MDN — Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage): structured clone, target origin và kiểm tra sender/payload.
+- [MDN — script type importmap](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap): module resolution, scopes và ràng buộc của mapping trong document.

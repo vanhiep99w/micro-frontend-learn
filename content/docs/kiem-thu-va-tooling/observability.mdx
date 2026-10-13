@@ -1,18 +1,617 @@
 ---
 title: "Logs, metrics và tracing"
-description: "Gắn tên ứng dụng, release version và correlation IDs vào lỗi cùng telemetry."
+description: "Thiết kế telemetry cho micro-frontend: xác định app và release gây lỗi, đo trải nghiệm người dùng, nối trace với backend và điều tra sự cố."
 ---
 
-<Callout type="info" title="Trang placeholder">
-  Bài này chưa có nội dung chi tiết. Bạn có thể yêu cầu viết tiếp bằng skill `fumadocs-technical-writer`.
+Giả sử shell vẫn mở bình thường, nhưng catalog hiển thị fallback và người dùng không thêm được hàng vào cart. Dashboard backend không báo lỗi. Nếu error report chỉ có `ChunkLoadError` và version của shell, bạn chưa biết catalog nào được tải, lỗi xảy ra trước hay sau khi mount, và team nào cần xử lý.
+
+**Telemetry của micro-frontend phải trả lời được cả “người dùng bị ảnh hưởng thế nào?” và “artifact nào tham gia vào lỗi?”.** Logs giúp xem một sự kiện cụ thể, metrics cho biết phạm vi ảnh hưởng, còn tracing nối các bước của cùng một thao tác. Ba loại dữ liệu có ích khi cùng nói về một app, release và boundary rõ ràng.
+
+<Callout type="info" title="Phạm vi và điều kiện chạy ví dụ">
+  Bài dùng shop gồm shell, catalog và cart trong một lab client-side riêng. Các file TypeScript bên dưới là ví dụ bạn tạo trong lab, không phải implementation có sẵn trong repository tài liệu này. Phần telemetry facade không phụ thuộc vendor; phần tracing cần các package OpenTelemetry đã nêu. Sơ đồ text không cần cấu hình Mermaid.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Chọn tín hiệu và phân quyền sở hữu](#chọn-tín-hiệu-và-phân-quyền-sở-hữu)
+  - [Logs metrics và traces trả lời những câu hỏi khác nhau](#logs-metrics-và-traces-trả-lời-những-câu-hỏi-khác-nhau)
+  - [Một transport cho mỗi runtime](#một-transport-cho-mỗi-runtime)
+- [Metadata để nhận diện app và release](#metadata-để-nhận-diện-app-và-release)
+  - [Các field tối thiểu](#các-field-tối-thiểu)
+  - [Release thực tế khác release dự kiến](#release-thực-tế-khác-release-dự-kiến)
+  - [Phân biệt các loại ID](#phân-biệt-các-loại-id)
+- [Telemetry facade không làm hỏng ứng dụng](#telemetry-facade-không-làm-hỏng-ứng-dụng)
+  - [Bind context theo từng app](#bind-context-theo-từng-app)
+  - [Instrument remote loader](#instrument-remote-loader)
+- [Thu thập lỗi và đọc stack trace](#thu-thập-lỗi-và-đọc-stack-trace)
+  - [Bắt lỗi ở đúng boundary](#bắt-lỗi-ở-đúng-boundary)
+  - [Source maps phải khớp artifact](#source-maps-phải-khớp-artifact)
+  - [Grouping và chống ghi nhận trùng](#grouping-và-chống-ghi-nhận-trùng)
+- [Metrics cho trải nghiệm người dùng](#metrics-cho-trải-nghiệm-người-dùng)
+  - [Đo từ load đến UI sẵn sàng](#đo-từ-load-đến-ui-sẵn-sàng)
+  - [Web Vitals thuộc page không tự thuộc remote](#web-vitals-thuộc-page-không-tự-thuộc-remote)
+  - [Cardinality và cách tổng hợp](#cardinality-và-cách-tổng-hợp)
+- [Nối trace từ browser đến backend](#nối-trace-từ-browser-đến-backend)
+  - [Trace context qua các boundary](#trace-context-qua-các-boundary)
+  - [Ví dụ OpenTelemetry với context tường minh](#ví-dụ-opentelemetry-với-context-tường-minh)
+  - [CORS và giới hạn propagation](#cors-và-giới-hạn-propagation)
+- [Sampling privacy và chi phí telemetry](#sampling-privacy-và-chi-phí-telemetry)
+- [Dashboard SLO và cảnh báo](#dashboard-slo-và-cảnh-báo)
+- [Runbook điều tra lỗi sau deploy](#runbook-điều-tra-lỗi-sau-deploy)
+- [Kiểm thử observability trước production](#kiểm-thử-observability-trước-production)
+- [Checklist triển khai](#checklist-triển-khai)
+- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
+- [Đọc tiếp](#đọc-tiếp)
 
-## Phạm vi dự kiến
+## Chọn tín hiệu và phân quyền sở hữu
 
-Bài này sẽ giúp bạn: gắn tên ứng dụng, release version và correlation IDs vào lỗi cùng telemetry.
+Mình bắt đầu bằng remote load errors, render errors, thời gian đến UI sẵn sàng và kết quả của một user journey quan trọng. Không bắt đầu bằng việc ghi mọi click, mọi state và toàn bộ request body: dữ liệu tăng nhanh nhưng câu hỏi điều tra vẫn chưa có đáp án.
 
-[Xem các bài trong nhóm Kiểm thử và tooling](/docs/kiem-thu-va-tooling).
+### Logs metrics và traces trả lời những câu hỏi khác nhau
+
+| Tín hiệu | Câu hỏi phù hợp | Ví dụ trong shop |
+| --- | --- | --- |
+| Structured logs và error events | Chuyện gì xảy ra, ở boundary nào, với build nào? | Shell không load được `catalog/CatalogPage`; error code là `REMOTE_LOAD_FAILED` |
+| Metrics | Lỗi xảy ra bao nhiêu, thời gian phân bố thế nào? | Tỷ lệ remote load thất bại; histogram thời gian catalog ready |
+| Traces | Thời gian và quan hệ nhân quả nằm ở đâu? | Thao tác mở cart → API request → backend đọc cart |
+
+Error tracking thường bổ sung stack trace, grouping, breadcrumbs và source maps. Nó không thay thế metric có mẫu số. Mười error events có thể thuộc một người retry liên tục hoặc mười người khác nhau; chỉ nhìn số event chưa biết mức ảnh hưởng.
+
+Trace cũng không tự bao phủ toàn bộ phiên người dùng. Mình tạo trace cho một operation có điểm bắt đầu và kết thúc, chẳng hạn mở cart hoặc xác nhận thêm hàng. Không giữ một root span mở trong nhiều giờ chỉ để gom cả tab thành một trace.
+
+### Một transport cho mỗi runtime
+
+Với các remote chạy trong cùng window, mặc định để shell sở hữu SDK initialization, global listeners, sampling và transport. Remote nhận một telemetry capability đã bind context. Cách này tránh mỗi team patch `fetch`, đăng ký `window.onerror` và gửi cùng lỗi một lần nữa.
+
+```text
+Shell ──────┐
+Catalog ────┼──► telemetry facade ──► queue/transport ──► ingestion
+Cart ───────┘          │                                    │
+                 context riêng/app                 redact, validate, route
+```
+
+Facade là contract chung, không phải yêu cầu mọi app có cùng cách xử lý lỗi nội bộ. Owner của catalog vẫn quyết định lỗi nào cần fallback và lúc nào UI sẵn sàng; shell quyết định telemetry được gửi đi thế nào.
+
+| Phần việc | Owner mặc định |
+| --- | --- |
+| SDK, global listeners, endpoint và privacy policy | Platform hoặc shell team |
+| Events ở module load và mount boundary | Shell integration owner |
+| Render errors, domain outcome và ready signal trong remote | Team sở hữu remote |
+| Release metadata và source maps | Pipeline của app tạo artifact |
+| Trace propagation và server spans | Frontend API client owner phối hợp backend team |
+| Alert routing và runbook | Owner của boundary, có platform hỗ trợ |
+
+Iframe là runtime riêng: thường cần SDK riêng trong frame, cộng contract trao đổi context với parent khi được phép. Không đọc globals của frame khác origin. Remote chạy standalone cũng cần bootstrap transport riêng; khi chạy trong shell thì dùng capability được inject, không bootstrap hai lần.
+
+<Callout type="warn" title="Một SDK không có nghĩa một global scope cho mọi app">
+  Đừng thay global tag `app_name` thành `catalog` trước một thao tác rồi đổi lại thành `cart`. Hai tác vụ bất đồng bộ có thể chạy xen kẽ và gán lỗi sai owner. Dùng context theo event hoặc scoped facade. Nếu remote gọi SDK trực tiếp, kiểm tra yêu cầu tương thích version của vendor; không mặc định các bản SDK khác nhau chia sẻ scope an toàn.
+</Callout>
+
+## Metadata để nhận diện app và release
+
+Một error message có thể giống nhau ở nhiều build. Metadata giúp phân biệt “catalog mới đang lỗi” với “tab cũ còn giữ catalog cũ”. Những field sau là **schema ứng dụng minh họa**, không phải tất cả đều là OpenTelemetry semantic conventions.
+
+### Các field tối thiểu
+
+| Field | Ý nghĩa và cách dùng |
+| --- | --- |
+| `event_id` | ID riêng cho lần ghi nhận; dùng deduplicate delivery retry |
+| `event_name` | Tên ổn định như `mfe.remote_load` hoặc `mfe.render_error`, không chứa ID động |
+| `timestamp` | Thời điểm event ở browser; không dùng để suy ra chính xác thứ tự giữa nhiều máy |
+| `environment` | `local`, `preview` hoặc `production`; không trộn vào cùng SLO |
+| `app_name` | App tạo event hoặc sở hữu boundary đang instrument |
+| `app_release` | Build ID bất biến của app đó; thường là tên app cộng commit/build digest |
+| `shell_release` | Shell thực tế đang chạy trong tab |
+| `subject_app` và `subject_release` | App bị tác động nếu khác app tạo event, ví dụ shell đang tải catalog |
+| `route_template` | Route đã normalize như `/products/:productId`, không phải URL raw |
+| `config_revision` | Revision của runtime config hoặc manifest dùng để resolve remote |
+| `outcome` và `error_code` | Kết quả và mã lỗi có tập giá trị hữu hạn |
+| `correlation_id`, `trace_id`, `span_id` | Nối logs và traces khi có context hợp lệ; không dùng làm metric labels |
+
+Khi map sang OpenTelemetry, có thể dùng resource attributes như `service.name` và `service.version` theo mô hình service của bạn, rồi thêm custom span attributes cho app tham gia. Một provider browser dùng chung có resource cố định; không đổi resource thành catalog rồi thành cart theo từng event. Nếu cần mỗi app là một resource/service riêng, phải thiết kế provider/export routing tương ứng và quản lý instrumentation để không trùng.
+
+### Release thực tế khác release dự kiến
+
+Giả sử manifest mới trỏ catalog build B, nhưng một tab đã load build A và vẫn đang hoạt động. Lỗi trong A phải được báo với A, không phải với “latest” lấy từ config vừa refresh.
+
+Remote nên expose metadata được nhúng lúc build qua public module hoặc mount handshake. Shell ghi release đã resolve trước khi tải; khi module thực sự chạy, ghi thêm release do remote khai báo. Trước khi tải thành công, `subject_release` chỉ là candidate từ manifest, chưa phải bằng chứng code đó đã thực thi.
+
+```json title="Ví dụ metadata của một event sau khi remote đã chạy"
+{
+  "event_name": "mfe.render_error",
+  "environment": "production",
+  "app_name": "catalog",
+  "app_release": "catalog@a1b2c3d",
+  "shell_release": "shell@d4e5f6a",
+  "route_template": "/products/:productId",
+  "config_revision": "shop-config-42",
+  "error_code": "RENDER_FAILED"
+}
+```
+
+Tên release và revision trên chỉ là giá trị minh họa. Đừng gom mọi app vào cùng version `1.0.0` nếu pipeline không đảm bảo version đó nhận diện đúng artifact. Với lỗi phối hợp nhiều app, lưu **release map của các app đang tham gia** trong error context; không biến toàn bộ tổ hợp version thành một metric label.
+
+### Phân biệt các loại ID
+
+| ID | Vòng đời | Không nên nhầm với |
+| --- | --- | --- |
+| `correlation_id` | Một thao tác hoặc chuỗi event theo contract của hệ thống | Trace có đầy đủ spans |
+| `trace_id` | Một distributed trace, do tracing SDK tạo/quản lý | UUID nghiệp vụ tự nhét vào `traceparent` |
+| `span_id` | Một bước trong trace | ID của toàn bộ operation |
+| `request_id` | Một HTTP request cụ thể, thường do gateway/backend gán | Mọi retry của cùng ý định |
+| `operation_id` | Một ý định nghiệp vụ, có thể giữ nguyên qua retry để idempotency | Cơ chế chống ghi telemetry trùng |
+| `session_id` | Một session theo policy được duyệt | Trace kéo dài suốt phiên hoặc user identity |
+
+Correlation ID giống mã phiếu để tìm những ghi chú cùng việc. Nhưng có cùng mã phiếu chưa cho biết bước nào gọi bước nào hay thời gian chờ nằm ở đâu; đó là phần span graph của tracing.
+
+Nếu retry một command với cùng `operation_id`, các request vẫn có thể có `request_id` và span riêng. Nếu backend trả request ID để hỗ trợ điều tra, chỉ nhận field đã thống nhất và validate trước khi lưu. Không dùng bất kỳ ID nào trong bảng này để quyết định quyền truy cập.
+
+## Telemetry facade không làm hỏng ứng dụng
+
+Instrumentation phải giữ nguyên hành vi của code được đo: thành công vẫn trả kết quả, lỗi vẫn reject với lỗi ban đầu. Endpoint telemetry chết không được biến thao tác thêm hàng thành thất bại.
+
+### Bind context theo từng app
+
+Ví dụ dưới dùng TypeScript với DOM types trong lab browser. Sink chỉ nhận structured event, không nhận `Error`, URL, props hay request body. Đây là phần core có thể thử bằng sink giả; chưa phải queue và transport production.
+
+```ts title="src/observability/telemetry.ts"
+export type AppName = 'shell' | 'catalog' | 'cart';
+export type ReleaseContext = Readonly<{
+  environment: 'local' | 'preview' | 'production';
+  app_name: AppName;
+  app_release: string;
+  shell_release: string;
+  route_template: string;
+  config_revision: string;
+}>;
+
+type Signal = Readonly<{
+  event_name: 'mfe.remote_load' | 'mfe.render_error' | 'mfe.ready';
+  outcome: 'success' | 'failure' | 'cancelled';
+  error_code?: 'REMOTE_LOAD_FAILED' | 'RENDER_FAILED';
+  duration_ms?: number;
+  subject_app?: AppName;
+  subject_release?: string;
+  correlation_id?: string;
+}>;
+
+export type TelemetryRecord = ReleaseContext & Signal & {
+  event_id: string;
+  timestamp: string;
+};
+export type Sink = (record: TelemetryRecord) => void | Promise<void>;
+export type Telemetry = { emit(signal: Signal): void };
+
+export function createTelemetry(
+  context: ReleaseContext,
+  sink: Sink,
+): Telemetry {
+  const scope = Object.freeze({ ...context });
+
+  return {
+    emit(signal) {
+      try {
+        const duration = signal.duration_ms;
+        const record: TelemetryRecord = {
+          ...scope,
+          // Liệt kê field thay vì spread object do caller truyền vào.
+          event_name: signal.event_name,
+          outcome: signal.outcome,
+          error_code: signal.error_code,
+          subject_app: signal.subject_app,
+          subject_release: signal.subject_release,
+          correlation_id: signal.correlation_id,
+          duration_ms:
+            duration !== undefined && Number.isFinite(duration) && duration >= 0
+              ? duration
+              : undefined,
+          event_id: crypto.randomUUID(),
+          timestamp: new Date().toISOString(),
+        };
+        void Promise.resolve(sink(record)).catch(() => {
+          // Không report lỗi transport lại qua chính transport này.
+        });
+      } catch {
+        // Telemetry là best effort; caller không phải xử lý lỗi telemetry.
+      }
+    },
+  };
+}
+```
+
+Context được snapshot nên hai facade không ghi đè nhau. Khi route hoặc mount context đổi, tạo facade mới cho operation mới; operation đang chạy giữ snapshot của nó. Không đọc `window.location.href` khi event kết thúc vì route có thể đã đổi và URL có thể chứa dữ liệu nhạy cảm.
+
+TypeScript không phải runtime validator. Adapter và ingestion vẫn cần kiểm tra enum, độ dài string, format release/ID và route allowlist, nhất là dữ liệu đến từ `postMessage` hay remote không cùng trust boundary. Sink production nên enqueue nhanh, có batch, giới hạn queue và backoff; không gọi một exporter đồng bộ nặng trong mỗi event.
+
+### Instrument remote loader
+
+Wrapper sau đo thời gian loader resolve hoặc reject. Nó chưa đo UI ready, chưa phân tích các subphase của federation runtime, và chưa cài timeout. Nếu runtime loader đã có deadline, wrapper quan sát kết quả đó; nếu chưa, hãy thiết kế deadline/cancellation ở loader, không tự coi `Promise.race` là đã hủy download.
+
+```ts title="src/observability/load-remote.ts"
+import type { AppName, Telemetry } from './telemetry';
+
+export async function observeRemoteLoad<T>(
+  load: () => Promise<T>,
+  telemetry: Telemetry,
+  target: { app: AppName; candidateRelease: string },
+  correlationId: string,
+): Promise<T> {
+  const started = performance.now();
+  const common = {
+    event_name: 'mfe.remote_load' as const,
+    subject_app: target.app,
+    subject_release: target.candidateRelease,
+    correlation_id: correlationId,
+  };
+
+  try {
+    const module = await load();
+    telemetry.emit({
+      ...common,
+      outcome: 'success',
+      duration_ms: performance.now() - started,
+    });
+    return module;
+  } catch (error) {
+    telemetry.emit({
+      ...common,
+      outcome: 'failure',
+      error_code: 'REMOTE_LOAD_FAILED',
+      duration_ms: performance.now() - started,
+    });
+    throw error;
+  }
+}
+```
+
+Shell gọi wrapper bằng facade có `app_name: 'shell'` và `app_release` của shell; target là catalog cùng candidate release đã resolve từ manifest. Tạo `correlationId` một lần ở đầu thao tác, truyền nó cho cả load và mount thay vì mỗi event tự tạo một ID mới.
+
+`subject_release` ở wrapper này là **candidate**, kể cả sau khi Promise resolve. Để biết artifact thực tế, đối chiếu metadata từ module đã tải. Không giả vờ phân biệt CORS, 404, stale cache hay shared-version mismatch chỉ bằng regex trên error message: nhiều lỗi browser cho cùng thông báo mơ hồ. Có thể bổ sung stage/error code từ runtime hooks có tài liệu, nhưng cần kiểm thử theo runtime và version đang dùng.
+
+Wrapper không capture exception vào error tracker. Nếu bạn thêm bước đó, chỉ định wrapper là report owner cho load failure; fallback nhận lỗi để hiển thị UI, không capture lần nữa. Facade này cũng không gửi raw stack, nên muốn đọc stack phải nối adapter error tracking riêng ở boundary bên dưới.
+
+## Thu thập lỗi và đọc stack trace
+
+### Bắt lỗi ở đúng boundary
+
+Một global error handler là lưới an toàn, không phải hệ thống attribution cho mọi micro-frontend. Nó thấy lỗi thoát ra ngoài nhưng có thể thiếu context nghiệp vụ và không thấy các lỗi đã được catch.
+
+| Boundary | Cần ghi nhận | Cách xử lý cho người dùng |
+| --- | --- | --- |
+| Resolve/load remote | Target, config revision, candidate release, stage nếu có | Fallback chỉ vùng remote bị lỗi, retry theo policy |
+| Mount/update/unmount | App thực tế, instance context, lifecycle stage | Cleanup phần mount dở, tránh giữ instance lỗi |
+| Render | App/release từ wrapper sở hữu remote; stack đã sanitize | Error boundary hoặc cơ chế tương ứng framework |
+| Async command/API | Correlation/trace context, outcome và mã lỗi ổn định | Phân biệt reject nghiệp vụ, lỗi kỹ thuật và kết quả chưa rõ |
+| `error` và `unhandledrejection` toàn cục | Lỗi chưa có report owner; attribution từ bằng chứng hiện có | Không tự thao tác DOM hoặc nuốt lỗi để làm dashboard xanh |
+
+Với React, Error Boundary phù hợp cho lỗi render trong subtree, nhưng không tự bắt mọi lỗi trong event handler hay async task; các nhánh đó cần `try/catch` hoặc error path riêng. Resource load errors cũng không phải lúc nào cung cấp stack như JavaScript exceptions.
+
+Lỗi hết hàng có thể là outcome nghiệp vụ bình thường, không phải exception cần page on-call. Timeout sau khi gửi command cũng không chứng minh backend chưa commit; dùng contract kết quả và reconcile trong bài [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts). Telemetry nên giữ sự khác biệt này.
+
+Nếu global listener không có bằng chứng lỗi thuộc catalog, ghi `unknown` trong schema mở rộng hoặc route vào nhóm unattributed. Đừng gán cho app cuối cùng vừa mount. Trong example schema nhỏ ở trên chưa có global error event, nên cần mở rộng contract trước khi dùng cho trường hợp này.
+
+### Source maps phải khớp artifact
+
+Một stack như `assets/catalog-xyz.js:1:18420` chưa giúp sửa source. Error tracker cần map đúng file đó về source của **build đã tạo file**, không phải HEAD mới nhất.
+
+Pipeline nên đi theo thứ tự:
+
+1. Build artifact bất biến, nhúng release metadata và tạo source maps.
+2. Upload maps bằng cơ chế matching của vendor: release + asset path, debug ID hoặc cơ chế tương ứng toolchain.
+3. Publish chính artifact đó, không rebuild riêng cho bước deploy.
+4. Chạy smoke test tạo một lỗi có chủ đích trong preview, kiểm tra stack đã map về file và dòng source đúng.
+
+Với bundle có code từ nhiều owner, một tag `app_release` không tự map mọi stack frame. Kiểm tra metadata của từng artifact/frame và khả năng hỗ trợ micro-frontend của error tracker. Sentry, chẳng hạn, có hướng dẫn dùng module metadata và transport routing cho trường hợp này; adapter cụ thể cần theo bundler và SDK bạn chọn.
+
+<Callout type="warn" title="Source maps cũng là dữ liệu cần bảo vệ">
+  Upload bằng credential của CI, không nhúng credential đó vào browser. Nếu policy không cho công khai source, kiểm tra cả `.map`, nội dung `sourcesContent` và cấu hình publish CDN. “Hidden source map” không đồng nghĩa file map chắc chắn không bị deploy.
+</Callout>
+
+Đối với script khác origin, thiếu cấu hình CORS phù hợp có thể chỉ cho lỗi mơ hồ như `Script error.`. Kiểm tra cả cấu hình script loader và response từ CDN; source maps không khôi phục được stack vốn không được browser cung cấp.
+
+### Grouping và chống ghi nhận trùng
+
+Fingerprint nên dựa vào nhóm lỗi ổn định, app/boundary và stack đã normalize khi có. Không đưa timestamp, correlation ID hay toàn bộ error message chứa ID động vào fingerprint: mỗi event sẽ thành một issue mới.
+
+Release là chiều để so sánh regression; thường không cần ép mỗi release thành issue riêng. Giữ `app_release` trong tags/context để hỏi “issue này xuất hiện từ build nào?” mà vẫn nhìn được lịch sử của cùng lỗi.
+
+Chống trùng có hai lớp khác nhau:
+
+- **Capture trùng:** loader, fallback và global handler cùng report một lỗi. Giải quyết bằng report ownership; dùng dedup của SDK hoặc tracking object error trong runtime nếu cần.
+- **Delivery trùng:** queue retry cùng event khi chưa biết server đã nhận chưa. Giữ nguyên `event_id` qua retry để ingestion deduplicate trong cửa sổ đã thiết kế.
+
+Đừng deduplicate bằng “message giống nhau trong vài giây”. Cách đó có thể làm mất hai lỗi thật từ hai instance. Một log kết quả load và một exception report vẫn có thể cùng tồn tại, nhưng dashboard không được cộng chúng thành hai lần thất bại của cùng attempt.
+
+## Metrics cho trải nghiệm người dùng
+
+### Đo từ load đến UI sẵn sàng
+
+Remote module resolve chưa có nghĩa người dùng dùng được màn hình. Module có thể còn mount, fetch dữ liệu, render skeleton hoặc thất bại ngay trong render đầu tiên.
+
+```text
+Navigation accepted → load module → mount accepted → data/render → ready
+         │                 │              │                       │
+         └──────── thời gian navigation đến UI ready ─────────────┘
+```
+
+Thống nhất điểm đo trước khi đặt alert:
+
+| Metric minh họa | Điểm bắt đầu và kết thúc |
+| --- | --- |
+| `mfe_remote_load_attempts_total` | Mỗi loader attempt kết thúc, với `outcome` success/failure/cancelled |
+| `mfe_remote_load_duration_ms` | Trước gọi loader → Promise settle; đo cả success và failure |
+| `mfe_mount_duration_ms` | Trước gọi mount → mount API hoàn tất theo contract |
+| `mfe_navigation_to_ready_ms` | Shell chấp nhận navigation → ready signal của instance còn hiện hành |
+| `mfe_fallback_shown_total` | Fallback thực sự được hiển thị, phân biệt load và render failure |
+| `cart_add_outcomes_total` | Command kết thúc với committed/rejected/unknown theo domain contract |
+
+Các tên có suffix `_ms` ở đây dùng milliseconds như example facade. Nếu adapter hoặc backend metric dùng seconds theo convention của nó, đổi cả giá trị lẫn tên đơn vị; không chỉ đổi tên metric.
+
+Ready signal cần định nghĩa rõ: chẳng hạn dữ liệu bắt buộc đã có và control chính đã tương tác được. `root.render()` trả về không phải tín hiệu paint xong. Shell phải bỏ ready signal đến từ instance đã unmount hoặc navigation bị thay thế, tránh đo UI cũ cho route mới.
+
+Nếu tính attempt-level error rate thì denominator gồm mọi attempt đủ điều kiện, kể cả retry. Nếu tính mức ảnh hưởng người dùng thì cần denominator theo journey/session được phép thu thập. Hai loại metric có thể cùng cần thiết, nhưng đừng gọi attempt rate là tỷ lệ người dùng bị lỗi.
+
+### Web Vitals thuộc page không tự thuộc remote
+
+Theo [Web Vitals](https://web.dev/articles/vitals), bộ Core Web Vitals hiện dùng LCP, INP và CLS. Thu thập ở cấp page/runtime một lần, thường ở shell, bằng thư viện `web-vitals` thay vì mỗi remote tự đăng ký rồi gửi bản sao.
+
+LCP tốt không chứng minh catalog load nhanh: phần tử LCP có thể thuộc header của shell. INP xấu cũng không tự chứng minh cart là thủ phạm chỉ vì cart đang mở; main thread dùng chung có thể bị code từ app khác chặn.
+
+Ghi app đang active, route template và release map làm context để phân tích. Khi cần attribution, dùng dữ liệu attribution của thư viện, Resource Timing hoặc performance profiling; coi app active là gợi ý, không phải kết luận nhân quả. Metric page-level cũng không tự reset thành metric mới cho mỗi client-side route; nếu dùng soft-navigation measurement, công bố rõ công cụ, browser hỗ trợ và semantics của phép đo riêng.
+
+Resource Timing có thể giúp tách thời gian fetch asset khỏi evaluate/render, nhưng cross-origin resources có các trường bị hạn chế nếu không có `Timing-Allow-Origin` phù hợp. CORS và `Timing-Allow-Origin` giải quyết hai việc khác nhau. `transferSize === 0` cũng không đủ để kết luận asset lấy từ cache vì hạn chế visibility có thể cho giá trị tương tự.
+
+### Cardinality và cách tổng hợp
+
+Cardinality là số tổ hợp label mà backend phải giữ. Một route template có vài giá trị; URL có product ID, search query và token có thể tạo gần như một chuỗi mới cho mỗi request.
+
+Mình dùng metric dimensions hữu hạn như app, environment, route template, phase và outcome. Release có ích cho rollout, nhưng cần retention, giới hạn số release đang phân tích hoặc dùng deployment annotations/cohort có giới hạn; không gắn cả release map vào mọi time series.
+
+Không dùng `event_id`, `trace_id`, `session_id`, email, raw URL hay product ID làm metric labels. Giữ correlation/trace IDs trong logs và traces; dùng exemplars nếu hệ thống hỗ trợ để mở một trace từ histogram mà không tạo time series cho mỗi trace.
+
+Với latency, lưu histogram hoặc các observations để backend tính percentile. Không lấy trung bình các p95 của từng remote hay từng máy rồi gọi đó là p95 toàn hệ thống. Với Web Vitals, phân tích field data và p75 theo hướng dẫn chính thức, tách những cohort cần thiết như mobile/desktop; với operation latency, chọn percentile phù hợp SLO đã thống nhất.
+
+## Nối trace từ browser đến backend
+
+### Trace context qua các boundary
+
+Một distributed trace cần propagation, không chỉ field `trace_id` trên một log. Trong shop, trace có thể có dạng:
+
+```text
+cart.read                         [browser operation]
+└── GET /api/cart                 [browser client span]
+    └── GET /api/cart             [backend server span]
+        └── cart repository read  [backend internal span]
+```
+
+HTTP dùng W3C `traceparent` và có thể có `tracestate`; để SDK inject/extract đúng format. `correlation_id` là metadata ứng dụng bổ sung, không thay thế headers này. Header có sampled flag cũng không đảm bảo mọi span sẽ được lưu: còn exporter, backend policy và delivery.
+
+Với các remote cùng window, truyền context qua capability hoặc function parameter; không cần giả lập HTTP headers giữa hai function call. Nếu qua event bus hay `postMessage`, dùng carrier theo contract, validate schema/origin và extract context ở bên nhận. Chỉ nối parent-child khi thực sự có quan hệ nhân quả. Các tác vụ fan-out, queued work hoặc context không còn phù hợp có thể cần span links thay vì ép vào một cây kéo dài.
+
+Không tự thêm `traceparent` vào mọi request CDN hoặc script tag. Browser instrumentation không tự biến tải remoteEntry và mọi chunk thành server trace đầy đủ, nhất là khi loader dùng script injection và CDN không tạo spans. Loader timing vẫn hữu ích dù không có distributed spans cho asset.
+
+### Ví dụ OpenTelemetry với context tường minh
+
+Phần này là lab tối thiểu cho **manual tracing**, dùng console exporter để nhìn spans. [Tài liệu OpenTelemetry browser](https://opentelemetry.io/docs/languages/js/getting-started/browser/) hiện cảnh báo browser client instrumentation còn experimental và chưa được quy định đầy đủ; cần kiểm thử trên browser/toolchain thực tế trước khi rollout.
+
+Cài trong workspace lab, không cài vào site tài liệu:
+
+```bash
+npm install @opentelemetry/api @opentelemetry/sdk-trace-web \
+  @opentelemetry/sdk-trace-base @opentelemetry/core
+```
+
+Chọn các version tương thích, giữ lockfile. Bootstrap một lần trước khi mount app; không import file bootstrap này từ mỗi remote.
+
+```ts title="src/observability/tracing-bootstrap.ts"
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import {
+  ConsoleSpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
+import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
+
+const provider = new WebTracerProvider({
+  spanProcessors: [new SimpleSpanProcessor(new ConsoleSpanExporter())],
+});
+provider.register({
+  propagator: new W3CTraceContextPropagator(),
+});
+```
+
+Ví dụ sau tạo một root span riêng cho lần đọc cart, tạo client span làm con và truyền đúng context cho request same-origin. Nó không dựa vào giả định `context.active()` tự giữ đúng operation qua mọi `await` trong browser.
+
+```ts title="src/cart/read-cart.ts"
+import {
+  propagation,
+  ROOT_CONTEXT,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+} from '@opentelemetry/api';
+
+const tracer = trace.getTracer('shop.cart-client');
+
+export async function readCart(
+  releases: { cart: string; shell: string },
+  correlationId: string,
+): Promise<unknown> {
+  const operation = tracer.startSpan('cart.read', {
+    attributes: {
+      'app.name': 'cart',
+      'app.release': releases.cart,
+      'shell.release': releases.shell,
+      'app.correlation_id': correlationId,
+    },
+  }, ROOT_CONTEXT);
+  const operationContext = trace.setSpan(ROOT_CONTEXT, operation);
+
+  const request = tracer.startSpan('GET /api/cart', {
+    kind: SpanKind.CLIENT,
+    attributes: { 'http.request.method': 'GET' },
+  }, operationContext);
+  const requestContext = trace.setSpan(operationContext, request);
+
+  try {
+    const carrier: Record<string, string> = {};
+    propagation.inject(requestContext, carrier);
+    // Endpoint same-origin do ứng dụng kiểm soát, không phải URL tùy ý.
+    const response = await fetch('/api/cart', {
+      headers: { ...carrier, 'X-Correlation-ID': correlationId },
+    });
+    request.setAttribute('http.response.status_code', response.status);
+    if (!response.ok) throw new Error('CART_READ_HTTP_FAILED');
+    const cart: unknown = await response.json();
+    return cart; // Caller còn cần validate domain schema.
+  } catch (error) {
+    // Không đưa raw Error/message hoặc response body vào span.
+    request.setStatus({ code: SpanStatusCode.ERROR });
+    operation.setStatus({ code: SpanStatusCode.ERROR });
+    throw error;
+  } finally {
+    request.end();
+    operation.end();
+  }
+}
+```
+
+Contract của `correlationId` trong ví dụ là UUID do ứng dụng tạo ở đầu operation, không phải string người dùng nhập. Backend phải có instrumentation extract W3C context, tạo server span và export đến nơi bạn có thể query. Header đến server đúng nhưng backend không tạo span thì chưa có trace end-to-end.
+
+Console exporter cho thấy parent-child của hai browser spans; không thay thế backend lưu trữ. Với production, dùng batch processor/exporter phù hợp và ingestion endpoint đã bảo vệ. Đừng nhúng API key quản trị hoặc credential của collector vào bundle. Nếu không bootstrap provider, calls qua API có thể trở thành no-op và bạn không có bằng chứng tracing đang hoạt động.
+
+Manual client span đã bao quanh `fetch`; nếu đồng thời bật auto-instrumentation fetch, có thể tạo thêm client span cho cùng request. Chọn một report owner hoặc cấu hình exclusion. Nếu operation phải nằm trong user interaction trace có sẵn, truyền parent context từ caller thay vì luôn dùng `ROOT_CONTEXT` như lab này.
+
+### CORS và giới hạn propagation
+
+Với API khác origin, trace headers và custom correlation header có thể khiến browser preflight. Backend/gateway phải cho phép origin, method và headers cần thiết; với credentials, không dùng wildcard origin để né cấu hình.
+
+- `Access-Control-Allow-Headers` phải cho phép các header thực sự được gửi, như `traceparent`, `tracestate` hoặc `X-Correlation-ID` khi có.
+- Nếu JavaScript cần đọc `X-Request-ID` từ response cross-origin, server phải expose header đó qua `Access-Control-Expose-Headers`.
+- CSP `connect-src` phải cho phép API và endpoint telemetry; ingestion endpoint cũng cần policy CORS tương ứng.
+- Chỉ propagate đến origins/paths do bạn tin cậy và đã phê duyệt. Redirect và request third-party cần được xét trong policy.
+
+Baggage là cơ chế khác với Trace Context. Không đưa token, email, user profile hay giỏ hàng vào baggage: dữ liệu có thể đi qua nhiều service và bị ghi lại. Trace headers cũng không phải bằng chứng danh tính; backend phải validate, giới hạn và áp dụng sampling/rate policy riêng, không tin mọi quyết định sampling từ browser.
+
+## Sampling privacy và chi phí telemetry
+
+Telemetry browser là best effort. Ad blocker, offline, tab đóng, quota và lỗi ingestion đều có thể làm mất events. “Không có lỗi trong dashboard” không chứng minh ứng dụng không lỗi; synthetic checks và kiểm thử artifact là nguồn bằng chứng bổ sung.
+
+| Loại dữ liệu | Policy khởi đầu hợp lý |
+| --- | --- |
+| Outcomes dùng cho SLI | Thu tập đủ nhỏ nhưng không sampling tùy tiện; nếu phải sample, công bố phương pháp và giới hạn |
+| Error events | Thu theo quota, redact và dedup; giữ khả năng phát hiện regression mà không gây flood |
+| Debug logs | Tắt hoặc sample mạnh ở production, bật có thời hạn khi cần |
+| Traces | Head sampling theo operation/cohort, theo dõi sampling decision |
+| Session replay | Mặc định chưa bật; chỉ bật sau review privacy, consent và masking |
+
+Đừng sample độc lập mỗi span nếu muốn giữ trace có quan hệ đầy đủ. Head sampling quyết định trước khi biết operation có lỗi hay không; việc đổi sampled flag sau lỗi không tự lấy lại spans đã bị bỏ. Nếu cần giữ traces lỗi bằng tail sampling ở backend, backend phải nhận đủ dữ liệu cần xét, nên cần tính lại bandwidth và ingestion cost.
+
+SLI không nên được suy ra trực tiếp từ error traces đã ưu tiên sample vì mẫu đó bị lệch. Nếu errors và successes dùng hai sampling rate khác nhau, raw counts không cho ra failure rate đúng; cần phương pháp weighting được thiết kế và kiểm chứng, hoặc một outcome stream riêng.
+
+Privacy nên được bảo vệ bằng allowlist ở client **và** ở ingestion. Không log raw URL/query, request/response body, authorization header, form values hay toàn bộ props. Error messages, stack, breadcrumbs và tên file cũng cần review vì có thể chứa dữ liệu ngoài dự kiến. Hash user identifier vẫn có thể là dữ liệu cá nhân có khả năng liên kết, không tự trở thành anonymous.
+
+Transport production cần giới hạn queue/batch, backoff có jitter và quota theo app/environment. Không persist mọi event vào localStorage vô thời hạn. Nếu dùng `sendBeacon` hoặc `fetch` với `keepalive` lúc rời trang, coi đó là best effort chứ không phải xác nhận server đã nhận. Nếu endpoint telemetry lỗi, không tạo vòng lặp report chính lỗi transport đó.
+
+## Dashboard SLO và cảnh báo
+
+Mình chia dashboard thành ba góc nhìn để tránh một đồ thị lớn không có hành động đi kèm:
+
+1. **Trải nghiệm:** journey outcomes, fallback exposure, navigation-to-ready, Web Vitals.
+2. **Boundary:** remote load failures và durations theo target/phase, mount/render failures, API outcome.
+3. **Release:** deployment annotations, cohorts chạy artifact cũ/mới, config revision và links tới errors/traces tương ứng.
+
+Ví dụ giả định team đặt mục tiêu: **99,5% lần mở catalog đủ điều kiện đạt ready trong 3 giây**. Đây là SLO minh họa, không phải ngưỡng chuẩn cho mọi micro-frontend.
+
+```text
+Good events = navigation đạt ready trong 3 giây
+Total events = mọi navigation đủ điều kiện đã có kết quả theo contract
+SLI = Good events / Total events
+Error budget = 1 - 0,995 = 0,005
+```
+
+Navigation lỗi load, render hoặc vượt deadline phải nằm trong total và không nằm trong good. Nếu người dùng chủ động rời route trước deadline, định nghĩa cancellation và policy đủ điều kiện ngay từ đầu; không loại lỗi dưới tên cancellation để làm SLO đẹp hơn. Browser biến mất trước khi gửi kết quả là missing data, cần theo dõi coverage và dùng nguồn kiểm tra bổ sung, không âm thầm coi là success.
+
+Alert nên dựa trên mức ảnh hưởng và burn rate của budget qua nhiều cửa sổ, kèm minimum traffic/volume phù hợp. Với ví dụ trên, failure rate 1% tương ứng burn rate `0,01 / 0,005 = 2`; đây chỉ là phép tính minh họa, chưa phải cấu hình paging hoàn chỉnh.
+
+Một alert có ích cần có:
+
+- Boundary và owner cần nhận alert; với remote load là target owner cùng platform khi có bằng chứng lỗi hạ tầng.
+- Environment, route/cohort và thời gian bắt đầu regression.
+- Release/config revision đang liên quan, không chỉ release deploy gần nhất.
+- Link tới dashboard, error group, trace mẫu và runbook.
+- Hành động an toàn: pause rollout, kiểm tra manifest/CDN, hoặc rollback **đúng artifact** sau khi có bằng chứng.
+
+Không page chỉ vì có một `ChunkLoadError` đơn lẻ. Ngược lại, “không có traffic” hoặc “telemetry pipeline không nhận dữ liệu” cần cảnh báo health riêng, không để được hiểu là error rate bằng không.
+
+## Runbook điều tra lỗi sau deploy
+
+Giả sử failure rate tăng sau khi catalog deploy. Thứ tự sau giúp kiểm tra giả thuyết mà không vội quy mọi lỗi cho build mới.
+
+1. **Xác nhận ảnh hưởng.** Xem journey/fallback metrics, denominator, traffic và health ingestion. Tách production khỏi preview, retry attempts khỏi số journey.
+2. **Lấy một event có context.** Ghi app tạo event, target, release thực tế nếu đã biết, candidate release nếu chưa tải, shell release, config revision và route template.
+3. **So artifact, không chỉ timestamp deploy.** Đối chiếu manifest, asset URL, response/cache headers và metadata nhúng trong module. Kiểm tra tab cũ, stale CDN và assets bị xóa sớm.
+4. **Xác định phase.** Load failure thì kiểm tra Network/runtime loader. Render failure thì mở stack đã symbolicate và release map. API failure thì mở trace/request ID tương ứng.
+5. **Theo dõi operation.** Query correlation ID ở logs; mở trace để xem request có đến backend không, server lỗi hay client xử lý response lỗi. Nếu thiếu span, kiểm tra propagation/sampling trước khi kết luận request không chạy.
+6. **Tái hiện đúng tổ hợp.** Dùng preview hoặc môi trường điều tra với shell/remote/config tương ứng. Không chỉ chạy tất cả app ở HEAD rồi kết luận không tái hiện được.
+7. **Giảm ảnh hưởng theo policy.** Pause rollout, dùng fallback hoặc rollback target artifact khi bằng chứng phù hợp. Giữ assets và source maps của build còn trong cửa sổ hỗ trợ; kiểm tra cả tab cũ lẫn tab mới sau rollback.
+8. **Xác nhận phục hồi.** Theo dõi metrics theo cửa sổ và cohorts, không chỉ test một tab. Lưu query, artifact IDs và nguyên nhân vào incident record; bổ sung regression test đúng boundary.
+
+Nếu lỗi chỉ xuất hiện ở global handler với app unknown, giữ nguyên điều đó trong điều tra. Bổ sung attribution cho lần sau tốt hơn việc đổi tag để alert tự biến mất.
+
+## Kiểm thử observability trước production
+
+Telemetry cũng là code ở boundary: cần test rằng nó đúng, không chỉ test rằng “có gọi capture”. Các kiểm tra sau chạy bằng sink/exporter giả trong unit tests và browser thật trong integration tests.
+
+| Tình huống | Điều cần assert |
+| --- | --- |
+| Loader thành công | Trả nguyên module; một success event; duration hữu hạn không âm |
+| Loader reject | Reject bằng đúng object lỗi ban đầu; một failure event ở report owner |
+| Sink throw hoặc Promise reject | Hành vi ứng dụng không đổi; không có unhandled rejection do sink |
+| Catalog và cart chạy xen kẽ | Context app/release không bị ghi đè giữa hai facade |
+| Caller sửa object context sau khi tạo facade | Event vẫn dùng snapshot ban đầu |
+| Navigation bị thay thế | Ready từ instance cũ không hoàn tất metric của navigation mới |
+| Một lỗi đi qua loader và fallback | Không capture hai exception cho một report owner |
+| Delivery retry | Giữ event ID, không sinh ID mới cho cùng record |
+| Manual tracing | Client span cùng trace với operation, parent đúng và span luôn kết thúc |
+| API cross-origin | Preflight thành công; header được nhận/extract; trace backend nối đúng |
+| Source map smoke test | Lỗi từ artifact preview map đúng file/dòng source của chính build đó |
+| Privacy và quota | Payload không có token/query/form data; queue không tăng vô hạn |
+| Telemetry endpoint bị chặn | UI vẫn hoạt động, không tạo request/report loop |
+
+Với wrapper `observeRemoteLoad`, sink giả có thể chỉ đẩy record vào array để assert. Sink reject phải được kiểm tra riêng sau khi Promise microtask xử lý, không chỉ assert ngay trên lời gọi `emit`. Facade đảm bảo không ném lỗi ở client, nhưng backend validation và routing vẫn cần integration test riêng.
+
+Kiểm tra cả request headers **và** spans export khi thử tracing: thấy một `traceparent` trong DevTools chưa chứng minh server span được nối và lưu. Các fault cases như chunk 404, render throw, API timeout và mất endpoint telemetry nên có trong preview trước khi bật alert production.
+
+## Checklist triển khai
+
+- [ ] Schema telemetry có owner, version, enum và runtime validation ở ingestion.
+- [ ] App/release thực tế được nhúng vào artifact; shell lưu config revision và candidate release khi load.
+- [ ] Remote dùng scoped facade; SDK/global instrumentation không bootstrap trùng trong cùng runtime.
+- [ ] Load, mount, render và async command có report ownership rõ ràng.
+- [ ] Source maps khớp artifact, smoke test symbolication pass và credential chỉ nằm trong CI.
+- [ ] Ready signal, denominator, cancellation và deadline được định nghĩa trước khi làm SLO.
+- [ ] Metric labels có giới hạn cardinality; IDs không trở thành labels.
+- [ ] W3C propagation được test end-to-end, có allowlist origins và CORS/CSP tương ứng.
+- [ ] Sampling policy không làm sai SLI; missing telemetry có health checks riêng.
+- [ ] Payload, breadcrumbs và replay đã qua privacy review; queue/quota có giới hạn.
+- [ ] Alert có owner, release context, evidence links và hành động giảm ảnh hưởng an toàn.
+
+Bắt đầu với một journey, chẳng hạn mở catalog: bind release metadata, ghi load outcome, thống nhất ready signal và kiểm tra một lỗi có chủ đích trong preview. Khi bạn đã đi từ alert đến artifact và source line đúng, mới mở rộng instrumentation sang các journey khác.
+
+## Tài liệu tham khảo
+
+- [OpenTelemetry JavaScript trong browser](https://opentelemetry.io/docs/languages/js/getting-started/browser/) — provider, exporter và trạng thái browser instrumentation.
+- [W3C Trace Context](https://www.w3.org/TR/trace-context/) — format `traceparent`/`tracestate`, propagation, privacy và security considerations.
+- [Sentry: Micro Frontends](https://docs.sentry.io/platforms/javascript/guides/react/best-practices/micro-frontends/) — local scopes, module metadata, routing và tương thích SDK.
+- [Web Vitals](https://web.dev/articles/vitals) — LCP, INP, CLS, field measurement và percentile được khuyến nghị.
+- [MDN: PerformanceResourceTiming](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming) — Resource Timing và giới hạn cross-origin.
+- [React: Catching rendering errors with an error boundary](https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary) — phạm vi bắt lỗi của React Error Boundary.
+
+## Đọc tiếp
+
+<Cards>
+  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Phân biệt command outcomes, operation IDs và context đi qua boundary." />
+  <Card title="Integration và E2E tests" href="/docs/kiem-thu-va-tooling/integration-e2e" description="Kiểm tra telemetry và lỗi phối hợp trong browser thật." />
+  <Card title="Remote không tải" href="/docs/troubleshooting/remote-khong-tai" description="Điều tra URL, runtime loader và lỗi tải artifact." />
+  <Card title="Rollout và rollback" href="/docs/trien-khai/rollout-rollback" description="Dùng tín hiệu production để quyết định tiếp tục hay dừng rollout." />
+</Cards>
