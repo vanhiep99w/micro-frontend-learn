@@ -8,7 +8,7 @@ Giả sử shell vẫn mở bình thường, nhưng catalog hiển thị fallbac
 **Telemetry của micro-frontend phải trả lời được cả “người dùng bị ảnh hưởng thế nào?” và “artifact nào tham gia vào lỗi?”.** Logs giúp xem một sự kiện cụ thể, metrics cho biết phạm vi ảnh hưởng, còn tracing nối các bước của cùng một thao tác. Ba loại dữ liệu có ích khi cùng nói về một app, release và boundary rõ ràng.
 
 <Callout type="info" title="Phạm vi và điều kiện chạy ví dụ">
-  Bài dùng shop gồm shell, catalog và cart trong một lab client-side riêng. Các file TypeScript bên dưới là ví dụ bạn tạo trong lab, không phải implementation có sẵn trong repository tài liệu này. Phần telemetry facade không phụ thuộc vendor; phần tracing cần các package OpenTelemetry đã nêu. Sơ đồ text không cần cấu hình Mermaid.
+  Bài dùng shop gồm shell, catalog và cart trong một lab client-side riêng. Các file TypeScript bên dưới là ví dụ bạn tạo trong lab, không phải implementation có sẵn trong repository tài liệu này. Phần telemetry facade không phụ thuộc vendor; phần tracing cần các package OpenTelemetry đã nêu.
 </Callout>
 
 ## Mục lục
@@ -63,11 +63,18 @@ Trace cũng không tự bao phủ toàn bộ phiên người dùng. Mình tạo 
 
 Với các remote chạy trong cùng window, mặc định để shell sở hữu SDK initialization, global listeners, sampling và transport. Remote nhận một telemetry capability đã bind context. Cách này tránh mỗi team patch `fetch`, đăng ký `window.onerror` và gửi cùng lỗi một lần nữa.
 
-```text
-Shell ──────┐
-Catalog ────┼──► telemetry facade ──► queue/transport ──► ingestion
-Cart ───────┘          │                                    │
-                 context riêng/app                 redact, validate, route
+```d2 title="Một transport cho mỗi runtime"
+direction: right
+shell: Shell
+catalog: Catalog
+cart: Cart
+facade: "Telemetry facade\nContext riêng/app"
+queue: Queue / transport
+ingestion: "Ingestion\nRedact, validate, route"
+shell -> facade
+catalog -> facade
+cart -> facade
+facade -> queue -> ingestion
 ```
 
 Facade là contract chung, không phải yêu cầu mọi app có cùng cách xử lý lỗi nội bộ. Owner của catalog vẫn quyết định lỗi nào cần fallback và lúc nào UI sẵn sàng; shell quyết định telemetry được gửi đi thế nào.
@@ -328,10 +335,15 @@ Chống trùng có hai lớp khác nhau:
 
 Remote module resolve chưa có nghĩa người dùng dùng được màn hình. Module có thể còn mount, fetch dữ liệu, render skeleton hoặc thất bại ngay trong render đầu tiên.
 
-```text
-Navigation accepted → load module → mount accepted → data/render → ready
-         │                 │              │                       │
-         └──────── thời gian navigation đến UI ready ─────────────┘
+```d2 title="Đo từ load đến UI sẵn sàng"
+direction: right
+nav: Navigation accepted
+load: Load module
+mount: Mount accepted
+data: Data / render
+ready: Ready
+nav -> load -> mount -> data -> ready
+nav -> ready: "Thời gian navigation đến UI\nready"
 ```
 
 Thống nhất điểm đo trước khi đặt alert:
@@ -377,11 +389,13 @@ Với latency, lưu histogram hoặc các observations để backend tính perce
 
 Một distributed trace cần propagation, không chỉ field `trace_id` trên một log. Trong shop, trace có thể có dạng:
 
-```text
-cart.read                         [browser operation]
-└── GET /api/cart                 [browser client span]
-    └── GET /api/cart             [backend server span]
-        └── cart repository read  [backend internal span]
+```d2 title="Trace context qua các boundary"
+direction: right
+n0: "cart.read\nBrowser operation"
+n1: "GET /api/cart\nBrowser client span"
+n2: "GET /api/cart\nBackend server span"
+n3: "Cart repository read\nBackend internal span"
+n0 -> n1 -> n2 -> n3
 ```
 
 HTTP dùng W3C `traceparent` và có thể có `tracestate`; để SDK inject/extract đúng format. `correlation_id` là metadata ứng dụng bổ sung, không thay thế headers này. Header có sampled flag cũng không đảm bảo mọi span sẽ được lưu: còn exporter, backend policy và delivery.

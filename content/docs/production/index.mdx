@@ -8,7 +8,7 @@ Giả sử catalog vừa release bộ lọc mới, shell và cart không đổi.
 Nhóm **Production** giúp bạn trả lời một câu hỏi thực tế: **mỗi team có thể release độc lập đến mức nào mà trải nghiệm chung vẫn nhanh, đúng và có đường phục hồi?** Mình mặc định giữ quyền tự chủ bên trong domain, nhưng đặt cam kết rõ tại boundary: budget, contract, quyền thực thi và trách nhiệm khi có lỗi.
 
 <Callout type="info" title="Phạm vi trang này">
-  Đây là trang định hướng, không phải hướng dẫn deploy site Fumadocs hiện tại. Ví dụ dùng shop giả định gồm shell, catalog và cart, chủ yếu theo mô hình client-side runtime composition. Repository này chỉ chứa tài liệu; release IDs, policy và bài tập bên dưới không phải hạ tầng đã có sẵn. Với SSR, cần đánh giá thêm performance, failure và quyền thực thi phía server. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
+  Đây là trang định hướng, không phải hướng dẫn deploy site Fumadocs hiện tại. Ví dụ dùng shop giả định gồm shell, catalog và cart, chủ yếu theo mô hình client-side runtime composition. Repository này chỉ chứa tài liệu; release IDs, policy và bài tập bên dưới không phải hạ tầng đã có sẵn. Với SSR, cần đánh giá thêm performance, failure và quyền thực thi phía server.
 </Callout>
 
 ## Mục lục
@@ -40,9 +40,15 @@ Một remote render được ở chế độ standalone mới chứng minh một
 
 Vì vậy, đơn vị kiểm chứng không chỉ là “catalog r19”. Nó là **journey chạy trên một tổ hợp release và môi trường xác định**. Trong shop giả định, journey tối thiểu có thể là mở catalog, chọn sản phẩm, thêm hàng, thấy badge cập nhật rồi mở cart. Nếu catalog hiện nhanh nhưng thao tác thêm hàng mất kết quả, journey vẫn thất bại.
 
-```text
-Người dùng → Shell → Catalog → Cart capability / API
-                 └─────────→ Cart UI và badge
+```d2 title="Production readiness thuộc về trải nghiệm đã ghép"
+direction: right
+user: Người dùng
+shell: Shell
+catalog: Catalog
+capability: Cart capability / API
+ui: Cart UI + badge
+user -> shell -> catalog -> capability
+shell -> ui
 ```
 
 Sơ đồ thể hiện dependency nghiệp vụ, không bắt buộc các phần tải tuần tự. Cart capability có thể là service/adapter tách khỏi cart UI; nếu cả hai nằm trong cùng remote, lỗi tải remote đó có thể ảnh hưởng cả thao tác thêm hàng lẫn hiển thị giỏ.

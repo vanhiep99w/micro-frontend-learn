@@ -94,12 +94,17 @@ Mình giữ shell mỏng ở bước này. Nếu shell import store nội bộ c
 
 Đường tải dự kiến của ví dụ webpack Federation tối thiểu là:
 
-```text
-Browser
-  ├── localhost:3000 → HTML và JavaScript của shell
-  └── localhost:3001 → container entry và các chunk của catalog
-
-Shell consume module công khai → render Catalog UI trong trang shell
+```d2 title="Browser tải code từ đâu"
+direction: right
+browser: Browser
+shell: "localhost:3000\nHTML và JavaScript shell"
+catalog: "localhost:3001\nContainer entry và chunks\ncatalog"
+consume: "Shell consume public module"
+ui: "Catalog UI trong trang shell"
+browser -> shell
+browser -> catalog
+shell -> consume
+catalog -> consume -> ui
 ```
 
 Browser tải code remote và chạy nó trong trang shell; Node.js chủ yếu chạy tooling và dev server trong ví dụ này. Đây không phải việc server shell gọi trang HTML của catalog rồi nhúng nguyên trang ấy.

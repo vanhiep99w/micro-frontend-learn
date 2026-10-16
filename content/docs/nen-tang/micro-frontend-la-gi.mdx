@@ -47,23 +47,15 @@ Từ *micro* không đặt ra số dòng code, số component hay kích thước
 
 Trong ví dụ xuyên suốt lộ trình này, bạn có một shop gồm ba phần:
 
-```text
-                  Shop trong trình duyệt
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │      Shell      │
-                  │ Layout và route │
-                  └────────┬────────┘
-                           │
-                  Chọn phần theo URL
-                           │
-                ┌──────────┴──────────┐
-                ▼                     ▼
-       ┌─────────────────┐   ┌─────────────────┐
-       │     Catalog     │   │      Cart       │
-       │    /products    │   │      /cart      │
-       └─────────────────┘   └─────────────────┘
+```d2 title="Ví dụ shop với shell, catalog và cart"
+direction: down
+shop: "Shop trong trình duyệt"
+shell: "Shell: layout và route"
+catalog: "Catalog: /products"
+cart: "Cart: /cart"
+shop -> shell
+shell -> catalog: "Chọn theo URL"
+shell -> cart: "Chọn theo URL"
 ```
 
 Sơ đồ này minh họa composition theo route: shell hiển thị catalog hoặc cart tùy URL, không bắt buộc tải và render cả hai cùng lúc. Một thiết kế khác có thể ghép catalog và mini-cart trên cùng trang; đó vẫn là micro-frontend nếu giữ được các ranh giới cần thiết.
@@ -118,10 +110,18 @@ Phép thử dễ hiểu nhất là: **catalog sửa một chi tiết bên trong,
 
 Giả sử catalog thêm tùy chọn sắp xếp sản phẩm, không đổi route hay contract với shell. Hệ thống dùng runtime composition và một cấu hình để chọn artifact đang hoạt động. Luồng phát hành có thể như sau:
 
-```text
-Catalog: sửa code → build và test → deploy artifact → chọn version mới
-Cart:    không đổi code, không build lại, giữ artifact đang dùng
-Shell:   không đổi code, không build lại, đọc cấu hình tích hợp
+```d2 title="Một lần release catalog"
+direction: down
+catalog: Catalog {
+  code: Sửa code
+  build: Build / test
+  deploy: Deploy artifact
+  select: Chọn version mới
+  code -> build -> deploy -> select
+}
+shell: "Shell: giữ artifact, đọc cấu\nhình tích hợp"
+cart: "Cart: không đổi code, không\nbuild lại"
+catalog.select -> shell: "Cập nhật selection"
 ```
 
 Một cấu hình **minh họa**, không phải API của một framework cụ thể:

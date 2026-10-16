@@ -8,7 +8,7 @@ Giả sử shell của shop có nút giỏ hàng, còn catalog vừa deploy mộ
 CSS isolation giúp bạn giới hạn vùng ảnh hưởng của style. Nhưng **tránh trùng tên class, chặn selector đi qua boundary và kiểm soát giá trị kế thừa là ba việc khác nhau**. Nếu gom chúng thành một lời hứa “CSS đã scoped”, bạn dễ bỏ sót reset, theme hoặc modal render ra ngoài container.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài này dành cho micro-frontend chạy trong trình duyệt, dùng shop với shell, catalog và cart làm ví dụ. Repository hiện tại là site tài liệu; các file code bên dưới thuộc lab riêng, không phải ứng dụng đã có trong repo. Ví dụ CSS Modules giả định bundler đã hỗ trợ `.module.css`; lab Shadow DOM dùng HTML và JavaScript thuần. Sơ đồ ASCII không cần thêm renderer.
+  Bài này dành cho micro-frontend chạy trong trình duyệt, dùng shop với shell, catalog và cart làm ví dụ. Repository hiện tại là site tài liệu; các file code bên dưới thuộc lab riêng, không phải ứng dụng đã có trong repo. Ví dụ CSS Modules giả định bundler đã hỗ trợ `.module.css`; lab Shadow DOM dùng HTML và JavaScript thuần.
 </Callout>
 
 ## Mục lục
@@ -44,14 +44,17 @@ CSS isolation giúp bạn giới hạn vùng ảnh hưởng của style. Nhưng 
 
 Trong light DOM, một stylesheet được gắn vào document không biết node nào thuộc shell hay remote. Nó chỉ tìm những element khớp selector rồi tham gia cascade.
 
-```text
-Document: một cascade cho light DOM
-├── Shell header → button giỏ hàng
-├── Catalog slot → button thêm sản phẩm
-└── Cart slot    → button thanh toán
-
-Catalog CSS: button { background: red; }
-                    └── có thể khớp cả ba button
+```d2 title="Selector và cascade dùng chung"
+direction: down
+doc: "Document: một cascade cho light\nDOM" {
+  shell: Shell header / button giỏ
+  catalog: Catalog slot / button thêm
+  cart: Cart slot / button thanh toán
+}
+css: "Catalog CSS: button {\nbackground: red; }"
+css -> doc.shell: "Có thể khớp"
+css -> doc.catalog: "Có thể khớp"
+css -> doc.cart: "Có thể khớp"
 ```
 
 Các rule dưới đây đều có thể làm hỏng vùng UI khác:
@@ -245,13 +248,21 @@ Có hai bẫy cần chốt thành policy:
 
 Shadow DOM tạo một tree gắn với host element. Selector thông thường trong document không đi vào các node nội bộ của tree; selector nội bộ cũng không lan ra node bên ngoài.
 
-```text
-Document / light DOM
-├── Shell button ← shell CSS
-└── <div host>   ← shell có thể style host
-    └── #shadow-root
-        ├── <style> catalog CSS
-        └── Catalog button ← stylesheet trong shadow root
+```d2 title="Shadow DOM tạo selector boundary"
+direction: down
+doc: Document / light DOM {
+  shell: Shell button
+  host: div host {
+    shadowroot: shadow-root {
+      stylesheet: Catalog CSS
+      button: Catalog button
+      stylesheet -> button: Stylesheet trong shadow root
+    }
+  }
+}
+css: Shell CSS
+css -> doc.shell
+css -> doc.host: "Có thể style host"
 ```
 
 Điểm khác biệt so với CSS Modules là một rule global `button` của shell không tự khớp button nằm trong shadow tree. Bạn không cần đăng ký custom element chỉ để có Shadow DOM; một host element phù hợp có thể gọi `attachShadow()`.

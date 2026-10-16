@@ -95,13 +95,17 @@ Event giống một thông báo “sổ đã cập nhật”, không phải bả
 
 Sơ đồ sau thể hiện trách nhiệm, không phải cách chia bundle hay yêu cầu các UI cùng mount:
 
-```text
-Catalog UI ── addItem ──► Cart domain ── mutation ──► Backend cart
-                              │                         │
-                              ◄── snapshot xác nhận ────┘
-                              │
-Shell badge ◄── đọc summary ───┤
-Shell badge ◄── notification ──┘
+```d2 title="Đường ghi đi qua cart owner"
+direction: right
+catalog: Catalog UI
+cart: Cart domain
+backend: Backend cart
+badge: Shell badge
+catalog -> cart: addItem
+cart -> backend: Mutation
+backend -> cart: "Snapshot xác nhận"
+cart -> badge: "Đọc summary"
+cart -> badge: Notification
 ```
 
 Một lần thêm hàng có thể đi qua các bước sau:

@@ -8,7 +8,7 @@ Catalog chạy standalone bình thường, nhưng khi shell render component t�
 Bài này đi từ triệu chứng đến bằng chứng, rồi mới sửa cấu hình. Mục tiêu là xác định React mà component gọi Hooks có trùng với React mà renderer của nó sử dụng hay không, thay vì thử lần lượt alias, reinstall và `singleton` cho đến khi lỗi biến mất.
 
 <Callout type="info" title="Phạm vi và nơi chạy ví dụ">
-  Ví dụ chính dùng shell–catalog trong [lab host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien): npm workspaces, Webpack 5 Module Federation và React client-side. Các đường dẫn `apps/shell`, `apps/catalog` thuộc `shop-workspace`, không phải repository Next.js + Fumadocs chứa tài liệu này. Phần Vite là biến thể cho resolution local, không phải cấu hình federation của lab. Sơ đồ dùng ASCII, không cần Mermaid.
+  Ví dụ chính dùng shell–catalog trong [lab host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien): npm workspaces, Webpack 5 Module Federation và React client-side. Các đường dẫn `apps/shell`, `apps/catalog` thuộc `shop-workspace`, không phải repository Next.js + Fumadocs chứa tài liệu này. Phần Vite là biến thể cho resolution local, không phải cấu hình federation của lab.
 </Callout>
 
 ## Mục lục
@@ -61,15 +61,24 @@ Giữ nguyên thông báo lỗi đầu tiên, component stack và release đang 
 
 Khi React DOM render function component, nó thiết lập dispatcher để các Hooks của React biết đang làm việc với render nào. Nếu component import `useState` từ React B nhưng renderer đang dùng React A, Hook đọc trạng thái của B, không phải dispatcher mà A đang sử dụng.
 
-```text
-Đúng:
-  React DOM của shell ───► React A ◄─── useState của CatalogPage
-
-Sai:
-  React DOM của shell ───► React A
-  CatalogPage          ───► React B ───► dispatcher không đúng render
-
-  React A.version === React B.version vẫn có thể là true.
+```d2 title="Một tree cần đúng React instance"
+direction: right
+correct: Đúng {
+  dom: React DOM shell
+  react: React A
+  hook: useState CatalogPage
+  dom -> react
+  hook -> react
+}
+wrong: "Sai: cùng version vẫn có thể\nkhác instance" {
+  dom: React DOM shell
+  a: React A
+  page: CatalogPage
+  b: React B
+  dispatcher: Dispatcher không đúng render
+  dom -> a
+  page -> b -> dispatcher
+}
 ```
 
 Có thể hình dung renderer và Hooks phải dùng chung một sổ theo dõi render. Hai cuốn sổ có cùng nhãn version vẫn là hai cuốn khác nhau. Đây chỉ là cách hình dung module identity; nó không mô tả toàn bộ thuật toán scheduling của React.

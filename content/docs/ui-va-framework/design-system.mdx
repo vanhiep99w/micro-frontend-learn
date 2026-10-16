@@ -8,7 +8,7 @@ Giả sử shell, catalog và cart của shop do ba team deploy riêng. Cùng m�
 Design system giải quyết phần giao diện và hành vi cần thống nhất. Tuy nhiên, nếu mỗi lần sửa `Button` đều buộc ba team deploy cùng lúc, bạn vừa chuyển từ copy-paste sang một điểm coupling mới. **Dùng chung quy tắc thiết kế không có nghĩa phải dùng chung một version code tại runtime.**
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài dùng shop giả định gồm shell, catalog và cart; tập trung vào tokens, UI packages, theme và quy trình nâng cấp. Code minh họa dành cho một lab riêng với bundler hỗ trợ CSS imports và TypeScript/TSX, không phải package đã tồn tại trong repository tài liệu này. Sơ đồ dùng ASCII nên không cần cấu hình Mermaid.
+  Bài dùng shop giả định gồm shell, catalog và cart; tập trung vào tokens, UI packages, theme và quy trình nâng cấp. Code minh họa dành cho một lab riêng với bundler hỗ trợ CSS imports và TypeScript/TSX, không phải package đã tồn tại trong repository tài liệu này.
 </Callout>
 
 ## Mục lục
@@ -91,10 +91,15 @@ Với một frontend nhỏ, một team và một lịch release, shared local co
 
 Tách phần độc lập framework khỏi adapter cho từng framework:
 
-```text
-@shop/tokens ──► @shop/ui-react ──► shell React, cart React
-      │
-      └───────► @shop/ui-vue   ──► catalog Vue
+```d2 title="Kiến trúc packages và quyền sở hữu"
+direction: right
+tokens: "@shop/tokens"
+react: "@shop/ui-react"
+vue: "@shop/ui-vue"
+reactapps: Shell React / Cart React
+vueapp: Catalog Vue
+tokens -> react -> reactapps
+tokens -> vue -> vueapp
 ```
 
 Sơ đồ thể hiện quan hệ phụ thuộc lúc build, không có nghĩa `ui-react` và `ui-vue` dùng chung instance tại runtime. Angular adapter có thể theo cùng cách tổ chức nếu hệ thống thật sự cần.

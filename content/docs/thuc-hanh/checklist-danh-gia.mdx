@@ -57,8 +57,13 @@ Trong bài tổng hợp có auth, controller sống suốt document chưa đủ 
 
 Chốt phạm vi trước rồi mới chạy checklist, vì sau khi thấy lỗi rất dễ đổi một mục thành “không cần”. Quy trình có thể giữ đơn giản:
 
-```text
-Chốt phạm vi → Chạy kịch bản → Lưu bằng chứng → Kiểm tra gate và kết luận
+```d2 title="Cách dùng checklist"
+direction: right
+n0: "Chốt phạm vi"
+n1: "Chạy kịch bản"
+n2: "Lưu bằng chứng"
+n3: "Kiểm tra gate và kết luận"
+n0 -> n1 -> n2 -> n3
 ```
 
 1. Ghi commit/build, danh sách release, config revision, môi trường và những mục `N/A` kèm lý do.

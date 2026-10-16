@@ -11,6 +11,8 @@ Giả sử cart vừa deploy và đổi `itemCount` từ tổng quantity sang s�
   Bài dùng shop giả định gồm shell, catalog và cart, nối tiếp ví dụ trong các trang events và state ownership. Code TypeScript, tên package và đường dẫn bên dưới là mẫu thiết kế, không phải implementation có sẵn trong repository docs. Functions và DOM element chỉ dùng cho các remote cùng JavaScript realm; dữ liệu đi qua iframe cần protocol message riêng.
 </Callout>
 
+<SourceRef project="giao-tiep-va-trang-thai-contracts" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Contract không chỉ là interface](#contract-không-chỉ-là-interface)
@@ -71,11 +73,16 @@ Không phải mọi contract đều cần nhiều trang mô tả. Với một ca
 
 Mình mặc định công bố contract theo domain, không theo thư viện đang dùng. Catalog cần `addItem`, không cần reducer, store instance hay query key nội bộ của cart.
 
-```text
-Catalog ── command contract ──► Cart domain ──► Backend
-Shell   ◄── summary / event ─── Cart domain
-
-Shell ── mount context + capabilities ──► Catalog remote
+```d2 title="Public boundary và implementation nội bộ"
+direction: right
+catalog: Catalog remote
+cart: Cart domain
+backend: Backend
+shell: Shell
+catalog -> cart: Command contract
+cart -> backend
+cart -> shell: Summary / event
+shell -> catalog: Mount context + capabilities
 ```
 
 Shell wiring các capability vào remote; cart domain vẫn sở hữu ý nghĩa của mutation. Nếu đổi cart từ Redux sang một controller khác mà catalog phải sửa import, boundary đang lộ implementation.
@@ -106,7 +113,7 @@ Cùng một domain có thể công bố nhiều boundary. Cart nhận command, t
 
 Một remote độc lập framework có thể expose `mount` thay vì buộc shell import React component. Ví dụ này dùng `productId` làm ID sản phẩm thống nhất với trang events; nếu ứng dụng dùng SKU, hãy công bố rõ loại định danh thay vì coi hai tên là tương đương.
 
-```ts title="contracts/catalog-mount.ts"
+```ts title="contracts/catalog-mount.ts" sourceFile="contracts/catalog-mount.ts" sourceRegion="main"
 import type { CartCommandsV1 } from './cart-commands';
 
 export type CatalogPropsV1 = Readonly<{
@@ -133,6 +140,8 @@ export interface CatalogRemoteV1 {
   mount(context: CatalogMountContextV1): CatalogHandleV1;
 }
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/catalog-mount.ts" region="main">Đối chiếu contracts/catalog-mount.ts</SourceRef>
 
 `locale` là language tag mà provider hỗ trợ, còn `currency` là mã tiền tệ mà UI hỗ trợ; `string` không có nghĩa mọi chuỗi đều hợp lệ. Contract thật cần công bố tập giá trị hoặc chính sách fallback. `currency` ở props chỉ là cấu hình hiển thị, không cho catalog tự đổi tiền tệ của giỏ hàng đã được backend xác nhận.
 
@@ -162,7 +171,7 @@ Có cleanup UI không đồng nghĩa mutation backend đã bị hủy. Remote c�
 
 Catalog không nên có quyền `setCartState`. Nó chỉ cần yêu cầu thêm một sản phẩm, còn cart domain quyết định gọi backend và cập nhật state thế nào.
 
-```ts title="contracts/cart-commands.ts"
+```ts title="contracts/cart-commands.ts" sourceFile="contracts/cart-commands.ts" sourceRegion="main"
 export type CartSnapshotV1 = Readonly<{
   cartId: string;
   revision: number;
@@ -199,6 +208,8 @@ export interface CartCommandsV1 {
   ): Promise<AddItemResultV1>;
 }
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/cart-commands.ts" region="main">Đối chiếu contracts/cart-commands.ts</SourceRef>
 
 Các ID là chuỗi không rỗng trong phạm vi đã thống nhất. `quantity` là số nguyên dương, không phải delta âm để xóa sản phẩm. `revision` và `itemCount` là số nguyên không âm trong giới hạn safe integer của JavaScript; revision tăng theo thay đổi được backend xác nhận trong cùng `cartId`.
 
@@ -265,7 +276,7 @@ Với wire contract cần nhiều ngôn ngữ/tooling cùng đọc, mình ưu ti
 
 Schema rút gọn cho event trên dùng JSON Schema Draft 2020-12:
 
-```json title="contracts/cart-updated.v1.schema.json"
+```json title="contracts/cart-updated.v1.schema.json" sourceFile="contracts/cart-updated.v1.schema.json" sourceRegion="main"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Shop cart updated v1",
@@ -307,6 +318,8 @@ Schema rút gọn cho event trên dùng JSON Schema Draft 2020-12:
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/cart-updated.v1.schema.json" region="main">Đối chiếu contracts/cart-updated.v1.schema.json</SourceRef>
+
 Giới hạn ID 200 ký tự là policy minh họa, cần thống nhất với API thật. Pattern yêu cầu có ít nhất một ký tự không phải whitespace; nó không tự trim hoặc chuẩn hóa ID.
 
 `properties` mô tả field, còn `required` mới bắt buộc field phải có. `additionalProperties: true` chủ động cho phép consumer v1 đọc event có thêm field, miễn các field cũ vẫn giữ type và nghĩa.
@@ -321,7 +334,7 @@ Vậy có nên luôn cho phép unknown fields? Không. Với command chứa lự
 
 Boundary nhận dữ liệu bên ngoài nên bắt đầu từ `unknown`, validate rồi chuyển thành model mà consumer dùng. Ví dụ dưới đây minh họa một decoder nhỏ chỉ cho payload; envelope và timestamp cần validator riêng như schema phía trên.
 
-```ts title="contracts/decode-cart-snapshot.ts"
+```ts title="contracts/decode-cart-snapshot.ts" sourceFile="contracts/decode-cart-snapshot.ts" sourceRegion="main"
 import type { CartSnapshotV1 } from './cart-commands';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -358,6 +371,8 @@ export function decodeCartSnapshotV1(value: unknown): CartSnapshotV1 {
   });
 }
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/decode-cart-snapshot.ts" region="main">Đối chiếu contracts/decode-cart-snapshot.ts</SourceRef>
 
 Decoder chấp nhận unknown fields nhưng chỉ trả phần v1 công bố. Consumer không phụ thuộc vào field mới bằng cách đọc lén object thô. Vì các field trong snapshot đều là primitive, shallow freeze đủ cho model này; thêm object lồng nhau thì phải xét lại chính sách copy/freeze.
 
@@ -510,7 +525,7 @@ Tối thiểu hãy kiểm tra các tổ hợp được policy của bạn cho ph
 
 Một test nhỏ cho decoder phía trên có thể chạy bằng Node với TypeScript đã compile, hoặc test runner có hỗ trợ TypeScript:
 
-```ts title="contracts/decode-cart-snapshot.test.ts"
+```ts title="contracts/decode-cart-snapshot.test.ts" sourceFile="contracts/decode-cart-snapshot.test.ts" sourceRegion="main"
 import assert from 'node:assert/strict';
 import { decodeCartSnapshotV1 } from './decode-cart-snapshot';
 
@@ -546,6 +561,8 @@ raw.itemCount = 99;
 assert.equal(decoded.itemCount, 3);
 assert.equal(Object.isFrozen(decoded), true);
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/decode-cart-snapshot.test.ts" region="main">Đối chiếu contracts/decode-cart-snapshot.test.ts</SourceRef>
 
 Test này kiểm tra payload shape và projection, chưa chứng minh event envelope, command hay lifecycle đúng. Với schema đầy đủ, thêm test event sai `type`, thiếu `correlationId`, timestamp sai và các field bổ sung; dùng cấu hình validator giống production.
 

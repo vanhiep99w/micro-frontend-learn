@@ -8,7 +8,7 @@ Giả sử shell vừa tải được `remoteEntry.js` của catalog với statu
 Bài này đi theo một request `import('catalog/ProductPage')` từ lúc webpack build shell đến lúc code catalog chạy trong browser. Khi hiểu từng mốc, bạn sẽ biết nên kiểm tra cấu hình, network, shared dependencies hay lifecycle UI, thay vì thử sửa mọi thứ cùng lúc.
 
 <Callout type="info" title="Phạm vi và điều kiện đọc">
-  Ví dụ dùng shop giả định gồm shell và catalog, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5 và remote dạng script container. Đây không phải cấu hình Module Federation cho Next.js của site docs này. Bạn nên biết JavaScript modules, Promise và code splitting; nếu chưa rõ host/remote, đọc [Module Federation](/docs/module-federation) trước. Sơ đồ text không cần plugin render bổ sung.
+  Ví dụ dùng shop giả định gồm shell và catalog, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5 và remote dạng script container. Đây không phải cấu hình Module Federation cho Next.js của site docs này. Bạn nên biết JavaScript modules, Promise và code splitting; nếu chưa rõ host/remote, đọc [Module Federation](/docs/module-federation) trước.
 </Callout>
 
 ## Mục lục
@@ -46,13 +46,15 @@ Bài này đi theo một request `import('catalog/ProductPage')` từ lúc webpa
 
 Với import nội bộ như `import('./ProductPage')`, webpack biết implementation nằm trong dependency graph của build hiện tại. Với federated import, host chỉ biết một public request và cách tiếp cận remote. Implementation được compile bởi build catalog, rồi cung cấp qua container khi ứng dụng chạy.
 
-```text
-Build shell                         Build catalog
-    │                                    │
-    ▼                                    ▼
-Shell runtime + remote reference    Entry + chunks của catalog
-    │                                    │
-    └────────── gặp nhau trong browser ──┘
+```d2 title="Hai build độc lập gặp nhau ở runtime"
+direction: right
+hostbuild: Build shell
+remotebuild: Build catalog
+host: Shell runtime + remote reference
+remote: Entry + chunks catalog
+browser: "Gặp nhau trong browser"
+hostbuild -> host -> browser
+remotebuild -> remote -> browser
 ```
 
 Điểm quan trọng không phải chỉ là code được tải muộn. Hai phía có artifact graph riêng: shell có thể được build hôm qua, còn catalog được build hôm nay. Khả năng ghép chúng phụ thuộc public contract và chính sách shared dependencies, không phải việc chúng cùng dùng một repository.
@@ -118,10 +120,13 @@ Remote entry là **artifact để tải**. Container là **giao diện runtime s
 
 Trong cấu hình script remote ở trên, thực thi `remoteEntry.js` công bố container qua global tên `catalog`, thường truy cập được bằng `window.catalog`. Container không phải component; nó là object cho runtime gọi `init` và `get`.
 
-```text
-remoteEntry.js ── tải và thực thi ──► container catalog
-                                          │
-                                          └── get('./ProductPage') ──► factory
+```d2 title="Remote entry và container là hai thứ khác nhau"
+direction: right
+entry: remoteEntry.js
+container: Container catalog
+factory: Factory
+entry -> container: "Tải và thực thi"
+container -> factory: "get('./ProductPage')"
 ```
 
 Entry không nhất thiết có tên `remoteEntry.js`; đó là convention được chọn bằng `filename`. Remote dạng ESM hoặc integration khác có thể công bố container theo cách khác. Đừng áp dụng `window.catalog` cho mọi artifact có chữ “federation”.
@@ -328,11 +333,14 @@ Nếu gặp “Shared module is not available for eager consumption”, mình ki
 
 Bạn có thể hình dung share scope là bảng đăng ký providers theo shared key và version. Host và remote đưa thông tin cung cấp vào bảng; code consume chọn provider theo policy của build đó.
 
-```text
-Host providers ──► share scope "default" ◄── Catalog providers
-                            │
-                            ▼
-                  Shared dependency consumer
+```d2 title="Share scope trao đổi điều gì"
+direction: right
+host: Host providers
+catalog: Catalog providers
+scope: "Share scope: default"
+consumer: Shared dependency consumer
+host -> scope
+catalog -> scope -> consumer
 ```
 
 Các entries chứa thông tin runtime để lấy module, không chỉ chuỗi version. Tên scope giống nhau là điều kiện cấu hình; khi init container, object scope thực tế cũng phải nhất quán. Tạo hai object riêng đều gọi là “default” không khiến chúng trở thành cùng scope.
@@ -360,9 +368,18 @@ DevTools “Disable cache” chủ yếu tác động HTTP cache khi công cụ 
 
 Trong cùng runtime và cùng module identity, import thành công lần hai thường dùng module đã đánh giá, không chạy lại top-level code. Với demo trên, mở catalog, cleanup rồi mở lại thường chỉ log “module evaluated” một lần, nhưng tạo DOM mới ở mỗi lần gọi `mount`.
 
-```text
-Lần đầu: import ──► load/evaluate ──► exports ──► mount A
-Lần sau: import ──► cached exports ─────────────► mount B
+```d2 title="Import lại không đồng nghĩa chạy lại module"
+direction: right
+first: "Import lần đầu"
+eval: Load / evaluate
+exports: Exports
+mountA: Mount A
+later: "Import lần sau"
+cache: Cached exports
+mountB: Mount B
+first -> eval -> exports -> mountA
+later -> cache -> mountB
+exports -> cache: "Được cache"
 ```
 
 Vì vậy unmount UI không unload module khỏi webpack. Nếu remote tạo listener hoặc timer ở top level, cleanup của component không tự biết tới chúng. Mình ưu tiên tạo resources theo instance trong `mount` và dọn chúng qua cleanup, tránh dùng top-level side effects để quản lý lifecycle màn hình.

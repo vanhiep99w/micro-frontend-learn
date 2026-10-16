@@ -82,12 +82,19 @@ Giữ checkpoint Git trước khi chuyển lát cắt. Lab routing bổ sung `Se
 
 Mô hình chung giữ catalog và cart không biết implementation nội bộ của nhau. Shell là composition layer: nó nối các contract, chọn vùng hiển thị và phối hợp trải nghiệm toàn trang.
 
-```text
-Catalog ── yêu cầu thêm hàng ──► Shell ── public API ──► Cart owner
-                                  │                        │
-                           layout / navigation      state / snapshot
-                                  │                        │
-                               Badge ◄──── projection ─────┘
+```d2 title="Ranh giới của shop mẫu"
+direction: down
+catalog: Catalog
+shell: Shell
+cart: Cart owner
+layout: Layout / navigation
+state: State / snapshot
+badge: Badge
+catalog -> shell: "Yêu cầu thêm hàng"
+shell -> cart: Public API
+shell -> layout
+cart -> state
+state -> badge: Projection
 ```
 
 Đây là sơ đồ trách nhiệm chung; chữ ký callback và cách tích hợp cụ thể nằm trong từng lab. Shell khởi tạo hoặc giữ reference đến domain runtime không có nghĩa shell sở hữu logic nghiệp vụ của runtime đó.

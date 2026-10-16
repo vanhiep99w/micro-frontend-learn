@@ -8,7 +8,7 @@ Giả sử shell của shop dùng React, catalog muốn deploy riêng, còn cart
 Nhóm **UI và framework** giúp bạn thiết kế điểm ghép đó. Câu hỏi đầu tiên không phải “framework nào hỗ trợ micro-frontend?”, mà là **các phần sẽ chia sẻ component tree, dùng application riêng hay nằm trong document riêng?** Từ lựa chọn này, bạn mới chốt lifecycle, runtime và các quy tắc giao diện.
 
 <Callout type="info" title="Phạm vi trang này">
-  Đây là trang định hướng cho nhóm bài, không phải hướng dẫn cài đặt từng framework. Ví dụ mở rộng [shop mẫu](/docs/bat-dau/bai-toan-shop) để so sánh các boundary; không yêu cầu shop phiên bản đầu dùng nhiều framework. Repository hiện chỉ là site tài liệu. Code dưới đây là contract minh họa cho một lab browser-only, còn sơ đồ text không cần plugin Mermaid.
+  Đây là trang định hướng cho nhóm bài, không phải hướng dẫn cài đặt từng framework. Ví dụ mở rộng [shop mẫu](/docs/bat-dau/bai-toan-shop) để so sánh các boundary; không yêu cầu shop phiên bản đầu dùng nhiều framework. Repository hiện chỉ là site tài liệu. Code dưới đây là contract minh họa cho một lab browser-only.
 </Callout>
 
 ## Mục lục
@@ -45,11 +45,13 @@ Mình mặc định giữ cùng framework khi xây mới các vùng UI cần tư
 
 Remote cung cấp component hoặc routes; shell render chúng trong application hiện có. Remote entry để nhúng không tự bootstrap thêm application khi được import.
 
-```text
-Application của shell
-└── Providers và router
-    └── Vùng xử lý loading và lỗi
-        └── Component hoặc route từ remote
+```d2 title="Ghép trong cùng component tree"
+direction: right
+n0: "Application shell"
+n1: "Providers + router"
+n2: "Vùng xử lý loading và lỗi"
+n3: "Component / route remote"
+n0 -> n1 -> n2 -> n3
 ```
 
 Đây là lựa chọn mình xem trước khi shell và remote cùng framework tương thích, cần dùng chung providers và phối hợp UI sâu. Đổi lại, hai phía phải thống nhất runtime, public props và provider contracts. Nếu remote dùng một Context object khác với shell, chỉ trùng tên Context không làm nó đọc được giá trị của shell.
@@ -60,14 +62,13 @@ Composition kiểu này cũng không biến framework thành sandbox. Component 
 
 Shell giao một DOM container; adapter của remote tạo application riêng, nhận context và cung cấp cách update/unmount. Shell không cần biết component API của framework bên trong.
 
-```text
-Shell: navigation, slots, loading và fallback
-  │
-  ├── container + snapshot + services
-  ▼
-Remote adapter: mount / update / unmount
-  │
-  └── Application riêng: UI và local state
+```d2 title="Ghép qua container và lifecycle"
+direction: down
+n0: "Shell: navigation, slots,\nloading, fallback"
+n1: "Container + snapshot + services"
+n2: "Remote adapter: mount / update /\nunmount"
+n3: "Application riêng: UI + local\nstate"
+n0 -> n1 -> n2 -> n3
 ```
 
 Mình chọn hướng này cho một màn hình tương đối độc lập hoặc khi shell khác framework. Root/app riêng làm quyền sở hữu lifecycle rõ hơn, nhưng providers của shell không tự đi qua boundary. Theme, navigation và state cần chia sẻ phải có bridge cụ thể.
@@ -223,12 +224,13 @@ Mình ưu tiên một tập dependency được chia sẻ có lý do rõ ràng. 
 
 Với CSR, shell tải code rồi render UI. Với SSR hoặc prerender, browser có thể đã nhận HTML chứa catalog trước khi JavaScript chạy. Lúc đó cần chốt thêm: ai tạo HTML, release nào tạo nội dung đó, và ai hydrate subtree tương ứng?
 
-```text
-Server/build: code + dữ liệu + locale/theme ban đầu
-                         ↓
-                   HTML ban đầu
-                         ↓
-Browser: code và snapshot tương thích → hydration
+```d2 title="Next.js cần thêm boundary phía server"
+direction: right
+n0: "Server/build: code + dữ liệu +\nlocale/theme"
+n1: "HTML ban đầu"
+n2: "Browser: code + snapshot tương\nthích"
+n3: "Hydration"
+n0 -> n1 -> n2 -> n3
 ```
 
 Giả sử server render catalog release A nhưng browser resolve URL mutable sang release B. Nếu markup hoặc dữ liệu render khác nhau, hydration có thể lỗi. Pin artifact, quản lý cache và giữ snapshot đầu tương thích là một phần của integration contract, không chỉ là việc của pipeline deploy.

@@ -16,6 +16,8 @@ Bài này thiết lập workspace cho shop mẫu: mỗi app có tên package, l�
   Kết thúc bài, bạn sẽ có ba trang standalone tối thiểu. Chúng chưa dùng React, chưa expose remote và chưa tải code của nhau; đó là nội dung của bài tiếp theo.
 </Callout>
 
+<SourceRef project="bat-dau-workspace" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Workspace giải quyết việc gì](#workspace-giải-quyết-việc-gì)
@@ -45,10 +47,17 @@ Nếu đặt ba project độc lập cạnh nhau, bạn sẽ phải vào từng 
 
 Nhưng workspace chỉ là cách tổ chức source và tooling. Nó không quyết định browser tải catalog lúc nào, không tạo `remoteEntry.js` và không đảm bảo các frontend deploy độc lập.
 
-```text
-npm workspaces       → quản lý package local và lệnh phát triển
-webpack của mỗi app  → tạo artifact cho app đó
-Module Federation    → tích hợp module giữa các build ở runtime
+```d2 title="Workspace giải quyết việc gì"
+direction: right
+npm: npm workspaces
+webpack: "webpack của mỗi app"
+federation: Module Federation
+npm -> packages: "Quản lý"
+packages: "Package local và lệnh phát triển"
+webpack -> artifacts: "Tạo"
+artifacts: "Artifact cho app"
+federation -> runtime: "Tích hợp"
+runtime: "Module giữa các build ở runtime"
 ```
 
 Ví dụ, shell dùng `import { CatalogPage } from '@shop/catalog'` rồi bundler đóng code catalog vào artifact của shell thì đó vẫn là build-time composition. Việc catalog có một `package.json` riêng không biến import ấy thành remote loading.
@@ -164,7 +173,7 @@ mkdir -p apps/shell/src apps/catalog/src apps/cart/src packages
 
 Tạo các file dưới đây bằng editor. Đừng chạy `npm install` trước khi đã có `package.json` của cả ba app ở bước kế tiếp.
 
-```json title="shop-workspace/package.json"
+```json title="shop-workspace/package.json" sourceFile="package.json" sourceRegion="main"
 {
   "name": "shop-workspace",
   "version": "0.1.0",
@@ -185,27 +194,33 @@ Tạo các file dưới đây bằng editor. Đừng chạy `npm install` trư�
 }
 ```
 
+<SourceRef project="bat-dau-workspace" file="package.json" region="main">Đối chiếu package.json</SourceRef>
+
 `private: true` ngăn publish nhầm package root lên registry. `workspaces` khai báo các thư mục package cần nhận diện; bản thân một thư mục chưa có `package.json` thì chưa phải workspace package.
 
-```text title="shop-workspace/.nvmrc"
+```text title="shop-workspace/.nvmrc" sourceFile=".nvmrc" sourceRegion="main"
 22
 ```
 
+<SourceRef project="bat-dau-workspace" file=".nvmrc" region="main">Đối chiếu .nvmrc</SourceRef>
+
 `.nvmrc` chọn major Node cho người dùng nvm; nó không tự cài hoặc đổi Node trong mọi terminal. Nếu bạn dùng nvm, chạy `nvm use` tại root và kiểm tra lại bằng `node --version`.
 
-```text title="shop-workspace/.gitignore"
+```text title="shop-workspace/.gitignore" sourceFile=".gitignore" sourceRegion="main"
 node_modules/
 dist/
 coverage/
 *.log
 ```
 
+<SourceRef project="bat-dau-workspace" file=".gitignore" region="main">Đối chiếu .gitignore</SourceRef>
+
 </Step>
 <Step>
 
 ### Khai báo ba app
 
-```json title="shop-workspace/apps/shell/package.json"
+```json title="shop-workspace/apps/shell/package.json" sourceFile="apps/shell/package.json" sourceRegion="main"
 {
   "name": "@shop/shell",
   "version": "0.1.0",
@@ -217,7 +232,9 @@ coverage/
 }
 ```
 
-```json title="shop-workspace/apps/catalog/package.json"
+<SourceRef project="bat-dau-workspace" file="apps/shell/package.json" region="main">Đối chiếu apps/shell/package.json</SourceRef>
+
+```json title="shop-workspace/apps/catalog/package.json" sourceFile="apps/catalog/package.json" sourceRegion="main"
 {
   "name": "@shop/catalog",
   "version": "0.1.0",
@@ -229,7 +246,9 @@ coverage/
 }
 ```
 
-```json title="shop-workspace/apps/cart/package.json"
+<SourceRef project="bat-dau-workspace" file="apps/catalog/package.json" region="main">Đối chiếu apps/catalog/package.json</SourceRef>
+
+```json title="shop-workspace/apps/cart/package.json" sourceFile="apps/cart/package.json" sourceRegion="main"
 {
   "name": "@shop/cart",
   "version": "0.1.0",
@@ -240,6 +259,8 @@ coverage/
   }
 }
 ```
+
+<SourceRef project="bat-dau-workspace" file="apps/cart/package.json" region="main">Đối chiếu apps/cart/package.json</SourceRef>
 
 Tên package phải duy nhất trong workspace. Khi npm chạy script của một app, working directory là thư mục app đó, nên `webpack.config.cjs` được tìm ngay cạnh `package.json` của app.
 
@@ -267,7 +288,7 @@ Tooling thuộc app nào thì khai báo trong manifest của app đó. npm có t
 
 Chưa cần React để kiểm tra workspace. Entry này chỉ xác nhận mỗi dev server phục vụ đúng app và JavaScript đã chạy.
 
-```js title="shop-workspace/apps/shell/src/index.js"
+```js title="shop-workspace/apps/shell/src/index.js" sourceFile="apps/shell/src/index.js" sourceRegion="main"
 const heading = document.createElement('h1');
 heading.textContent = 'Shop shell';
 
@@ -277,7 +298,9 @@ status.textContent = 'Shell đang chạy standalone. Chưa kết nối remote.';
 document.body.append(heading, status);
 ```
 
-```js title="shop-workspace/apps/catalog/src/index.js"
+<SourceRef project="bat-dau-workspace" file="apps/shell/src/index.js" region="main">Đối chiếu apps/shell/src/index.js</SourceRef>
+
+```js title="shop-workspace/apps/catalog/src/index.js" sourceFile="apps/catalog/src/index.js" sourceRegion="main"
 const heading = document.createElement('h1');
 heading.textContent = 'Shop catalog';
 
@@ -287,7 +310,9 @@ status.textContent = 'Catalog đang chạy standalone. Chưa expose module.';
 document.body.append(heading, status);
 ```
 
-```js title="shop-workspace/apps/cart/src/index.js"
+<SourceRef project="bat-dau-workspace" file="apps/catalog/src/index.js" region="main">Đối chiếu apps/catalog/src/index.js</SourceRef>
+
+```js title="shop-workspace/apps/cart/src/index.js" sourceFile="apps/cart/src/index.js" sourceRegion="main"
 const heading = document.createElement('h1');
 heading.textContent = 'Shop cart';
 
@@ -297,9 +322,11 @@ status.textContent = 'Cart đang chạy standalone. Chưa expose module.';
 document.body.append(heading, status);
 ```
 
+<SourceRef project="bat-dau-workspace" file="apps/cart/src/index.js" region="main">Đối chiếu apps/cart/src/index.js</SourceRef>
+
 Tạo `webpack.config.cjs` với nội dung sau **trong cả ba app**: `apps/shell`, `apps/catalog` và `apps/cart`. Config lấy tên app từ `package.json` nằm cạnh nó, nên có thể dùng cùng nội dung ở bước tối thiểu này.
 
-```js title="webpack.config.cjs — đặt một bản trong mỗi app"
+```js title="webpack.config.cjs — đặt một bản trong mỗi app" sourceFile="templates/webpack.config.cjs" sourceRegion="main"
 const path = require('node:path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { name } = require('./package.json');
@@ -325,6 +352,8 @@ module.exports = {
   },
 };
 ```
+
+<SourceRef project="bat-dau-workspace" file="templates/webpack.config.cjs" region="main">Đối chiếu templates/webpack.config.cjs</SourceRef>
 
 `context` giữ việc resolve entry gắn với thư mục app. `output.path` tách artifact thành ba thư mục `dist`; `uniqueName` tạo tên runtime riêng khi các build sau này cùng xuất hiện trên một trang. Các app mẫu sinh lần lượt `_shop_shell`, `_shop_catalog` và `_shop_cart`.
 

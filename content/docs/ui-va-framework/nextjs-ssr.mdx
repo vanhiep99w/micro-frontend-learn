@@ -8,7 +8,7 @@ Giả sử shop dùng Next.js để trang sản phẩm có nội dung ngay trong
 Nếu server dùng catalog r18 nhưng browser tải r19 từ URL `latest`, hai bên có thể tạo ra markup khác nhau. Trang vẫn có thể hiện nội dung ban đầu, nhưng báo lỗi hydration hoặc mất state khi React phải dựng lại một phần tree. Vì vậy, chọn boundary render và policy release trước khi chọn plugin federation.
 
 <Callout type="info" title="Phạm vi và môi trường ví dụ">
-  Bài giả định bạn biết React, routing và khái niệm host–remote. Ví dụ Multi-Zones và App Router dùng Next.js 16, TypeScript, Node.js runtime và không bật `cacheComponents`; chúng thuộc một lab shop riêng. Repository này chỉ là site docs, đang dùng `output: 'export'`: không có server SSR hay shop backend để chạy các snippet. Không thêm cấu hình lab vào site docs. Sơ đồ dùng ASCII, không cần Mermaid.
+  Bài giả định bạn biết React, routing và khái niệm host–remote. Ví dụ Multi-Zones và App Router dùng Next.js 16, TypeScript, Node.js runtime và không bật `cacheComponents`; chúng thuộc một lab shop riêng. Repository này chỉ là site docs, đang dùng `output: 'export'`: không có server SSR hay shop backend để chạy các snippet. Không thêm cấu hình lab vào site docs.
 </Callout>
 
 ## Mục lục
@@ -68,17 +68,19 @@ Mình không mặc định chọn SSR cho toàn bộ shop. Mô tả sản phẩm
 
 Trong App Router, pages và layouts mặc định là Server Components. Next.js tạo RSC payload — biểu diễn kết quả render cùng references tới Client Components — rồi dùng nó và Client Components để tạo HTML cho lần tải trang đầu.
 
-```text
-Server Components + dữ liệu
-             │
-             ▼
-         RSC payload
-             │  kết hợp Client Components
-             ▼
-       HTML gửi tới browser
-             │  RSC payload + JavaScript
-             ▼
-   Client Components được hydrate
+```d2 title="Server Component khác Client Component thế nào"
+direction: right
+server: Server Components + dữ liệu
+rsc: RSC payload
+client: Client Components
+html: HTML gửi tới browser
+js: JavaScript
+hydrate: Client Components được hydrate
+server -> rsc -> html
+client -> html
+html -> hydrate
+rsc -> hydrate
+js -> hydrate
 ```
 
 Server Components không được hydrate như các component tương tác; code server-only của chúng không cần gửi xuống browser. Tuy nhiên, kết quả render và props truyền xuống client vẫn có thể chứa dữ liệu mà browser nhìn thấy.
@@ -179,14 +181,17 @@ Nếu requirement bắt buộc header, cart drawer và nhiều remote trên cùn
 
 Giả sử shell zone sở hữu home và cart, catalog zone sở hữu toàn bộ `/catalog`. Browser vẫn truy cập cùng public domain; một gateway hoặc shell server phân phối request.
 
-```text
-Browser: shop.example.com
-            │
-            ▼
-     Gateway / rewrites
-            ├── /catalog và /catalog/* ──► Catalog Next.js
-            ├── /catalog-static/* ───────► Catalog assets
-            └── các route còn lại ──────► Shell Next.js
+```d2 title="Chia quyền sở hữu route"
+direction: right
+browser: "Browser: shop.example.com"
+gateway: Gateway / rewrites
+catalog: Catalog Next.js
+assets: Catalog assets
+shell: Shell Next.js
+browser -> gateway
+gateway -> catalog: "/catalog và /catalog/*"
+gateway -> assets: "/catalog-static/*"
+gateway -> shell: "Route còn lại"
 ```
 
 Một path chỉ có một owner. Catalog phải có route thật `/catalog`, chẳng hạn `app/catalog/page.tsx`; rewrite trong ví dụ **giữ nguyên** prefix `/catalog`, không cắt nó trước khi gửi upstream.
@@ -474,12 +479,17 @@ Multi-Zones giảm coupling vì mỗi app render document riêng. Tuy nhiên, ap
 
 Giả sử SSR chọn catalog r18. Cặp cần giữ là:
 
-```text
-Request chọn catalog r18
-          ├── server artifact r18 → HTML + initial snapshot
-          └── browser artifact r18 → hydrate initial snapshot
-
-Không hydrate HTML r18 bằng browser artifact r19 từ URL latest.
+```d2 title="Pin artifact và dữ liệu render"
+direction: down
+request: Request chọn catalog r18
+server: Server artifact r18
+html: HTML + initial snapshot
+browser: Browser artifact r18
+hydrate: Hydrate initial snapshot
+wrong: "Không dùng browser artifact r19\ntừ URL latest" {style.stroke-dash: 4}
+request -> server -> html -> hydrate
+request -> browser -> hydrate
+wrong -> hydrate: "Cấm trộn release" {style.stroke-dash: 4}
 ```
 
 Mình ưu tiên artifacts bất biến theo release, cùng descriptor/version selection được resolve một lần cho render. Đó có thể là policy riêng của ứng dụng hoặc capability của integration; không phải tính năng mà mọi federation runtime tự cung cấp.

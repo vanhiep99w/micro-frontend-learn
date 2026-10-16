@@ -8,7 +8,7 @@ Giả sử catalog vừa lên r19 và lỗi mở trang sản phẩm bắt đầu
 Rollout an toàn cần trả lời ba câu hỏi: ai sẽ nhận release mới, bằng chứng nào cho phép mở rộng, và khi có lỗi thì quay về tổ hợp nào. **Rollback là một lần publish có kiểm chứng, không phải nút undo cho mọi trạng thái của browser và backend.**
 
 <Callout type="info" title="Phạm vi và cách dùng">
-  Bài dùng shop giả định gồm shell, catalog và cart, nối tiếp [CI/CD](/docs/trien-khai/ci-cd) và [Runtime configuration](/docs/trien-khai/runtime-configuration). URL, revision và ngưỡng đo đều là minh họa; repository này là site tài liệu, không có shop hay dịch vụ promotion để chạy các thao tác production. Nếu đang xử lý incident, đi thẳng tới [Runbook rollback](#runbook-rollback). Sơ đồ text không cần cấu hình Mermaid.
+  Bài dùng shop giả định gồm shell, catalog và cart, nối tiếp [CI/CD](/docs/trien-khai/ci-cd) và [Runtime configuration](/docs/trien-khai/runtime-configuration). URL, revision và ngưỡng đo đều là minh họa; repository này là site tài liệu, không có shop hay dịch vụ promotion để chạy các thao tác production. Nếu đang xử lý incident, đi thẳng tới [Runbook rollback](#runbook-rollback).
 </Callout>
 
 import { Step, Steps } from 'fumadocs-ui/components/steps';
@@ -80,15 +80,21 @@ Canary không thay contract tests và không phải A/B test. Canary tìm regres
 
 Chọn release **trước khi tải code**, rồi trả một config snapshot hoàn chỉnh:
 
-```text
-Opaque targeting key → Cohort selector → Config snapshot → Shell bootstrap
+```d2 title="Chọn theo người dùng không theo request asset"
+direction: right
+n0: "Opaque targeting key"
+n1: "Cohort selector"
+n2: "Config snapshot"
+n3: "Shell bootstrap"
+n0 -> n1 -> n2 -> n3
 ```
 
 Ví dụ hai nhánh đều giữ shell s17 và cart r7, chỉ catalog thay đổi:
 
-```text
-stable:  shell s17 + catalog r18 + cart r7
-canary:  shell s17 + catalog r19 + cart r7
+```d2 title="Chọn theo người dùng không theo request asset"
+direction: down
+stable: "Stable: shell s17 + catalog r18\n+ cart r7"
+canary: "Canary: shell s17 + catalog r19\n+ cart r7"
 ```
 
 Selector có thể chạy ở server/edge hoặc trong shell nếu policy hoàn toàn public. Server-side selection thuận lợi hơn khi cần cohort từ dữ liệu không công bố cho browser, đồng nhất SSR và audit tập trung. Dù đặt ở đâu, chọn một lần rồi pin snapshot cho document; mỗi remote không tự đánh giá lại policy rollout.
@@ -176,10 +182,17 @@ Với SSR, chọn release set theo request, render bằng đúng server artifact
 
 Giả sử tab A pin config 42 chọn r18. Sau khi rollout, tab B pin config 43 chọn r19. Rollback publish config 44 chọn lại r18 sẽ ảnh hưởng document nhận config 44, **không sửa snapshot của A hoặc B**.
 
-```text
-Tab A: config 42 → catalog r18 → tiếp tục r18
-Tab B: config 43 → catalog r19 → tiếp tục r19 sau rollback
-Tab C: config 44 → catalog r18 → document mới sau rollback
+```d2 title="Document cũ không tự chuyển release"
+direction: right
+a: "Tab A: config 42"
+b: "Tab B: config 43"
+c: "Tab C: config 44"
+r18a: "Catalog r18: tiếp tục r18"
+r19: "Catalog r19: tiếp tục r19 sau\nrollback"
+r18c: "Catalog r18: document mới sau\nrollback"
+a -> r18a
+b -> r19
+c -> r18c
 ```
 
 Ngay cả khi B chưa mở route catalog, snapshot đã pin vẫn có thể khiến nó tải r19 sau rollback. Back/forward cache có thể khôi phục document cũ thay vì bootstrap mới. Chuyển route trong SPA cũng không phải reload document.
@@ -398,10 +411,12 @@ Publisher phải commit snapshot nhất quán bằng transaction hoặc compare-
 
 Contract tối thiểu của publisher:
 
-```text
-Input: expected store version + candidate snapshot + evidence + incident ID
-Check: quyền, schema, compatibility, artifact inventory, current store version
-Commit: toàn snapshot + revision mới + audit, hoặc trả conflict và không ghi
+```d2 title="Publish có kiểm soát concurrent writers"
+direction: down
+n0: "Input: expected version,\ncandidate, evidence, incident ID"
+n1: "Check: quyền, schema,\ncompatibility, inventory, store\nversion"
+n2: "Commit: snapshot + revision +\naudit\nHoặc conflict, không ghi"
+n0 -> n1 -> n2
 ```
 
 Nếu store đã đổi, đọc lại, tạo candidate trên base mới và revalidate phần chịu tác động. Không tự retry bằng cách force-write snapshot cũ. Idempotent request ID giúp tránh commit lặp nếu client timeout sau khi server đã ghi; vẫn phải đọc trạng thái để biết outcome.

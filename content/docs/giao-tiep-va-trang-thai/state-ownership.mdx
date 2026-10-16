@@ -121,14 +121,17 @@ Với shop giả định, mình sẽ bắt đầu bằng bảng này trước kh
 
 Sơ đồ đơn giản dưới đây thể hiện quyền yêu cầu và quyền đọc, không phải cấu trúc bundle:
 
-```text
-Catalog UI ── addItem ──► Cart controller ◄── command ── Cart UI
-                                │
-                         mutation / query
-                                ▼
-                           Backend cart
-
-Cart controller ── snapshot chỉ đọc ──► Header của shell
+```d2 title="Bản đồ ownership cho shop"
+direction: right
+catalog: Catalog UI
+cart: Cart UI
+controller: Cart controller
+backend: Backend cart
+header: Header shell
+catalog -> controller: addItem
+cart -> controller: Command
+controller -> backend: Mutation / query
+controller -> header: "Snapshot chỉ đọc"
 ```
 
 Cart controller là một module không phụ thuộc màn hình cart có đang mount hay không. Shell có thể nối các bên với nó, nhưng không tự tính badge hoặc tự cập nhật cart reducer.

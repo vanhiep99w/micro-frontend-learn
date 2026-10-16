@@ -8,7 +8,7 @@ Giả sử bạn dùng bàn phím để mở Giỏ hàng từ catalog. URL đã 
 Người dùng không nhìn thấy ranh giới repository hay React root. Với họ, shop là một giao diện liên tục. **Accessibility phải được kiểm thử trên hành trình xuyên ứng dụng, không chỉ trên từng component của remote.** Bài này giúp bạn xác định ai quản lý focus, ai thông báo thay đổi và xử lý thế nào khi một phần tải chậm hoặc gặp lỗi.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài dùng shop giả định gồm shell, catalog và cart, chủ yếu cho client-side composition. Các đoạn HTML, CSS và TypeScript là ví dụ cho lab riêng, không phải code ứng dụng đã tồn tại trong repository này. Quy tắc áp dụng cho React, Vue và Angular; phần iframe cần kiểm thử thêm vì có document riêng. Sơ đồ dùng ASCII, không cần Mermaid.
+  Bài dùng shop giả định gồm shell, catalog và cart, chủ yếu cho client-side composition. Các đoạn HTML, CSS và TypeScript là ví dụ cho lab riêng, không phải code ứng dụng đã tồn tại trong repository này. Quy tắc áp dụng cho React, Vue và Angular; phần iframe cần kiểm thử thêm vì có document riêng.
 </Callout>
 
 ## Mục lục
@@ -70,12 +70,17 @@ Bảng này chỉ là một phần của WCAG. Các yêu cầu như alternative 
 
 Shell nên điều phối những thay đổi ảnh hưởng toàn trang; remote sở hữu tương tác bên trong domain của mình. Design system cung cấp primitive có hành vi đúng, nhưng không biết người dùng đang chuyển route hay chỉ sửa số lượng.
 
-```text
-Shell: route, title, landmarks, policy focus và overlay
-  ├── Catalog: sản phẩm, nút thêm giỏ, feedback thao tác
-  └── Cart: số lượng, validation, focus sau khi xóa dòng
-
-Design system → native controls, dialog, focus styles, tokens
+```d2 title="Phân chia trách nhiệm giữa shell và remote"
+direction: down
+shell: "Shell: route, title, landmarks,\nfocus, overlay"
+catalog: "Catalog: sản phẩm, thêm giỏ,\nfeedback"
+cart: "Cart: số lượng, validation,\nfocus sau xóa"
+ds: "Design system: native controls,\ndialog, focus styles, tokens"
+shell -> catalog
+shell -> cart
+ds -> shell
+ds -> catalog
+ds -> cart
 ```
 
 Sơ đồ mô tả quyền sở hữu, không bắt buộc dùng một framework hay một root chung. Nếu catalog dùng Vue và cart dùng React, shell vẫn có thể truyền capabilities qua contract không phụ thuộc framework.

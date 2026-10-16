@@ -53,10 +53,13 @@ Sáu thuật ngữ này trả lời những câu hỏi khác nhau. Một hệ th
 
 **Application shell** là phần giữ khung và điều phối trải nghiệm chung. Với shop mẫu, shell có thể quản lý header, navigation, vùng hiển thị nội dung, route cấp cao và trạng thái loading hoặc fallback khi một phần chưa tải được.
 
-```text
-Shell: khung trang, navigation, chọn nội dung theo URL
-  ├── /products → Catalog
-  └── /cart     → Cart
+```d2 title="Shell là vai trò trong sản phẩm"
+direction: down
+shell: "Shell: khung trang, navigation,\nchọn theo URL"
+catalog: Catalog
+cart: Cart
+shell -> catalog: /products
+shell -> cart: /cart
 ```
 
 Sơ đồ này chỉ mô tả trách nhiệm, chưa quyết định shell tải nội dung bằng Module Federation, iframe hay cơ chế khác. Nó cũng không yêu cầu catalog và cart xuất hiện cùng lúc.
@@ -185,10 +188,18 @@ Một catalog đã deploy lên CDN nhưng shell vẫn trỏ tới version cũ th
 
 Giả sử catalog thêm bộ lọc, giữ nguyên contract công khai. Hệ thống dùng runtime config để chọn artifact:
 
-```text
-Catalog: build/test bản mới → deploy artifact → chọn version cho người dùng
-Shell:   giữ nguyên artifact, dùng cấu hình chọn version
-Cart:    giữ nguyên artifact
+```d2 title="Phép thử với một thay đổi catalog"
+direction: down
+catalog: Catalog {
+  code: Sửa code
+  build: Build / test
+  deploy: Deploy artifact
+  select: Chọn version mới
+  code -> build -> deploy -> select
+}
+shell: "Shell: giữ artifact, đọc cấu\nhình tích hợp"
+cart: "Cart: không đổi code, không\nbuild lại"
+catalog.select -> shell: "Cập nhật selection"
 ```
 
 Đây là dấu hiệu đạt phát hành độc lập cho thay đổi đó. Để kết luận chắc hơn, bạn cần trả lời:

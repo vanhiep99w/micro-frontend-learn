@@ -10,7 +10,7 @@ Preview environment giải quyết việc này bằng một URL riêng cho **m�
 <Callout type="info" title="Phạm vi và điều kiện bắt đầu">
   Bài dùng shop giả định gồm shell, catalog và cart, với shell CSR tải webpack 5 classic script remotes. Các manifest, đường dẫn và tests là mẫu thiết kế cho workspace ứng dụng, **không phải implementation có sẵn trong repository Next.js + Fumadocs này**.
 
-  Bạn cần shell có runtime selection như trong [Dynamic remotes](/docs/module-federation/dynamic-remotes), artifact graph đầy đủ và hạ tầng phục vụ HTTPS. Sơ đồ text hiển thị trực tiếp, không cần Mermaid. Với ESM, enhanced runtime hoặc SSR, giữ nguyên nguyên tắc pin tổ hợp nhưng dùng loader và deployment phù hợp.
+  Bạn cần shell có runtime selection như trong [Dynamic remotes](/docs/module-federation/dynamic-remotes), artifact graph đầy đủ và hạ tầng phục vụ HTTPS. Với ESM, enhanced runtime hoặc SSR, giữ nguyên nguyên tắc pin tổ hợp nhưng dùng loader và deployment phù hợp.
 </Callout>
 
 ## Mục lục
@@ -91,15 +91,17 @@ Mình dùng ba ID khác nhau:
 | Deployment ID | Một lần publish với release set và config bất biến | `dep-5831` |
 | Artifact release ID | Một build cụ thể của một app | `r19` cho catalog |
 
-```text
-Link trên PR: catalog-pr-142.preview.example.net
-                       │ redirect, không serve assets ở alias
-                       ▼
-Deployment: dep-5831.preview.example.net
-                       │ snapshot đã pin
-                       ├── shell r12
-                       ├── catalog r19
-                       └── cart r7
+```d2 title="Link ổn định nhưng deployment bất biến"
+direction: down
+alias: "catalog-pr-142.preview.example.net"
+deployment: dep-5831.preview.example.net
+shell: Shell r12
+catalog: Catalog r19
+cart: Cart r7
+alias -> deployment: "Redirect, không serve assets ở\nalias"
+deployment -> shell: Snapshot đã pin
+deployment -> catalog: Snapshot đã pin
+deployment -> cart: Snapshot đã pin
 ```
 
 Alias trên PR có thể chuyển sang deployment mới; URL deployment dùng cho tests và tái hiện lỗi thì không đổi nội dung. Trong thiết kế này, alias redirect tới origin deployment bằng redirect tạm thời, chẳng hạn `302`, với `Cache-Control: no-store`. Không dùng `301` cho pointer dự kiến thay đổi.
@@ -143,13 +145,21 @@ Resolver phía deploy xác minh build thuộc repository, commit và PR được
 
 Để bắt đầu, mình ưu tiên frontend assets và public runtime config được phục vụ qua cùng origin deployment. Route `/api` đi qua gateway tới sandbox đã gán cho deployment. Cách này giảm cấu hình CORS và tránh bắt browser đăng nhập riêng vào nhiều hostname chỉ để tải chunks.
 
-```text
-Browser → dep-5831.preview.example.net
-                  ├─ /                         → shell r12
-                  ├─ /runtime/config.json       → snapshot dep-5831
-                  ├─ /artifacts/catalog/r19/*   → catalog graph
-                  ├─ /artifacts/cart/r7/*        → cart graph
-                  └─ /api/*                     → backend sandbox
+```d2 title="Một origin cho một deployment"
+direction: right
+browser: Browser
+deployment: dep-5831.preview.example.net
+shell: Shell r12
+config: Snapshot dep-5831
+catalog: Catalog graph
+cart: Cart graph
+backend: Backend sandbox
+browser -> deployment
+deployment -> shell: /
+deployment -> config: /runtime/config.json
+deployment -> catalog: "/artifacts/catalog/r19/*"
+deployment -> cart: "/artifacts/cart/r7/*"
+deployment -> backend: "/api/*"
 ```
 
 Hạ tầng có thể copy artifacts hoặc route tới artifact store; mục tiêu là giữ nguyên bytes và cấu trúc thư mục, không rebuild các app baseline. Mỗi graph phải gồm entry, lazy chunks, CSS, font và public assets được app sử dụng.
@@ -268,13 +278,15 @@ Hai commit A và B trên cùng PR có thể build song song. B hoàn tất trư�
 
 Dùng compare-and-swap hoặc transaction ở control plane: chỉ chuyển alias khi desired generation/head vẫn khớp candidate. Một mô hình đơn giản giữ `desiredGeneration` trong record PR; mỗi yêu cầu deploy mới tăng generation, kể cả khi rerun cùng commit.
 
-```text
-Request A → generation 7 → dep-A hoàn tất chậm
-Request B → generation 8 → dep-B hoàn tất trước
-
-Publish dep-B: desired generation = 8 → chấp nhận
-Publish dep-A: desired generation ≠ 7 → không đổi alias
-Close PR: trạng thái không còn active → mọi publish còn chạy bị từ chối
+```d2 title="Đổi alias mà không bị job cũ ghi đè"
+shape: sequence_diagram
+a: Request A / generation 7
+b: Request B / generation 8
+alias: Review alias
+pr: PR state
+b -> alias: "dep-B xong trước, desired = 8 →\nchấp nhận"
+a -> alias: "dep-A xong chậm, desired ≠ 7 →\ntừ chối"
+pr -> alias: "PR closed → từ chối mọi publish\nđang chạy"
 ```
 
 Kiểm tra head bằng một API call rồi ghi alias bằng API call khác vẫn có race. Quyết định “còn active, generation đúng, đổi pointer” phải được bảo vệ trong cùng thao tác conditional ở control plane. Cancel job cũ chỉ tiết kiệm compute; nó không bảo đảm upload hoặc update alias cũ đã dừng.
@@ -445,12 +457,21 @@ Cleanup không thể chỉ phụ thuộc event đóng PR. Webhook có thể bị
 
 Vòng đời logical preview có thể là:
 
-```text
-PR active → provisioning → verifying → ready
-                 │            │
-                 └── failed ──┘ → cleanup theo retention
-
-PR closed hoặc TTL hết → retiring → deleted
+```d2 title="Đóng PR và hết hạn"
+direction: right
+active: PR active
+provision: Provisioning
+verify: Verifying
+ready: Ready
+failed: Failed
+cleanup: Cleanup theo retention
+retire: Retiring
+deleted: Deleted
+closed: PR closed / TTL hết
+active -> provision -> verify -> ready
+provision -> failed
+verify -> failed -> cleanup
+closed -> retire -> deleted
 ```
 
 PR active có thể tạo nhiều deployment; chỉ một deployment là current alias target. Deployment cũ giữ bất biến trong cửa sổ retention để tái hiện lỗi, còn sandbox đắt tiền có thể có TTL ngắn hơn nếu reviewer biết rõ giới hạn đó.

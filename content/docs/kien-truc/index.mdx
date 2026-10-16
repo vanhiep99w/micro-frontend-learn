@@ -8,7 +8,7 @@ Giả sử team catalog muốn đưa bộ lọc mới lên production mà không
 Nhóm **Kiến trúc và ranh giới** giúp bạn trả lời ba câu hỏi trước khi chọn công cụ: chia frontend theo năng lực nào, ai chịu trách nhiệm ở điểm ghép và ghép các phần vào lúc nào. Mình ưu tiên làm rõ domain và public contract trong một modular frontend trước; chỉ thêm ranh giới deploy khi có nhu cầu phát hành riêng đủ cụ thể để kiểm chứng.
 
 <Callout type="info" title="Phạm vi trang này">
-  Đây là bản đồ định hướng cho nhóm bài, không phải hướng dẫn cấu hình Module Federation. Ví dụ xuyên suốt là shop giả định gồm shell, catalog và cart; repository này là site tài liệu, không có ứng dụng shop chạy được. Bạn nên biết component, routing, build và deploy ở mức cơ bản. Các sơ đồ dùng text để hiển thị trực tiếp với cấu hình Fumadocs hiện tại.
+  Đây là bản đồ định hướng cho nhóm bài, không phải hướng dẫn cấu hình Module Federation. Ví dụ xuyên suốt là shop giả định gồm shell, catalog và cart; repository này là site tài liệu, không có ứng dụng shop chạy được. Bạn nên biết component, routing, build và deploy ở mức cơ bản.
 </Callout>
 
 ## Mục lục
@@ -63,14 +63,18 @@ Theo cách dùng thuật ngữ trong lộ trình này, **release độc lập** 
 
 Một cách chia khởi đầu hợp lý là giữ catalog và cart theo năng lực nghiệp vụ, còn shell làm lớp tích hợp. Đây là mô hình minh họa, không phải yêu cầu rằng cả hai domain luôn được render cùng lúc.
 
-```text
-Shop
-└── Shell: layout, navigation, route cấp app, composition
-    ├── /catalog/* → Catalog: tìm, xem sản phẩm, chọn SKU
-    └── /cart/*    → Cart: xem, thêm, sửa, xóa hàng
-
-Catalog ── command thêm SKU ──► Cart capability ──► Cart API
-Shell   ◄── summary chỉ đọc ─── Cart data layer
+```d2 title="Bản đồ trách nhiệm của shop"
+direction: down
+shell: "Shell: layout, navigation,\nroute, composition"
+catalog: "Catalog: tìm, xem, chọn SKU"
+cart: "Cart: xem, thêm, sửa, xóa hàng"
+layer: Cart data layer
+api: Cart API
+shell -> catalog: "/catalog/*"
+shell -> cart: "/cart/*"
+catalog -> layer: "Command thêm SKU"
+layer -> api: Cart capability
+layer -> shell: "Summary chỉ đọc"
 ```
 
 Các mũi tên mô tả contract, không phải import graph hoặc cấu trúc folder. Cart capability là giao diện công khai do cart domain sở hữu; composition layer có thể inject một adapter cho catalog. Thao tác thêm hàng không nên phụ thuộc vào việc trang cart đã mount hay chưa.
@@ -119,10 +123,15 @@ Một hướng đơn giản khác là để mỗi app trả document riêng và 
 
 Shell khai báo dependency vào package catalog và cart; bundler resolve các version khi build ứng dụng tiêu thụ.
 
-```text
-Catalog package ──┐
-                  ├──► Build shell ──► Artifact ứng dụng ──► Browser
-Cart package ─────┘
+```d2 title="Build-time composition"
+direction: right
+catalog: Catalog package
+cart: Cart package
+build: Build shell
+artifact: "Artifact ứng dụng"
+browser: Browser
+catalog -> build
+cart -> build -> artifact -> browser
 ```
 
 Cách này giúp tách code, ownership và kiểm thử module mà không tạo thêm network boundary để tải app riêng. Đổi lại, publish package catalog mới chưa đổi code đang chạy: shell cần cập nhật dependency, build và deploy để người dùng nhận thay đổi.
@@ -135,10 +144,13 @@ Code splitting không đổi bản chất đó. Một chunk được browser t�
 
 Catalog và cart có artifact riêng. Khi ứng dụng chạy, shell tải phần cần dùng và ghép nó theo route hoặc slot.
 
-```text
-Browser / Shell ──► Chọn tham chiếu catalog
-                ──► Tải entry và chunk
-                ──► Mount vào outlet hoặc render qua contract
+```d2 title="Client-side runtime composition"
+direction: right
+n0: "Browser / Shell"
+n1: "Chọn tham chiếu catalog"
+n2: "Tải entry và chunk"
+n3: "Mount outlet / render qua\ncontract"
+n0 -> n1 -> n2 -> n3
 ```
 
 Cách này mở đường cho việc thay catalog mà giữ nguyên artifact shell. Nhưng điều đó chỉ đúng khi cơ chế chọn version và contract cho phép: nếu mỗi URL catalog mới đều phải hardcode rồi rebuild shell, bạn vẫn bị ràng buộc ở bước release.
@@ -151,10 +163,14 @@ Module Federation là một lựa chọn cung cấp/tiêu thụ module; single-s
 
 Server hoặc edge ghép phần giao diện trước khi trả document cho browser. Chẳng hạn composer lấy nội dung sản phẩm từ catalog renderer, ghép với layout rồi trả HTML; browser tiếp tục tải asset cần cho tương tác.
 
-```text
-Browser ──► Composer tại server hoặc edge ──► Catalog renderer
-                       │
-                       └──► HTML đã ghép ──► Browser
+```d2 title="Server-side composition"
+direction: right
+browser: Browser
+composer: Composer server / edge
+renderer: Catalog renderer
+html: "HTML đã ghép"
+browser -> composer -> renderer
+composer -> html -> browser
 ```
 
 Cách này đáng xem khi nội dung chính cần có trong HTML đầu tiên, chẳng hạn trang sản phẩm public. Nhưng chuyển điểm ghép sang server không loại bỏ coupling: bạn phải kiểm soát latency của renderer, cache, nội dung cá nhân hóa và khả năng khớp HTML với code hydrate.

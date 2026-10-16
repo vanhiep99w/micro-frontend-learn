@@ -212,8 +212,14 @@ Khi schema lớn hơn, bạn có thể dùng thư viện validation. Điều c�
 
 Một đường đi đơn giản, dùng làm mô hình để debug:
 
-```text
-Source TS/JS → Build tools → Artifact JS/CSS → HTTP server/CDN → Trình duyệt
+```d2 title="Source module khác artifact"
+direction: right
+n0: "Source TS/JS"
+n1: "Build tools"
+n2: "Artifact JS/CSS"
+n3: "HTTP server/CDN"
+n4: "Trình duyệt"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 *Artifact* là output được đưa lên môi trường chạy. Trình duyệt tải artifact qua URL, không đọc file TypeScript trong repo của bạn và không dùng cấu hình alias của editor để tìm module.
@@ -327,10 +333,20 @@ Mức cần đạt lúc này: bạn giải thích được vì sao reload, mở 
 
 Với shop mẫu, có thể thống nhất shell chọn domain theo URL, còn mỗi domain xử lý route bên trong:
 
-```text
-/products             → shell chọn catalog → catalog hiện danh sách
-/products/shirt-01    → shell chọn catalog → catalog hiện chi tiết
-/cart                 → shell chọn cart    → cart hiện giỏ hàng
+```d2 title="Routing và quyền sở hữu URL"
+direction: right
+products: /products
+product: /products/shirt-01
+carturl: /cart
+cataloglist: Shell chọn catalog
+catalogdetail: Shell chọn catalog
+cart: Shell chọn cart
+list: Danh sách
+item: Chi tiết
+a: Giỏ hàng
+products -> cataloglist -> list
+product -> catalogdetail -> item
+carturl -> cart -> a
 ```
 
 Điều cần hiểu trước là ai được cập nhật URL và ai phản ứng với thay đổi đó. Nếu shell và catalog đều coi mình là router cấp cao nhất, một lần navigation có thể kích hoạt hai lần xử lý hoặc tạo vòng lặp.

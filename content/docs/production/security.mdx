@@ -8,7 +8,7 @@ Giả sử catalog được deploy qua CDN riêng, còn shell giữ session củ
 Deploy độc lập không đồng nghĩa với quyền truy cập độc lập. Với micro-frontend chạy chung document, **bạn đang tin remote code gần như tin code của shell**. Bài này giúp bạn xác định sự tin cậy đó đi qua những hệ thống nào, đặt kiểm soát trước khi code chạy và chọn boundary khác khi không thể chấp nhận mức quyền ấy.
 
 <Callout type="info" title="Phạm vi và điều kiện dùng ví dụ">
-  Bài dùng shop giả định gồm shell, catalog và cart, nhất quán với các bài trong nhóm Production. Repository này là site tài liệu, không có ứng dụng shop để chạy snippet. URL, release ID và cấu hình bên dưới dành cho lab riêng; CSP phải được điều chỉnh theo framework, loader và browser mục tiêu. Sơ đồ dùng text, không cần Mermaid. Ví dụ loader tập trung vào CSR; SSR có thêm trust boundary phía server.
+  Bài dùng shop giả định gồm shell, catalog và cart, nhất quán với các bài trong nhóm Production. Repository này là site tài liệu, không có ứng dụng shop để chạy snippet. URL, release ID và cấu hình bên dưới dành cho lab riêng; CSP phải được điều chỉnh theo framework, loader và browser mục tiêu. Ví dụ loader tập trung vào CSR; SSR có thêm trust boundary phía server.
 </Callout>
 
 ## Mục lục
@@ -71,19 +71,21 @@ Ghi rõ owner cho từng đường vào. Team catalog có thể sở hữu sourc
 
 Khi shell tại `https://shop.example.com` thêm classic script từ `https://assets.example.com/catalog/r18/remoteEntry.js`, script chạy trong realm của document shell. Native ESM được import vào realm đó cũng không tự tạo sandbox theo origin tải module.
 
-```text
-Source → CI → Artifact storage / CDN
-                         │
-                         │ remote entry, chunks, CSS
-                         ▼
-              Shell document: shop.example.com
-              ├── Shell code
-              ├── Catalog code
-              └── Cart code
-                  Cùng DOM, global object và quyền của document
-                         │
-                         ▼
-                 API kiểm tra session và quyền
+```d2 title="Origin của asset không phải origin thực thi"
+direction: down
+source: Source
+ci: CI
+cdn: Artifact storage / CDN
+document: "Shell document: shop.example.com" {
+  label: "Shell document: cùng DOM, global\nobject và quyền"
+  shell: Shell code
+  catalog: Catalog code
+  cart: Cart code
+}
+api: "API: kiểm tra session và quyền"
+source -> ci -> cdn
+cdn -> document: Entry / chunks / CSS
+document -> api
 ```
 
 Remote có thể đọc DOM, đăng ký listener vào document, đọc storage cùng origin và gọi API bằng môi trường của trang. Với cookie `HttpOnly`, nó không đọc được giá trị cookie qua JavaScript, nhưng vẫn có thể gửi request được browser gắn cookie theo các quy tắc credentials/cookie hiện hành.
@@ -296,11 +298,15 @@ SRI chứng minh file khớp digest, không chứng minh file không có mã đ�
 
 Federation entry thường tải thêm lazy chunks, shared dependencies, CSS hoặc metadata. SRI của entry không tự truyền xuống những tài nguyên ấy.
 
-```text
-remoteEntry.js [digest đã kiểm tra]
-├── product-page.js [cần kiểm tra riêng nếu tải dưới dạng script]
-├── shared-runtime.js [cần kiểm tra riêng]
-└── catalog.css [integrity riêng nếu cơ chế tải hỗ trợ]
+```d2 title="Entry hợp lệ chưa chứng minh chunks hợp lệ"
+direction: down
+entry: "remoteEntry.js\nDigest đã kiểm tra"
+product: "product-page.js\nKiểm tra riêng nếu tải dạng\nscript"
+shared: "shared-runtime.js\nKiểm tra riêng"
+css: "catalog.css\nIntegrity riêng nếu loader hỗ\ntrợ"
+entry -> product
+entry -> shared
+entry -> css
 ```
 
 Nếu attacker không sửa được entry nhưng sửa được `product-page.js`, release vẫn có thể bị compromise. Tên file có content hash không tự làm browser tính và xác minh hash đó; nó chỉ là naming/cache convention nếu không có cơ chế kiểm tra tương ứng.

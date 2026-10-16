@@ -8,7 +8,7 @@ Giả sử người dùng đang xem catalog thì cart không tải được chun
 Resilience không có nghĩa là làm cho mọi remote luôn chạy. Mục tiêu là **lỗi ở một phần không kéo sập những phần còn dùng được, và UI không nói sai về trạng thái nghiệp vụ**. Muốn vậy, bạn cần quyết định rõ khi nào ngừng chờ, ai hiển thị fallback, thao tác nào được thử lại và lúc nào phải dừng để rollback.
 
 <Callout type="info" title="Phạm vi và điều kiện dùng ví dụ">
-  Bài dùng shop giả định gồm shell, catalog và cart. Ví dụ TypeScript/React dành cho một lab CSR riêng, dùng React 18 trở lên, DOM types và target hỗ trợ `Error.cause`; repository hiện chỉ chứa tài liệu, không có shop để chạy các snippet. Loader được truyền qua contract, không giả định một federation runtime cụ thể. Sơ đồ text hiển thị trực tiếp, không cần Mermaid. Với SSR, cần thêm error handling phía server theo framework.
+  Bài dùng shop giả định gồm shell, catalog và cart. Ví dụ TypeScript/React dành cho một lab CSR riêng, dùng React 18 trở lên, DOM types và target hỗ trợ `Error.cause`; repository hiện chỉ chứa tài liệu, không có shop để chạy các snippet. Loader được truyền qua contract, không giả định một federation runtime cụ thể. Với SSR, cần thêm error handling phía server theo framework.
 </Callout>
 
 ## Mục lục
@@ -82,11 +82,13 @@ Không gộp mọi lỗi thành “network error”. Khi remote entry trả HTML
 
 Shell cần render được header, navigation, route slot và fallback bằng artifact của chính nó. Không lấy component thông báo lỗi từ chính remote đang có nguy cơ tải thất bại, cũng không để fallback phụ thuộc API của remote đó.
 
-```text
-Shell artifact
-├── Header và navigation
-├── Catalog slot → loading | Catalog UI | fallback local
-└── Cart slot    → loading | Cart UI    | fallback local
+```d2 title="Bootstrap không đợi remote không thiết yếu"
+direction: down
+shell: Shell artifact {
+  header: Header + navigation
+  catalog: "Catalog slot\nLoading | Catalog UI | fallback\nlocal"
+  cart: "Cart slot\nLoading | Cart UI | fallback\nlocal"
+}
 ```
 
 Nếu bootstrap dùng `await Promise.all([loadCatalog(), loadCart()])` trước khi render shell, một Promise reject sẽ làm bước chờ chung reject. Với các vùng độc lập, khởi tạo shell trước rồi để từng slot xử lý kết quả tải của mình. Nếu thật sự cần tổng hợp diagnostics, `Promise.allSettled` giúp quan sát từng kết quả, nhưng vẫn chờ tất cả settle; nó không thay deadline hay progressive rendering.
@@ -176,11 +178,13 @@ Timer cũng không phải hard real-time deadline: callback có thể chạy tr�
 
 Trong mô hình remote export React component, shell render component trong cùng tree và dùng cấu trúc sau:
 
-```text
-Shell React root
-└── Remote Error Boundary
-    └── Suspense với loading UI local
-        └── Remote component
+```d2 title="Suspense xử lý chờ boundary xử lý lỗi"
+direction: right
+n0: "Shell React root"
+n1: "Remote Error Boundary"
+n2: "Suspense: loading UI local"
+n3: "Remote component"
+n0 -> n1 -> n2 -> n3
 ```
 
 `Suspense` hiển thị loading UI khi component suspend. Khi Promise của `React.lazy` reject, React đưa lỗi tới Error Boundary gần nhất; `Suspense` không tự biến nó thành error fallback. Một Promise fetch bất kỳ trong event handler hoặc effect cũng không tự kích hoạt `Suspense`.
@@ -420,15 +424,15 @@ Ví dụ React ở trên minh họa load/boundary/budget, chưa triển khai foc
 
 Retry giúp một failure ngắn hạn. Circuit breaker giúp ngừng gọi một dependency đang liên tục lỗi: giống tạm đóng một quầy đang hỏng thay vì để mọi khách tiếp tục xếp hàng. Trong browser, breaker thường chỉ biết lịch sử của document hiện tại; nó không thay hệ thống điều khiển traffic toàn fleet.
 
-```text
-CLOSED ── lỗi vượt policy ──► OPEN
-  ▲                            │
-  │                     hết thời gian chờ
-  │                            ▼
-  └── probe thành công ── HALF_OPEN
-                              │
-                         probe thất bại
-                              └────────► OPEN
+```d2 title="Circuit breaker kill switch và rollback"
+direction: right
+closed: CLOSED
+open: OPEN
+half: HALF_OPEN
+closed -> open: "Lỗi vượt policy"
+open -> half: "Hết thời gian chờ"
+half -> closed: "Probe thành công"
+half -> open: "Probe thất bại"
 ```
 
 Chỉ cho một probe ở `HALF_OPEN`, không cho mọi consumers đồng loạt tải lại. Key breaker theo remote/release và loại operation; cart lỗi không mở breaker catalog. Đừng coi mọi domain validation error là remote outage, và đừng mở breaker toàn cục chỉ vì một người offline.

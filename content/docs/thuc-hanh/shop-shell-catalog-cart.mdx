@@ -15,6 +15,8 @@ Trong lab này, mình giữ **một cart controller cho mỗi phiên chạy củ
   Bài dùng React 19, webpack 5 và Babel JSX runtime `classic` như hai bài đó. Bạn cần hoàn thành host tải được `catalog/CatalogPage` trước khi tiếp tục. Không thêm các dependency của lab vào site tài liệu.
 </Callout>
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Kết quả và phạm vi](#kết-quả-và-phạm-vi)
@@ -69,11 +71,17 @@ Mình chọn callback và controller trực tiếp thay vì global event bus vì
 
 ### Đường tải module
 
-```text
-Shell build
-  ├─ catalog/CatalogPage       → catalog:3001 / remoteEntry.js
-  ├─ cart/createCartController → cart:3002 / remoteEntry.js
-  └─ cart/CartPage             → cart:3002 / remoteEntry.js
+```d2 title="Đường tải module"
+direction: right
+shell: Shell build
+catalog: "catalog/CatalogPage"
+controller: "cart/createCartController"
+cart: "cart/CartPage"
+catalogentry: "catalog:3001/remoteEntry.js"
+cartentry: "cart:3002/remoteEntry.js"
+shell -> catalog -> catalogentry
+shell -> controller -> cartentry
+shell -> cart -> cartentry
 ```
 
 Cart expose hai module vì **nghiệp vụ giỏ phải sẵn sàng trước khi trang giỏ được mở**. Shell tải factory controller từ lúc khởi động; `CartPage` chỉ được yêu cầu khi người dùng vào `/cart`. Webpack quyết định cách chia chunk cụ thể, nên đừng suy ra rằng mỗi public module luôn tương ứng đúng một file JavaScript.
@@ -82,14 +90,17 @@ Catalog không khai báo cart trong `remotes`. Nó chỉ nhận callback, vì vi
 
 ### Đường đi của thao tác và state
 
-```text
-CatalogPage ── onAddToCart({ sku, quantity }) ──► Cart controller
-                                                     │
-                                             xác nhận, publish
-                                                     │
-                                               cùng snapshot
-                                                 /       \
-                                           Shell badge   CartPage
+```d2 title="Đường đi của thao tác và state"
+direction: down
+catalog: CatalogPage
+controller: Cart controller
+snapshot: "Cùng snapshot đã xác nhận"
+badge: Shell badge
+cart: CartPage
+catalog -> controller: "onAddToCart({ sku, quantity })"
+controller -> snapshot: "Xác nhận, publish"
+snapshot -> badge
+snapshot -> cart
 ```
 
 Shell chuyển command sang controller rồi trả nguyên kết quả. Nó không cộng badge sau mỗi click. Cart UI cũng không tạo controller lúc mount: làm như vậy sẽ tạo giỏ mới mỗi lần chuyển route.
@@ -219,7 +230,7 @@ Thêm field `"type": "module"` ở cấp ngoài cùng của **`apps/cart/package
 
 Cart cần tra tên và đơn giá theo SKU, không tin vào giá do catalog gửi. Tạo resolver local của cart:
 
-```js title="shop-workspace/apps/cart/src/products.js"
+```js title="shop-workspace/apps/cart/src/products.js" sourceFile="apps/cart/src/products.js" sourceRegion="main"
 const products = new Map([
   ['ao-thun-den', { sku: 'ao-thun-den', name: 'Áo thun đen', unitPrice: 150000 }],
   ['tui-vai', { sku: 'tui-vai', name: 'Túi vải', unitPrice: 80000 }],
@@ -231,6 +242,8 @@ export async function resolveProduct(sku) {
 }
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/cart/src/products.js" region="main">Đối chiếu apps/cart/src/products.js</SourceRef>
+
 Catalog bên dưới có cùng bộ fixture để hiển thị. Việc lặp ba sản phẩm ở đây là chủ ý của mock, **không phải kiến trúc đồng bộ giá cho production**. Trong ứng dụng thật, cả hai đọc qua data contract phù hợp và backend xác nhận giá; không lấy fixture này từ component catalog.
 
 Resolver trả Promise để bạn có thể thay bằng API hoặc resolver có delay trong test mà không đổi contract command.
@@ -239,7 +252,7 @@ Resolver trả Promise để bạn có thể thay bằng API hoặc resolver có
 
 Tạo factory không import React, không tự mount UI và không tạo instance ở module top-level:
 
-```js title="shop-workspace/apps/cart/src/createCartController.js"
+```js title="shop-workspace/apps/cart/src/createCartController.js" sourceFile="apps/cart/src/createCartController.js" sourceRegion="main"
 import { resolveProduct as defaultResolver } from './products.js';
 
 export const apiVersion = 1;
@@ -349,6 +362,8 @@ export function createCartController({ resolveProduct = defaultResolver } = {}) 
 }
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/cart/src/createCartController.js" region="main">Đối chiếu apps/cart/src/createCartController.js</SourceRef>
+
 Ở đây `tail` giữ thứ tự của cả các command phải chờ resolver. Hai lần thêm cùng SKU không đọc cùng quantity cũ rồi ghi đè nhau. Thao tác lỗi không gọi `publish`, nên snapshot và revision giữ nguyên; đặt lại quantity hiện có cũng không tạo update thừa.
 
 Khi thêm SKU lần nữa, mock giữ đơn giá của dòng đã có. Repricing và các trường hợp giá thay đổi thuộc data/business contract sau này. Resolver của lab là dữ liệu tin cậy nội bộ; khi thay bằng API, cart owner phải validate response, thêm timeout/cancellation phù hợp và kiểm thử lỗi mạng. Đừng mặc định cho rằng mọi JSON response đều khớp shape này.
@@ -357,7 +372,7 @@ Khi thêm SKU lần nữa, mock giữ đơn giá của dòng đã có. Repricing
 
 ### Cart UI chỉ dùng public API
 
-```jsx title="shop-workspace/apps/cart/src/CartPage.jsx"
+```jsx title="shop-workspace/apps/cart/src/CartPage.jsx" sourceFile="apps/cart/src/CartPage.jsx" sourceRegion="main"
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 const money = (value) => new Intl.NumberFormat('vi-VN', {
@@ -437,6 +452,8 @@ export default function CartPage({ controller }) {
 }
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/cart/src/CartPage.jsx" region="main">Đối chiếu apps/cart/src/CartPage.jsx</SourceRef>
+
 `useSyncExternalStore` tự unsubscribe khi unmount. Guard `mounted` chỉ ngăn callback hoàn tất cập nhật local UI đã rời màn hình; nó **không hủy mutation**. Command đã gửi vẫn có thể cập nhật controller và badge, vì giỏ có vòng đời dài hơn trang cart.
 
 UI khóa các nút cart trong lúc một command đang chạy. Đây là policy đơn giản để không gửi các `setQuantity` tuyệt đối dựa trên snapshot cũ. Khi muốn thao tác song song, cần thiết kế lại command/UX, không chỉ bỏ `disabled`.
@@ -445,14 +462,16 @@ UI khóa các nút cart trong lúc một command đang chạy. Đây là policy 
 
 Thay entry cart còn dùng DOM thuần từ bài workspace bằng async bootstrap:
 
-```js title="shop-workspace/apps/cart/src/index.js"
+```js title="shop-workspace/apps/cart/src/index.js" sourceFile="apps/cart/src/index.js" sourceRegion="main"
 import('./bootstrap.jsx').catch((error) => {
   console.error(error);
   document.body.textContent = 'Cart standalone không khởi động được.';
 });
 ```
 
-```jsx title="shop-workspace/apps/cart/src/bootstrap.jsx"
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/cart/src/index.js" region="main">Đối chiếu apps/cart/src/index.js</SourceRef>
+
+```jsx title="shop-workspace/apps/cart/src/bootstrap.jsx" sourceFile="apps/cart/src/bootstrap.jsx" sourceRegion="main"
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import CartPage from './CartPage.jsx';
@@ -478,6 +497,8 @@ start().catch((error) => {
 });
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/cart/src/bootstrap.jsx" region="main">Đối chiếu apps/cart/src/bootstrap.jsx</SourceRef>
+
 Standalone có một áo để bạn thử tăng, giảm và xóa ngay. Giỏ của shell vẫn bắt đầu rỗng vì shell chỉ import factory, không chạy `bootstrap.jsx` này.
 
 ## Nối catalog bằng callback
@@ -486,7 +507,7 @@ Standalone có một áo để bạn thử tăng, giảm và xóa ngay. Giỏ c�
 
 Thay toàn bộ component từ bài host/remote đầu tiên:
 
-```jsx title="shop-workspace/apps/catalog/src/CatalogPage.jsx"
+```jsx title="shop-workspace/apps/catalog/src/CatalogPage.jsx" sourceFile="apps/catalog/src/CatalogPage.jsx" sourceRegion="main"
 import React, { useEffect, useRef, useState } from 'react';
 
 const products = [
@@ -551,13 +572,15 @@ export default function CatalogPage({ onAddToCart = unavailable }) {
 }
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/catalog/src/CatalogPage.jsx" region="main">Đối chiếu apps/catalog/src/CatalogPage.jsx</SourceRef>
+
 Callback chỉ nhận SKU và quantity. Catalog không gửi giá, không biết shape của cart snapshot và không import controller của cart. `busy` chặn hai lần gọi trước khi React kịp render trạng thái disabled; pending ở đây là local UI state, không phải state giỏ.
 
 Prop có default để host cũ vẫn render được component không truyền props. Tuy nhiên, nút thêm khi không được nối sẽ báo chưa kết nối, không giả vờ thành công. Đây là thay đổi bổ sung contract có chủ đích; vẫn phải test với các consumer còn được hỗ trợ.
 
 ### Giữ catalog chạy standalone
 
-```jsx title="shop-workspace/apps/catalog/src/bootstrap.jsx"
+```jsx title="shop-workspace/apps/catalog/src/bootstrap.jsx" sourceFile="apps/catalog/src/bootstrap.jsx" sourceRegion="main"
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import CatalogPage from './CatalogPage';
@@ -573,6 +596,8 @@ createRoot(container).render(
 );
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/catalog/src/bootstrap.jsx" region="main">Đối chiếu apps/catalog/src/bootstrap.jsx</SourceRef>
+
 Giữ `index.js` với `import('./bootstrap')` và webpack config catalog từ bài trước. Nếu muốn test thành công/thất bại của callback khi standalone, truyền adapter giả trong test harness; không thêm dependency runtime từ catalog sang cart chỉ để trang standalone có badge.
 
 ## Khai báo Federation cho cart và shell
@@ -581,7 +606,7 @@ Giữ `index.js` với `import('./bootstrap')` và webpack config catalog từ b
 
 Thay toàn bộ config cart. Cấu hình dùng JSX runtime `classic`, nên mọi file JSX phía trên đều import `React` và không phát sinh automatic JSX runtime subpaths.
 
-```js title="shop-workspace/apps/cart/webpack.config.cjs"
+```js title="shop-workspace/apps/cart/webpack.config.cjs" sourceFile="apps/cart/webpack.config.cjs" sourceRegion="main"
 const path = require('node:path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { ModuleFederationPlugin } = require('webpack').container;
@@ -644,28 +669,34 @@ module.exports = {
 };
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/cart/webpack.config.cjs" region="main">Đối chiếu apps/cart/webpack.config.cjs</SourceRef>
+
 `name: 'shop_cart'` là tên container, còn alias `cart` do shell khai báo ở dưới. `uniqueName` khác shell và catalog để tránh runtime collision. `publicPath: 'auto'` giúp chunks của cart tải từ origin cart, không phải port shell.
 
 ### Bổ sung remote và deep link cho shell
 
 Trong **ModuleFederationPlugin đang có** ở `apps/shell/webpack.config.cjs`, thay object `remotes` bằng:
 
-```js title="Phần remotes của shell"
+```js title="Phần remotes của shell" sourceFile="fragments/shell-remotes.js" sourceRegion="main"
 remotes: {
   catalog: 'shop_catalog@http://localhost:3001/remoteEntry.js',
   cart: 'shop_cart@http://localhost:3002/remoteEntry.js',
 },
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="fragments/shell-remotes.js" region="main">Đối chiếu fragments/shell-remotes.js</SourceRef>
+
 Thay `devServer` của shell bằng:
 
-```js title="Phần devServer của shell"
+```js title="Phần devServer của shell" sourceFile="fragments/shell-dev-server.js" sourceRegion="main"
 devServer: {
   host: 'localhost',
   static: false,
   historyApiFallback: true,
 },
 ```
+
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="fragments/shell-dev-server.js" region="main">Đối chiếu fragments/shell-dev-server.js</SourceRef>
 
 Giữ entry, Babel loader, `publicPath`, `uniqueName`, HtmlWebpackPlugin và toàn bộ `shared` của shell từ bài trước. Không thêm plugin Federation thứ hai vào shell. Sau khi sửa config, restart dev server để webpack nhận cấu hình mới.
 
@@ -681,7 +712,7 @@ Giữ entry, Babel loader, `publicPath`, `uniqueName`, HtmlWebpackPlugin và to�
 
 Tạo module wiring thuộc shell:
 
-```js title="shop-workspace/apps/shell/src/cart-client.js"
+```js title="shop-workspace/apps/shell/src/cart-client.js" sourceFile="apps/shell/src/cart-client.js" sourceRegion="main"
 let controllerPromise;
 
 export function loadCartController() {
@@ -703,6 +734,8 @@ export function loadCartController() {
 }
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/shell/src/cart-client.js" region="main">Đối chiếu apps/shell/src/cart-client.js</SourceRef>
+
 Promise được cache trong module shell, không tạo trong render. Hai lần setup effect dưới StrictMode vẫn chờ cùng Promise và nhận cùng controller. Shell không chia sẻ module này với catalog; đó là wiring nội bộ của composition layer.
 
 Guard trên chỉ kiểm tra version và các method cần gọi, chưa validate toàn bộ snapshot/result. Policy retry của lab là **reload trang**: nếu import bị reject, Promise này giữ trạng thái reject. Việc gọi lại hàm không bảo đảm runtime tải lại remote; lab nâng cao về lỗi remote sẽ xử lý recovery kỹ hơn.
@@ -711,7 +744,7 @@ Guard trên chỉ kiểm tra version và các method cần gọi, chưa validate
 
 Thay toàn bộ `App.jsx`. Router nhỏ này chỉ phục vụ hai path của lab; nó chưa có auth guards, nested routes hay focus management sau navigation.
 
-```jsx title="shop-workspace/apps/shell/src/App.jsx"
+```jsx title="shop-workspace/apps/shell/src/App.jsx" sourceFile="apps/shell/src/App.jsx" sourceRegion="main"
 import React, { Component, Suspense, lazy, useEffect, useState, useSyncExternalStore } from 'react';
 import { loadCartController } from './cart-client';
 
@@ -830,6 +863,8 @@ export default function App() {
 }
 ```
 
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="apps/shell/src/App.jsx" region="main">Đối chiếu apps/shell/src/App.jsx</SourceRef>
+
 Khi controller chưa tải xong, badge là `—`, **không phải `0`**. Catalog vẫn tải độc lập; bấm thêm quá sớm nhận thất bại rõ ràng, không được queue ngầm và không hiện thành công. Policy này tránh yêu cầu bị thực hiện bất ngờ sau khi người dùng đã rời màn hình.
 
 `CartBadge` là component riêng vì không được gọi Hook có điều kiện trong `App`. Cả badge và `CartPage` đọc cùng instance. Key của boundary reset trạng thái lỗi khi chuyển màn hình, nhưng không reset controller; cũng không phải cơ chế retry import đã reject của `React.lazy`.
@@ -904,7 +939,7 @@ Dừng remote **sau khi code đã tải** không làm component hoặc controlle
 
 Tạo test dùng Node test runner, chưa cần thêm thư viện test UI. Đây là test của cart owner nên được import implementation cart trực tiếp; shell runtime vẫn chỉ dùng public federation requests.
 
-```js title="shop-workspace/tests/cart-controller.test.mjs"
+```js title="shop-workspace/tests/cart-controller.test.mjs" sourceFile="tests/cart-controller.test.mjs" sourceRegion="main"
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCartController } from '../apps/cart/src/createCartController.js';
@@ -1000,6 +1035,8 @@ test('resolver lỗi không commit và queue vẫn dùng được', async () => 
   assert.equal(cart.getSnapshot().summary.totalQuantity, 1);
 });
 ```
+
+<SourceRef project="thuc-hanh-shop-shell-catalog-cart" file="tests/cart-controller.test.mjs" region="main">Đối chiếu tests/cart-controller.test.mjs</SourceRef>
 
 Chạy từ root `shop-workspace` với Node 22+. Field `"type": "module"` đã thêm vào manifest cart giúp Node đọc source controller đúng định dạng:
 

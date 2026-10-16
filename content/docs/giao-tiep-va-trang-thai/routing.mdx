@@ -11,6 +11,8 @@ Bài này đi từ **vấn đề cần giải quyết**, sau đó mới đến g
   <strong>Shell</strong> là app bao ngoài, giữ khung giao diện và ghép các microfrontend vào trang. <strong>Remote</strong> là microfrontend được ghép vào đó. Ví dụ xuyên suốt là một shop có Catalog để xem sản phẩm và Cart để xem giỏ hàng. Đây là ứng dụng giả định, không phải tính năng có sẵn trong repository tài liệu.
 </Callout>
 
+<SourceRef project="giao-tiep-va-trang-thai-routing" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Các vấn đề cần giải quyết](#các-vấn-đề-cần-giải-quyết)
@@ -176,17 +178,13 @@ Bây giờ Catalog thêm `/catalog/favorites`, shell vẫn nhận ra URL thuộc
 
 Một lần mở URL diễn ra như sau:
 
-```text
-/catalog/products/42
-        │
-        ▼
-Shell chọn Catalog theo prefix /catalog
-        │
-        ▼
-Catalog chọn trang sản phẩm theo products/:id
-        │
-        ▼
-Trang chi tiết nhận id = 42
+```d2 title="Chia route cấp app và route bên trong app"
+direction: right
+n0: "/catalog/products/42"
+n1: "Shell chọn Catalog theo /catalog"
+n2: "Catalog chọn products/:id"
+n3: "Trang chi tiết nhận id = 42"
+n0 -> n1 -> n2 -> n3
 ```
 
 **Đây là hai cấp trách nhiệm, không có nghĩa phải tạo hai router độc lập.** Cách thực hiện phụ thuộc vào mô hình tích hợp ở hai phần tiếp theo.
@@ -199,10 +197,13 @@ Shell xử lý URL không thuộc app nào, chẳng hạn `/unknown`. Catalog x�
 
 Nếu shell render các remote như component trong cùng một cây React, lựa chọn đơn giản là **một router chung**:
 
-```text
-Router của shell
-├── /catalog/* → Component route của Catalog
-└── /cart/*    → Component route của Cart
+```d2 title="Dùng router chung khi các app cùng cây React"
+direction: down
+router: Router shell
+catalog: "Component route Catalog"
+cart: "Component route Cart"
+router -> catalog: "/catalog/*"
+router -> cart: "/cart/*"
 ```
 
 Shell tạo router. Catalog và Cart cung cấp những nhánh route của mình, đồng thời dùng `Link` hoặc `useNavigate` từ router chung để điều hướng.
@@ -228,9 +229,12 @@ Trong trường hợp đó, mỗi app có thể có router riêng để chọn m
 
 Chiều ngược lại cũng cần có: khi người dùng bấm Back, shell nhận URL mới rồi thông báo cho remote đang hiển thị. Nếu đó là một màn hình khác trong Catalog, Catalog phải chọn lại đúng màn hình.
 
-```text
-Remote yêu cầu chuyển trang → Shell thay đổi URL
-Shell công bố URL hiện tại  → Remote cập nhật màn hình
+```d2 title="Phối hợp router riêng khi các app chạy độc lập"
+direction: right
+remote: Remote
+shell: Shell
+remote -> shell: "Yêu cầu chuyển trang"
+shell -> remote: "URL hiện tại sau khi đổi"
 ```
 
 Remote có thể dùng memory router, tức router giữ đường đi trong bộ nhớ thay vì tự đổi thanh địa chỉ. Nhưng dùng memory router thôi chưa đủ: nó vẫn cần nhận URL ban đầu và các thay đổi từ shell để deep link và Back/Forward hoạt động.
@@ -243,13 +247,15 @@ Nếu mỗi frontend là một website/document độc lập, bạn cũng có th
 
 Để một URL hiển thị nhiều MFE, shell chọn **cấu trúc trang**, không chỉ chọn một app duy nhất:
 
-```text
-URL: /catalog/products/42
-
-Shell
-├── Header
-├── Vùng chính: Catalog → chi tiết sản phẩm 42
-└── Vùng gợi ý: Recommendations → gợi ý cho sản phẩm 42
+```d2 title="Ghép nhiều microfrontend theo layout"
+direction: down
+shell: "Shell: /catalog/products/42"
+header: Header
+catalog: "Vùng chính: Catalog\nChi tiết sản phẩm 42"
+recommend: "Vùng gợi ý: Recommendations\nGợi ý cho sản phẩm 42"
+shell -> header
+shell -> catalog
+shell -> recommend
 ```
 
 Catalog dùng URL để chọn trang sản phẩm. Recommendations chỉ cần nhận `productId = "42"` để hiển thị gợi ý, nên không nhất thiết cần router riêng.
@@ -262,14 +268,13 @@ Một widget có các tab “Liên quan” và “Đã xem” có thể giữ ta
 
 Với một static SPA, giải pháp cho mở link trực tiếp là để server trả document của shell cho những đường dẫn màn hình thuộc ứng dụng. Sau đó shell và remote dựng nội dung theo URL ban đầu:
 
-```text
-Browser mở /catalog/products/42
-        ↓
-Server trả HTML của shell, giữ nguyên URL
-        ↓
-Shell nhận /catalog → tải Catalog
-        ↓
-Catalog nhận products/42 → hiển thị sản phẩm 42
+```d2 title="Cho server và frontend cùng hiểu URL"
+direction: down
+n0: "Browser mở /catalog/products/42"
+n1: "Server trả HTML shell, giữ URL"
+n2: "Shell nhận /catalog → tải\nCatalog"
+n3: "Catalog nhận products/42 → hiển\nthị"
+n0 -> n1 -> n2 -> n3
 ```
 
 Đây thường là **rewrite nội bộ**, không phải redirect người dùng về `/`. Nếu redirect về trang chủ, bạn có thể làm mất điểm đến mà người dùng muốn mở.
@@ -310,7 +315,7 @@ Ví dụ này minh họa mô hình router chung. Shell và Catalog render trong 
 
 ### Shell chỉ khai báo điểm gắn của Catalog
 
-```tsx title="shell/App.tsx"
+```tsx title="shell/App.tsx" sourceFile="shell/App.tsx" sourceRegion="main"
 import { BrowserRouter, Link, Route, Routes } from 'react-router';
 import { CatalogRoutes } from 'catalog/routes';
 import { CartPage } from 'cart/Page';
@@ -335,11 +340,13 @@ export function App() {
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-routing" file="shell/App.tsx" region="main">Đối chiếu shell/App.tsx</SourceRef>
+
 Điểm cần nhìn là `/catalog/*`. Shell không khai báo `/catalog/products/:id` hay `/catalog/search`; nó giao cả nhánh đó cho `CatalogRoutes`. Cart trong ví dụ chỉ có một trang, nên shell gắn trực tiếp `/cart`. Khi Cart cần nhiều màn hình, nó có thể cung cấp `CartRoutes` dưới `/cart/*` theo cùng cách.
 
 ### Catalog khai báo các màn hình của mình
 
-```tsx title="catalog/routes.tsx"
+```tsx title="catalog/routes.tsx" sourceFile="catalog/routes.tsx" sourceRegion="main"
 import { Link, Route, Routes, useParams } from 'react-router';
 
 function ProductList() {
@@ -367,6 +374,8 @@ export function CatalogRoutes() {
   );
 }
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-routing" file="catalog/routes.tsx" region="main">Đối chiếu catalog/routes.tsx</SourceRef>
 
 Catalog chỉ khai báo phần phía sau điểm gắn `/catalog`:
 
@@ -403,7 +412,7 @@ Một remote chạy độc lập cần trả lời ba câu hỏi: “URL hiện 
 
 Ví dụ contract dưới đây giữ các public destination của shop. Catalog yêu cầu tới destination `cart`, không cần biết Cart dùng thư viện router nào.
 
-```ts title="contracts/navigation.ts"
+```ts title="contracts/navigation.ts" sourceFile="contracts/navigation.ts" sourceRegion="main"
 export type LocationSnapshot = Readonly<{
   revision: number;
   pathname: string;
@@ -427,6 +436,8 @@ export interface NavigationPort {
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-routing" file="contracts/navigation.ts" region="main">Đối chiếu contracts/navigation.ts</SourceRef>
+
 | Thành phần | Remote dùng để làm gì |
 | --- | --- |
 | `getSnapshot()` | Đọc URL hiện tại, kể cả ngay khi vừa mount |
@@ -441,11 +452,13 @@ Snapshot là bất biến, giữ cùng reference khi chưa đổi nếu dùng v�
 
 Điểm dễ sai nhất là đồng bộ thành vòng lặp. Khi shell gửi URL mới do Back, remote cần cập nhật màn hình nhưng **không gửi lại yêu cầu chuyển tới chính URL đó**. Nếu gửi lại bằng push, Back vừa quay về thì app lại tạo một bước history mới.
 
-```text
-Người dùng click trong remote
-        → remote gọi navigate
-        → shell chuyển URL và công bố snapshot
-        → remote áp dụng snapshot, không gọi lại navigate
+```d2 title="Navigation contract cho remote cô lập"
+direction: right
+n0: "Người dùng click trong remote"
+n1: "Remote gọi navigate"
+n2: "Shell đổi URL và công bố\nsnapshot"
+n3: "Remote áp dụng snapshot\nKhông gọi lại navigate"
+n0 -> n1 -> n2 -> n3
 ```
 
 Nếu remote dùng memory router, adapter cần cập nhật router khi snapshot thay đổi, thường bằng replace cho location từ shell. `initialEntries` của `MemoryRouter` chỉ khởi tạo history; đổi prop này không phải cách đồng bộ location liên tục. Back cấp ứng dụng đi qua shell, không qua memory history riêng của remote. Với wizard không cần bookmark hay Back qua từng bước, local state hoặc memory routing nội bộ có thể là đủ.

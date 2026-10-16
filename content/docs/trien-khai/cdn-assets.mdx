@@ -8,7 +8,7 @@ Giả sử shell tải được `remoteEntry.js` của catalog, nhưng khi bạn
 Với micro-frontend, hosting không chỉ là đưa một thư mục build lên CDN. Bạn cần giữ đúng ba thứ: **entry trỏ đến đúng release, runtime tải assets từ đúng nơi, và server trả đúng nội dung cùng headers**. Bài này đi qua cả ba bằng một ví dụ shell/catalog.
 
 <Callout type="info" title="Phạm vi và giả định">
-  Ví dụ dành cho micro-frontend chạy trong browser, dùng webpack 5 hoặc Vite. Các domain, release ID và artifact bên dưới là minh họa; repository này chỉ chứa tài liệu, không có ứng dụng catalog hay hạ tầng để chạy trực tiếp các lệnh deploy. Ví dụ Vite chỉ nói về đường dẫn assets, không cấu hình một federation plugin. Sơ đồ dùng ASCII nên không cần Mermaid.
+  Ví dụ dành cho micro-frontend chạy trong browser, dùng webpack 5 hoặc Vite. Các domain, release ID và artifact bên dưới là minh họa; repository này chỉ chứa tài liệu, không có ứng dụng catalog hay hạ tầng để chạy trực tiếp các lệnh deploy. Ví dụ Vite chỉ nói về đường dẫn assets, không cấu hình một federation plugin.
 </Callout>
 
 ## Mục lục
@@ -41,18 +41,17 @@ Với micro-frontend, hosting không chỉ là đưa một thư mục build lên
 
 Mình chọn mặc định: shell ở domain ứng dụng, còn các remote static ở object storage phía sau CDN. CDN giữ bản cache gần người dùng; object storage là origin, nơi giữ artifact gốc khi CDN cần lấy file.
 
-```text
-Browser đang mở https://shop.example.com
-    │
-    ├── HTML và shell assets ──► Hosting của shell
-    │
-    └── Entry và chunks ──────► https://assets.example.com
-                                         │
-                                         ▼
-                                    CDN edge cache
-                                         │ cache miss
-                                         ▼
-                                 Object storage origin
+```d2 title="Chọn nơi phục vụ shell và remote"
+direction: down
+browser: "Browser: shop.example.com"
+host: Hosting shell
+assets: assets.example.com
+cdn: CDN edge cache
+origin: Object storage origin
+browser -> host: HTML + shell assets
+browser -> assets: Entry + chunks
+assets -> cdn
+cdn -> origin: Cache miss
 ```
 
 Trong sơ đồ này, **browser tải remote**, không phải server của shell tải rồi trả lại. Vì vậy DNS, TLS, CORS và CSP phải đúng từ góc nhìn browser của người dùng. Việc server CI tải được file chưa chứng minh người dùng tải được.

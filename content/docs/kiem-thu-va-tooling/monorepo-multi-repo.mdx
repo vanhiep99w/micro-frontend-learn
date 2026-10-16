@@ -10,7 +10,7 @@ Giả sử team catalog muốn release cách lọc sản phẩm mới, còn team
 Bài này giúp bạn chọn giữa monorepo, multi-repo và cách kết hợp cả hai cho shop gồm shell, catalog và cart. Mình ưu tiên một cấu trúc dễ vận hành hơn là một cấu trúc trông giống sơ đồ micro-frontend.
 
 <Callout type="info" title="Phạm vi và ví dụ">
-  Đây là tài liệu kiến trúc và tooling, không phải hướng dẫn tạo thêm app trong site docs. Các cấu hình bên dưới dành cho workspace shop riêng. Bài [Cấu trúc workspace](/docs/bat-dau/workspace) dùng npm workspaces và webpack 5; phần pnpm/Turborepo ở đây là phương án mở rộng riêng, không phải lệnh chạy trực tiếp trên lab npm đó. Sơ đồ dùng ASCII, không cần cấu hình Mermaid.
+  Đây là tài liệu kiến trúc và tooling, không phải hướng dẫn tạo thêm app trong site docs. Các cấu hình bên dưới dành cho workspace shop riêng. Bài [Cấu trúc workspace](/docs/bat-dau/workspace) dùng npm workspaces và webpack 5; phần pnpm/Turborepo ở đây là phương án mở rộng riêng, không phải lệnh chạy trực tiếp trên lab npm đó.
 </Callout>
 
 ## Mục lục
@@ -133,17 +133,25 @@ Hoisting có thể khiến app chạy được dù không khai báo dependency t
 
 Bạn cần nhìn hai graph khác nhau. Graph thứ nhất phục vụ build, graph thứ hai mô tả các phần giao tiếp khi ứng dụng chạy:
 
-```text
-Build/package graph — mũi tên nghĩa là "phụ thuộc vào"
-
-shell   ──► contracts, ui
-catalog ──► contracts, ui
-cart    ──► contracts, ui
-
-Runtime composition
-
-shell ──tải remote──► catalog
-shell ──tải remote──► cart
+```d2 title="Dependency graph không phải runtime graph"
+direction: right
+build: "Build/package graph: phụ thuộc\nvào" {
+  shell: shell
+  catalog: catalog
+  cart: cart
+  contracts: contracts
+  ui: ui
+  shell -> contracts
+  shell -> ui
+  catalog -> contracts
+  catalog -> ui
+  cart -> contracts
+  cart -> ui
+}
+runtime: Runtime composition {
+  shell -> catalog: "Tải remote"
+  shell -> cart: "Tải remote"
+}
 ```
 
 Shell không cần khai báo `@shop/catalog` trong npm dependencies chỉ vì nó tải catalog qua URL remote. Ngược lại, dependency `@shop/contracts` không nói cho CI biết catalog đang giao tiếp với version cart nào trên production.
@@ -384,13 +392,15 @@ Deploy credentials cũng cần boundary: job catalog chỉ được ghi artifact
 
 Luồng dưới đây áp dụng cho cả monorepo lẫn multi-repo:
 
-```text
-Catalog candidate
-  → app checks + contract checks
-  → build artifact immutable
-  → smoke với shell/cart đang được hỗ trợ
-  → promote mapping hoặc release catalog
-  → theo dõi, rollback về release trước nếu cần
+```d2 title="Luồng release catalog độc lập"
+direction: down
+n0: "Catalog candidate"
+n1: "App + contract checks"
+n2: "Build artifact immutable"
+n3: "Smoke với shell/cart hỗ trợ"
+n4: "Promote mapping / release"
+n5: "Theo dõi, rollback nếu cần"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5
 ```
 
 1. **Xác định candidate:** ghi source commit, lockfile/toolchain và contract version. Trong monorepo, cùng commit có thể tạo nhiều artifact; lưu identity riêng cho từng artifact.

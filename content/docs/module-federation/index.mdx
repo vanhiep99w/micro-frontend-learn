@@ -10,7 +10,7 @@ Module Federation cho phép một build lấy module từ một build độc l�
 **Module Federation giải quyết việc cung cấp, tải và chia sẻ module giữa các build; nó không tự tạo một kiến trúc micro-frontend độc lập.**
 
 <Callout type="info" title="Phạm vi nhóm bài">
-  Đây là trang định hướng cho sáu bài chuyên sâu về Module Federation. Ví dụ dùng shop giả định gồm shell, catalog và cart, không phải ứng dụng có sẵn trong repository docs. Phần cấu hình minh họa dùng plugin tích hợp trong webpack 5; không phải cấu hình cho Next.js của site này. Sơ đồ text hiển thị trực tiếp với cấu hình Fumadocs hiện tại.
+  Đây là trang định hướng cho sáu bài chuyên sâu về Module Federation. Ví dụ dùng shop giả định gồm shell, catalog và cart, không phải ứng dụng có sẵn trong repository docs. Phần cấu hình minh họa dùng plugin tích hợp trong webpack 5; không phải cấu hình cho Next.js của site này.
 </Callout>
 
 ## Mục lục
@@ -90,16 +90,15 @@ Share scope không phải một global store nghiệp vụ. Nó hỗ trợ resol
 
 Với webpack script remote, có thể hình dung đường đi như sau:
 
-```text
-Shell ── import catalog/ProductPage ──► Federation runtime
-                                               │
-                                               ▼
-                                      Catalog container
-                                               │
-                                               ▼
-                                      Module và các chunk
-                                               │
-Shell ◄──────────── public exports ─────────────┘
+```d2 title="Luồng tải trong shop"
+direction: right
+shell: Shell
+runtime: Federation runtime
+container: Catalog container
+modules: Module + chunks
+shell -> runtime: "import catalog/ProductPage"
+runtime -> container -> modules
+modules -> shell: Public exports
 ```
 
 Một lần người dùng mở catalog thường có các mốc sau:

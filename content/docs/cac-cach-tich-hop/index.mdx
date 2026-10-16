@@ -8,7 +8,7 @@ Giả sử shell của shop dùng React, catalog cần release riêng, còn cart
 Nhóm **Các cách tích hợp khác** giúp bạn xác định phần nào cần một cơ chế tải code, phần nào cần điều phối lifecycle và phần nào cần ranh giới DOM hoặc bảo mật mạnh hơn. Các cơ chế này có thể kết hợp; “không dùng federation” không có nghĩa phải viết lại mọi thứ từ đầu.
 
 <Callout type="info" title="Phạm vi trang này">
-  Đây là trang định hướng, không phải lab cài đặt. Ví dụ dùng shop giả định gồm shell, catalog và cart; repository hiện là site tài liệu. Bạn nên biết ES modules, routing, mount/unmount và origin ở mức cơ bản. Sơ đồ text hiển thị trực tiếp với cấu hình Fumadocs hiện tại, không cần thêm plugin.
+  Đây là trang định hướng, không phải lab cài đặt. Ví dụ dùng shop giả định gồm shell, catalog và cart; repository hiện là site tài liệu. Bạn nên biết ES modules, routing, mount/unmount và origin ở mức cơ bản.
 </Callout>
 
 ## Mục lục
@@ -47,16 +47,14 @@ Có thật sự cần release riêng không? Nếu một team vẫn phát hành 
 
 Một điểm ghép runtime có thể hình dung như sau:
 
-```text
-Chọn release / URL
-        ↓
-Resolve và tải code
-        ↓
-Kích hoạt và mount UI
-        ↓
-Giao tiếp trong boundary đã chọn
-        ↓
-Unmount và cleanup khi không còn dùng
+```d2 title="Bốn trách nhiệm cần tách"
+direction: down
+n0: "Chọn release / URL"
+n1: "Resolve và tải code"
+n2: "Kích hoạt và mount UI"
+n3: "Giao tiếp trong boundary"
+n4: "Unmount và cleanup"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Đây là mô hình trách nhiệm, không phải thứ tự API bắt buộc. Với iframe, browser tải cả document thay vì shell import một module rồi gọi mount; với custom element, việc thêm hoặc tháo element kích hoạt lifecycle của nó.
@@ -118,12 +116,12 @@ CSS của hai document không tự áp dụng chéo như khi dùng chung DOM. V�
 
 Điểm dễ nhầm nhất là nghĩ phải chọn giữa single-spa và import maps. Một tổ hợp hoàn toàn hợp lý là:
 
-```text
-Import map: @shop/catalog → URL release catalog
-                         ↓
-single-spa: chọn route → load → mount → unmount
-                         ↓
-Catalog: render và cleanup trong container được giao
+```d2 title="Các cơ chế có thể kết hợp như thế nào"
+direction: right
+n0: "Import map: @shop/catalog → URL\nrelease"
+n1: "single-spa: route, load, mount,\nunmount"
+n2: "Catalog: render và cleanup trong\ncontainer"
+n0 -> n1 -> n2
 ```
 
 Trong tổ hợp này, import map giúp browser resolve module, single-spa điều phối khi nào app xuất hiện, còn app chịu trách nhiệm implementation lifecycle. Không thành phần nào tự tạo CSS isolation.

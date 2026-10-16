@@ -8,8 +8,10 @@ Giả sử bạn đã kiểm thử shell ở staging và muốn đưa đúng art
 Runtime configuration tách những quyết định có thể thay đổi — môi trường, remote release, một số feature flags — ra khỏi bundle. Shell đọc cấu hình trước khi dùng nó để tải remote. Nhưng file JSON này cũng có thể làm cả shop không khởi động, hoặc đưa code ngoài ý muốn vào cùng window. Vì vậy, mình xem **thay cấu hình là một lần release**, có validation, review và rollback như thay code.
 
 <Callout type="info" title="Phạm vi và môi trường ví dụ">
-  Bài dùng shop giả định gồm shell, catalog và cart. Các snippet TypeScript dành cho shell CSR trong một lab riêng, với remote dạng classic script container của webpack 5; không phải code sẵn có trong repository docs. Sơ đồ text hiển thị trực tiếp, không cần Mermaid. Cách nối loader vào federation được trình bày ở [Dynamic remotes](/docs/module-federation/dynamic-remotes); bài này tập trung vào hợp đồng cấu hình và vận hành.
+  Bài dùng shop giả định gồm shell, catalog và cart. Các snippet TypeScript dành cho shell CSR trong một lab riêng, với remote dạng classic script container của webpack 5; không phải code sẵn có trong repository docs. Cách nối loader vào federation được trình bày ở [Dynamic remotes](/docs/module-federation/dynamic-remotes); bài này tập trung vào hợp đồng cấu hình và vận hành.
 </Callout>
+
+<SourceRef project="trien-khai-runtime-configuration" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -97,7 +99,7 @@ Nếu đã SSR, truyền public snapshot cùng response thường hợp lý hơn
 
 Endpoint `/runtime/config.json` trả một document nhất quán. Ví dụ sau dùng domain và revision minh họa; bạn phải thay domain bằng deployment của lab trước khi chạy.
 
-```json title="Response minh họa của /runtime/config.json"
+```json title="Response minh họa của /runtime/config.json" sourceFile="runtime/config.json" sourceRegion="main"
 {
   "schemaVersion": 1,
   "revision": "demo-config-42",
@@ -124,6 +126,8 @@ Endpoint `/runtime/config.json` trả một document nhất quán. Ví dụ sau 
   }
 }
 ```
+
+<SourceRef project="trien-khai-runtime-configuration" file="runtime/config.json" region="main">Đối chiếu runtime/config.json</SourceRef>
 
 | Field | Contract trong ví dụ |
 | --- | --- |
@@ -164,11 +168,14 @@ Khi cần breaking schema, deploy reader hỗ trợ trước, xác nhận cả s
 
 Luồng khởi động mong muốn là:
 
-```text
-Bootstrap ──► Fetch JSON ──► Validate + pin snapshot ──► Start shell
-                                                          │
-                                                          ▼
-                                              Resolve remote khi cần
+```d2 title="Đọc và kiểm tra cấu hình trước khi bootstrap"
+direction: right
+n0: "Bootstrap"
+n1: "Fetch JSON"
+n2: "Validate + pin snapshot"
+n3: "Start shell"
+n4: "Resolve remote khi cần"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Lấy JSON thành công chưa đủ. `response.json() as RuntimeConfig` chỉ thuyết phục TypeScript, không kiểm tra response server, file deploy sai hay dữ liệu bị sửa.
@@ -177,7 +184,7 @@ Lấy JSON thành công chưa đủ. `response.json() as RuntimeConfig` chỉ th
 
 Module sau là policy hẹp cho hai remote đã biết. Cùng shell artifact có thể chạy ở staging và production vì biết trước cả hai origin tin cậy; config chọn release chứ không được quyền tự khai báo thêm origin tin cậy.
 
-```ts title="shell/src/runtime-config.ts — phần 1"
+```ts title="shell/src/runtime-config.ts — phần 1" sourceFile="shell/src/runtime-config.ts" sourceRegion="validation"
 type Environment = 'staging' | 'production';
 type RemoteName = 'catalog' | 'cart';
 
@@ -284,6 +291,8 @@ export function validateConfig(
 }
 ```
 
+<SourceRef project="trien-khai-runtime-configuration" file="shell/src/runtime-config.ts" region="validation">Đối chiếu shell/src/runtime-config.ts</SourceRef>
+
 Validator so exact origin và exact release path. Kiểm tra prefix chuỗi như `startsWith('https://assets.example.com')` có thể cho lọt `assets.example.com.attacker.invalid`. Code cũng chặn credentials, query và hash trong entry URL; descriptor `enabled: false` vẫn phải hợp lệ để có thể kiểm tra toàn snapshot.
 
 Policy không đọc allowlist từ chính JSON đang validate. Nếu JSON vừa khai báo URL vừa khai báo “URL này đáng tin”, validation không còn ranh giới trust. Trong lab có localhost hoặc preview, thêm một policy riêng được kiểm soát; không tự động tắt HTTPS/origin checks khi request thất bại.
@@ -298,7 +307,7 @@ Policy không đọc allowlist từ chính JSON đang validate. Nếu JSON vừa
 
 Thêm đoạn sau vào cùng module. Thời hạn 5 giây chỉ là giá trị minh họa; chọn theo mục tiêu bootstrap của sản phẩm.
 
-```ts title="shell/src/runtime-config.ts — phần 2"
+```ts title="shell/src/runtime-config.ts — phần 2" sourceFile="shell/src/runtime-config.ts" sourceRegion="fetch-and-pin"
 let snapshotPromise: Promise<RuntimeConfig> | undefined;
 
 async function fetchConfig(): Promise<RuntimeConfig> {
@@ -330,6 +339,8 @@ export function getRuntimeConfig(): Promise<RuntimeConfig> {
 }
 ```
 
+<SourceRef project="trien-khai-runtime-configuration" file="shell/src/runtime-config.ts" region="fetch-and-pin">Đối chiếu shell/src/runtime-config.ts</SourceRef>
+
 Mọi caller trong shell dùng cùng Promise, kể cả khi gọi đồng thời. Promise reject cũng được giữ; không để mỗi remote tự retry và nhận revision khác nhau. Đây là snapshot **theo document đang sống**, không phải theo phiên đăng nhập và không persist qua reload.
 
 Timer abort request fetch và việc đọc body đang chờ; nó không preempt phần parse/validate đồng bộ đã chạy trên main thread. Giữ payload nhỏ, giới hạn kích thước ở server và không dùng config endpoint để trả danh sách sản phẩm hoặc dữ liệu domain lớn.
@@ -338,7 +349,7 @@ Timer abort request fetch và việc đọc body đang chờ; nó không preempt
 
 Bootstrap chỉ phụ thuộc vào config loader và UI lỗi cục bộ. Không static-import module có thể tải remote trước khi cấu hình sẵn sàng.
 
-```ts title="shell/src/bootstrap.ts"
+```ts title="shell/src/bootstrap.ts" sourceFile="shell/src/bootstrap.ts" sourceRegion="main"
 import { getRuntimeConfig } from './runtime-config';
 
 async function bootstrap() {
@@ -364,6 +375,8 @@ async function bootstrap() {
 
 void bootstrap();
 ```
+
+<SourceRef project="trien-khai-runtime-configuration" file="shell/src/bootstrap.ts" region="main">Đối chiếu shell/src/bootstrap.ts</SourceRef>
 
 `./app` là module lab bạn cần cung cấp, export `startShell(root, config)` và cấu hình resolver dùng snapshot này trước lần federated import đầu tiên. Bootstrap không phải một implementation loader. Với webpack promise-based remote, nối resolver theo [Dynamic remotes](/docs/module-federation/dynamic-remotes), nhưng thay nguồn manifest bằng snapshot chung; không fetch thêm `/runtime/remotes.json` riêng cho mỗi alias.
 
@@ -486,11 +499,13 @@ Không mở allowlist bằng cách chấp nhận mọi subdomain của một n�
 
 Với SSR, browser snapshot phải khớp snapshot server đã dùng để render:
 
-```text
-Request ──► Resolve config snapshot ──► Render HTML + public snapshot
-                                                 │
-                                                 ▼
-                              Browser hydrate với cùng release map
+```d2 title="Môi trường preview và SSR"
+direction: right
+n0: "Request"
+n1: "Resolve config snapshot"
+n2: "Render HTML + public snapshot"
+n3: "Browser hydrate cùng release map"
+n0 -> n1 -> n2 -> n3
 ```
 
 Không fetch “latest config” riêng trước hydration rồi ghép code mới với HTML cũ. HTML, RSC payload nếu có, client artifacts và remote mapping phải theo strategy version nhất quán. Cache HTML cũng cần phân biệt cohort/variant nếu nội dung khác nhau.

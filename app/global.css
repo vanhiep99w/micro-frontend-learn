@@ -1,5 +1,8 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/style.css';
+@import '@vanhiep99w/docs-kit/styles/d2.css';
+@import '@vanhiep99w/docs-kit/styles/source-explorer.css';
+@import '@vanhiep99w/docs-kit/styles/source-explorer-fumadocs.css';
 
 :root {
   /* Fill the viewport instead of leaving large margins on wide screens. */

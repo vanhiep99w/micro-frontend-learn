@@ -8,8 +8,10 @@ Giả sử shell của shop đã dùng React, còn team catalog muốn deploy m�
 Quyết định này ảnh hưởng trực tiếp đến Context, lifecycle, xử lý lỗi và cách chia sẻ dependency. Module Federation có thể giúp tải code, nhưng không tự quyết định các boundary đó thay bạn.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài này dành cho client-side integration, giả định bạn đã biết component, props và Hooks. Ví dụ dùng TypeScript cùng API `createRoot` của React 18 trở lên; shell và catalog trong lab là các module local, chưa phải hai ứng dụng deploy độc lập. Repository hiện tại chỉ chứa tài liệu, không có ứng dụng shop để chạy các đoạn code này. Sơ đồ dùng ASCII nên không cần cấu hình Mermaid.
+  Bài này dành cho client-side integration, giả định bạn đã biết component, props và Hooks. Ví dụ dùng TypeScript cùng API `createRoot` của React 18 trở lên; shell và catalog trong lab là các module local, chưa phải hai ứng dụng deploy độc lập. Repository hiện tại chỉ chứa tài liệu, không có ứng dụng shop để chạy các đoạn code này.
 </Callout>
+
+<SourceRef project="ui-va-framework-react" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -58,12 +60,14 @@ Có hai cách ghép phổ biến. Cả hai có thể tải code bằng dynamic i
 
 Remote export component; shell render nó như component local. Đây là mặc định mình chọn khi các team cùng dùng React tương thích, tin cậy nhau và cần giao diện phối hợp chặt chẽ.
 
-```text
-Root của shell
-└── ThemeProvider
-    └── ErrorBoundary
-        └── Suspense
-            └── CatalogPage từ remote
+```d2 title="Component trong tree của shell"
+direction: right
+n0: "Shell root"
+n1: "ThemeProvider"
+n2: "ErrorBoundary"
+n3: "Suspense"
+n4: "CatalogPage remote"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Ví dụ dưới chỉ minh họa cách tải component local. `ErrorBoundary` là boundary do shell cung cấp, không phải export có sẵn của React; khi chuyển sang federation, loader và type declaration cho remote phải được cấu hình riêng.
@@ -96,14 +100,21 @@ Remote ở mô hình này **không gọi `createRoot` khi được import**. Ent
 
 Remote export adapter, nhận một DOM container và tự tạo root. Shell có thể dùng React, Vue hoặc chỉ JavaScript; contract không bắt shell phải render JSX của remote.
 
-```text
-Shell root                         Catalog root
-└── ThemeProvider                   └── CatalogProviders
-    └── <div dành cho catalog>          └── CatalogApp
-             ▲                               │
-             └──────── DOM được render ──────┘
-
-Hai React tree riêng, dù DOM catalog nằm bên trong DOM shell.
+```d2 title="Ứng dụng có root riêng"
+direction: down
+shell: Shell React tree {
+  root: Shell root
+  theme: ThemeProvider
+  container: div dành cho catalog
+  root -> theme -> container
+}
+catalog: Catalog React tree riêng {
+  root: Catalog root
+  providers: CatalogProviders
+  app: CatalogApp
+  root -> providers -> app
+}
+catalog.app -> shell.container: "DOM render vào container, không\nchia sẻ React tree"
 ```
 
 Mình chọn cách này cho một màn hình có lifecycle tương đối độc lập hoặc khi shell không dùng React. Nó cũng giúp giữ provider nội bộ trong catalog, nhưng đổi lại theme, navigation và state dùng chung phải đi qua contract.
@@ -120,10 +131,14 @@ React quản lý nội dung bên trong container được truyền cho `createRo
 
 Lifecycle nên có đường đi rõ ràng:
 
-```text
-Chưa mount → mount → update → update → unmount
-                                         │
-                                         └── handle cũ không dùng lại
+```d2 title="Quyền sở hữu DOM và lifecycle"
+direction: right
+n0: "Chưa mount"
+n1: "Mount"
+n2: "Update lần 1"
+n3: "Update lần 2"
+n4: "Unmount\nKhông dùng lại handle cũ"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 `update` gọi `root.render` trên root hiện có, không tạo root mới. React có thể giữ local state nếu component type, vị trí và key vẫn tương ứng. Ngược lại, unmount rồi mount lại sẽ tạo tree mới và reset state; đây là hành vi bạn nên chọn có chủ đích, không phải cách cập nhật props mặc định.
@@ -156,7 +171,7 @@ Các file sau giả định nằm trong một lab client-side có bundler hỗ t
 
 ### Contract và component catalog
 
-```ts title="src/contracts.ts"
+```ts title="src/contracts.ts" sourceFile="src/contracts.ts" sourceRegion="main"
 export type CatalogProps = {
   locale: 'vi-VN' | 'en-US';
   onAddToCart: (sku: string) => void;
@@ -168,7 +183,9 @@ export type CatalogHandle = {
 };
 ```
 
-```tsx title="src/catalog/App.tsx"
+<SourceRef project="ui-va-framework-react" file="src/contracts.ts" region="main">Đối chiếu src/contracts.ts</SourceRef>
+
+```tsx title="src/catalog/App.tsx" sourceFile="src/catalog/App.tsx" sourceRegion="main"
 import { useId, useState } from 'react';
 import type { CatalogProps } from '../contracts';
 
@@ -200,13 +217,15 @@ export default function CatalogApp({ locale, onAddToCart }: CatalogProps) {
 }
 ```
 
+<SourceRef project="ui-va-framework-react" file="src/catalog/App.tsx" region="main">Đối chiếu src/catalog/App.tsx</SourceRef>
+
 `quantity` chỉ là local UI state để quan sát state preservation. Callback hiện chỉ gửi SKU một lần, không phải API thêm nhiều sản phẩm hay triển khai cart thật.
 
 ### Adapter React của catalog
 
 Adapter không tạo root ở module scope. Mỗi lần `mount` tạo một instance; mỗi handle giữ reference đến đúng root của instance đó.
 
-```tsx title="src/catalog/mount.tsx"
+```tsx title="src/catalog/mount.tsx" sourceFile="src/catalog/mount.tsx" sourceRegion="main"
 import { Component, StrictMode } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -291,6 +310,8 @@ export function mount(
 }
 ```
 
+<SourceRef project="ui-va-framework-react" file="src/catalog/mount.tsx" region="main">Đối chiếu src/catalog/mount.tsx</SourceRef>
+
 Ở đây `unmount` là idempotent: gọi lần hai không làm gì; `update` sau unmount thì báo lỗi để lộ lỗi lifecycle phía caller. `WeakMap` ngăn double mount trong **cùng module adapter**, không phải registry toàn trang. Nếu hai bản bundle catalog cùng tồn tại, shell vẫn phải bảo đảm một owner cho mỗi slot.
 
 `identifierPrefix` giúp phân biệt ID tạo bởi `useId` giữa các roots. Counter trong ví dụ chỉ phân biệt instances của bản module này; production có nhiều bundle hoặc SSR cần quy ước prefix rộng hơn. Không dùng prefix đó như security identifier.
@@ -301,7 +322,7 @@ export function mount(
 
 Một tình huống dễ bỏ sót: người dùng rời catalog khi bundle vẫn đang tải. `import()` không tự hủy khi route thay đổi. Controller dưới dùng cờ `disposed` để bỏ qua kết quả tải muộn, đồng thời giữ props mới nhất trong lúc chờ.
 
-```ts title="src/catalog-slot.ts"
+```ts title="src/catalog-slot.ts" sourceFile="src/catalog-slot.ts" sourceRegion="main"
 import type { CatalogHandle, CatalogProps } from './contracts';
 
 export function createCatalogSlot(
@@ -355,6 +376,8 @@ export function createCatalogSlot(
 }
 ```
 
+<SourceRef project="ui-va-framework-react" file="src/catalog-slot.ts" region="main">Đối chiếu src/catalog-slot.ts</SourceRef>
+
 Controller này có **một owner cho slot**. Đừng gọi `createCatalogSlot` lần nữa trên slot đang hoạt động mà chưa dispose controller trước: `replaceChildren` khi đó sẽ xóa container của một root còn sống.
 
 Cờ `disposed` không ngăn download hay module evaluation. Vì vậy module remote vẫn phải tránh side effect ở top level như đăng ký listener global hoặc tự mount app. Những tài nguyên theo instance nên bắt đầu ở `mount` hoặc effect, và kết thúc ở cleanup.
@@ -363,14 +386,16 @@ Cờ `disposed` không ngăn download hay module evaluation. Vì vậy module re
 
 Đặt markup này trong body của trang lab và để bundler nạp entry `src/main.ts`. Shell sở hữu buttons và status; catalog chỉ sở hữu descendants của container do controller tạo.
 
-```html title="Markup của trang lab"
+```html title="Markup của trang lab" sourceFile="index.html" sourceRegion="main"
 <button id="toggle-catalog">Mở catalog</button>
 <button id="switch-locale">Đổi ngôn ngữ</button>
 <p id="shell-status" role="status"></p>
 <div id="catalog-slot"></div>
 ```
 
-```ts title="src/main.ts"
+<SourceRef project="ui-va-framework-react" file="index.html" region="main">Đối chiếu index.html</SourceRef>
+
+```ts title="src/main.ts" sourceFile="src/main.ts" sourceRegion="main"
 import { createCatalogSlot } from './catalog-slot';
 import type { CatalogProps } from './contracts';
 
@@ -407,6 +432,8 @@ switchLocale.addEventListener('click', () => {
   controller?.update(props());
 });
 ```
+
+<SourceRef project="ui-va-framework-react" file="src/main.ts" region="main">Đối chiếu src/main.ts</SourceRef>
 
 Trong lab, sửa quantity rồi đổi locale: label đổi nhưng quantity còn giữ nguyên. Đóng rồi mở lại catalog: quantity trở về `1`, vì instance trước đã unmount. Nếu dùng loader mạng, thử đóng khi đang tải và xác nhận catalog không xuất hiện lại sau đó. Dynamic import local có thể resolve quá nhanh để quan sát race này; hãy dùng loader có delay trong test.
 

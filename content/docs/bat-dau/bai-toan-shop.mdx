@@ -82,10 +82,13 @@ Auth, deploy độc lập và giả lập remote lỗi sẽ được thêm ở c
 
 Đây là ba phần của **frontend**, không phải yêu cầu tạo ba backend service. Bạn có thể dùng cùng mock data hoặc cùng backend khi thực hành; frontend boundary và backend boundary là hai quyết định khác nhau.
 
-```text
-Shell: header, navigation, vùng nội dung, fallback
-  ├── Catalog UI: xem sản phẩm, gửi yêu cầu thêm giỏ
-  └── Cart UI: xem giỏ, đổi số lượng, xóa dòng
+```d2 title="Ranh giới shell catalog và cart"
+direction: down
+shell: "Shell: header, navigation,\noutlet, fallback"
+catalog: "Catalog UI: xem sản phẩm, yêu\ncầu thêm giỏ"
+cart: "Cart UI: xem giỏ, đổi số lượng,\nxóa dòng"
+shell -> catalog
+shell -> cart
 ```
 
 Sơ đồ thể hiện nơi ghép giao diện. Quyền sở hữu nghiệp vụ được phân công riêng ở dưới; một phần được render bên trong shell không có nghĩa shell sở hữu state của phần đó.
@@ -164,16 +167,17 @@ Mặc định phiên bản đầu cập nhật giỏ sau khi thao tác được 
 
 Luồng quan trọng nhất bắt đầu ở catalog nhưng kết quả xuất hiện ở cả cart và shell:
 
-```text
-Catalog UI ── addItem({ sku, quantity }) ──► Cart controller
-                                                   │
-                                       xác nhận và cập nhật state
-                                                   │
-                                                   ▼
-                                            Snapshot giỏ hàng
-                                              │          │
-                                              ▼          ▼
-                                           Cart UI   Shell badge
+```d2 title="Luồng thêm sản phẩm vào giỏ"
+direction: down
+catalog: Catalog UI
+controller: Cart controller
+snapshot: "Snapshot giỏ hàng"
+cart: Cart UI
+badge: Shell badge
+catalog -> controller: "addItem({ sku, quantity })"
+controller -> snapshot: "Xác nhận và cập nhật state"
+snapshot -> cart
+snapshot -> badge
 ```
 
 Đây là mô hình giao tiếp, không phải đường tải bundle. Các bước mong đợi là:

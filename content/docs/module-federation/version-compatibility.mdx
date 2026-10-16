@@ -203,9 +203,13 @@ Với ma trận H1/H2 và C1/C2/C3, mình chọn trình tự sau:
 3. **Observe:** đo contract thực sự được chọn, build IDs và lỗi theo từng tổ hợp. Giữ routing cho host trong window.
 4. **Contract:** chỉ route C3 tới host đủ khả năng dùng v2. Bỏ v1 sau khi đáp ứng policy hết hạn, hoặc tiếp tục route H1 tới C2 nếu H1 còn được hỗ trợ.
 
-```text
-C2: v1 + v2  →  H2: v1 + v2  →  Kết thúc hỗ trợ H1  →  C3: chỉ v2
-    expand          migrate          hết window             contract
+```d2 title="Thứ tự deploy và điều kiện loại bỏ API cũ"
+direction: right
+n0: "C2: v1 + v2\nExpand"
+n1: "H2: v1 + v2\nMigrate"
+n2: "Kết thúc hỗ trợ H1\nHết window"
+n3: "C3: chỉ v2\nContract"
+n0 -> n1 -> n2 -> n3
 ```
 
 Điều kiện loại bỏ API gồm cả code đã ship, cấu hình routing và rollback target. Nếu C2 vẫn là rollback target, H2 phải giữ đường gọi C2 hợp lệ. Nếu muốn xóa cả đường v1 khỏi H2, cần đánh giá lại ma trận và thay rollback target; không chỉ xóa adapter trong một PR.
@@ -214,10 +218,15 @@ C2: v1 + v2  →  H2: v1 + v2  →  Kết thúc hỗ trợ H1  →  C3: chỉ v2
 
 Runtime registry có thể chọn candidate theo host build, contract hoặc cohort. Sau đó host vẫn nên kiểm tra descriptor trước khi thực thi remote. Gate này giúp từ chối một cặp không được hỗ trợ trước khi container có cơ hội đăng ký shared providers hoặc chạy code.
 
-```text
-Registry chọn candidate → Host kiểm tra descriptor → Loader tải đúng artifact
-                                     │
-                            Không phù hợp: fallback
+```d2 title="Kiểm tra compatibility trước khi tải remote"
+direction: right
+registry: "Registry chọn candidate"
+check: "Host kiểm tra descriptor" {shape: diamond}
+loader: "Loader tải đúng artifact"
+fallback: Fallback
+registry -> check
+check -> loader: "Phù hợp"
+check -> fallback: "Không phù hợp"
 ```
 
 Gate là nơi thực thi policy, không phải nơi tự động “tìm đại version chạy được”. Mình ưu tiên candidate từ danh sách đã được kiểm thử và routing rõ ràng, thay vì quét toàn bộ lịch sử releases rồi chọn số lớn nhất.

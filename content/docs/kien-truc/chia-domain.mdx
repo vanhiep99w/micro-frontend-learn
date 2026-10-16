@@ -160,15 +160,16 @@ Trong ví dụ này, chọn `/catalog` làm nhánh tìm sản phẩm và `/cart`
 
 Shell là vai trò tích hợp, không phải một business domain ngang hàng với catalog hay cart. Nó có thể do platform team hoặc một team sản phẩm sở hữu; không cần tạo team mới chỉ để khớp sơ đồ.
 
-```text
-                     Shell
-              layout · route · lifecycle
-                 /               \
-        Catalog UI               Cart UI
-        tìm và chọn SKU          xem và sửa giỏ
-                 \               /
-                  Cart data port
-              command · summary reader
+```d2 title="Phần thuộc catalog cart và shell"
+direction: down
+shell: "Shell: layout, route, lifecycle"
+catalog: "Catalog UI: tìm và chọn SKU"
+cart: "Cart UI: xem và sửa giỏ"
+port: "Cart data port: command, summary\nreader"
+shell -> catalog
+shell -> cart
+catalog -> port
+cart -> port
 ```
 
 Sơ đồ là bản đồ trách nhiệm, không phải dependency graph của bundle. Cart data port do cart domain sở hữu; composition layer có thể inject nó cho consumer. Khi chỉ cần thêm hàng hoặc đọc badge, không nhất thiết phải tải toàn bộ trang giỏ hàng. Port có thể được hiện thực bằng adapter gọi backend mà không kéo theo UI cart.
@@ -252,12 +253,14 @@ Contract thực tế còn cần quy tắc session, xử lý nhiều lần bấm,
 
 ### Luồng xử lý và trạng thái lỗi
 
-```text
-Catalog UI ── addItem(skuId, quantity) ──► Cart data layer
-                                              │
-                                        gọi Cart API
-                                              │
-Catalog UI ◄── confirmed / rejected / failed ──┘
+```d2 title="Luồng xử lý và trạng thái lỗi"
+direction: right
+catalog: Catalog UI
+layer: Cart data layer
+api: Cart API
+catalog -> layer: "addItem(skuId, quantity)"
+layer -> api: "Gọi API"
+layer -> catalog: Confirmed / rejected / failed
 ```
 
 Sau xác nhận thành công, cart data layer cập nhật hoặc invalidate dữ liệu thuộc mình. Header đọc summary hiện tại; cart UI đọc giỏ hiện tại. Nếu dùng notification để báo dữ liệu đổi, consumer mới mount vẫn phải đọc snapshot hoặc fetch lại, vì notification trong memory có thể đã trôi qua.

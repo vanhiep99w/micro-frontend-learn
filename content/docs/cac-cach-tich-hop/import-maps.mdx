@@ -8,8 +8,10 @@ Giả sử shell của shop đã build xong, nhưng catalog cần chuyển sang 
 Nhưng đổi được URL mới chỉ giải quyết bước tìm module. Ai mount giao diện, ai cleanup listener, React có bị tải hai bản không, và tab đang mở có nhận release mới không? Bài này tách những trách nhiệm đó, rồi dựng một ví dụ nhỏ để bạn kiểm chứng ngay trong browser.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Ví dụ dùng native ESM trong browser, DOM API và shop giả định với shell, catalog, cart. Đây là mã thực hành để tạo ở thư mục riêng, không phải mã ứng dụng có sẵn trong repository hay cấu hình cho Next.js của site docs. Bạn cần biết `import`, `export`, Promise và HTTP cơ bản. Sơ đồ text không cần plugin bổ sung.
+  Ví dụ dùng native ESM trong browser, DOM API và shop giả định với shell, catalog, cart. Đây là mã thực hành để tạo ở thư mục riêng, không phải mã ứng dụng có sẵn trong repository hay cấu hình cho Next.js của site docs. Bạn cần biết `import`, `export`, Promise và HTTP cơ bản.
 </Callout>
+
+<SourceRef project="cac-cach-tich-hop-import-maps" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -164,19 +166,17 @@ Nếu nhiều scope khớp, browser thử scope cụ thể nhất, rồi các sc
 
 ## Luồng tải trong shop
 
-```text
-HTML có import map ──► shell.js
-                          │
-                  import('@shop/catalog')
-                          │ resolve tên thành URL
-                          ▼
-                  /catalog/r17/entry.js
-                          │ tải và evaluate module graph
-                          ▼
-                  module namespace có mount
-                          │ shell gọi mount(container, props)
-                          ▼
-                       Catalog UI
+```d2 title="Luồng tải trong shop"
+direction: down
+n0: "HTML có import map"
+n1: "shell.js"
+n2: "import(\"@shop/catalog\")"
+n3: "Resolve URL:\n/catalog/r17/entry.js"
+n4: "Tải và evaluate module graph"
+n5: "Module namespace có mount"
+n6: "mount(container, props)"
+n7: "Catalog UI"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5 -> n6 -> n7
 ```
 
 Bạn cần phân biệt ba thời điểm: **resolve địa chỉ**, **evaluate module**, và **mount giao diện**. Import top-level có thể chạy code ngay khi module evaluate, dù người dùng chưa mở trang. Vì vậy, remote nên export function và tránh gắn global listener, sửa DOM hay khởi động mutation ngay ở top-level.
@@ -203,7 +203,7 @@ Contract UI của ví dụ là `mount(container, { cart })` chạy đồng bộ 
 
 ### Tạo HTML và import map
 
-```html title="index.html"
+```html title="index.html" sourceFile="index.html" sourceRegion="main"
 <!doctype html>
 <html lang="vi">
   <head>
@@ -232,13 +232,15 @@ Contract UI của ví dụ là `mount(container, { cart })` chạy đồng bộ 
 </html>
 ```
 
+<SourceRef project="cac-cach-tich-hop-import-maps" file="index.html" region="main">Đối chiếu index.html</SourceRef>
+
 Module script không có `async` được thực thi sau khi HTML đã parse, nên shell có thể lấy các DOM node trên. Map nằm trước script module để mọi bare specifier cần dùng đều đã có địa chỉ.
 
 ### Tạo cart controller
 
 Implementation thuộc cart domain; shell chỉ tạo instance và nối nó vào các UI. Lab dùng dữ liệu in-memory và hai SKU cố định, không import store hay component từ catalog.
 
-```js title="cart/1.0.0/controller.js"
+```js title="cart/1.0.0/controller.js" sourceFile="cart/1.0.0/controller.js" sourceRegion="main"
 export function createCartController() {
   const allowedSkus = new Set(['ao-thun-den', 'tui-vai']);
   const quantities = new Map();
@@ -266,13 +268,15 @@ export function createCartController() {
 }
 ```
 
+<SourceRef project="cac-cach-tich-hop-import-maps" file="cart/1.0.0/controller.js" region="main">Đối chiếu cart/1.0.0/controller.js</SourceRef>
+
 `getSnapshot()` trả về dữ liệu mới để consumer không sửa trực tiếp state nội bộ. `subscribe()` trả unsubscribe; contract production cần chốt thêm cách xử lý lỗi observer, mutation bất đồng bộ và schema dữ liệu, không chỉ tên function.
 
 ### Tạo catalog và cart UI
 
 Catalog nhận capability qua props thay vì import implementation của cart. Trong lab, command chạy đồng bộ và dữ liệu cố định; khi nối backend bạn cần trạng thái pending và xử lý lỗi riêng cho thao tác thêm giỏ.
 
-```js title="catalog/1.0.0/entry.js"
+```js title="catalog/1.0.0/entry.js" sourceFile="catalog/1.0.0/entry.js" sourceRegion="main"
 export function mount(container, { cart }) {
   const section = document.createElement('section');
   const heading = document.createElement('h2');
@@ -305,9 +309,11 @@ export function mount(container, { cart }) {
 }
 ```
 
+<SourceRef project="cac-cach-tich-hop-import-maps" file="catalog/1.0.0/entry.js" region="main">Đối chiếu catalog/1.0.0/entry.js</SourceRef>
+
 Cart UI đọc snapshot hiện có **trước khi chờ thông báo mới**. Nhờ vậy, thêm sản phẩm ở catalog rồi mới mở cart lần đầu vẫn thấy dữ liệu.
 
-```js title="cart/1.0.0/entry.js"
+```js title="cart/1.0.0/entry.js" sourceFile="cart/1.0.0/entry.js" sourceRegion="main"
 export function mount(container, { cart }) {
   const section = document.createElement('section');
   container.replaceChildren(section);
@@ -338,11 +344,13 @@ export function mount(container, { cart }) {
 }
 ```
 
+<SourceRef project="cac-cach-tich-hop-import-maps" file="cart/1.0.0/entry.js" region="main">Đối chiếu cart/1.0.0/entry.js</SourceRef>
+
 ### Shell quản lý loading và lifecycle
 
 Shell dùng loader function với specifier cố định. Cách này giới hạn route được phép tải và dễ audit hơn việc chuyển input người dùng trực tiếp vào `import()`.
 
-```js title="shell.js"
+```js title="shell.js" sourceFile="shell.js" sourceRegion="main"
 import { createCartController } from '@shop/cart-controller';
 
 const outlet = document.querySelector('#outlet');
@@ -405,6 +413,8 @@ async function navigate() {
 window.addEventListener('hashchange', navigate);
 navigate();
 ```
+
+<SourceRef project="cac-cach-tich-hop-import-maps" file="shell.js" region="main">Đối chiếu shell.js</SourceRef>
 
 `navigationId` ngăn catalog tải chậm ghi đè cart sau khi bạn đã đổi route. Nó chỉ bỏ qua kết quả import cũ; không hủy network request hoặc ngăn module đó evaluate.
 

@@ -10,8 +10,10 @@ Catalog render đúng khi chạy standalone, cart pass component tests, nhưng k
 <Callout type="info" title="Phạm vi và điều kiện bắt đầu">
   Các file và lệnh mẫu thuộc workspace ứng dụng `shop-workspace`, **không chạy trong repository Next.js + Fumadocs chứa tài liệu này**. Smoke test dùng đúng shell/catalog từ [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien), tại `localhost:3000` và `localhost:3001`.
 
-  Các ví dụ thêm giỏ là bước mở rộng giả định đã có cart remote, routing, API và UI tương ứng. Bài không dựng implementation của những phần đó. Playwright có thể kiểm thử React, Vue, Angular hay iframe vì quan sát browser, không yêu cầu các app dùng chung framework. Sơ đồ text không cần Mermaid.
+  Các ví dụ thêm giỏ là bước mở rộng giả định đã có cart remote, routing, API và UI tương ứng. Bài không dựng implementation của những phần đó. Playwright có thể kiểm thử React, Vue, Angular hay iframe vì quan sát browser, không yêu cầu các app dùng chung framework.
 </Callout>
+
+<SourceRef project="kiem-thu-va-tooling-integration-e2e" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -87,11 +89,17 @@ Một browser test chỉ có ý nghĩa khi bạn biết browser đã chạy code
 
 Vòng lặp local có thể dùng dev servers để debug nhanh. Release gate nên dùng production artifacts đã build một lần, URL bất biến và mapping được pin:
 
-```text
-Browser → shell artifact
-             ├─→ catalog artifact đã pin
-             ├─→ cart artifact đã pin
-             └─→ API mock hoặc test backend
+```d2 title="Test đúng artifact sẽ deploy"
+direction: right
+browser: Browser
+shell: Shell artifact
+catalog: "Catalog artifact đã pin"
+cart: "Cart artifact đã pin"
+api: API mock / test backend
+browser -> shell
+shell -> catalog
+shell -> cart
+shell -> api
 ```
 
 Shell vẫn tải remote qua loader thật. Không thay `import('catalog/CatalogPage')` bằng source import catalog ngay trong harness, vì cách đó bỏ qua container initialization, share scope và đường tải chunk đang cần test.
@@ -131,7 +139,7 @@ Trên Linux CI, dùng `npx playwright install --with-deps chromium` khi runner c
 
 Cấu hình này chỉ khởi động **hai app đã tích hợp trong lab**. Cart chưa cần chạy:
 
-```ts title="shop-workspace/playwright.config.ts"
+```ts title="shop-workspace/playwright.config.ts" sourceFile="playwright.config.ts" sourceRegion="main"
 import { defineConfig, devices } from '@playwright/test';
 
 const targetURL = process.env.TEST_BASE_URL;
@@ -170,6 +178,8 @@ export default defineConfig({
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-integration-e2e" file="playwright.config.ts" region="main">Đối chiếu playwright.config.ts</SourceRef>
+
 Các timeout và số workers là cấu hình minh họa; điều chỉnh theo môi trường đo được. `TEST_BASE_URL` là URL của môi trường **đã provision và kiểm tra readiness bên ngoài**, không làm Playwright tự deploy remote hay backend.
 
 Local cho phép reuse server để debug thuận tiện, nhưng bạn phải xác nhận đúng profile/code đang chạy. CI không reuse server có sẵn để tránh vô tình test process từ lượt chạy trước. Khi thêm cart local, bổ sung một entry `webServer` cho cart và mapping tương ứng trong shell; chỉ mở port `3002` không tự tích hợp cart.
@@ -178,7 +188,7 @@ Local cho phép reuse server để debug thuận tiện, nhưng bạn phải xá
 
 Test dưới đây dùng các heading và sản phẩm đã có trong lab. Không cần API mock, props mới hay test-only component:
 
-```ts title="tests/browser/remote-smoke.spec.ts"
+```ts title="tests/browser/remote-smoke.spec.ts" sourceFile="tests/browser/remote-smoke.spec.ts" sourceRegion="main"
 import { expect, test } from '@playwright/test';
 
 test('shell render catalog remote trong trang host', async ({ page }) => {
@@ -200,6 +210,8 @@ test('shell render catalog remote trong trang host', async ({ page }) => {
   expect(runtimeErrors).toEqual([]);
 });
 ```
+
+<SourceRef project="kiem-thu-va-tooling-integration-e2e" file="tests/browser/remote-smoke.spec.ts" region="main">Đối chiếu tests/browser/remote-smoke.spec.ts</SourceRef>
 
 ```bash
 npx playwright test tests/browser/remote-smoke.spec.ts
@@ -235,7 +247,7 @@ Nếu ứng dụng dùng `productId` thay vì `sku`, envelope khác hoặc acces
 
 Mock API trước khi `goto`. State của mock nằm trong test, không chia sẻ giữa tests. Các frontend và kênh giao tiếp vẫn là implementation thật:
 
-```ts title="tests/browser/cart.integration.spec.ts"
+```ts title="tests/browser/cart.integration.spec.ts" sourceFile="tests/browser/cart.integration.spec.ts" sourceRegion="main"
 import { expect, test } from '@playwright/test';
 
 test.use({ serviceWorkers: 'block' });
@@ -293,6 +305,8 @@ test('catalog thêm hàng, shell và cart nhận snapshot mới', async ({ page 
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-integration-e2e" file="tests/browser/cart.integration.spec.ts" region="main">Đối chiếu tests/browser/cart.integration.spec.ts</SourceRef>
+
 Case này kiểm tra catalog dùng cart boundary thật, shell nhận trạng thái mới và cart render đúng sau navigation. Nó không chỉ assert POST response, vì một request thành công vẫn có thể không đến được shell badge.
 
 Mock chỉ hỗ trợ một sản phẩm và thao tác thêm một đơn vị. Nếu test tăng quantity, xóa item hoặc retry, mở rộng state machine theo contract; đừng cho mọi POST trả cùng một snapshot thành công. `writes === 1` chỉ đếm requests trong đoạn journey này, không chứng minh backend có idempotency.
@@ -332,7 +346,7 @@ Thêm TTL cleanup phía server vì worker có thể bị kill trước khi chạ
 
 Ví dụ dùng cùng UI contract ở phần integration, không khai báo `page.route()` và chạy trên preview có backend thật. Config `baseURL` phải là origin mà test support API và shop cùng được phục vụ:
 
-```ts title="tests/browser/cart.e2e.spec.ts"
+```ts title="tests/browser/cart.e2e.spec.ts" sourceFile="tests/browser/cart.e2e.spec.ts" sourceRegion="main"
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
@@ -395,6 +409,8 @@ test('giỏ hàng đã lưu còn tồn tại sau reload', async ({
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-integration-e2e" file="tests/browser/cart.e2e.spec.ts" region="main">Đối chiếu tests/browser/cart.e2e.spec.ts</SourceRef>
+
 `expect.poll` cho phép chờ trạng thái commit trong khoảng timeout hữu hạn; nó không sửa được một endpoint chỉ trả cache sai mãi. Test support read phải quan sát state của cart mà session vừa dùng, không trả fixture mặc định. Type assertion trong ví dụ không validate JSON ở runtime; API support thực tế nên validate response và báo rõ lỗi setup.
 
 Reload cộng với backend assertion tránh trường hợp UI trông đúng chỉ vì giữ optimistic state trong memory hoặc localStorage. Case vẫn chưa chứng minh idempotency, race giữa nhiều tab hay checkout: mỗi rủi ro cần một scenario riêng và expected result rõ ràng.
@@ -429,7 +445,7 @@ Test cleanup bằng hành vi: quay lại route, click một lần và quan sát 
 
 Remote failure là lỗi ở frontend composition, khác API trả `503`. Với lab hiện tại, bạn có thể chặn chính catalog entry để kiểm tra error boundary đã có:
 
-```ts title="tests/browser/remote-failure.spec.ts"
+```ts title="tests/browser/remote-failure.spec.ts" sourceFile="tests/browser/remote-failure.spec.ts" sourceRegion="main"
 import { expect, test } from '@playwright/test';
 
 test.use({ serviceWorkers: 'block' });
@@ -448,6 +464,8 @@ test('catalog entry lỗi không làm mất shell header', async ({ page }) => {
   })).toBeVisible();
 });
 ```
+
+<SourceRef project="kiem-thu-va-tooling-integration-e2e" file="tests/browser/remote-failure.spec.ts" region="main">Đối chiếu tests/browser/remote-failure.spec.ts</SourceRef>
 
 Test cần browser context mới và intercept trước navigation để chưa có remote module trong memory/cache. Không dùng một glob chung `**/remoteEntry.js` nếu chỉ muốn phá catalog; nó có thể phá cả cart và làm kết quả không còn đúng scenario.
 

@@ -8,10 +8,12 @@ Catalog chỉ đổi cách hiển thị sản phẩm, nhưng pipeline vẫn bắ
 Bạn sẽ publish catalog mới vào URL bất biến, kiểm thử trước khi chọn traffic, rồi đổi runtime config. Sau đó, bạn thử một breaking change và rollback để thấy deploy độc lập không có nghĩa là bỏ qua tương thích.
 
 <Callout type="info" title="Chạy ở workspace riêng">
-  Repository hiện tại là site Next.js + Fumadocs, không có shop để deploy. Các file và lệnh bên dưới thuộc một thư mục lab riêng, không đặt trong repository docs. Lab dùng native ESM và mount API để tập trung vào release; không phải cấu hình webpack Module Federation hay bản triển khai đầy đủ của shop React. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
+  Repository hiện tại là site Next.js + Fumadocs, không có shop để deploy. Các file và lệnh bên dưới thuộc một thư mục lab riêng, không đặt trong repository docs. Lab dùng native ESM và mount API để tập trung vào release; không phải cấu hình webpack Module Federation hay bản triển khai đầy đủ của shop React.
 </Callout>
 
 import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+<SourceRef project="thuc-hanh-deploy-doc-lap" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -63,14 +65,20 @@ Bạn cần Node.js 22 trở lên, npm, terminal Bash trên Linux/macOS và brow
 
 ### Artifact khác selection
 
-```text
-Document mới → shell s17 → config snapshot
-                              ├─ catalog → /catalog/r18/entry.mjs
-                              └─ cart    → /cart/r7/entry.mjs
-
-Publish r19: thêm /catalog/r19/*, config chưa đổi
-Promote r19: config mới chọn /catalog/r19/entry.mjs
-Rollback:   config mới hơn chọn lại /catalog/r18/entry.mjs
+```d2 title="Artifact khác selection"
+direction: down
+browser: Document mới
+shell: Shell s17
+config: Config snapshot
+catalog: "/catalog/r18/entry.mjs"
+cart: "/cart/r7/entry.mjs"
+publish: "Publish r19: thêm /catalog/r19/*\nConfig chưa đổi"
+promote: "Promote: config mới chọn r19"
+rollback: "Rollback: config mới hơn chọn\nlại r18"
+browser -> shell -> config
+config -> catalog
+config -> cart
+publish -> promote -> rollback
 ```
 
 **Publish** làm artifact có thể tải được. **Promote** thay selection để document mới chọn artifact đó. Vì shell lấy URL ở runtime nên promotion không cần sửa bundle shell.
@@ -110,7 +118,7 @@ Commit `package.json` và lockfile nếu bạn lưu lab vào Git. CI dùng `npm 
 
 ### HTML của shop
 
-```html title="public/index.html"
+```html title="public/index.html" sourceFile="public/index.html" sourceRegion="main"
 <!doctype html>
 <html lang="vi">
   <head>
@@ -128,11 +136,13 @@ Commit `package.json` và lockfile nếu bạn lưu lab vào Git. CI dùng `npm 
 </html>
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="public/index.html" region="main">Đối chiếu public/index.html</SourceRef>
+
 ### Cart sở hữu state
 
 Catalog gửi ý định thêm hàng; cart quyết định cách lưu và hiển thị. State chỉ ở memory để bạn tập trung vào boundary. Reload sẽ reset số lượng; đó không phải lỗi rollback.
 
-```js title="public/cart/r7/entry.mjs"
+```js title="public/cart/r7/entry.mjs" sourceFile="public/cart/r7/entry.mjs" sourceRegion="main"
 export const release = 'r7';
 export const contractVersion = 1;
 
@@ -162,11 +172,13 @@ export function mount(container) {
 }
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="public/cart/r7/entry.mjs" region="main">Đối chiếu public/cart/r7/entry.mjs</SourceRef>
+
 ### Shell đọc và pin runtime config
 
 Shell fetch config đúng một lần cho mỗi document. Query `preview` chỉ chọn một trong các file lab đã biết, không cho truyền URL code tùy ý. Bỏ cơ chế override này khỏi production hoặc bảo vệ nó bằng policy QA riêng.
 
-```js title="public/shell/s17/main.mjs"
+```js title="public/shell/s17/main.mjs" sourceFile="public/shell/s17/main.mjs" sourceRegion="main"
 const status = document.querySelector('#status');
 const catalogRoot = document.querySelector('#catalog');
 
@@ -255,6 +267,8 @@ try {
 }
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="public/shell/s17/main.mjs" region="main">Đối chiếu public/shell/s17/main.mjs</SourceRef>
+
 Validator chỉ nhận URL thuộc đúng origin và release path. Điều này giảm rủi ro config chọn nhầm code, **không phải sandbox**: module đã import có quyền trong cùng window. Code remote vẫn phải thuộc nguồn tin cậy.
 
 Loader kiểm tra metadata sau import, nên top-level code của module đã có thể chạy trước khi bị từ chối. Không dùng check này thay artifact verification hay security review. Lab không có shared framework dependencies; với React/Module Federation bạn còn phải kiểm tra share scope và singleton policy.
@@ -265,7 +279,7 @@ Loader kiểm tra metadata sau import, nên top-level code của module đã có
 
 Catalog có hai button: thêm hàng và xem chi tiết. Button thứ hai mới tải `details.mjs`, giúp bạn kiểm chứng rằng cả graph của release được phục vụ, không chỉ entry trả 200.
 
-```js title="src/catalog-entry.mjs"
+```js title="src/catalog-entry.mjs" sourceFile="src/catalog-entry.mjs" sourceRegion="main"
 export const release = __RELEASE__;
 export const contractVersion = __CONTRACT_VERSION__;
 const title = __TITLE__;
@@ -311,13 +325,15 @@ export function mount(container, { onAdd }) {
 }
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="src/catalog-entry.mjs" region="main">Đối chiếu src/catalog-entry.mjs</SourceRef>
+
 Các token `__RELEASE__`, `__CONTRACT_VERSION__`, `__TITLE__` là input cho build script, không phải JavaScript chạy trực tiếp trong browser. Không chỉnh output đã publish để đổi label.
 
 ### Build một lần vào thư mục bất biến
 
 Script này đóng vai trò bundler tối giản: thay build constants và sinh một lazy module. R19 giữ API v1; r20 cố ý expose `mountV2` và contract major 2.
 
-```js title="build-catalog.mjs"
+```js title="build-catalog.mjs" sourceFile="build-catalog.mjs" sourceRegion="main"
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -347,13 +363,15 @@ await writeFile(join(directory, 'details.mjs'),
 console.log(`Published catalog ${release}; selection chưa thay đổi.`);
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="build-catalog.mjs" region="main">Đối chiếu build-catalog.mjs</SourceRef>
+
 Nếu build dừng giữa chừng, thư mục có thể chưa đầy đủ. Đừng promote nó; trong lab bỏ release ID đó và dùng workspace sạch để chạy lại bài. Production nên build ở staging directory rồi upload graph đã kiểm chứng vào prefix mới, với inventory/digests và policy không overwrite.
 
 ## Phục vụ shop với cache policy rõ ràng
 
 Server chỉ listen loopback và chỉ phục vụ các path lab đã biết. Không dùng server minh họa này làm hosting production.
 
-```js title="server.mjs"
+```js title="server.mjs" sourceFile="server.mjs" sourceRegion="main"
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
@@ -399,11 +417,13 @@ createServer(async (request, response) => {
 });
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="server.mjs" region="main">Đối chiếu server.mjs</SourceRef>
+
 HTML và runtime config dùng `no-store` cho dễ quan sát; artifact dùng cache dài vì URL bất biến. Lab không có service worker/CDN. Trong production, kiểm tra policy ở cả origin, CDN và service worker, không chỉ response của local server.
 
 Tạo config ban đầu và build stable catalog:
 
-```json title="public/runtime/config.json"
+```json title="public/runtime/config.json" sourceFile="public/runtime/config.json" sourceRegion="main"
 {
   "schemaVersion": 1,
   "revision": "cfg-1",
@@ -422,6 +442,8 @@ Tạo config ban đầu và build stable catalog:
 }
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="public/runtime/config.json" region="main">Đối chiếu public/runtime/config.json</SourceRef>
+
 ```bash
 node build-catalog.mjs r18
 node server.mjs
@@ -435,7 +457,7 @@ Giữ server chạy ở terminal này. Mở `http://127.0.0.1:4173` và bấm th
 
 Candidate được tạo từ config hiện tại, chỉ thay descriptor catalog và revision. File preview phục vụ snapshot này để browser thử r19 mà không thay selection stable. File envelope trong `candidates/` giữ base revision để phát hiện một writer khác đã thay config.
 
-```js title="candidate.mjs"
+```js title="candidate.mjs" sourceFile="candidate.mjs" sourceRegion="main"
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -475,13 +497,15 @@ await writeFile(`public/runtime/preview-${release}.json`,
 console.log(`Candidate ${revision} từ ${current.revision}; stable chưa đổi.`);
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="candidate.mjs" region="main">Đối chiếu candidate.mjs</SourceRef>
+
 Preview config là mutable và không cache; artifact vẫn immutable. Không ghi secrets vào bất kỳ JSON nào được phục vụ cho browser.
 
 ### Promotion kiểm tra base revision
 
 Promotion từ chối candidate cũ thay vì âm thầm rollback thay đổi của team khác. Script cũng xác nhận cart không bị candidate đổi và kiểm tra cả entry lẫn lazy module tồn tại.
 
-```js title="promote.mjs"
+```js title="promote.mjs" sourceFile="promote.mjs" sourceRegion="main"
 import { readFile, writeFile, rename, access } from 'node:fs/promises';
 
 const revision = process.argv[2];
@@ -510,6 +534,8 @@ await rename(temporary, 'public/runtime/config.json');
 console.log(`Promoted ${revision}: catalog ${spec.release}, cart giữ nguyên.`);
 ```
 
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="promote.mjs" region="main">Đối chiếu promote.mjs</SourceRef>
+
 <Callout type="warn" title="Single writer, không phải distributed CAS">
   Lab giả định bạn chạy tuần tự một promotion process. Check revision rồi rename tránh candidate stale và tránh browser đọc JSON đang ghi dở trên filesystem local, nhưng **không khóa được hai writer đồng thời**. Production cần conditional write/CAS theo version hoặc ETag của store, quyền promotion tách biệt và audit log. Script này cũng không tự biết browser tests đã pass: chỉ promote sau khi gate bên dưới thành công.
 </Callout>
@@ -518,7 +544,7 @@ console.log(`Promoted ${revision}: catalog ${spec.release}, cart giữ nguyên.`
 
 Test dùng artifact thật qua HTTP, không mock module catalog. Nó chạy journey shell → catalog → cart trong preview, rồi kiểm tra lifecycle riêng với export thật. Test mỗi release ở browser context mới để tránh nhầm ESM module cache với HTTP cache.
 
-```js title="verify.mjs"
+```js title="verify.mjs" sourceFile="verify.mjs" sourceRegion="main"
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
@@ -578,6 +604,8 @@ try {
   await browser.close();
 }
 ```
+
+<SourceRef project="thuc-hanh-deploy-doc-lap" file="verify.mjs" region="main">Đối chiếu verify.mjs</SourceRef>
 
 Đây là gate tối thiểu cho boundary của lab, không phải chứng nhận mọi hành vi production. Nó chưa bao phủ backend, accessibility, CSS isolation, shared dependency negotiation hay toàn bộ async cleanup. Với app thật, thêm consumer fixtures của các shell được hỗ trợ và test pending callback khi unmount theo contract riêng.
 

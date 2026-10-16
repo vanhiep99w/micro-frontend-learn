@@ -260,9 +260,15 @@ node -e "const http = require('node:http'); http.createServer((req, res) => { re
 
 Mở cả hai URL và kiểm tra mỗi trang trả đúng nội dung riêng. Bạn vừa xác nhận máy có thể chạy hai process trên hai port và quan sát chúng từ browser:
 
-```text
-Browser ──► 127.0.0.1:4300 ──► environment-ok
-        └─► 127.0.0.1:4301 ──► second-server-ok
+```d2 title="Thử hai server cùng lúc"
+direction: right
+browser: Browser
+s1: "127.0.0.1:4300"
+s2: "127.0.0.1:4301"
+ok1: environment-ok
+ok2: second-server-ok
+browser -> s1 -> ok1
+browser -> s2 -> ok2
 ```
 
 Đây chưa phải host/remote: không server nào tải module từ server còn lại, và chưa có phép kiểm tra CORS hay shared dependencies. Bước này chỉ xác nhận phần môi trường nền tảng.

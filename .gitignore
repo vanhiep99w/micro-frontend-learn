@@ -7,3 +7,5 @@ out/
 !.env.example
 .DS_Store
 dist/
+.cache/
+public/source-examples/

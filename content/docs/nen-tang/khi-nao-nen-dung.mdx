@@ -187,13 +187,21 @@ Checklist này không phải thang điểm: đánh dấu nhiều ô không tự 
 
 Một cách đọc nhanh kết quả:
 
-```text
-Chưa có nhu cầu release riêng hoặc migration từng phần
-    → Giữ modular frontend.
-Có nhu cầu, nhưng ranh giới hoặc ownership chưa rõ
-    → Làm rõ module, contract và trách nhiệm trước.
-Có nhu cầu, ranh giới rõ và khả năng vận hành phù hợp
-    → Thử một đơn vị deploy; đo kết quả rồi mới mở rộng.
+```d2 title="Checklist trước khi chọn kiến trúc"
+direction: down
+need: "Cần release riêng hoặc migration\ntừng phần?" {shape: diamond}
+boundary: "Ranh giới và ownership rõ?" {shape: diamond}
+ops: "Khả năng vận hành phù hợp?" {shape: diamond}
+modular: "Giữ modular frontend"
+clarify: "Làm rõ module, contract, trách\nnhiệm"
+prepare: "Chuẩn bị vận hành trước khi thử"
+pilot: "Thử một đơn vị deploy\nĐo kết quả trước khi mở rộng"
+need -> modular: "Chưa"
+need -> boundary: "Có"
+boundary -> clarify: "Chưa"
+boundary -> ops: "Rõ"
+ops -> prepare: "Chưa"
+ops -> pilot: "Phù hợp"
 ```
 
 Nếu đang học, bạn vẫn có thể làm demo shell–catalog–cart để hiểu cơ chế. Chỉ cần tách quyết định “thử công cụ để học” khỏi quyết định “đưa kiến trúc này vào production”.

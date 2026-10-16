@@ -80,11 +80,15 @@ Nếu chưa tự giải thích được đường đi “source → build → UR
 
 Shop giữ cùng một bối cảnh nghiệp vụ để bạn so sánh các quyết định kiến trúc, thay vì đổi ví dụ ở mỗi nhóm bài:
 
-```text
-Shop: một trải nghiệm cho người dùng
-└── Shell: khung giao diện và composition
-    ├── Catalog: tìm, lọc và xem sản phẩm
-    └── Cart: trải nghiệm và state giỏ hàng
+```d2 title="Shop mẫu và những ranh giới cần hiểu"
+direction: down
+shop: "Shop: một trải nghiệm"
+shell: "Shell: layout, navigation,\ncomposition"
+catalog: "Catalog: tìm, lọc, xem sản phẩm"
+cart: "Cart: xem và cập nhật giỏ hàng"
+shop -> shell
+shell -> catalog
+shell -> cart
 ```
 
 Đây là sơ đồ trách nhiệm, không phải cấu trúc folder hoặc yêu cầu cả hai màn hình phải cùng hiển thị. **Shell** là vai trò điều phối trải nghiệm; **host** là vai trò tiêu thụ module trong tích hợp Federation. Shell có thể làm host trong ví dụ này, nhưng hai thuật ngữ không đồng nghĩa ở mọi kiến trúc.

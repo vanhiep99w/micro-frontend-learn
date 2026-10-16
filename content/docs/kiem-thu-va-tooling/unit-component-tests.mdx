@@ -8,8 +8,10 @@ Giả sử catalog vẫn build thành công, nhưng nút “Thêm vào giỏ” 
 Mục tiêu của unit và component tests là giúp mỗi team sửa code nội bộ với phản hồi nhanh, **không cần chạy cả hệ thống micro-frontend**. Nhưng test local xanh không chứng minh remote tải được trên shell production; bạn cần biết test đang bảo vệ boundary nào, và boundary nào còn để lại cho contract hoặc integration tests.
 
 <Callout type="info" title="Phạm vi và điều kiện chạy ví dụ">
-  Bài dùng TypeScript, React 18 trở lên, Vitest và React Testing Library trong một lab client-side riêng. Repository hiện tại là site tài liệu, chưa cài các dependency kiểm thử và chưa có ứng dụng catalog. Các đường dẫn `src/...` dưới đây là file bạn tạo trong lab, không phải file có sẵn trong repository này. Sơ đồ dùng ASCII, không cần Mermaid.
+  Bài dùng TypeScript, React 18 trở lên, Vitest và React Testing Library trong một lab client-side riêng. Repository hiện tại là site tài liệu, chưa cài các dependency kiểm thử và chưa có ứng dụng catalog. Các đường dẫn `src/...` dưới đây là file bạn tạo trong lab, không phải file có sẵn trong repository này.
 </Callout>
+
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -43,15 +45,17 @@ Mục tiêu của unit và component tests là giúp mỗi team sửa code nội
 
 Một micro-frontend không phải một “unit” chỉ vì nó deploy độc lập. Bên trong vẫn có logic nghiệp vụ, component, API client và adapter tích hợp. Chọn phạm vi theo hành vi cần xác nhận, không theo tên thư mục.
 
-```text
-Trong catalog, không cần shell thật
-  Logic thuần       → input/output
-  Component + hooks → DOM, tương tác, trạng thái bất đồng bộ
-  Public adapter    → mount/update/unmount, cleanup tài nguyên
-
-Ngoài phạm vi trên
-  Contract tests    → các bên có hiểu cùng public API và payload không?
-  Integration/E2E   → shell, remotes và browser có phối hợp đúng không?
+```d2 title="Chọn đúng phạm vi kiểm thử"
+direction: right
+local: "Trong catalog: không cần shell\nthật" {
+  logic: "Logic thuần → input/output"
+  component: "Component + hooks → DOM, tương\ntác, async state"
+  adapter: "Public adapter →\nmount/update/unmount, cleanup"
+}
+external: "Ngoài phạm vi" {
+  contracts: "Contract tests: public API và\npayload"
+  e2e: "Integration/E2E: shell, remotes\nvà browser"
+}
 ```
 
 ### Unit test bảo vệ logic thuần
@@ -107,7 +111,7 @@ npm install -D typescript @types/react @types/react-dom @types/node \
 
 Package `@vitest/coverage-v8` cần cùng version với Vitest. Lab này chạy Vitest trên Node, kể cả khi bạn dùng Bun để cài package; `bun test` là runner khác, không phải lệnh chạy suite Vitest.
 
-```ts title="vitest.config.ts"
+```ts title="vitest.config.ts" sourceFile="vitest.config.ts" sourceRegion="main"
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
 
@@ -129,9 +133,11 @@ export default defineConfig({
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="vitest.config.ts" region="main">Đối chiếu vitest.config.ts</SourceRef>
+
 Nếu app đã có Vite config, giữ lại những plugin, aliases và define values mà test thực sự cần, hoặc merge config có chủ đích. Một `vitest.config.ts` riêng không tự merge mọi cấu hình của app; nhưng cũng không nên kéo plugin deploy hoặc remote loading vào local component suite nếu chúng không phục vụ hành vi đang test.
 
-```json title="tsconfig.json của lab"
+```json title="tsconfig.json của lab" sourceFile="tsconfig.json" sourceRegion="main"
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -148,9 +154,11 @@ Nếu app đã có Vite config, giữ lại những plugin, aliases và define v
 }
 ```
 
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="tsconfig.json" region="main">Đối chiếu tsconfig.json</SourceRef>
+
 Thêm các scripts sau vào `scripts` hiện có, không thay cả manifest của app:
 
-```json title="Scripts cần thêm vào package.json"
+```json title="Scripts cần thêm vào package.json" sourceFile="fragments/package-scripts.json" sourceRegion="main"
 {
   "test": "vitest",
   "test:ci": "vitest run",
@@ -159,13 +167,15 @@ Thêm các scripts sau vào `scripts` hiện có, không thay cả manifest củ
 }
 ```
 
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="fragments/package-scripts.json" region="main">Đối chiếu fragments/package-scripts.json</SourceRef>
+
 Vitest transform TypeScript để chạy test, không thay bước typecheck. Đây là lý do lab có một command riêng cho `tsc`.
 
 ### Cleanup giữa các test
 
 Vì `globals: false`, mình đăng ký cleanup rõ ràng thay vì dựa vào việc Testing Library tìm được global `afterEach`.
 
-```ts title="src/test/setup.ts"
+```ts title="src/test/setup.ts" sourceFile="src/test/setup.ts" sourceRegion="main"
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
 import { afterEach } from 'vitest';
@@ -175,13 +185,15 @@ afterEach(() => {
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/test/setup.ts" region="main">Đối chiếu src/test/setup.ts</SourceRef>
+
 `cleanup()` unmount những tree do Testing Library `render()` tạo. **Root do public adapter tự tạo không nằm trong registry đó**: test adapter phải gọi `handle.unmount()` và xóa container của mình. DOM sạch không đồng nghĩa timer, request hay subscription đã sạch.
 
 ## Unit test cho số lượng mua
 
 Đầu tiên tách quy tắc khỏi UI. Ví dụ dùng stock nguyên không âm như một điều kiện đầu vào của domain, và trả `null` nếu số lượng không hợp lệ. Kiểm tra dữ liệu stock từ backend là trách nhiệm của API boundary, không nằm trong hàm này.
 
-```ts title="src/quantity.ts"
+```ts title="src/quantity.ts" sourceFile="src/quantity.ts" sourceRegion="main"
 export function parseQuantity(raw: string, stock: number): number | null {
   const text = raw.trim();
   if (!/^\d+$/.test(text)) return null;
@@ -193,7 +205,9 @@ export function parseQuantity(raw: string, stock: number): number | null {
 }
 ```
 
-```ts title="src/quantity.test.ts"
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/quantity.ts" region="main">Đối chiếu src/quantity.ts</SourceRef>
+
+```ts title="src/quantity.test.ts" sourceFile="src/quantity.test.ts" sourceRegion="main"
 import { describe, expect, it } from 'vitest';
 import { parseQuantity } from './quantity';
 
@@ -215,6 +229,8 @@ describe('parseQuantity', () => {
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/quantity.test.ts" region="main">Đối chiếu src/quantity.test.ts</SourceRef>
+
 Bảng test tập trung vào biên: giá trị nhỏ nhất/lớn nhất, hết hàng, vượt stock, giá trị không nguyên và số không biểu diễn an toàn. Không cần tạo hàng chục case chỉ khác số ở giữa khoảng hợp lệ.
 
 ## Component test theo hành vi người dùng
@@ -223,7 +239,7 @@ Bảng test tập trung vào biên: giá trị nhỏ nhất/lớn nhất, hết 
 
 Component nhận một `loadProduct` thay vì import store của shell. Đây là một port nhỏ tại boundary dữ liệu; production có thể truyền API client thật, còn test truyền fake có kiểm soát. Callback `onAddToCart` là yêu cầu thêm hàng, không phải xác nhận cart đã xử lý thành công.
 
-```tsx title="src/CatalogApp.tsx"
+```tsx title="src/CatalogApp.tsx" sourceFile="src/CatalogApp.tsx" sourceRegion="main"
 import { useEffect, useState } from 'react';
 import { parseQuantity } from './quantity';
 
@@ -317,6 +333,8 @@ export default function CatalogApp({
 }
 ```
 
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/CatalogApp.tsx" region="main">Đối chiếu src/CatalogApp.tsx</SourceRef>
+
 `AbortController` yêu cầu client hủy công việc nếu nó hỗ trợ signal; cờ `active` ngăn kết quả cũ cập nhật state ngay cả khi client không hủy được. Hai cơ chế giải quyết hai việc khác nhau. Production client dùng `fetch` cần truyền signal xuống `fetch(url, { signal })`, không chỉ nhận signal rồi bỏ qua.
 
 Lab giữ số lượng dưới dạng string để người dùng có thể xóa ô rồi nhập lại; validation mới chuyển sang number. `locale` chỉ đổi label/nút mua trong ví dụ, chưa phải hệ thống i18n hoàn chỉnh. `loadProduct` cần giữ identity ổn định nếu shell không muốn refetch mỗi lần update.
@@ -325,7 +343,7 @@ Lab giữ số lượng dưới dạng string để người dùng có thể xó
 
 Dùng Promise chủ động resolve để giữ UI ở loading. Với fake trả `Promise.resolve()` ngay lập tức, trạng thái loading có thể qua nhanh đến mức test không còn chủ động kiểm soát được thời điểm quan sát.
 
-```ts title="src/test/deferred.ts"
+```ts title="src/test/deferred.ts" sourceFile="src/test/deferred.ts" sourceRegion="main"
 export function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -337,7 +355,9 @@ export function deferred<T>() {
 }
 ```
 
-```tsx title="src/CatalogApp.test.tsx"
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/test/deferred.ts" region="main">Đối chiếu src/test/deferred.ts</SourceRef>
+
+```tsx title="src/CatalogApp.test.tsx" sourceFile="src/CatalogApp.test.tsx" sourceRegion="main"
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
@@ -386,6 +406,8 @@ it('hiển thị loading rồi gửi SKU và số lượng người dùng chọn
   expect(onAddToCart).toHaveBeenCalledTimes(1);
 });
 ```
+
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/CatalogApp.test.tsx" region="main">Đối chiếu src/CatalogApp.test.tsx</SourceRef>
 
 Test không tìm `.primary-button` hay truy cập hook state. Nếu đổi cấu trúc DOM nhưng vẫn giữ label, button và callback, test tiếp tục phản ánh hành vi người dùng. Query theo role cũng giúp lộ những UI thiếu tên truy cập được, dù nó không thay một accessibility audit.
 
@@ -469,7 +491,7 @@ Nếu shell render trực tiếp component, React của shell điều khiển un
 
 Adapter dưới dùng full props snapshot khi update, chặn duplicate mount trong cùng module, cho phép gọi unmount nhiều lần và báo lỗi nếu update handle đã đóng. Đây là lựa chọn của contract lab, không phải chuẩn bắt buộc cho mọi micro-frontend.
 
-```tsx title="src/mount.tsx"
+```tsx title="src/mount.tsx" sourceFile="src/mount.tsx" sourceRegion="main"
 import { createRoot } from 'react-dom/client';
 import CatalogApp, { type CatalogProps } from './CatalogApp';
 
@@ -509,13 +531,15 @@ export function mount(
 }
 ```
 
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/mount.tsx" region="main">Đối chiếu src/mount.tsx</SourceRef>
+
 Lab chưa triển khai Error Boundary, readiness Promise hay remote loader. `mount()` trả handle không đồng nghĩa React đã commit UI; test đợi DOM trước khi khẳng định UI sẵn sàng. Production adapter cần chính sách xử lý lỗi render riêng, xem [Tích hợp React](/docs/ui-va-framework/react).
 
 ### Test qua public entry của adapter
 
 Dùng `within(container)` để truy vấn đúng slot. Trong shell có thể có nhiều nút cùng tên; query toàn document dễ click nhầm instance mà vẫn cho test xanh.
 
-```tsx title="src/mount.test.tsx"
+```tsx title="src/mount.test.tsx" sourceFile="src/mount.test.tsx" sourceRegion="main"
 import { act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
@@ -594,6 +618,8 @@ it('update giữ state, unmount hủy request và cho phép mount lại', async 
   }
 });
 ```
+
+<SourceRef project="kiem-thu-va-tooling-unit-component-tests" file="src/mount.test.tsx" region="main">Đối chiếu src/mount.test.tsx</SourceRef>
 
 `act` bao quanh những thao tác tự điều khiển React như mount/update/unmount và resolve Promise. `render`, `rerender` và những helpers của Testing Library đã xử lý phần tương ứng; không cần bọc mọi assertion vào `act`.
 

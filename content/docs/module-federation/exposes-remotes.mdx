@@ -40,21 +40,20 @@ Hai cấu hình nối những phần đó là `exposes` ở phía cung cấp mod
 
 Một import federated trông giống import package, nhưng nó được plugin xử lý để lấy module từ một build khác. Với webpack script remote, mối nối cơ bản là:
 
-```text
-Host import: catalog/ProductPage
-                 │        │
-                 │        └── Remote exposes: './ProductPage'
-                 │                              │
-                 │                              ▼
-                 │                  './src/public/ProductPage.jsx'
-                 │
-                 └── Host remotes: catalog
-                            │
-                            ▼
-              catalog_app@https://assets.example.com/catalog/r17/remoteEntry.js
-                   │                             │
-                   ▼                             ▼
-          Remote name: catalog_app          URL của container entry
+```d2 title="Đọc đúng các tên trong một import"
+direction: down
+request: "Host import: catalog/ProductPage"
+alias: "Host remotes: catalog"
+expose: "Remote exposes: ./ProductPage"
+source: "./src/public/ProductPage.jsx"
+ref: "catalog_app@https://assets.example.com/catalog/r17/remoteEntry.js"
+name: "Remote name: catalog_app"
+url: "URL container entry"
+request -> alias
+request -> expose -> source
+alias -> ref
+ref -> name
+ref -> url
 ```
 
 Có ba namespace khác nhau: alias mà host dùng, tên container do remote tạo, và public key bên trong container. Chúng không cần giống tên thư mục hoặc tên npm package.

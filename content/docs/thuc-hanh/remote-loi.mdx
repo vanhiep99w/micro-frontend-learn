@@ -12,8 +12,10 @@ Bài này cho bạn tạo lỗi có chủ đích rồi kiểm chứng đường 
 
   Phần shared-version mismatch dùng `shop-workspace` của [Lab shell, catalog và cart](/docs/thuc-hanh/shop-shell-catalog-cart), với webpack 5 và React 19. Hai loader không thay thế cho nhau: không dùng native `import()` để tải classic-script `remoteEntry.js`.
 
-  Tất cả file và lệnh trong bài thuộc workspace thực hành tương ứng, không phải repository Next.js + Fumadocs. Sơ đồ text không cần cấu hình Mermaid.
+  Tất cả file và lệnh trong bài thuộc workspace thực hành tương ứng, không phải repository Next.js + Fumadocs.
 </Callout>
+
+<SourceRef project="thuc-hanh-remote-loi" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -61,15 +63,17 @@ Các deadline `2000 ms` và delay `2600 ms` bên dưới chỉ là số minh h�
 
 ## Phân biệt các failure boundary
 
-```text
-Shell → config snapshot
-         ├─ catalog entry → validate → mount → lazy details
-         └─ cart entry    → validate → mount → add command
-
-Lỗi catalog entry/mount: thay slot catalog, giữ slot cart
-Lỗi lazy details:       catalog tự báo lỗi phần chi tiết
-Lỗi add command:        thông báo thao tác, không tải lại code
-Lỗi config bắt buộc:    bootstrap dừng, không giả vờ đã chọn release
+```d2 title="Phân biệt các failure boundary"
+direction: right
+shell: Shell
+config: "Config snapshot\nLỗi bắt buộc → dừng bootstrap"
+catalog: "Catalog entry → validate → mount\nLỗi entry/mount → fallback slot\ncatalog"
+details: "Lazy details\nLỗi → catalog báo lỗi phần chi\ntiết"
+cart: "Cart entry → validate → mount\nGiữ slot cart khi catalog lỗi"
+command: "Add command\nLỗi → báo thao tác, không tải\nlại code"
+shell -> config
+config -> catalog -> details
+config -> cart -> command
 ```
 
 Entry trả 200 chưa chứng minh remote hoạt động: nó có thể import một chunk thiếu, throw lúc evaluation hoặc expose sai API. Ngược lại, một API/command thất bại không có nghĩa code remote cần tải lại.
@@ -106,15 +110,19 @@ Hai lệnh chỉ tạo candidate và preview, chưa promote. Trước khi fault 
 
 ### State machine và policy phục hồi
 
-```text
-idle → loading → ready
-          │
-          └─ load / timeout / contract / mount failure → failed
-
-loading → dispose → disposed
-ready   → dispose → disposed + unmount
-
-Kết quả import đến sau failed/disposed → bỏ qua, không mount
+```d2 title="State machine và policy phục hồi"
+direction: down
+idle: Idle
+loading: Loading
+ready: Ready
+failed: Failed
+disposed: "Disposed\nBỏ kết quả import đến muộn"
+idle -> loading -> ready
+loading -> failed: "Load / timeout / contract /\nmount failure"
+loading -> disposed: Dispose
+ready -> disposed: Dispose + unmount
+failed -> ignored: "Import đến muộn"
+ignored: "Bỏ qua, không mount"
 ```
 
 Deadline giới hạn thời gian slot chờ import và validation; nó **không hủy native import**, không ngắt synchronous evaluation/mount và không cứu được module khóa main thread. Browser timer chỉ chạy khi event loop có cơ hội xử lý.
@@ -125,7 +133,7 @@ Mỗi slot có một generation. Dispose tăng generation để phần async cũ
 
 Tạo file mới dưới release shell `s18`. Không sửa bytes của s17 đã publish.
 
-```js title="independent-deploy-lab/public/shell/s18/remote-slot.mjs"
+```js title="independent-deploy-lab/public/shell/s18/remote-slot.mjs" sourceFile="public/shell/s18/remote-slot.mjs" sourceRegion="main"
 export function createSlot({ name, root, spec, revision, report, deadlineMs = 2000 }) {
   let generation = 0;
   let state = 'idle';
@@ -221,6 +229,8 @@ export function createSlot({ name, root, spec, revision, report, deadlineMs = 20
 }
 ```
 
+<SourceRef project="thuc-hanh-remote-loi" file="public/shell/s18/remote-slot.mjs" region="main">Đối chiếu public/shell/s18/remote-slot.mjs</SourceRef>
+
 `Promise.race` gắn rejection handler lên Promise import, kể cả khi timeout thắng trước. Khi import resolve muộn, đoạn code sau `await` không chạy lần hai, nên không mount muộn. Khi dispose trước khi import hoàn thành, generation check ngăn mount.
 
 Tuy vậy, import vẫn có thể **evaluate top-level code** sau timeout. Remote phải không tự mount ở module scope; timers/listeners/subscriptions thuộc lifecycle mount/unmount. Metadata validation diễn ra sau evaluation, không phải sandbox hay security gate.
@@ -233,7 +243,7 @@ Nếu `mount()` throw sau khi tạo listener nhưng trước khi trả handle, s
 
 Tạo `public/shell/s18/` rồi lưu loader ở trên. Thay HTML bootstrap để chọn shell mới; đây là **một lần release shell để bổ sung resilience**, không phải một bước rollback remote:
 
-```html title="independent-deploy-lab/public/index.html"
+```html title="independent-deploy-lab/public/index.html" sourceFile="public/index.html" sourceRegion="main"
 <!doctype html>
 <html lang="vi">
   <head>
@@ -256,13 +266,15 @@ Tạo `public/shell/s18/` rồi lưu loader ở trên. Thay HTML bootstrap để
 </html>
 ```
 
+<SourceRef project="thuc-hanh-remote-loi" file="public/index.html" region="main">Đối chiếu public/index.html</SourceRef>
+
 Hai links chỉ điều hướng đến vùng trong cùng document, không reload và không đổi cart instance. Đây không phải SPA router hoặc bản shop đầy đủ.
 
 ### Pin config và khởi động hai slot độc lập
 
 Validator giữ policy của bài trước: chỉ chọn URL same-origin theo release path đã biết, config fetch một lần cho mỗi document. Cart lỗi không ngăn catalog browse; catalog lỗi không ngăn cart mount.
 
-```js title="independent-deploy-lab/public/shell/s18/main.mjs"
+```js title="independent-deploy-lab/public/shell/s18/main.mjs" sourceFile="public/shell/s18/main.mjs" sourceRegion="main"
 import { createSlot } from './remote-slot.mjs';
 
 const status = document.querySelector('#status');
@@ -350,6 +362,8 @@ bootstrap().catch(() => {
 });
 ```
 
+<SourceRef project="thuc-hanh-remote-loi" file="public/shell/s18/main.mjs" region="main">Đối chiếu public/shell/s18/main.mjs</SourceRef>
+
 Trong dòng status, `selected` nghĩa là config đã chọn release đó, **không có nghĩa release đã chạy**. `remote-state` chỉ ghi `actualRelease` sau khi kiểm tra metadata thành công. Với module throw lúc evaluation, loader không biết release thực nên để `null`.
 
 Lab giữ cart r7 theo bài trước. Callback thêm hàng ở đây là synchronous contract của cart fixture, không phải xác nhận backend và không có durable queue. Chưa có cart thì thao tác bị từ chối rõ ràng, không được tự replay khi cart tải xong.
@@ -372,7 +386,7 @@ Test dùng interception của Playwright, không sửa artifact đã publish. M�
 
 Tạo script dưới đây. Nó dùng preview r18 hoặc r19, nên **không sửa config stable** khi chạy fault matrix.
 
-```js title="independent-deploy-lab/fault-tests.mjs"
+```js title="independent-deploy-lab/fault-tests.mjs" sourceFile="fault-tests.mjs" sourceRegion="main"
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
@@ -567,6 +581,8 @@ try {
   await browser.close();
 }
 ```
+
+<SourceRef project="thuc-hanh-remote-loi" file="fault-tests.mjs" region="main">Đối chiếu fault-tests.mjs</SourceRef>
 
 Chạy ở terminal thứ hai, vẫn tại root workspace:
 

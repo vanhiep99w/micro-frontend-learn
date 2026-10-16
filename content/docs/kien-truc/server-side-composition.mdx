@@ -8,7 +8,7 @@ Giả sử trang sản phẩm của shop gồm thông tin từ catalog, gợi ý
 Server-side composition đưa việc ghép giao diện về server hoặc edge trước khi trả document cho browser. Nó có thể giúp nội dung chính xuất hiện mà không phải chờ JavaScript phía client, nhưng đổi lại bạn phải quản lý dependency giữa các renderer, cache và phiên bản hydration. **Ghép ở server không tự tạo independent deployment, cũng không tự làm trang nhanh hơn.**
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài dùng shop giả định với catalog, recommendations và cart. Ví dụ code minh họa contract, không phải implementation có sẵn trong repository này. Sơ đồ dùng text để hiển thị trực tiếp, không cần cấu hình Mermaid. Chi tiết riêng của Next.js được tách sang bài [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
+  Bài dùng shop giả định với catalog, recommendations và cart. Ví dụ code minh họa contract, không phải implementation có sẵn trong repository này. Chi tiết riêng của Next.js được tách sang bài [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
 </Callout>
 
 ## Mục lục
@@ -118,13 +118,20 @@ Edge gần người dùng không có nghĩa renderer cũng gần người dùng.
 
 Một mô hình đơn giản là ghép catalog bắt buộc với recommendations tùy chọn tại origin. Cart badge được tải ở browser để document public không chứa dữ liệu session.
 
-```text
-Browser ──► CDN ──► Origin composer ──► Catalog renderer
-                         │
-                         └────────────► Recommendations renderer
-
-Composer ──► Document chứa layout + product + recommendations
-Browser  ──► Cart API sau đó, theo session của người dùng
+```d2 title="Kiến trúc và luồng một request"
+direction: right
+browser: Browser
+cdn: CDN
+composer: Origin composer
+catalog: Catalog renderer
+recommend: Recommendations renderer
+html: "Document: layout + product +\nrecommendations"
+cart: Cart API
+browser -> cdn -> composer
+composer -> catalog
+composer -> recommend
+composer -> html -> browser
+browser -> cart: "Sau đó, theo session"
 ```
 
 Hai renderer được gọi song song nếu input đã đủ. Sơ đồ không có nghĩa CDN luôn cache document: composer có thể trả `no-store`, trong khi fragment public được cache ở một lớp riêng.
@@ -339,11 +346,15 @@ Giả sử catalog build `b42` tạo HTML, nhưng bootstrap script tải URL `la
 
 Một render snapshot nên giữ cùng nhau:
 
-```text
-HTML của catalog-b42
-  ├── Client entry bất biến của catalog-b42
-  ├── CSS tương ứng với catalog-b42
-  └── Bootstrap data + locale + ID prefix của lần render đó
+```d2 title="Giữ lần render đầu tiên giống server"
+direction: down
+html: HTML catalog-b42
+client: "Client entry bất biến\ncatalog-b42"
+css: "CSS tương ứng catalog-b42"
+data: "Bootstrap data + locale + ID\nprefix của lần render"
+html -> client
+html -> css
+html -> data
 ```
 
 Các giá trị này cần được pin ở server và gửi tới browser. Client dùng bootstrap data cho lần render đầu, rồi mới revalidate theo policy. Đọc lại giá mới, timezone của máy, `Date.now()` hoặc random ID trước khi hydrate có thể làm output khác HTML.

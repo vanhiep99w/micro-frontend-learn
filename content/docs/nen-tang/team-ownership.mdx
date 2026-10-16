@@ -78,8 +78,13 @@ Melvin Conway nêu luận điểm trong bài *How Do Committees Invent?*, xuất
 
 Giả sử shop tổ chức theo ba nhóm: nhóm UI làm mọi màn hình, nhóm API làm mọi endpoint và nhóm release đưa mọi thứ lên production. Một tính năng bộ lọc mới sẽ đi qua các bước bàn giao:
 
-```text
-Nhóm UI → Nhóm API → Nhóm UI tích hợp → Nhóm release
+```d2 title="Cấu trúc giao tiếp để lại dấu vết trong kiến trúc"
+direction: right
+n0: "Nhóm UI"
+n1: "Nhóm API"
+n2: "Nhóm UI tích hợp"
+n3: "Nhóm release"
+n0 -> n1 -> n2 -> n3
 ```
 
 Tách `catalog` và `cart` thành hai bundle không xóa chuỗi bàn giao này. Mọi thay đổi vẫn chạy qua cùng các nhóm, nên quyết định và lịch phát hành tiếp tục bị buộc vào nhau.
@@ -129,13 +134,21 @@ Ngược lại, nhiều team có thể làm việc trong một modular frontend 
 
 Một bản đồ đơn giản nên thể hiện cả phần ứng dụng lẫn những thứ dùng chung:
 
-```text
-Team platform → Shell: layout, composition, routing cấp ứng dụng
-Team catalog  → Catalog: tìm, lọc, xem sản phẩm
-Team cart     → Cart: hiển thị và cập nhật giỏ hàng
-
-Cả ba dùng contract và chuẩn chung:
-URL · auth integration · design system · telemetry · release policy
+```d2 title="Bản đồ ownership cho shop mẫu"
+direction: down
+platform: Team platform
+catalogteam: Team catalog
+cartteam: Team cart
+shell: "Shell: layout, composition, app\nrouting"
+catalog: "Catalog: tìm, lọc, xem sản phẩm"
+cart: "Cart: hiển thị, cập nhật giỏ"
+standards: "Contract và chuẩn chung\nURL, auth, design system,\ntelemetry, release policy"
+platform -> shell
+catalogteam -> catalog
+cartteam -> cart
+shell -> standards
+catalog -> standards
+cart -> standards
 ```
 
 “Team platform” ở đây là một vai trò minh họa. Trong dự án nhỏ, trách nhiệm shell có thể do một team sản phẩm đảm nhiệm; không cần lập team mới chỉ để sơ đồ đẹp hơn.

@@ -10,7 +10,7 @@ Câu hỏi cần trả lời không phải “tool nào mạnh nhất?”, mà l
 **Mặc định mình chọn modular frontend với release chung, rồi chỉ tách đơn vị deploy khi có nhu cầu và owner rõ.** Đó không phải lựa chọn kém hiện đại hơn. Nó giữ chi phí vận hành thấp khi sự độc lập chưa mang lại lợi ích đủ lớn.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài giúp bạn chọn kiến trúc, không hướng dẫn cấu hình một bundler cụ thể. Shop, route, trọng số và điểm đánh giá bên dưới đều là ví dụ giả định, không phải benchmark hoặc chức năng đã có trong repository. Sơ đồ dùng text để hiển thị với cấu hình Fumadocs hiện tại. Bạn nên đọc [Chia domain và ranh giới](/docs/kien-truc/chia-domain) trước nếu chưa xác định domain nào cần tách.
+  Bài giúp bạn chọn kiến trúc, không hướng dẫn cấu hình một bundler cụ thể. Shop, route, trọng số và điểm đánh giá bên dưới đều là ví dụ giả định, không phải benchmark hoặc chức năng đã có trong repository. Bạn nên đọc [Chia domain và ranh giới](/docs/kien-truc/chia-domain) trước nếu chưa xác định domain nào cần tách.
 </Callout>
 
 ## Mục lục
@@ -69,11 +69,15 @@ Trước hết, xác định phần nào sở hữu hành trình và quyết đ�
 
 Tiếp theo mới chọn độ hạt: một route, một cụm route hay một fragment trên trang. Mình ưu tiên boundary theo route vì nó thường cần ít giao tiếp đồng thời hơn. Tách từng button thành remote làm tăng số contract mà chưa chắc tạo được một đơn vị thay đổi độc lập.
 
-```text
-Ứng dụng
-├── /catalog/*  → Catalog owner
-├── /cart/*     → Cart owner
-└── Navigation → Shell owner
+```d2 title="Ranh giới nghiệp vụ và độ hạt"
+direction: down
+app: "Ứng dụng"
+catalog: Catalog owner
+cart: Cart owner
+shell: Shell owner
+app -> catalog: "/catalog/*"
+app -> cart: "/cart/*"
+app -> shell: Navigation
 ```
 
 Boundary theo route không bắt buộc mỗi lần chuyển trang phải reload document. Nó có thể chạy trong SPA, hoặc dùng ứng dụng riêng qua route gateway. Đó là quyết định về navigation và composition ở trục tiếp theo.
@@ -82,10 +86,27 @@ Boundary theo route không bắt buộc mỗi lần chuyển trang phải reload
 
 Hai câu hỏi quan trọng nhất là: **ai chọn version của domain, vào lúc nào**, và **thay đổi đó tới người dùng qua artifact nào**?
 
-```text
-Build time:     Domain package → Consumer build → Browser
-Client runtime: Domain artifact → Browser loader → UI
-Server side:    Domain renderer → Composer → HTML → Browser
+```d2 title="Ranh giới release và nơi ghép giao diện"
+direction: right
+build: Build time {
+  domain: Domain package
+  consumer: Consumer build
+  browser: Browser
+  domain -> consumer -> browser
+}
+runtime: Client runtime {
+  domain: Domain artifact
+  loader: Browser loader
+  ui: UI
+  domain -> loader -> ui
+}
+server: Server side {
+  domain: Domain renderer
+  composer: Composer
+  html: HTML
+  browser: Browser
+  domain -> composer -> html -> browser
+}
 ```
 
 Trong dòng đầu, publish package mới không đổi consumer đã deploy. Trong dòng thứ hai, domain có thể deploy riêng nếu loader hoặc cấu hình cho phép chọn artifact mới mà không rebuild host. Trong dòng thứ ba, deploy riêng phụ thuộc vào renderer, contract và cách composer chọn version, không chỉ việc có HTML phía server.

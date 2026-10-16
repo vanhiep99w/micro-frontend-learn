@@ -8,7 +8,7 @@ Giả sử catalog và cart đều đạt bundle budget của team mình, nhưng
 **Performance budget phải áp dụng cho trải nghiệm đã ghép, không chỉ cho từng remote.** Bài này giúp bạn tìm bước nằm trên critical path, phân biệt chi phí network với CPU, rồi đưa giới hạn có thể kiểm tra vào CI và rollout.
 
 <Callout type="info" title="Phạm vi và điều kiện áp dụng">
-  Ví dụ dùng shop giả định gồm shell, catalog và cart, chủ yếu là client-side runtime composition. Repository này là site tài liệu, không có ứng dụng shop hay pipeline performance có sẵn. Các file và số budget bên dưới là ví dụ cho lab riêng; không phải benchmark hoặc cấu hình production của repository. Sơ đồ text không cần Mermaid. Phần webpack chỉ áp dụng cho webpack 5 Module Federation, không mặc định áp dụng cho Next.js hay mọi federation runtime.
+  Ví dụ dùng shop giả định gồm shell, catalog và cart, chủ yếu là client-side runtime composition. Repository này là site tài liệu, không có ứng dụng shop hay pipeline performance có sẵn. Các file và số budget bên dưới là ví dụ cho lab riêng; không phải benchmark hoặc cấu hình production của repository. Phần webpack chỉ áp dụng cho webpack 5 Module Federation, không mặc định áp dụng cho Next.js hay mọi federation runtime.
 </Callout>
 
 ## Mục lục
@@ -119,11 +119,16 @@ Với SPA, không mặc định mỗi lần router đổi URL là một page vis
 
 Một đường tải client-side có thể như sau; đây là sơ đồ minh họa, không phải thứ tự bắt buộc của mọi runtime:
 
-```text
-HTML → shell bootstrap → runtime config → catalog entry → route chunks
-                                                             │
-                                                             ▼
-                                                     catalog API → render
+```d2 title="Tìm dependency nối tiếp thay vì chỉ đếm request"
+direction: down
+n0: "HTML"
+n1: "Shell bootstrap"
+n2: "Runtime config"
+n3: "Catalog entry"
+n4: "Route chunks"
+n5: "Catalog API"
+n6: "Render"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5 -> n6
 ```
 
 Critical path là chuỗi phụ thuộc quyết định mốc bạn đang đo. Mười request nhỏ chạy song song có thể ít gây chờ hơn ba request nhỏ nối tiếp qua network latency cao. Ngược lại, HTTP/2 hoặc HTTP/3 không làm dependency giữa các bước biến mất.
@@ -134,10 +139,15 @@ Ví dụ giả định: config mất `100 ms`, entry `120 ms`, chunks `180 ms`, 
 
 Nếu API catalog đã có contract rõ và được phép gọi ngay sau config/auth, có thể bắt đầu data song song với entry và chunks:
 
-```text
-                     ┌── catalog entry → route chunks ──┐
-Config và auth ready ┤                                  ├── render
-                     └── catalog API ───────────────────┘
+```d2 title="Tìm dependency nối tiếp thay vì chỉ đếm request"
+direction: right
+ready: Config + auth ready
+entry: Catalog entry
+chunks: Route chunks
+api: Catalog API
+render: Render
+ready -> entry -> chunks -> render
+ready -> api -> render
 ```
 
 Với cùng các số giả định và giả sử hai nhánh không tranh tài nguyên, đoạn sau config trở thành `max(120 + 180, 250) + 80 = 380 ms`, thay vì `630 ms`. Đây là phép tính lý tưởng để giải thích dependency, không phải cam kết tốc độ thật; trace sau thay đổi mới xác nhận được lợi ích.

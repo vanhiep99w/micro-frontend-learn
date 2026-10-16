@@ -69,17 +69,15 @@ CI trả lời “source này có đủ điều kiện tạo candidate không?�
 
 ### Luồng cho một catalog candidate
 
-```text
-Source catalog
-      │ CI: install, lint, unit, source contracts, build
-      ▼
-Artifact catalog bất biến
-      │ CD: publish candidate, test với release set đã pin
-      ▼
-Bằng chứng gate cho candidate và tổ hợp đích
-      │ Approval, kiểm tra revision, đổi selection
-      ▼
-Môi trường chọn catalog mới; shell và cart giữ nguyên
+```d2 title="Luồng cho một catalog candidate"
+direction: down
+source: Source catalog
+artifact: "Artifact catalog bất biến"
+evidence: "Bằng chứng gate cho candidate và\ntổ hợp đích"
+selection: "Môi trường chọn catalog mới\nShell và cart giữ nguyên"
+source -> artifact: "CI install / lint / unit /\nsource contracts / build"
+artifact -> evidence: "CD publish candidate / test\nrelease set đã pin"
+evidence -> selection: "Approval / kiểm tra revision /\nđổi selection"
 ```
 
 Publish và promote là hai thao tác khác nhau. Publish đưa toàn bộ bytes lên storage/CDN dưới URL chưa được production chọn. Promote đổi mapping hoặc routing để document mới nhận release đó. Upload thành công chưa có nghĩa người dùng đang chạy bản mới; promote thành công cũng chưa có nghĩa mọi tab cũ đã đổi code.

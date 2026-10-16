@@ -46,11 +46,15 @@ Câu hỏi đáng giữ trong suốt nhóm bài này là: **thay đổi nào c�
 
 Trong shop minh họa, shell giữ khung trải nghiệm và ghép phần nội dung theo URL. Catalog phụ trách tìm, lọc và xem sản phẩm; cart phụ trách trải nghiệm giỏ hàng.
 
-```text
-Shop: một trải nghiệm cho người dùng
-└── Shell: layout, navigation, composition
-    ├── Catalog: tìm, lọc, xem sản phẩm
-    └── Cart: xem và cập nhật giỏ hàng
+```d2 title="Mô hình shop để cùng hình dung"
+direction: down
+shop: "Shop: một trải nghiệm"
+shell: "Shell: layout, navigation,\ncomposition"
+catalog: "Catalog: tìm, lọc, xem sản phẩm"
+cart: "Cart: xem và cập nhật giỏ hàng"
+shop -> shell
+shell -> catalog
+shell -> cart
 ```
 
 Đây là sơ đồ trách nhiệm, không phải cấu trúc folder hay yêu cầu rằng cả hai phần luôn xuất hiện cùng lúc. Shell có thể chọn catalog ở `/products` và cart ở `/cart`; cách ghép cụ thể sẽ được học ở nhóm Kiến trúc.

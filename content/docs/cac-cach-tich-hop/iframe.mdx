@@ -8,8 +8,10 @@ Giả sử shell của shop đã dùng React mới, nhưng một vùng quản tr
 Đổi lại, hai phía không còn chia sẻ component tree, router hay store một cách tự nhiên. Bạn phải thiết kế cách gửi dữ liệu, đồng bộ theme, xử lý loading và trả focus cho người dùng. Mình chọn iframe khi ranh giới document riêng thật sự có giá trị, không chỉ vì đây là cách nhanh nhất để thấy hai giao diện trên cùng màn hình.
 
 <Callout type="info" title="Phạm vi ví dụ">
-  Repository này là site tài liệu. Các HTML, JavaScript và URL dưới đây dành cho lab riêng, không phải ứng dụng shop đã có trong repo. Ví dụ chỉ triển khai handshake, theme và resize; nghiệp vụ cart, auth và router được bàn như phần contract cần bổ sung. Sơ đồ dùng ASCII để không cần thêm cấu hình renderer.
+  Repository này là site tài liệu. Các HTML, JavaScript và URL dưới đây dành cho lab riêng, không phải ứng dụng shop đã có trong repo. Ví dụ chỉ triển khai handshake, theme và resize; nghiệp vụ cart, auth và router được bàn như phần contract cần bổ sung.
 </Callout>
+
+<SourceRef project="cac-cach-tich-hop-iframe" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -46,13 +48,19 @@ Giả sử shell của shop đã dùng React mới, nhưng một vùng quản tr
 
 Một iframe tạo nested browsing context: ứng dụng nhúng có `window`, `document`, stylesheet và môi trường JavaScript riêng. Shell tải một trang HTML qua `src`; trang đó tự tải bundle, chạy framework và quản lý UI bên trong.
 
-```text
-Shell document: header, router, fallback
-  │
-  └── <iframe src="https://catalog.example.net/embed">
-        └── Catalog document: DOM, CSS, framework riêng
-
-Shell window   ◄──── postMessage ────►   Catalog window
+```d2 title="iframe tạo ra boundary nào"
+direction: down
+shell: "Shell document" {
+  label: "Shell document: header, router,\nfallback"
+  window: Shell window
+  frame: "iframe:\ncatalog.example.net/embed"
+}
+catalog: "Catalog document" {
+  label: "Catalog document: DOM, CSS,\nframework riêng"
+  window: Catalog window
+}
+shell.frame -> catalog
+shell.window <-> catalog.window: postMessage
 ```
 
 Khác với Web Components, đây không chỉ là một boundary cho DOM selectors. React Context, dependency injection, module-level singleton và DOM events của catalog không tự nối với shell. Muốn trao đổi, hai bên dùng một contract như `postMessage` hoặc cùng gọi backend qua API của mình.
@@ -230,14 +238,16 @@ Port khác nhau nên khác origin. Đây là môi trường local, không phải
 
 Shell giữ loading status **bên ngoài** iframe, đặt `title` cho frame và giới hạn chiều cao được nhận. Timeout 8 giây và khoảng chiều cao 240–1200 pixel là lựa chọn minh họa của lab, không phải ngưỡng chuẩn cho mọi sản phẩm.
 
-```html title="shell/index.html"
+```html title="shell/index.html" sourceFile="shell/index.html" sourceRegion="main"
 <button id="theme" type="button">Đổi theme</button>
 <p id="embed-status" role="status" aria-live="polite"></p>
 <div id="catalog-slot"></div>
 <script type="module" src="/shell.js"></script>
 ```
 
-```js title="shell/shell.js"
+<SourceRef project="cac-cach-tich-hop-iframe" file="shell/index.html" region="main">Đối chiếu shell/index.html</SourceRef>
+
+```js title="shell/shell.js" sourceFile="shell/shell.js" sourceRegion="main"
 const CATALOG_URL = 'http://localhost:4301/embed.html';
 const CATALOG_ORIGIN = new URL(CATALOG_URL).origin;
 const CHANNEL = 'shop.catalog';
@@ -342,6 +352,8 @@ document.querySelector('#theme').addEventListener('click', () => {
 // Trong shell thật: gọi catalog.dispose() khi rời route hoặc unmount adapter.
 ```
 
+<SourceRef project="cac-cach-tich-hop-iframe" file="shell/shell.js" region="main">Đối chiếu shell/shell.js</SourceRef>
+
 Bridge chỉ chấp nhận hai message types của catalog và không coi payload là HTML. Một sender đúng origin vẫn có thể gửi sai dữ liệu; `RESIZE` có kiểu sai hoặc chiều cao không hữu hạn bị bỏ qua.
 
 Lab ẩn frame khi timeout và hiển thị fallback ở shell. Trong sản phẩm, hãy cung cấp nút thử lại tạo adapter mới và hủy adapter cũ trước đó. Không tự reload cả trang hay retry liên tục: người dùng có thể đang có dữ liệu chưa lưu ở vùng khác.
@@ -350,7 +362,7 @@ Lab ẩn frame khi timeout và hiển thị fallback ở shell. Trong sản ph�
 
 Catalog cần một wrapper nội dung không phụ thuộc chiều cao viewport để đo resize. Bridge bên dưới đăng ký listener khi module chạy; chỉ gửi message sau khi nhận `INIT` hợp lệ.
 
-```html title="catalog/embed.html"
+```html title="catalog/embed.html" sourceFile="catalog/embed.html" sourceRegion="main"
 <!doctype html>
 <html lang="vi">
   <head>
@@ -377,7 +389,9 @@ Catalog cần một wrapper nội dung không phụ thuộc chiều cao viewport
 </html>
 ```
 
-```js title="catalog/bridge.js"
+<SourceRef project="cac-cach-tich-hop-iframe" file="catalog/embed.html" region="main">Đối chiếu catalog/embed.html</SourceRef>
+
+```js title="catalog/bridge.js" sourceFile="catalog/bridge.js" sourceRegion="main"
 const SHELL_ORIGIN = 'http://localhost:4300';
 const CHANNEL = 'shop.catalog';
 const content = document.querySelector('#content');
@@ -442,6 +456,8 @@ function disposeBridge() {
   session = '';
 }
 ```
+
+<SourceRef project="cac-cach-tich-hop-iframe" file="catalog/bridge.js" region="main">Đối chiếu catalog/bridge.js</SourceRef>
 
 `ResizeObserver` theo dõi thay đổi kích thước wrapper, còn `requestAnimationFrame` gộp các lần đo trong một frame và `lastHeight` tránh gửi lại số đo không đổi. Đây không phải cơ chế chống flood từ sender độc hại; production vẫn cần giới hạn tần suất xử lý và tài nguyên theo mức độ tin cậy.
 

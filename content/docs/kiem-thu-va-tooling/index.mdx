@@ -8,7 +8,7 @@ Giả sử catalog vừa deploy bộ lọc mới. Unit tests xanh, màn hình st
 Nhóm **Kiểm thử và tooling** giúp bạn xây vòng lặp phát triển đủ nhanh cho từng team, nhưng vẫn có bằng chứng rằng các frontend hoạt động cùng nhau. Mình ưu tiên kiểm tra hành vi ở boundary và artifact thực tế, thay vì lấy coverage cao hoặc một suite E2E rất lớn làm thước đo duy nhất.
 
 <Callout type="info" title="Phạm vi trang này">
-  Đây là trang định hướng, không phải lab cài đặt test runner. Ví dụ dùng shop giả định gồm shell, catalog và cart; cart tích hợp là phần mở rộng so với lab shell/catalog ban đầu. Repository hiện tại là site Next.js + Fumadocs, không phải workspace ứng dụng shop. Các JSON bên dưới minh họa dữ liệu cần lưu, không phải cấu hình được site này tự đọc. Sơ đồ text không cần plugin Mermaid.
+  Đây là trang định hướng, không phải lab cài đặt test runner. Ví dụ dùng shop giả định gồm shell, catalog và cart; cart tích hợp là phần mở rộng so với lab shell/catalog ban đầu. Repository hiện tại là site Next.js + Fumadocs, không phải workspace ứng dụng shop. Các JSON bên dưới minh họa dữ liệu cần lưu, không phải cấu hình được site này tự đọc.
 </Callout>
 
 ## Mục lục
@@ -198,10 +198,14 @@ Một pipeline hữu ích trả lời hai việc: thay đổi này ảnh hưởn
 
 Luồng tối thiểu có thể hình dung như sau:
 
-```text
-Checks trong app → Contract verification → Build artifact
-                                               ↓
-Promotion decision ← Integration theo release map
+```d2 title="CI và release gate theo mức tác động"
+direction: right
+n0: "Checks trong app"
+n1: "Contract verification"
+n2: "Build artifact"
+n3: "Integration theo release map"
+n4: "Promotion decision"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Trong thực tế, một số bước chạy song song. Điểm quan trọng là integration kiểm tra **artifact đã build**, và decision dùng report gắn với artifact đó; không build lại một bản khác sau khi test rồi coi là tương đương.

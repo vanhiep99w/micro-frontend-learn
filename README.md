@@ -2,8 +2,9 @@
 
 Site tài liệu tiếng Việt dùng Next.js App Router, Fumadocs MDX/UI và Tailwind CSS v4.
 
-**Đây là bộ khung học, chưa phải tài liệu chi tiết hoặc ứng dụng micro-frontend chạy được.**
-Có 12 nhóm, 68 bài placeholder, 12 trang tổng quan và 1 trang lộ trình: **81 trang MDX**.
+Có **81 trang MDX** tiếng Việt trong 12 nhóm, từ nền tảng đến production và troubleshooting.
+Đây là repository tài liệu, không phải workspace chạy ứng dụng shop trong các bài lab.
+Sơ đồ D2 và Source Explorer dùng `@vanhiep99w/docs-kit@0.5.0`.
 
 ## Chạy trên máy có mạng
 
@@ -16,16 +17,16 @@ npm run dev
 
 Mở http://localhost:3000/docs. Đường dẫn `/` chuyển đến `/docs`.
 
-Sandbox của bước khởi tạo không có mạng cho bash nên không chạy cài dependencies
-hoặc build tại đây. Log Cloudflare bạn cung cấp xác nhận phiên bản scaffold ban đầu
-đã compile, kiểm tra TypeScript và prerender thành công; cấu hình static export
-mới cần được kiểm tra lại bằng các lệnh bên dưới hoặc lần deploy tiếp theo.
 `npm install` chạy `postinstall` để sinh `.source/`; không viết tay hoặc commit thư mục đó.
+`npm run dev` và `npm run build` tự sinh assets Source Explorer trước khi chạy Next.js.
+Sau khi sửa code trong MDX lúc dev đang chạy, chạy lại `npm run build:source` để cập nhật drawer.
 
 Kiểm tra sau khi cài:
 
 ```bash
 npm run check:docs
+npm run check:source
+npm test
 npm run typecheck
 npm run build
 npm run check:export
@@ -92,11 +93,73 @@ Bạn có thể yêu cầu: **“Dùng fumadocs-technical-writer viết chi ti�
 
 - Giữ frontmatter `title` và `description`; không thêm H1 trùng tiêu đề.
 - Giữ mục lục thủ công ngay trước phần nội dung, cập nhật anchors khi đổi headings.
-- Leaf pages hiện chỉ có callout trạng thái và phạm vi dự kiến.
+- Giữ phạm vi và prerequisite của từng bài; các snippet lab không phải code chạy trong site docs.
 - Mỗi nhóm dùng `index.mdx` làm landing page và `meta.json` để xếp sidebar.
 - Khi thêm hoặc đổi slug, cập nhật `meta.json` cùng các liên kết.
 - `Callout` và các thành phần MDX mặc định được đăng ký trong `mdx-components.tsx`.
-- Mermaid chưa được cấu hình. Đừng coi fenced Mermaid là sơ đồ đã được render.
+- Viết sơ đồ kiến trúc/flow/lifecycle bằng fenced `d2`; giữ cây thư mục, log, URL và công thức ở dạng text khi phù hợp. Mermaid không được cấu hình.
+
+## D2 và Source Explorer
+
+### Sơ đồ D2
+
+`source.config.ts` đăng ký `remarkD2`; `mdx-components.tsx` đăng ký `D2Diagram`.
+CSS light/dark được import trong `app/global.css`. D2 compile thành SVG lúc build,
+không tải renderer/WASM xuống browser, không cần D2 CLI hay dịch vụ render.
+Cache nằm ở `.next/cache/docs-kit/d2`, dùng chung cache build Next.js trên CI.
+
+````mdx
+```d2 title="Catalog gửi command qua public boundary"
+direction: right
+catalog: Catalog UI
+cart: Cart controller
+catalog -> cart: addItem
+```
+````
+
+Dùng nhãn ngắn; tách flow dài thành giai đoạn. Diagram cuộn ngang trên màn hình nhỏ.
+Chỉ compile source D2 đáng tin cậy trong repository vì SVG được nhúng trực tiếp.
+
+### Source Explorer
+
+`app/source-provider.tsx` bọc layout bằng provider client, dùng pathname để reset khi
+chuyển bài. Drawer lazy-load code và JSON khi mở; hỗ trợ tree, highlight region,
+copy và deep link. Không chạy source trong viewer.
+
+Nguồn chuẩn vẫn là **code fence trong MDX**, không có bản sao code phải sửa riêng:
+
+1. Thêm project vào `source-examples/registry.json`: `id`, `title`, `doc` tương đối
+   với `content/docs/`, `defaultFile`.
+2. Đánh dấu các fence thuộc ví dụ bằng `sourceFile` và `sourceRegion`.
+3. Thêm `SourceRef` trong bài để mở đúng file/region.
+4. Chạy `npm run build:source` và `npm run check:source`.
+
+````mdx
+```ts title="src/main.ts" sourceFile="src/main.ts" sourceRegion="entry"
+console.log('Ví dụ');
+```
+
+<SourceRef project="demo" file="src/main.ts" region="entry">
+  Đối chiếu entry
+</SourceRef>
+````
+
+`demo` ở trên phải có entry trong registry trước khi dùng. Không cần import
+`SourceRef` từng bài. Dùng `variant="button"` cho nút mở cả ví dụ; bỏ `file` để chọn
+`defaultFile`. Có thể dùng `lines="1-4"` thay cho `region`, không dùng cả hai.
+
+Các fence cùng `sourceFile` được nối theo thứ tự trong bài, ngăn bởi một dòng trống;
+mỗi `sourceRegion` phải duy nhất trong file. Dùng tên file khác cho biến thể độc lập,
+không nối những bản config thay thế nhau. Các trích đoạn cấu hình được đặt trong
+`fragments/`; đây là **source tham chiếu**, không phải cam kết project chạy độc lập.
+Mỗi bài hiện có snapshot `document` với nhãn “Code trong bài”.
+
+Pipeline dùng parser Markdown/MDX, validate project/file/region/line trước khi build,
+rồi highlight Shiki light/dark với `.line[data-line]`. Assets sinh vào
+`public/source-examples/` (gitignored) và được static export sang `out/source-examples/`.
+`npm run check:export` kiểm tra cả SVG đã render lẫn snapshot JSON/highlight.
+Chỉ đưa code công khai, không có secrets vào fence: assets được publish nguyên văn.
+Không nhận manifest hoặc HTML highlight từ nguồn không tin cậy.
 
 ## Các file chính
 

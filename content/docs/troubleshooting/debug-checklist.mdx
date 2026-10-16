@@ -12,7 +12,7 @@ Trang này là checklist dùng xuyên suốt một lần điều tra: giữ lầ
 <Callout type="info" title="Phạm vi và cách dùng">
   Ví dụ dùng shop giả định gồm shell, catalog và cart. Lab webpack 5 dùng shell ở `http://localhost:3000`, catalog ở `http://localhost:3001`, container `shop_catalog` và public key `./CatalogPage`. URL production, release IDs và dữ liệu incident bên dưới đều là minh họa, không phải deployment có sẵn trong repository tài liệu này.
 
-  Checklist áp dụng cho nhiều cách tích hợp; các kiểm tra webpack classic script, Module Federation enhanced, ESM và SSR được ghi rõ phạm vi. Sơ đồ text không cần thêm renderer. Khi đã xác định lớp lỗi, dùng bài chuyên sâu thay vì thử mọi nhánh trong checklist.
+  Checklist áp dụng cho nhiều cách tích hợp; các kiểm tra webpack classic script, Module Federation enhanced, ESM và SSR được ghi rõ phạm vi. Khi đã xác định lớp lỗi, dùng bài chuyên sâu thay vì thử mọi nhánh trong checklist.
 </Callout>
 
 ## Mục lục
@@ -132,14 +132,15 @@ Không ghi “latest” thay cho build ID. Không biết remote đã chạy rele
 
 ### Theo đường tải thực tế
 
-```text
-Document / config → resolve remote → entry và dependency graph
-                                                 ↓
-                                  initialize / evaluate
-                                                 ↓
-                                     mount / render / ready
-                                                 ↓
-                                     API / events / commands
+```d2 title="Theo đường tải thực tế"
+direction: down
+n0: "Document / config"
+n1: "Resolve remote"
+n2: "Entry + dependency graph"
+n3: "Initialize / evaluate"
+n4: "Mount / render / ready"
+n5: "API / events / commands"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5
 ```
 
 Đây là các boundary để khoanh vùng, không phải thứ tự nội bộ bắt buộc: runtime có thể tải shared modules và chunks xen kẽ, hoặc preload trước khi route mở.

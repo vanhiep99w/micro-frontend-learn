@@ -65,17 +65,20 @@ Nếu người dùng đang bị ảnh hưởng trên production, giữ fallback 
 
 ## Đường tải remote cần kiểm tra
 
-```text
-Route của shell → resolve URL → tải và chạy remoteEntry.js
-                                        │
-                                        ▼
-                         container → init/get → tải chunk
-                                                      │
-                                                      ▼
-                                             evaluate → render
+```d2 title="Đường tải remote cần kiểm tra"
+direction: down
+n0: "Route shell"
+n1: "Resolve URL"
+n2: "Tải + chạy remoteEntry.js"
+n3: "Container"
+n4: "init / get"
+n5: "Tải chunk"
+n6: "Evaluate"
+n7: "Render"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5 -> n6 -> n7
 ```
 
-Với webpack, các bước initialize, `get` và tải shared chunks có thể xen kẽ; sơ đồ dùng để khoanh vùng, không mô tả đầy đủ thứ tự nội bộ của runtime.
+Với webpack, các bước initialize, `get` và tải shared chunks có thể xen kẽ;
 
 `remoteEntry.js` giống mục lục chỉ tới những phần code khác của remote. Nhận được mục lục không chứng minh các phần đó còn tồn tại. Phép so sánh chỉ giúp nhớ hai lớp entry–chunk; entry thực tế là JavaScript có logic runtime, không phải một danh sách URL tĩnh.
 

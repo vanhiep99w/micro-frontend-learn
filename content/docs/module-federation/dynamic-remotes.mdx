@@ -8,8 +8,10 @@ Giả sử shell đã build xong, nhưng bạn muốn chuyển catalog từ rele
 Điểm khó không phải tạo một script tag. Bạn cần biết ai được quyền chọn URL, hai request đồng thời có tải entry hai lần không, và rollback có ảnh hưởng tới tab đã mở hay không. Bài này đi từ một runtime manifest nhỏ tới loader có ranh giới rõ ràng, rồi đưa ra chính sách vận hành cho các tình huống đó.
 
 <Callout type="info" title="Phạm vi và điều kiện đọc">
-  Ví dụ dùng shell và catalog giả định, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5, remote dạng classic script container chạy trong browser. Đây không phải cấu hình Next.js của site docs này, không bao gồm SSR hay React Server Components. Bạn nên đọc [Cơ chế Module Federation](/docs/module-federation/co-che) và [Cấu hình exposes và remotes](/docs/module-federation/exposes-remotes) trước. Sơ đồ text không cần plugin render bổ sung.
+  Ví dụ dùng shell và catalog giả định, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5, remote dạng classic script container chạy trong browser. Đây không phải cấu hình Next.js của site docs này, không bao gồm SSR hay React Server Components. Bạn nên đọc [Cơ chế Module Federation](/docs/module-federation/co-che) và [Cấu hình exposes và remotes](/docs/module-federation/exposes-remotes) trước.
 </Callout>
+
+<SourceRef project="module-federation-dynamic-remotes" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -89,7 +91,7 @@ Với `@module-federation/enhanced/runtime`, API cấp module hoạt động tr�
 
 Shell đọc endpoint same-origin `/runtime/remotes.json`. Đây là schema do ứng dụng tự thiết kế; webpack không tự fetch hay hiểu nó.
 
-```json title="Response của /runtime/remotes.json"
+```json title="Response của /runtime/remotes.json" sourceFile="runtime/remotes.json" sourceRegion="main"
 {
   "schemaVersion": 1,
   "revision": "demo-config-18",
@@ -104,6 +106,8 @@ Shell đọc endpoint same-origin `/runtime/remotes.json`. Đây là schema do �
   }
 }
 ```
+
+<SourceRef project="module-federation-dynamic-remotes" file="runtime/remotes.json" region="main">Đối chiếu runtime/remotes.json</SourceRef>
 
 | Field | Ý nghĩa |
 | --- | --- |
@@ -127,14 +131,16 @@ Bạn có thể có cả hai lớp: manifest của ứng dụng chọn release, 
 
 ## Luồng resolve và quyền sở hữu
 
-```text
-Shell import ──► Manifest snapshot ──► Entry URL đã validate
-                                            │
-                                            ▼
-                                      Script container
-                                            │
-                                            ▼
-                              Webpack init → get → factory
+```d2 title="Luồng resolve và quyền sở hữu"
+direction: down
+n0: "Shell import"
+n1: "Manifest snapshot"
+n2: "Entry URL đã validate"
+n3: "Script container"
+n4: "Webpack init"
+n5: "get"
+n6: "factory"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5 -> n6
 ```
 
 | Giai đoạn | Chủ thể | Trách nhiệm |
@@ -155,7 +161,7 @@ Các snippet dành cho hai app webpack đã có HTML, entry, build và static ho
 
 Remote công bố script container `catalog_app`. Nó expose một named export `mount(root, options)` trả cleanup function, cùng kiểu lifecycle API đã dùng ở bài cơ chế.
 
-```js title="catalog/webpack.config.cjs — phần cấu hình liên quan"
+```js title="catalog/webpack.config.cjs — phần cấu hình liên quan" sourceFile="catalog/webpack.config.cjs" sourceRegion="main"
 const { ModuleFederationPlugin } = require('webpack').container;
 
 module.exports = {
@@ -177,7 +183,9 @@ module.exports = {
 };
 ```
 
-```js title="catalog/src/product-page.js"
+<SourceRef project="module-federation-dynamic-remotes" file="catalog/webpack.config.cjs" region="main">Đối chiếu catalog/webpack.config.cjs</SourceRef>
+
+```js title="catalog/src/product-page.js" sourceFile="catalog/src/product-page.js" sourceRegion="main"
 export function mount(root, { onSelect }) {
   const button = document.createElement('button');
   button.type = 'button';
@@ -193,13 +201,15 @@ export function mount(root, { onSelect }) {
 }
 ```
 
+<SourceRef project="module-federation-dynamic-remotes" file="catalog/src/product-page.js" region="main">Đối chiếu catalog/src/product-page.js</SourceRef>
+
 Publish toàn bộ output vào prefix `/catalog/r18/`, không chỉ `remoteEntry.js`. Với script entry, `publicPath: 'auto'` giúp runtime suy ra địa chỉ tải chunk từ location của script. Vẫn phải kiểm tra qua production hosting thực tế: redirect, proxy hoặc cách tách runtime có thể khiến assumptions về location không còn đúng.
 
 ### Đọc và kiểm tra manifest
 
 Loader giữ một Promise manifest cho toàn bộ document. Hai import xảy ra đồng thời dùng cùng response, không thể nhận hai release khác nhau do manifest vừa được promote giữa hai request.
 
-```js title="shell/src/runtime-remotes.js — phần 1"
+```js title="shell/src/runtime-remotes.js — phần 1" sourceFile="shell/src/runtime-remotes.js" sourceRegion="manifest"
 const CONFIG_URL = '/runtime/remotes.json';
 const ASSET_ORIGIN = 'https://assets.example.com';
 const CONFIG_TIMEOUT_MS = 5000; // Giá trị minh họa; điều chỉnh theo SLO.
@@ -279,6 +289,8 @@ export function getRemoteManifest() {
 }
 ```
 
+<SourceRef project="module-federation-dynamic-remotes" file="shell/src/runtime-remotes.js" region="manifest">Đối chiếu shell/src/runtime-remotes.js</SourceRef>
+
 Mình dùng exact origin và exact release path thay vì `entry.startsWith('https://assets.example.com')`: kiểm tra chuỗi prefix có thể chấp nhận hostname khác như `assets.example.com.attacker.invalid`. Code cũng không cho URL có credentials hoặc query tùy ý. Đây là policy minh họa cho một remote, không phải schema tổng quát cho mọi deployment.
 
 `enabled: false` vẫn là descriptor hợp lệ, nhưng bước tải sẽ từ chối. Khi manifest lỗi, Promise reject được giữ lại; ví dụ không âm thầm dùng URL “latest” hay manifest trong local storage. Nếu cần last-known-good, hãy thiết kế riêng TTL, compatibility, allowlist và telemetry cho fallback đó.
@@ -287,7 +299,7 @@ Mình dùng exact origin và exact release path thay vì `entry.startsWith('http
 
 Thêm phần sau vào cùng module. Một Promise entry được giữ theo `scope` và URL. Loader không nhận container global có sẵn từ nguồn không rõ, không đổi URL cho scope đã được chọn, và không gọi `init` thủ công.
 
-```js title="shell/src/runtime-remotes.js — phần 2"
+```js title="shell/src/runtime-remotes.js — phần 2" sourceFile="shell/src/runtime-remotes.js" sourceRegion="loader"
 const ENTRY_TIMEOUT_MS = 8000; // Chỉ timeout entry, không phải toàn bộ import.
 const entriesByScope = new Map();
 
@@ -364,6 +376,8 @@ export async function resolveRemoteContainer(alias) {
 }
 ```
 
+<SourceRef project="module-federation-dynamic-remotes" file="shell/src/runtime-remotes.js" region="loader">Đối chiếu shell/src/runtime-remotes.js</SourceRef>
+
 Promise được đưa vào cache khi entry còn đang tải. Đây mới là dedupe concurrency; chỉ cache container sau `onload` sẽ để hai caller cùng chèn script trước khi lần tải đầu hoàn tất.
 
 Đoạn này có chủ ý **giữ cả Promise đã reject**. Tải lại entry có thể thực thi lại code hoặc gặp một container đã xuất hiện sau timeout. Ví dụ chọn fail-closed cho remote trong document hiện tại, thay vì giả vờ rằng xóa script tag đã reset toàn bộ runtime. Những hệ thống cần retry entry phải có policy chặt hơn và kiểm thử các race đó.
@@ -372,7 +386,7 @@ Promise được đưa vào cache khi entry còn đang tải. Đây mới là de
 
 Host khai báo alias đã biết, nhưng thay `scope@url` bằng một promise external. Kết quả phải có API `get` và `init`; loader ở trên resolve trực tiếp container thật.
 
-```js title="shell/webpack.config.cjs — phần cấu hình liên quan"
+```js title="shell/webpack.config.cjs — phần cấu hình liên quan" sourceFile="shell/webpack.config.cjs" sourceRegion="main"
 const { ModuleFederationPlugin } = require('webpack').container;
 
 module.exports = {
@@ -390,9 +404,11 @@ module.exports = {
 };
 ```
 
+<SourceRef project="module-federation-dynamic-remotes" file="shell/webpack.config.cjs" region="main">Đối chiếu shell/webpack.config.cjs</SourceRef>
+
 Promise external là một expression trong generated code, không phải closure giữ lexical scope của `webpack.config.cjs`. Vì vậy nó không thể gọi một biến chỉ tồn tại trong file cấu hình build. Ở đây entry host cài resolver lên một global có tên riêng trước khi bootstrap tải feature.
 
-```js title="shell/src/index.js — entry host"
+```js title="shell/src/index.js — entry host" sourceFile="shell/src/index.js" sourceRegion="main"
 import { resolveRemoteContainer } from './runtime-remotes.js';
 
 globalThis.__shopResolveRemote__ = resolveRemoteContainer;
@@ -402,6 +418,8 @@ import('./bootstrap.js').catch((error) => {
 });
 ```
 
+<SourceRef project="module-federation-dynamic-remotes" file="shell/src/index.js" region="main">Đối chiếu shell/src/index.js</SourceRef>
+
 Không đặt static import tới module remote trong `index.js`: import đó có thể được xử lý trước khi assignment cài resolver chạy. Async boundary bảo đảm bước cài resolver hoàn tất trước khi bootstrap tiêu thụ remote, đồng thời phù hợp với quy trình sharing của webpack.
 
 Webpack sẽ gọi `container.init` bằng share scope của nó. Loader không gọi thêm `__webpack_init_sharing__`, không tạo scope object mới và không bọc `init` bằng `catch` rỗng. Nếu init lỗi, import cần reject để boundary xử lý; nuốt lỗi có thể khiến bạn tiếp tục dùng một container ở trạng thái không hợp lệ.
@@ -410,7 +428,7 @@ Webpack sẽ gọi `container.init` bằng share scope của nó. Loader không 
 
 HTML host cần một vùng `#catalog-root`. Shell tải module rồi gọi lifecycle API; manifest hoặc remote lỗi không được làm biến mất toàn bộ navigation của shell.
 
-```js title="shell/src/bootstrap.js"
+```js title="shell/src/bootstrap.js" sourceFile="shell/src/bootstrap.js" sourceRegion="main"
 import { getRemoteManifest } from './runtime-remotes.js';
 
 const root = document.getElementById('catalog-root');
@@ -447,6 +465,8 @@ async function showCatalog() {
 
 void showCatalog();
 ```
+
+<SourceRef project="module-federation-dynamic-remotes" file="shell/src/bootstrap.js" region="main">Đối chiếu shell/src/bootstrap.js</SourceRef>
 
 Kết quả thành công là button của remote xuất hiện trong vùng catalog và callback chạy khi click. Khi entry lỗi, bạn thấy fallback trong vùng đó, còn các phần UI khác do shell quản lý vẫn hoạt động.
 

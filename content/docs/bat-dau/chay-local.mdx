@@ -194,12 +194,15 @@ Nếu lab có service worker, HTTP cache bị tắt chưa đủ: kiểm tra serv
 
 Đây là sơ đồ tối giản cho webpack Federation dùng script container, không phải thứ tự cứng của mọi request:
 
-```text
-Browser ở trang shell
-  ├─► localhost:3000  → HTML và JavaScript của host
-  └─► localhost:3001  → remoteEntry.js
-                        └─► chunks cần cho module catalog
-                             └─► UI catalog render trong shell
+```d2 title="Đọc đường đi của module"
+direction: right
+browser: "Browser ở trang shell"
+host: "localhost:3000\nHTML và JavaScript của host"
+entry: "localhost:3001\nremoteEntry.js"
+chunks: "Chunks cần cho module catalog"
+ui: "UI catalog render trong shell"
+browser -> host
+browser -> entry -> chunks -> ui
 ```
 
 Host tải container entry, khởi tạo sharing, lấy public module và thực thi module để render. Một số chunk có thể được tải song song hoặc dùng lại; số request còn phụ thuộc code splitting và cách cấu hình shared dependencies.

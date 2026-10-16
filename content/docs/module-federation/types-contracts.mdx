@@ -51,12 +51,19 @@ Bài này nối hai phần thường bị tách rời: **types giúp kiểm tra 
 
 Với `import('catalog/productApi')`, bundler biết cách tải container và lấy exposed module. TypeScript lại cần declarations mô tả module đó để kiểm tra code shell. Plugin webpack tích hợp không tự biến `exposes` thành declarations mà host có thể dùng.
 
-```text
-Trước khi chạy:
-  Declarations hoặc contract package ──► TypeScript của shell
-
-Khi chạy trong browser:
-  Remote entry và chunks ──► Module catalog ──► Adapter của shell
+```d2 title="Hai đường phân phối khác nhau"
+direction: right
+build: "Trước khi chạy" {
+  declarations: Declarations / contract package
+  ts: TypeScript shell
+  declarations -> ts
+}
+runtime: Browser runtime {
+  remote: Remote entry + chunks
+  module: Module catalog
+  adapter: Adapter shell
+  remote -> module -> adapter
+}
 ```
 
 Hai đường này có thể lấy artifact của hai release khác nhau. Ví dụ shell typecheck với declarations của catalog r18, nhưng runtime config trỏ tới r17. Chỉ sửa `tsconfig.json` không làm browser đổi remote; chỉ đổi URL remote cũng không cập nhật types trong source shell.

@@ -10,7 +10,7 @@ Bài này giúp bạn tìm **ranh giới đầu tiên có hành vi sai**: server
 <Callout type="info" title="Phạm vi ví dụ">
   Ví dụ dùng shop giả định gồm shell, catalog và cart; URL công khai là `/catalog`, `/catalog/products/sku-42` và `/cart`. Code thuộc workspace thực hành riêng, không phải implementation có sẵn trong repository tài liệu này. Ví dụ React dùng API declarative của React Router v7; phần asset runtime dùng webpack 5 khi được ghi rõ.
 
-  Cấu hình Nginx dưới đây dành cho một SPA tĩnh, không phải cấu hình triển khai site Next.js chứa tài liệu. Với SSR, server cần xử lý route theo framework thay vì trả cùng một `index.html`. Sơ đồ ASCII không cần thêm renderer.
+  Cấu hình Nginx dưới đây dành cho một SPA tĩnh, không phải cấu hình triển khai site Next.js chứa tài liệu. Với SSR, server cần xử lý route theo framework thay vì trả cùng một `index.html`.
 </Callout>
 
 ## Mục lục
@@ -63,10 +63,17 @@ Bảng này chọn nơi kiểm tra đầu tiên, không khẳng định nguyên 
 
 Tách đường chọn màn hình khỏi đường tải tài nguyên:
 
-```text
-Deep link → server trả shell document → router chọn remote → remote render
-
-Asset URL → CDN/server trả CSS, ảnh, font → browser áp dụng vào DOM
+```d2 title="Khoanh vùng nhanh theo triệu chứng"
+direction: right
+route: Deep link
+html: Server trả shell document
+router: Router chọn remote
+render: Remote render
+url: Asset URL
+cdn: CDN/server trả CSS / ảnh / font
+dom: Browser áp dụng vào DOM
+route -> html -> router -> render
+url -> cdn -> dom
 ```
 
 Một route khớp đúng vẫn có thể render UI thiếu CSS. Ngược lại, CSS tải đủ không chứng minh router đang hiển thị đúng màn hình.
@@ -287,9 +294,12 @@ Một lỗi phổ biến là bridge gửi location của shell vào memory route
 
 Tách hai đường:
 
-```text
-Remote gửi command → Shell commit location → Remote áp dụng snapshot
-                                             └─ không phát lại command
+```d2 title="Ngăn navigation loop và listener dư"
+direction: right
+n0: "Remote gửi command"
+n1: "Shell commit location"
+n2: "Remote áp dụng snapshot\nKhông phát lại command"
+n0 -> n1 -> n2
 ```
 
 Adapter nên có thao tác “apply external location” riêng, hoặc source/revision để bỏ qua update do shell gửi. So sánh URL có thể bỏ một số update trùng nhưng chưa đủ để xử lý race với guard bất đồng bộ. Việc đồng bộ vào memory router thường dùng replace nội bộ; Back cấp ứng dụng vẫn đi qua shell history owner.

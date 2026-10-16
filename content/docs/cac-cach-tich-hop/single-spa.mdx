@@ -8,8 +8,10 @@ Giả sử catalog đang dùng React, còn trang cart cũ chưa chuyển framewo
 Điểm dễ nhầm là coi single-spa như một công cụ tải remote hoặc một lớp isolation. Nó không tự tạo deploy độc lập, không tự chia sẻ React, và không ngăn CSS của catalog ảnh hưởng cart. Bài này tách rõ những trách nhiệm đó, rồi dùng một lab nhỏ để bạn quan sát lifecycle thay vì chỉ nhớ tên API.
 
 <Callout type="info" title="Phạm vi và điều kiện đọc">
-  Bài dùng API single-spa 6.x cho ứng dụng client-side. Lab dùng JavaScript thuần và Vite trong một project riêng, không phải mã chạy bên trong site Next.js này. Bạn cần biết ES modules, Promise và History API. Ví dụ React ở cuối minh họa adapter, không bao gồm SSR hay React Server Components. Các sơ đồ text không cần plugin bổ sung.
+  Bài dùng API single-spa 6.x cho ứng dụng client-side. Lab dùng JavaScript thuần và Vite trong một project riêng, không phải mã chạy bên trong site Next.js này. Bạn cần biết ES modules, Promise và History API. Ví dụ React ở cuối minh họa adapter, không bao gồm SSR hay React Server Components.
 </Callout>
+
+<SourceRef project="cac-cach-tich-hop-single-spa" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -51,11 +53,15 @@ Giới hạn của cách hình dung này là các ứng dụng không có phòng
 
 **Root config** gồm HTML gốc và JavaScript đăng ký ứng dụng. Nó thường sống cùng composition layer của shell, nhưng không đồng nghĩa với một component React khổng lồ chứa mọi trang.
 
-```text
-HTML gốc + root config
-  ├── single-spa: kiểm tra URL, gọi lifecycle
-  ├── /catalog → catalog → vùng DOM của catalog
-  └── /cart    → cart    → vùng DOM của cart
+```d2 title="Root config và ứng dụng"
+direction: down
+root: "HTML gốc + root config"
+spa: "single-spa: kiểm tra URL, gọi\nlifecycle"
+catalog: "/catalog → catalog → vùng DOM\ncatalog"
+cart: "/cart → cart → vùng DOM cart"
+root -> spa
+spa -> catalog
+spa -> cart
 ```
 
 | Thành phần | Trách nhiệm |
@@ -130,10 +136,12 @@ Entry của một application cần export `bootstrap`, `mount` và `unmount`. M
 
 Một chuyến đi bình thường có dạng:
 
-```text
-/catalog lần đầu: load catalog → bootstrap catalog → mount catalog
-/cart:           unmount catalog → load/bootstrap/mount cart
-/catalog trở lại: unmount cart → mount catalog
+```d2 title="Mount và unmount"
+direction: right
+n0: "/catalog lần đầu\nload → bootstrap → mount catalog"
+n1: "/cart\nunmount catalog →\nload/bootstrap/mount cart"
+n2: "/catalog trở lại\nunmount cart → mount catalog"
+n0 -> n1 -> n2
 ```
 
 Đây là thứ tự quan sát đơn giản, không phải cam kết rằng mọi việc đều tuần tự: tải code và bootstrap ứng dụng sắp vào có thể diễn ra trong lúc ứng dụng cũ đang unmount. single-spa chờ các ứng dụng cần rời đi unmount trước khi mount các ứng dụng mới. Đừng dùng thứ tự bootstrap của hai ứng dụng như một API giao tiếp.
@@ -208,7 +216,7 @@ Dùng Node đáp ứng yêu cầu của version Vite bạn cài và commit lockf
 
 ### Tạo HTML và root config
 
-```html title="index.html"
+```html title="index.html" sourceFile="index.html" sourceRegion="main"
 <!doctype html>
 <html lang="vi">
   <head>
@@ -233,7 +241,9 @@ Dùng Node đáp ứng yêu cầu của version Vite bạn cài và commit lockf
 </html>
 ```
 
-```js title="src/root-config.js"
+<SourceRef project="cac-cach-tich-hop-single-spa" file="index.html" region="main">Đối chiếu index.html</SourceRef>
+
+```js title="src/root-config.js" sourceFile="src/root-config.js" sourceRegion="main"
 import {
   registerApplication,
   start,
@@ -298,13 +308,15 @@ if (window.location.pathname === '/') {
 start();
 ```
 
+<SourceRef project="cac-cach-tich-hop-single-spa" file="src/root-config.js" region="main">Đối chiếu src/root-config.js</SourceRef>
+
 `customProps` được đưa trực tiếp vào object `props` của lifecycle: ứng dụng đọc `props.cart` và `props.domElement`, không đọc `props.customProps.cart`. Các props có sẵn như `name`, `singleSpa` và `mountParcel` do single-spa cung cấp; tránh dùng tên đó cho contract riêng.
 
 Ở lab, root config truyền một instance cart cho cả hai application. Trong production, đây nên là public contract thuộc cart domain, không phải cách mở quyền truy cập vào reducer hoặc mutable store nội bộ.
 
 ### Giữ cart controller ngoài lifecycle giao diện
 
-```js title="src/cart-controller.js"
+```js title="src/cart-controller.js" sourceFile="src/cart-controller.js" sourceRegion="main"
 let totalQuantity = 0;
 const listeners = new Set();
 
@@ -330,13 +342,15 @@ export const cart = Object.freeze({
 });
 ```
 
+<SourceRef project="cac-cach-tich-hop-single-spa" file="src/cart-controller.js" region="main">Đối chiếu src/cart-controller.js</SourceRef>
+
 Đây là controller in-memory tối thiểu, chỉ dùng cho một SKU và các consumer đồng bộ của lab. Production cần contract thao tác, xử lý lỗi và nguồn dữ liệu phù hợp; backend vẫn là nguồn chuẩn cho giỏ đã xác nhận.
 
 Controller không nằm trong `bootstrap` của cart UI, vì catalog phải thêm được sản phẩm **trước khi người dùng mở `/cart`**. Subscription UI cần được tháo lúc unmount, nhưng state giỏ không nên bị xóa chỉ vì người dùng quay lại catalog. Reload document sẽ reset controller này về `0`.
 
 ### Viết lifecycle của catalog
 
-```js title="src/catalog.single-spa.js"
+```js title="src/catalog.single-spa.js" sourceFile="src/catalog.single-spa.js" sourceRegion="main"
 let dispose;
 
 export async function bootstrap({ name }) {
@@ -383,13 +397,15 @@ export async function unmount({ name }) {
 }
 ```
 
+<SourceRef project="cac-cach-tich-hop-single-spa" file="src/catalog.single-spa.js" region="main">Đối chiếu src/catalog.single-spa.js</SourceRef>
+
 HTML trong ví dụ là literal cố định. Không nội suy tên sản phẩm hay dữ liệu user chưa sanitize vào `innerHTML`; dùng `textContent` hoặc cơ chế escaping của framework cho dữ liệu động.
 
 `AbortController` ở đây dọn listener, không phải request mạng. Khi app rời route, listener bị tháo trước khi DOM được bỏ; lần mount sau tạo page và controller mới.
 
 ### Viết lifecycle của cart
 
-```js title="src/cart.single-spa.js"
+```js title="src/cart.single-spa.js" sourceFile="src/cart.single-spa.js" sourceRegion="main"
 let dispose;
 
 export async function bootstrap({ name }) {
@@ -426,6 +442,8 @@ export async function unmount({ name }) {
   dispose = undefined;
 }
 ```
+
+<SourceRef project="cac-cach-tich-hop-single-spa" file="src/cart.single-spa.js" region="main">Đối chiếu src/cart.single-spa.js</SourceRef>
 
 Nếu bỏ `unsubscribe()`, controller vẫn giữ callback có closure trỏ tới page cũ. UI nhìn như đã biến mất nhưng tài nguyên chưa được dọn. Chính những lỗi này khiến lifecycle trở thành một phần của contract tích hợp, không chỉ là ba tên export.
 
@@ -563,11 +581,13 @@ Chọn budget từ đo đạc thực tế. `dieOnTimeout: true` cho phép single
 
 Local dynamic import trong lab chứng minh contract lifecycle. Để catalog phát hành mà không rebuild root config, bạn cần một lớp resolve entry ở runtime và một quy trình publish artifact riêng.
 
-```text
-Runtime mapping: @shop/catalog → URL của release catalog
-                                 │
-                                 ▼
-Loader → module có bootstrap/mount/unmount → single-spa
+```d2 title="Từ lab tới deploy độc lập"
+direction: right
+n0: "Runtime mapping\n@shop/catalog → URL release"
+n1: "Loader"
+n2: "Module: bootstrap / mount /\nunmount"
+n3: "single-spa"
+n0 -> n1 -> n2 -> n3
 ```
 
 Ví dụ khi đã cấu hình SystemJS cùng import map và bundle đúng format:

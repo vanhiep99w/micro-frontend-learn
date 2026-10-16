@@ -8,7 +8,7 @@ Giả sử catalog vừa deploy bộ lọc mới, còn shell và cart không đ�
 Triển khai micro-frontend không chỉ là đưa từng app lên hosting riêng. Bạn cần biết **browser đang chạy tổ hợp nào, vì sao tổ hợp đó được chọn và có thể quay về đâu khi có lỗi**. Nhóm này nối CI/CD, hosting, runtime configuration, cache và rollout thành một đường release có thể kiểm chứng.
 
 <Callout type="info" title="Phạm vi trang này">
-  Đây là trang định hướng cho nhóm **Triển khai**, không phải hướng dẫn deploy site Fumadocs hiện tại. Ví dụ dùng shop giả định gồm shell, catalog và cart; cart là phần mở rộng của lab shell/catalog. Mô hình chính là shell CSR tải webpack classic script remotes qua runtime config. JSON, release IDs và domain bên dưới chỉ minh họa, không phải hạ tầng có sẵn trong repository. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
+  Đây là trang định hướng cho nhóm **Triển khai**, không phải hướng dẫn deploy site Fumadocs hiện tại. Ví dụ dùng shop giả định gồm shell, catalog và cart; cart là phần mở rộng của lab shell/catalog. Mô hình chính là shell CSR tải webpack classic script remotes qua runtime config. JSON, release IDs và domain bên dưới chỉ minh họa, không phải hạ tầng có sẵn trong repository.
 </Callout>
 
 ## Mục lục
@@ -74,11 +74,19 @@ Vì vậy, rollback pointer và khôi phục toàn bộ người dùng là hai v
 
 Với shop CSR trong ví dụ, shell là nơi resolve remotes:
 
-```text
-Browser ──► Shell HTML + shell assets
-       ──► Runtime config: một snapshot được validate và pin
-       ──► Catalog entry + chunks theo snapshot đó
-       ──► Cart entry + chunks theo cùng snapshot
+```d2 title="Đường tải của một document mới"
+direction: right
+browser: Browser
+shell: Shell HTML + assets
+config: "Runtime config\nSnapshot được validate và pin"
+catalog: Catalog entry + chunks
+cart: Cart entry + chunks
+browser -> shell
+browser -> config
+browser -> catalog: Theo snapshot
+browser -> cart: Theo cùng snapshot
+config -> catalog: Selection
+config -> cart: Selection
 ```
 
 Các dòng thể hiện quan hệ tải, không yêu cầu catalog và cart luôn tải tuần tự. Shell có thể lazy-load từng remote khi vào route, nhưng descriptor dùng để resolve vẫn thuộc snapshot của document.
@@ -110,8 +118,14 @@ Release set dùng ở pipeline có thể chứa digests, test IDs và metadata n
 
 Luồng dưới áp dụng cho một thay đổi catalog tương thích:
 
-```text
-Build candidate → Publish artifacts → Verify release set → Promote → Observe
+```d2 title="Luồng release mặc định"
+direction: right
+n0: "Build candidate"
+n1: "Publish artifacts"
+n2: "Verify release set"
+n3: "Promote"
+n4: "Observe"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Nếu một gate fail, giữ candidate ở trạng thái chưa được chọn. Việc artifact tồn tại trên storage không buộc bạn phải release nó.

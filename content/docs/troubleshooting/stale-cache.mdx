@@ -10,7 +10,7 @@ Bài này giúp bạn xác định **ai chọn release, ai trả bytes và file 
 <Callout type="info" title="Phạm vi">
   Ví dụ dùng shop giả định với shell và remote catalog, webpack 5 Module Federation trong browser. URL `assets.example.com`, release `r18`/`r19`, config revision và hash là minh họa; repo này chỉ chứa site tài liệu, không có CDN hay pipeline để chạy lệnh production. Layout `/catalog/releases/r18/` nối tiếp [Caching và cache invalidation](/docs/trien-khai/caching).
 
-  Với Vite/ESM hoặc runtime enhanced, tên lỗi, manifest và cơ chế retry có thể khác. Vẫn kiểm tra selection, entry và dependency graph, nhưng không áp dụng thao tác reset webpack container cho mọi runtime. Sơ đồ text bên dưới không cần Mermaid.
+  Với Vite/ESM hoặc runtime enhanced, tên lỗi, manifest và cơ chế retry có thể khác. Vẫn kiểm tra selection, entry và dependency graph, nhưng không áp dụng thao tác reset webpack container cho mọi runtime.
 </Callout>
 
 ## Mục lục
@@ -95,12 +95,18 @@ HTTP gọi một response là *stale* khi freshness lifetime đã hết. Còn tr
 
 Đường chọn release và đường lấy bytes không phải một đường duy nhất:
 
-```text
-Document → snapshot config → entry r18 → lazy chunk r18
-                                 │             │
-                                 └──────┬──────┘
-                                        ▼
-                      HTTP cache → CDN → origin
+```d2 title="Các lớp cần kiểm tra"
+direction: right
+document: Document
+config: Config snapshot
+entry: Entry r18
+chunk: Lazy chunk r18
+http: HTTP cache
+cdn: CDN
+origin: Origin
+document -> config -> entry -> chunk
+entry -> http
+chunk -> http -> cdn -> origin
 ```
 
 Sơ đồ lược bỏ service worker và những bước initialize của federation. Loader có thể không tạo request nếu code đã evaluate; service worker có thể trả response từ Cache Storage thay vì đi qua đường network này.
@@ -143,11 +149,13 @@ Lấy snapshot mà shell đã consume, không chỉ fetch config hiện tại r�
 
 Đối chiếu chuỗi sau trong một document:
 
-```text
-config revision 42
-  → catalog release r18
-  → /catalog/releases/r18/remoteEntry.js
-  → /catalog/releases/r18/assets/product.4e8a.js
+```d2 title="Xác nhận release document đang dùng"
+direction: down
+n0: "Config revision 42"
+n1: "Catalog release r18"
+n2: "/catalog/releases/r18/remoteEntry.js"
+n3: "/catalog/releases/r18/assets/product.4e8a.js"
+n0 -> n1 -> n2 -> n3
 ```
 
 Hash và tên chunk là minh họa. Một số topology đặt chunks ở prefix khác; điều cần xác nhận là URL resolve đúng và bytes thuộc cùng dependency graph, không phải mọi URL đều phải chứa chuỗi `r18`.
@@ -329,11 +337,16 @@ Kiểm thử worker update với nhiều tab đang chạy release khác nhau. Đ
 
 Giả sử tab A đã tải entry r18 nhưng chưa mở trang sản phẩm. Tab B được mở sau deploy r19. Pipeline chỉ giữ release mới nhất và xóa thư mục r18; các tên và thời điểm dưới đây là giả định.
 
-```text
-Trước deploy: A pin config 42 → entry r18; chưa tải product chunk
-Sau deploy:  config 43 chọn r19; cleanup xóa r18
-Tab B:       entry r19 → product chunk r19 → chạy bình thường
-Tab A:       entry r18 trong runtime → product.4e8a.js r18 → 404
+```d2 title="Worked example tab r18 lỗi sau deploy r19"
+shape: sequence_diagram
+a: Tab A
+config: Config / deploy
+b: Tab B
+origin: Origin
+a -> config: "Trước deploy: pin config 42,\nentry r18"
+config -> origin: "Config 43 chọn r19, cleanup xóa\nr18"
+b -> origin: "Entry + product chunk r19 → bình\nthường"
+a -> origin: "Lazy product.4e8a.js r18 → 404"
 ```
 
 Entry của tab A không “sai” chỉ vì đã cũ. Cleanup đã phá availability của graph mà document còn cần.

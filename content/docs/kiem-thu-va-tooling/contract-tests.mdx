@@ -8,8 +8,10 @@ Giả sử catalog đổi default export thành named export, hoặc cart vẫn 
 **Contract tests kiểm tra những cam kết ở boundary mà ứng dụng khác đang dựa vào.** Mục tiêu không phải chạy lại toàn bộ user journey, mà là trả lời sớm: provider mới có còn phục vụ consumer đang chạy không, và consumer mới có dùng được provider còn trong cửa sổ hỗ trợ không?
 
 <Callout type="info" title="Phạm vi và cách dùng ví dụ">
-  Bài dùng shop gồm shell, catalog và cart, tiếp nối [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts). Các đường dẫn và lệnh thuộc workspace ứng dụng riêng, **không chạy trong repository Next.js + Fumadocs này**. Lab ban đầu expose React component `catalog/CatalogPage`; mount API, TypeScript và event schema là các boundary mở rộng cần có implementation tương ứng. Sơ đồ text không cần Mermaid.
+  Bài dùng shop gồm shell, catalog và cart, tiếp nối [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts). Các đường dẫn và lệnh thuộc workspace ứng dụng riêng, **không chạy trong repository Next.js + Fumadocs này**. Lab ban đầu expose React component `catalog/CatalogPage`; mount API, TypeScript và event schema là các boundary mở rộng cần có implementation tương ứng.
 </Callout>
+
+<SourceRef project="kiem-thu-va-tooling-contract-tests" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -78,20 +80,14 @@ Trong lab [Host và remote đầu tiên](/docs/bat-dau/host-remote-dau-tien), `C
 
 Chỉ kiểm tra schema ở package dùng chung chưa chứng minh hai app giao tiếp đúng. Bạn cần test ở consumer và verification ở provider, với cùng một contract được version hóa.
 
-```text
-Consumer thật + fixture/provider giả theo contract
-                      │
-                      ▼
-        Expectations có version và owner
-                      │
-                      ▼
-Provider thật + dependency phía sau được kiểm soát
-                      │
-                      ▼
-     Kết quả verification cho cặp version
-                      │
-                      ▼
-                 Release gate
+```d2 title="Kiểm thử từ cả hai phía"
+direction: down
+n0: "Consumer thật + fixture/provider\ngiả"
+n1: "Expectations có version và owner"
+n2: "Provider thật + dependency kiểm\nsoát"
+n3: "Verification cho cặp version"
+n4: "Release gate"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 ### Consumer expectations và provider verification
@@ -122,7 +118,7 @@ TypeScript giúp phát hiện lệch public API sớm, nhưng kiểm tra compile
 
 Sau khi ứng dụng đã chuyển public component sang TypeScript, có thể đặt một typecheck fixture như sau. Đây là **ví dụ contract mở rộng**, không phải props đã có trong lab JavaScript ban đầu:
 
-```tsx title="apps/catalog/contract-tests/catalog-public.typecheck.tsx"
+```tsx title="apps/catalog/contract-tests/catalog-public.typecheck.tsx" sourceFile="apps/catalog/contract-tests/catalog-public.typecheck.tsx" sourceRegion="main"
 import React from 'react';
 import type { ComponentType } from 'react';
 import CatalogPage from '../src/CatalogPage';
@@ -145,6 +141,8 @@ export const shellV1Usage = (
   />
 );
 ```
+
+<SourceRef project="kiem-thu-va-tooling-contract-tests" file="apps/catalog/contract-tests/catalog-public.typecheck.tsx" region="main">Đối chiếu apps/catalog/contract-tests/catalog-public.typecheck.tsx</SourceRef>
 
 Chạy fixture bằng `tsc --noEmit` trong tsconfig dành cho contract, bật `strict` và chọn JSX mode phù hợp toolchain. Dùng tsc riêng là cách đơn giản để không nhầm rằng test runner đã kiểm tra type; nhiều runner chỉ transpile TypeScript để chạy.
 
@@ -206,7 +204,7 @@ npm install --save-dev --save-exact vitest typescript ajv@8 ajv-formats@3
 
 Commit manifest và lockfile; CI dùng `npm ci`. Các file ví dụ ở phần event đặt cạnh nhau trong `contract-lab/`, chạy bằng `npx vitest run contract-lab`. Test runner transpile TypeScript; typecheck vẫn là một bước riêng trong ứng dụng TypeScript.
 
-```json title="contract-lab/cart-updated.v1.schema.json"
+```json title="contract-lab/cart-updated.v1.schema.json" sourceFile="contract-lab/cart-updated.v1.schema.json" sourceRegion="main"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
@@ -236,9 +234,11 @@ Commit manifest và lockfile; CI dùng `npm ci`. Các file ví dụ ở phần e
 }
 ```
 
+<SourceRef project="kiem-thu-va-tooling-contract-tests" file="contract-lab/cart-updated.v1.schema.json" region="main">Đối chiếu contract-lab/cart-updated.v1.schema.json</SourceRef>
+
 Schema giữ cùng quy tắc với [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts#schema-kiểm-tra-ở-runtime). Giới hạn ID là policy minh họa; `additionalProperties: true` cho phép notification v1 có thêm field, không cho phép thiếu hoặc đổi type field cũ.
 
-```ts title="contract-lab/validate-cart-updated.ts"
+```ts title="contract-lab/validate-cart-updated.ts" sourceFile="contract-lab/validate-cart-updated.ts" sourceRegion="main"
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import schema from './cart-updated.v1.schema.json';
@@ -256,13 +256,15 @@ addFormats(ajv);
 export const validateCartUpdatedV1 = ajv.compile(schema);
 ```
 
+<SourceRef project="kiem-thu-va-tooling-contract-tests" file="contract-lab/validate-cart-updated.ts" region="main">Đối chiếu contract-lab/validate-cart-updated.ts</SourceRef>
+
 Dùng entry `ajv/dist/2020.js` để khớp draft, thêm `ajv-formats` để kiểm tra `date-time`. Không bật coercion/default ở boundary này: `"3"` không tự thành `3`, và thiếu `itemCount` không tự thành giỏ rỗng.
 
 ### Fixture hợp lệ và không hợp lệ
 
 Tách fixture thành hàm tạo object mới để mỗi test không sửa dữ liệu của test khác. Timestamp, ID và revision dưới đây là dữ liệu minh họa cố định.
 
-```ts title="contract-lab/cart-updated.fixture.ts"
+```ts title="contract-lab/cart-updated.fixture.ts" sourceFile="contract-lab/cart-updated.fixture.ts" sourceRegion="main"
 export function cartUpdatedV1Fixture() {
   return {
     type: 'shop.cart.updated.v1',
@@ -275,7 +277,9 @@ export function cartUpdatedV1Fixture() {
 }
 ```
 
-```ts title="contract-lab/cart-updated.schema.test.ts"
+<SourceRef project="kiem-thu-va-tooling-contract-tests" file="contract-lab/cart-updated.fixture.ts" region="main">Đối chiếu contract-lab/cart-updated.fixture.ts</SourceRef>
+
+```ts title="contract-lab/cart-updated.schema.test.ts" sourceFile="contract-lab/cart-updated.schema.test.ts" sourceRegion="main"
 import { expect, test } from 'vitest';
 import { cartUpdatedV1Fixture } from './cart-updated.fixture';
 import { validateCartUpdatedV1 as validate } from './validate-cart-updated';
@@ -316,13 +320,15 @@ test('từ chối thiếu field, sai version và timestamp không hợp lệ', (
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-contract-tests" file="contract-lab/cart-updated.schema.test.ts" region="main">Đối chiếu contract-lab/cart-updated.schema.test.ts</SourceRef>
+
 Nhóm này bảo vệ validator/schema. Nó **chưa phải provider verification**, vì event vẫn được tạo bằng fixture chứ không phải code cart.
 
 ### Consumer phải đọc fixture qua code thật
 
 Decoder nhận `unknown`, validate toàn bộ envelope rồi chỉ trả model v1 consumer cần. Mẫu nhỏ dưới đây có thể dùng làm decoder ở boundary shell; trong ứng dụng đã có decoder, import decoder đó thay vì viết bản riêng cho test.
 
-```ts title="contract-lab/decode-cart-updated.ts"
+```ts title="contract-lab/decode-cart-updated.ts" sourceFile="contract-lab/decode-cart-updated.ts" sourceRegion="main"
 import { validateCartUpdatedV1 } from './validate-cart-updated';
 
 type CartUpdatedV1 = {
@@ -344,7 +350,9 @@ export function decodeCartUpdatedV1(raw: unknown) {
 }
 ```
 
-```ts title="contract-lab/shell-consumer.test.ts"
+<SourceRef project="kiem-thu-va-tooling-contract-tests" file="contract-lab/decode-cart-updated.ts" region="main">Đối chiếu contract-lab/decode-cart-updated.ts</SourceRef>
+
+```ts title="contract-lab/shell-consumer.test.ts" sourceFile="contract-lab/shell-consumer.test.ts" sourceRegion="main"
 import { expect, test } from 'vitest';
 import { cartUpdatedV1Fixture } from './cart-updated.fixture';
 import { decodeCartUpdatedV1 } from './decode-cart-updated';
@@ -371,6 +379,8 @@ test('consumer không biến count lỗi thành badge bằng 0', () => {
   })).toThrow(TypeError);
 });
 ```
+
+<SourceRef project="kiem-thu-va-tooling-contract-tests" file="contract-lab/shell-consumer.test.ts" region="main">Đối chiếu contract-lab/shell-consumer.test.ts</SourceRef>
 
 Để kiểm tra shell đầy đủ hơn, đưa fixture qua subscription adapter thật rồi quan sát model badge. Đừng chỉ gọi validator nếu lỗi có thể nằm ở adapter đọc nhầm `revision` thành `itemCount`.
 
@@ -446,13 +456,15 @@ Import `../src/CatalogPage` trong test không đi qua `remoteEntry.js`. Vì vậ
 
 Thêm một browser harness nhỏ build bằng cấu hình host tương ứng với consumer được hỗ trợ. Harness dùng đúng request `import('catalog/CatalogPage')`, tải candidate qua URL artifact bất biến và render public export bằng props tối thiểu.
 
-```text
-Browser harness của shell H1
-  └─ import catalog/CatalogPage
-       ├─ tải remoteEntry.js của catalog candidate C2
-       ├─ khởi tạo share scope của H1 và lấy ./CatalogPage
-       ├─ tải chunks của C2
-       └─ render default export → gọi callback public nếu contract có
+```d2 title="Kiểm tra artifact được deploy"
+direction: down
+n0: "Browser harness shell H1"
+n1: "import catalog/CatalogPage"
+n2: "remoteEntry.js candidate C2"
+n3: "Share scope H1 + ./CatalogPage"
+n4: "Chunks C2"
+n5: "Render default export\nGọi callback public nếu có"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5
 ```
 
 Các assertion quan trọng:

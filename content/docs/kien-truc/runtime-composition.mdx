@@ -10,7 +10,7 @@ Runtime composition đưa việc tải và ghép những phần frontend có art
 **Tải bundle riêng là cơ chế; phát hành độc lập và phục hồi được mới là kết quả cần thiết kế.**
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài tập trung vào client-side runtime composition với shop giả định gồm shell, catalog và cart. Ví dụ minh họa thiết kế, không phải implementation có sẵn trong repository docs. Sơ đồ dùng text để hiển thị trực tiếp với cấu hình Fumadocs hiện tại. Lifecycle và trách nhiệm của shell được trình bày sâu hơn ở [Application shell](/docs/kien-truc/application-shell).
+  Bài tập trung vào client-side runtime composition với shop giả định gồm shell, catalog và cart. Ví dụ minh họa thiết kế, không phải implementation có sẵn trong repository docs. Lifecycle và trách nhiệm của shell được trình bày sâu hơn ở [Application shell](/docs/kien-truc/application-shell).
 </Callout>
 
 ## Mục lục
@@ -91,17 +91,18 @@ Một hệ thống runtime composition tối thiểu có những vai trò sau. C
 
 Sơ đồ này tách **quyết định chọn bản** khỏi **việc tải và sử dụng bản đã chọn**:
 
-```text
-Runtime config ── chọn version ──► Shell
-                                    │
-                                    ▼
-                                 Loader ── tải ──► Remote artifact
-                                    │
-                                    ▼
-                              Public module
-                                    │
-                                    ▼
-                              Outlet của shell
+```d2 title="Các thành phần và luồng tải"
+direction: right
+config: Runtime config
+shell: Shell
+loader: Loader
+artifact: Remote artifact
+module: Public module
+outlet: Outlet shell
+config -> shell: "Chọn version"
+shell -> loader
+loader -> artifact: "Tải"
+loader -> module -> outlet
 ```
 
 ### Từ route tới nội dung usable

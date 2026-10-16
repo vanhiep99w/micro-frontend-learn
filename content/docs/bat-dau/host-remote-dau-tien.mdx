@@ -16,6 +16,8 @@ Bài này dựng lát cắt nhỏ nhất: **shell tải một React component do
   Tất cả đường dẫn bên dưới thuộc thư mục `shop-workspace` đã tạo ở bài đó, **không phải repo Next.js + Fumadocs đang chứa tài liệu này**. Các lệnh npm chạy từ root `shop-workspace`. Chỉ sửa shell và catalog; cart giữ nguyên, chưa kết nối vào shell.
 </Callout>
 
+<SourceRef project="bat-dau-host-remote-dau-tien" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Kết quả cần đạt](#kết-quả-cần-đạt)
@@ -88,14 +90,15 @@ Phần code mới trong hai app có cấu trúc như sau. Giữ `package.json` v
 
 Host là bên consume module; remote là bên expose module. Trong ví dụ này, shell chỉ consume, catalog chỉ expose. Một build có thể làm cả hai, nhưng chưa cần dùng khả năng đó ở bước đầu.
 
-```text
-Browser mở shell :3000
-  │
-  └─ Shell render CatalogPage bằng React.lazy
-       │
-       ├─ tải :3001/remoteEntry.js
-       ├─ webpack khởi tạo share scope và lấy module ./CatalogPage
-       └─ tải chunk cần thiết từ :3001 → render trong React tree của shell
+```d2 title="Đường tải module và các tên cần phân biệt"
+direction: down
+n0: "Browser mở shell :3000"
+n1: "React.lazy tải CatalogPage"
+n2: ":3001/remoteEntry.js"
+n3: "Khởi tạo share scope\nLấy ./CatalogPage"
+n4: "Chunks từ :3001"
+n5: "Render trong React tree của\nshell"
+n0 -> n1 -> n2 -> n3 -> n4 -> n5
 ```
 
 Đây không phải iframe. Browser không mở trang HTML của catalog rồi nhúng vào shell; nó tải JavaScript của remote và chạy component trong cùng trang, cùng React tree. Vì vậy, remote cũng dùng chung môi trường DOM và quyền thực thi JavaScript của trang host, không có isolation như một iframe khác origin.
@@ -150,7 +153,7 @@ Commit manifest và `package-lock.json` sau khi kiểm tra. Trên máy khác, d�
 
 Tạo file dưới đây. Dữ liệu dùng đúng ba sản phẩm minh họa trong [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop), nhưng chưa có thao tác giỏ hàng.
 
-```jsx title="shop-workspace/apps/catalog/src/CatalogPage.jsx"
+```jsx title="shop-workspace/apps/catalog/src/CatalogPage.jsx" sourceFile="apps/catalog/src/CatalogPage.jsx" sourceRegion="main"
 import React from 'react';
 
 const products = [
@@ -181,6 +184,8 @@ export default function CatalogPage() {
 }
 ```
 
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/catalog/src/CatalogPage.jsx" region="main">Đối chiếu apps/catalog/src/CatalogPage.jsx</SourceRef>
+
 Public contract ở bước này rất nhỏ: module `./CatalogPage` có **default export là một React component không yêu cầu props**. Host không biết vị trí file thật hay cách catalog tổ chức dữ liệu bên trong.
 
 Không gọi `createRoot` trong module được expose. Host đã có React root và sẽ render component đó. Việc mount DOM để chạy standalone nằm trong entry riêng ở bước kế tiếp.
@@ -192,16 +197,18 @@ Không gọi `createRoot` trong module được expose. Host đã có React root
 
 **Thay toàn bộ** `apps/catalog/src/index.js` từ bài workspace bằng:
 
-```js title="shop-workspace/apps/catalog/src/index.js"
+```js title="shop-workspace/apps/catalog/src/index.js" sourceFile="apps/catalog/src/index.js" sourceRegion="main"
 import('./bootstrap').catch((error) => {
   console.error('Không khởi động được catalog standalone.', error);
   document.body.textContent = 'Catalog standalone không khởi động được.';
 });
 ```
 
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/catalog/src/index.js" region="main">Đối chiếu apps/catalog/src/index.js</SourceRef>
+
 Tạo `bootstrap.jsx`:
 
-```jsx title="shop-workspace/apps/catalog/src/bootstrap.jsx"
+```jsx title="shop-workspace/apps/catalog/src/bootstrap.jsx" sourceFile="apps/catalog/src/bootstrap.jsx" sourceRegion="main"
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import CatalogPage from './CatalogPage';
@@ -218,6 +225,8 @@ createRoot(container).render(
 );
 ```
 
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/catalog/src/bootstrap.jsx" region="main">Đối chiếu apps/catalog/src/bootstrap.jsx</SourceRef>
+
 `index.js` không import React đồng bộ. `import('./bootstrap')` tạo một async boundary để webpack chuẩn bị shared dependencies trước khi chạy code dùng React.
 
 Standalone import component local là đúng: entry này thuộc chính build catalog. Shell sẽ dùng request remote, không copy cách import local ấy sang host.
@@ -229,7 +238,7 @@ Standalone import component local là đúng: entry này thuộc chính build ca
 
 **Thay toàn bộ** `apps/catalog/webpack.config.cjs` bằng cấu hình sau. Giữ scripts npm và port `3001` đã khai báo ở bài workspace.
 
-```js title="shop-workspace/apps/catalog/webpack.config.cjs"
+```js title="shop-workspace/apps/catalog/webpack.config.cjs" sourceFile="apps/catalog/webpack.config.cjs" sourceRegion="main"
 const path = require('node:path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { ModuleFederationPlugin } = require('webpack').container;
@@ -302,6 +311,8 @@ module.exports = {
 };
 ```
 
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/catalog/webpack.config.cjs" region="main">Đối chiếu apps/catalog/webpack.config.cjs</SourceRef>
+
 Ở đây, `exposes` là public boundary: bạn có thể chuyển file component vào thư mục khác và chỉ sửa value trong config. Nếu key `./CatalogPage` và default export vẫn tương thích, host không cần biết đường dẫn mới.
 
 Remote có cả entry standalone và container entry. Khi shell tải container, nó không chạy `bootstrap.jsx` của standalone và không tạo thêm DOM root cho catalog.
@@ -318,7 +329,7 @@ Remote có cả entry standalone và container entry. Khi shell tải container,
 
 **Thay toàn bộ** `apps/shell/webpack.config.cjs` bằng:
 
-```js title="shop-workspace/apps/shell/webpack.config.cjs"
+```js title="shop-workspace/apps/shell/webpack.config.cjs" sourceFile="apps/shell/webpack.config.cjs" sourceRegion="main"
 const path = require('node:path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { ModuleFederationPlugin } = require('webpack').container;
@@ -390,6 +401,8 @@ module.exports = {
 };
 ```
 
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/shell/webpack.config.cjs" region="main">Đối chiếu apps/shell/webpack.config.cjs</SourceRef>
+
 Không thêm `@shop/catalog` vào dependencies của shell. Webpack nhận diện request bắt đầu bằng alias `catalog` trong `remotes` và sinh runtime loader, thay vì tìm một npm package hoặc đọc source catalog.
 
 Cũng không thêm script tag `remoteEntry.js` bằng tay vào HTML. Với remote khai báo tĩnh như trên, webpack tự tải script khi cần module.
@@ -405,16 +418,18 @@ Cũng không thêm script tag `remoteEntry.js` bằng tay vào HTML. Với remot
 
 **Thay toàn bộ** `apps/shell/src/index.js` bằng:
 
-```js title="shop-workspace/apps/shell/src/index.js"
+```js title="shop-workspace/apps/shell/src/index.js" sourceFile="apps/shell/src/index.js" sourceRegion="main"
 import('./bootstrap').catch((error) => {
   console.error('Không khởi động được shell.', error);
   document.body.textContent = 'Shell không khởi động được. Kiểm tra Console.';
 });
 ```
 
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/shell/src/index.js" region="main">Đối chiếu apps/shell/src/index.js</SourceRef>
+
 Tạo file bootstrap:
 
-```jsx title="shop-workspace/apps/shell/src/bootstrap.jsx"
+```jsx title="shop-workspace/apps/shell/src/bootstrap.jsx" sourceFile="apps/shell/src/bootstrap.jsx" sourceRegion="main"
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
@@ -426,6 +441,8 @@ document.body.appendChild(container);
 createRoot(container).render(<App />);
 ```
 
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/shell/src/bootstrap.jsx" region="main">Đối chiếu apps/shell/src/bootstrap.jsx</SourceRef>
+
 `HtmlWebpackPlugin` đang sinh HTML mặc định, chưa có sẵn `<div id="root">`. Vì vậy bootstrap tạo container trước khi gọi `createRoot`. Nếu bạn dùng HTML template riêng, chỉ giữ một container và một lần mount, không vừa tạo vừa mount lại root có sẵn.
 
 </Step>
@@ -435,7 +452,7 @@ createRoot(container).render(<App />);
 
 Tạo `App.jsx`:
 
-```jsx title="shop-workspace/apps/shell/src/App.jsx"
+```jsx title="shop-workspace/apps/shell/src/App.jsx" sourceFile="apps/shell/src/App.jsx" sourceRegion="main"
 import React, { Component, lazy, Suspense } from 'react';
 
 const CatalogPage = lazy(() => import('catalog/CatalogPage'));
@@ -486,6 +503,8 @@ export default function App() {
   );
 }
 ```
+
+<SourceRef project="bat-dau-host-remote-dau-tien" file="apps/shell/src/App.jsx" region="main">Đối chiếu apps/shell/src/App.jsx</SourceRef>
 
 `React.lazy` yêu cầu Promise resolve thành module có `default` là component. Đó là lý do catalog export default, thay vì để host đoán shape của module. Nếu chuyển sang named export sau này, phải sửa adapter hoặc giữ một default export tương thích.
 

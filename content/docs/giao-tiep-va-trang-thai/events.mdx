@@ -69,12 +69,18 @@ Vì vậy, đừng dùng một event chung như `state.changed` rồi nhét mọ
 
 ## Luồng giao tiếp trong shop
 
-```text
-Catalog -- command addItem --> Cart domain -- mutation --> Backend
-                                  ^                         |
-                                  |------ snapshot ---------|
-                                  |
-                                  +-- cart.updated --> Bus --> Shell badge
+```d2 title="Luồng giao tiếp trong shop"
+direction: right
+catalog: Catalog
+cart: Cart domain
+backend: Backend
+bus: Bus
+badge: Shell badge
+catalog -> cart: Command addItem
+cart -> backend: Mutation
+backend -> cart: Snapshot
+cart -> bus: "cart.updated"
+bus -> badge
 ```
 
 Cart domain là code sở hữu nghiệp vụ và API giỏ hàng, không nhất thiết là component màn hình cart. Nó có thể hoạt động ngay cả khi route giỏ hàng chưa mount.

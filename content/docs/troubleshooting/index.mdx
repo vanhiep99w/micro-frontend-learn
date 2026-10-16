@@ -12,7 +12,7 @@ Trang này là điểm bắt đầu để tìm **boundary đầu tiên bị lỗ
 <Callout type="info" title="Phạm vi và ví dụ">
   Các ví dụ dùng shop giả định gồm shell, catalog và cart. Phần remote entry/shared dependencies chủ yếu áp dụng cho Webpack 5 Module Federation chạy trong browser; với Vite/ESM, runtime enhanced, iframe hoặc SSR, cần kiểm tra cơ chế của đúng loader/framework.
 
-  Release IDs, URL và incident record dưới đây chỉ là minh họa. Repo này chứa site tài liệu, không có hệ thống shop hay CDN production để chạy thao tác phục hồi. Sơ đồ dùng ASCII, không cần cấu hình Mermaid.
+  Release IDs, URL và incident record dưới đây chỉ là minh họa. Repo này chứa site tài liệu, không có hệ thống shop hay CDN production để chạy thao tác phục hồi.
 </Callout>
 
 ## Mục lục
@@ -70,8 +70,14 @@ Một chunk tải nhầm origin thường cần kiểm tra `publicPath`/asset ba
 
 Dùng đường đi này làm bản đồ điều tra:
 
-```text
-Selection/config → Entry và chunks → Runtime/contract → UI tích hợp → Domain action
+```d2 title="Tìm boundary đầu tiên bị lỗi"
+direction: right
+n0: "Selection / config"
+n1: "Entry + chunks"
+n2: "Runtime / contract"
+n3: "UI tích hợp"
+n4: "Domain action"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Đây là các nhóm kiểm tra, không phải thứ tự nội bộ tuyệt đối. Trong federation, initialize sharing, lấy module và tải shared chunks có thể xen kẽ. Runtime dùng manifest có thêm request manifest; iframe có document riêng; SSR còn có bước tải/evaluate phía server.

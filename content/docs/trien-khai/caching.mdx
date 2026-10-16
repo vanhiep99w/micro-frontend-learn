@@ -8,7 +8,7 @@ Giả sử bạn vừa deploy catalog r18. Tab mới vẫn tải `remoteEntry.js
 Vấn đề không phải “cache càng ít càng tốt”. Bạn cần phân biệt **URL dùng để chọn release có thể đổi** với **URL của artifact đã chọn không được đổi**. Mình cache dài cho artifact bất biến, giữ freshness rõ ràng cho điểm chọn release, và giữ đủ artifact cũ để các tab đang sống tiếp tục chạy.
 
 <Callout type="info" title="Phạm vi và ví dụ">
-  Bài dùng shop giả định gồm shell, catalog và cart, tập trung vào HTTP cache và frontend runtime trong browser. Domain, release ID, hash và TTL ngắn bên dưới là minh họa, không phải kết quả đo. Layout `/catalog/releases/r18/` theo bài [Hosting, CDN và assets](/docs/trien-khai/cdn-assets); nếu dùng validator từ bài [Runtime configuration](/docs/trien-khai/runtime-configuration), cần điều chỉnh allowlist đường dẫn tương ứng. Repository này chỉ chứa tài liệu; các snippet dành cho hạ tầng/lab của bạn. Sơ đồ text không cần Mermaid.
+  Bài dùng shop giả định gồm shell, catalog và cart, tập trung vào HTTP cache và frontend runtime trong browser. Domain, release ID, hash và TTL ngắn bên dưới là minh họa, không phải kết quả đo. Layout `/catalog/releases/r18/` theo bài [Hosting, CDN và assets](/docs/trien-khai/cdn-assets); nếu dùng validator từ bài [Runtime configuration](/docs/trien-khai/runtime-configuration), cần điều chỉnh allowlist đường dẫn tương ứng. Repository này chỉ chứa tài liệu; các snippet dành cho hạ tầng/lab của bạn.
 </Callout>
 
 ## Mục lục
@@ -60,10 +60,14 @@ Cùng document nên đọc một snapshot cấu hình trước khi resolve các 
 
 Với request thật sự đi ra network, đường tải đơn giản là:
 
-```text
-Browser HTTP cache ──► CDN edge ──► Origin
-        │
-        └── Cache hit: có thể không gửi request ra network
+```d2 title="Các lớp cache trên đường tải remote"
+direction: right
+browser: Browser HTTP cache
+cdn: CDN edge
+origin: Origin
+hit: "Cache hit: có thể không gửi\nrequest network"
+browser -> cdn -> origin
+browser -> hit: Hit
 ```
 
 Nhưng không phải lần mở route nào cũng tạo request. Loader có thể trả module đã evaluate; service worker có thể trả response từ Cache Storage trước khi browser cần truy cập origin.

@@ -46,16 +46,17 @@ Nhưng một tag mới chưa giải quyết hết bài toán micro-frontend. B�
 
 Web Components là nhóm API của nền tảng web, không phải một framework riêng. Trong micro-frontend, giá trị chính của nó là **boundary tích hợp dựa trên DOM**: shell cấu hình element qua public API, còn element tự quản lý UI bên trong.
 
-```text
-Shell
-  │  properties / attributes / methods
-  ▼
-<shop-product-card>                 ← public boundary
-  └── Shadow root
-        ├── CSS nội bộ
-        └── UI: DOM thuần hoặc framework riêng
-  │
-  └── CustomEvent ─────────────────► Shell
+```d2 title="Web Components giải quyết phần nào"
+direction: right
+shell: Shell
+card: "shop-product-card: public\nboundary" {
+  shadowroot: Shadow root {
+    css: "CSS nội bộ"
+    ui: "UI: DOM thuần hoặc framework\nriêng"
+  }
+}
+shell -> card: "Properties / attributes /\nmethods"
+card -> shell: CustomEvent
 ```
 
 Bạn có thể hình dung custom element như một thiết bị có cổng kết nối chuẩn: bên ngoài biết đầu vào và tín hiệu đầu ra, không cần biết mạch bên trong. Điểm dừng của phép so sánh là element vẫn chạy trong cùng JavaScript runtime với shell; nó không có một môi trường thực thi độc lập.
@@ -127,16 +128,16 @@ Property không tự phản chiếu thành attribute. Method như `focusAction()
 
 Một lần bấm thêm sản phẩm là **yêu cầu thay đổi giỏ**, không phải bằng chứng giỏ đã thay đổi. Card gọi `addItem()` để nhận kết quả thành công hoặc thất bại; cart controller vẫn là bên duy nhất sở hữu nghiệp vụ giỏ.
 
-```text
-Card ── addItem({ sku, quantity: 1 }) ──► Cart controller
-                                             │
-                                  xác nhận và cập nhật state
-                                             │
-          Card ◄── Promise resolve/reject ────┘
-            │
-            └── resolve → shop:cart-add-succeeded
-
-Shell badge ◄── snapshot/subscription ── Cart controller
+```d2 title="Commands và events không có cùng ý nghĩa"
+direction: right
+card: Card
+controller: "Cart controller\nXác nhận và cập nhật state"
+event: "shop:cart-add-succeeded"
+badge: Shell badge
+card -> controller: "addItem({ sku, quantity: 1 })"
+controller -> card: "Promise resolve / reject"
+card -> event: "Chỉ khi resolve"
+controller -> badge: "Snapshot / subscription"
 ```
 
 Event thành công dùng cho thông báo hoặc analytics, **không dùng để shell tự cộng badge**. Badge phải đọc snapshot hoặc subscription từ owner của cart như trong [Bài toán shop mẫu](/docs/bat-dau/bai-toan-shop).

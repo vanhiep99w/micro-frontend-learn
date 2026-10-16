@@ -1,0 +1,122 @@
+[
+  {
+    "id": "bat-dau-workspace",
+    "title": "Cấu trúc workspace",
+    "doc": "bat-dau/workspace.mdx",
+    "defaultFile": "package.json"
+  },
+  {
+    "id": "bat-dau-host-remote-dau-tien",
+    "title": "Host và remote đầu tiên",
+    "doc": "bat-dau/host-remote-dau-tien.mdx",
+    "defaultFile": "apps/shell/src/App.jsx"
+  },
+  {
+    "id": "kien-truc-application-shell",
+    "title": "Application shell",
+    "doc": "kien-truc/application-shell.mdx",
+    "defaultFile": "shell/outlet-controller.ts"
+  },
+  {
+    "id": "module-federation-dynamic-remotes",
+    "title": "Dynamic remotes",
+    "doc": "module-federation/dynamic-remotes.mdx",
+    "defaultFile": "shell/src/runtime-remotes.js"
+  },
+  {
+    "id": "trien-khai-runtime-configuration",
+    "title": "Runtime configuration",
+    "doc": "trien-khai/runtime-configuration.mdx",
+    "defaultFile": "shell/src/runtime-config.ts"
+  },
+  {
+    "id": "giao-tiep-va-trang-thai-contracts",
+    "title": "Hợp đồng giao tiếp",
+    "doc": "giao-tiep-va-trang-thai/contracts.mdx",
+    "defaultFile": "contracts/catalog-mount.ts"
+  },
+  {
+    "id": "giao-tiep-va-trang-thai-routing",
+    "title": "Routing và navigation",
+    "doc": "giao-tiep-va-trang-thai/routing.mdx",
+    "defaultFile": "shell/App.tsx"
+  },
+  {
+    "id": "ui-va-framework-react",
+    "title": "Tích hợp React",
+    "doc": "ui-va-framework/react.mdx",
+    "defaultFile": "src/catalog-slot.ts"
+  },
+  {
+    "id": "ui-va-framework-vue",
+    "title": "Tích hợp Vue",
+    "doc": "ui-va-framework/vue.mdx",
+    "defaultFile": "shell/src/vue-catalog-slot.ts"
+  },
+  {
+    "id": "ui-va-framework-angular",
+    "title": "Tích hợp Angular",
+    "doc": "ui-va-framework/angular.mdx",
+    "defaultFile": "mount.ts"
+  },
+  {
+    "id": "cac-cach-tich-hop-iframe",
+    "title": "iframe isolation",
+    "doc": "cac-cach-tich-hop/iframe.mdx",
+    "defaultFile": "shell/index.html"
+  },
+  {
+    "id": "cac-cach-tich-hop-import-maps",
+    "title": "ES modules và import maps",
+    "doc": "cac-cach-tich-hop/import-maps.mdx",
+    "defaultFile": "shell.js"
+  },
+  {
+    "id": "cac-cach-tich-hop-single-spa",
+    "title": "single-spa và lifecycle",
+    "doc": "cac-cach-tich-hop/single-spa.mdx",
+    "defaultFile": "src/root-config.js"
+  },
+  {
+    "id": "kiem-thu-va-tooling-unit-component-tests",
+    "title": "Unit và component tests",
+    "doc": "kiem-thu-va-tooling/unit-component-tests.mdx",
+    "defaultFile": "src/CatalogApp.test.tsx"
+  },
+  {
+    "id": "kiem-thu-va-tooling-contract-tests",
+    "title": "Contract tests",
+    "doc": "kiem-thu-va-tooling/contract-tests.mdx",
+    "defaultFile": "contract-lab/shell-consumer.test.ts"
+  },
+  {
+    "id": "kiem-thu-va-tooling-integration-e2e",
+    "title": "Integration và E2E tests",
+    "doc": "kiem-thu-va-tooling/integration-e2e.mdx",
+    "defaultFile": "tests/browser/cart.integration.spec.ts"
+  },
+  {
+    "id": "thuc-hanh-shop-shell-catalog-cart",
+    "title": "Lab shell, catalog và cart",
+    "doc": "thuc-hanh/shop-shell-catalog-cart.mdx",
+    "defaultFile": "apps/shell/src/App.jsx"
+  },
+  {
+    "id": "thuc-hanh-deploy-doc-lap",
+    "title": "Lab deploy độc lập",
+    "doc": "thuc-hanh/deploy-doc-lap.mdx",
+    "defaultFile": "public/shell/s17/main.mjs"
+  },
+  {
+    "id": "thuc-hanh-remote-loi",
+    "title": "Lab giả lập remote lỗi",
+    "doc": "thuc-hanh/remote-loi.mdx",
+    "defaultFile": "public/shell/s18/remote-slot.mjs"
+  },
+  {
+    "id": "thuc-hanh-routing-auth",
+    "title": "Lab routing và authentication",
+    "doc": "thuc-hanh/routing-auth.mdx",
+    "defaultFile": "apps/shell/src/App.jsx"
+  }
+]

@@ -143,14 +143,17 @@ export interface CartSummaryReader {
 
 Cart owner query backend, cập nhật snapshot rồi báo subscriber. Header chỉ đọc summary. Implementation có thể dùng TanStack Query ở bên trong mà consumer không biết; nếu dùng adapter React, snapshot phải ổn định reference khi dữ liệu không đổi.
 
-```text
-Catalog UI ── addItem ──► Cart data layer ── query/mutation ──► Cart API
-                               │
-                           Query cache
-                               │
-                      snapshot + subscribe
-                               ▼
-                         Header / Cart UI
+```d2 title="Data port cho consumer khác runtime"
+direction: right
+catalog: Catalog UI
+layer: Cart data layer
+api: Cart API
+cache: Query cache
+ui: Header / Cart UI
+catalog -> layer: addItem
+layer -> api: Query / mutation
+layer -> cache
+cache -> ui: Snapshot + subscribe
 ```
 
 Với iframe hoặc document khác, function port không truyền trực tiếp qua boundary được. Dùng message protocol có validation, scope và request ID; mỗi runtime vẫn có cache riêng. Contract cần có snapshot ban đầu hoặc khả năng resync, không chỉ event “cart đã đổi”.

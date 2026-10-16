@@ -8,8 +8,10 @@ Giả sử shell của shop dùng React, còn team catalog đã có một ứng 
 Bài này đặt Angular sau một contract `mount → update → unmount`. Shell biết contract đó, không cần biết component, injector hay Angular version bên trong. Mình ưu tiên boundary này khi nhúng Angular vào shell khác framework; nếu cả shell lẫn remote cùng Angular và cùng chính sách runtime, tích hợp qua routes thường đơn giản hơn.
 
 <Callout type="info" title="Phạm vi và phiên bản">
-  Repository này là site tài liệu, chưa có ứng dụng Angular chạy sẵn. Code dưới đây dành cho lab browser-only với standalone components trên Angular 20.2 trở lên, dùng `provideZonelessChangeDetection()` và không dùng Angular Router trong ví dụ chính. Các package Angular trong lab phải cùng phiên bản tương thích. Sơ đồ dùng ASCII, không cần thêm renderer. SSR, hydration và cấu hình loader/federation không nằm trong ví dụ.
+  Repository này là site tài liệu, chưa có ứng dụng Angular chạy sẵn. Code dưới đây dành cho lab browser-only với standalone components trên Angular 20.2 trở lên, dùng `provideZonelessChangeDetection()` và không dùng Angular Router trong ví dụ chính. Các package Angular trong lab phải cùng phiên bản tương thích. SSR, hydration và cấu hình loader/federation không nằm trong ví dụ.
 </Callout>
+
+<SourceRef project="ui-va-framework-angular" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -58,16 +60,19 @@ Trong mô hình cùng application, remote không chạy `bootstrapApplication()`
 
 Trong mô hình application riêng, mỗi lần mount có `ApplicationRef` và application injector riêng. Đây là boundary quản lý UI và providers, **không phải security boundary**: các ứng dụng trong cùng document vẫn có thể truy cập DOM, global APIs và gây ảnh hưởng CPU cho nhau.
 
-```text
-Shell: navigation, cart controller, loading và fallback
-  │
-  ├── mount(container, context, signal)
-  │     └── Angular catalog application
-  │           ├── application injector
-  │           └── CatalogComponent trong host element riêng
-  │
-  ├── update(props)
-  └── unmount() → destroy view, destroy application, remove host
+```d2 title="Cùng Angular application hay application riêng"
+direction: down
+shell: "Shell: navigation, cart\ncontroller, loading, fallback"
+mount: "mount(container, context,\nsignal)"
+app: Angular catalog application {
+  injector: Application injector
+  component: "CatalogComponent trong host\nriêng"
+}
+update: update(props)
+unmount: "unmount(): destroy view +\napplication, remove host"
+shell -> mount -> app
+shell -> update -> app
+shell -> unmount
 ```
 
 Mình bắt đầu với một application riêng cho mỗi phiên mount vì quyền sở hữu tài nguyên rõ nhất. Chỉ giữ application sống qua nhiều lần mount sau khi đã xác định state nào cần giữ, ai cleanup application cuối cùng và memory budget là bao nhiêu. Đừng biến một biến `appRef` global thành chiến lược cache vô thời hạn.
@@ -103,7 +108,7 @@ Shell sở hữu container; adapter tạo một host con và sở hữu subtree 
 
 Trong [shop mẫu](/docs/bat-dau/bai-toan-shop), catalog chỉ yêu cầu thêm sản phẩm; cart controller sở hữu quy tắc giỏ hàng. Vì vậy, shell truyền một capability nhỏ thay vì truyền toàn bộ store, injector hoặc access token.
 
-```ts title="catalog-contract.ts — contract framework-neutral"
+```ts title="catalog-contract.ts — contract framework-neutral" sourceFile="catalog-contract.ts" sourceRegion="main"
 export interface CatalogProps {
   readonly title: string;
   readonly locale: 'vi' | 'en';
@@ -130,6 +135,8 @@ export type MountCatalog = (
 ) => Promise<MountedCatalog>;
 ```
 
+<SourceRef project="ui-va-framework-angular" file="catalog-contract.ts" region="main">Đối chiếu catalog-contract.ts</SourceRef>
+
 Contract này có vài quy tắc cần chốt cùng code:
 
 - Một phiên mount chiếm một container; muốn thay phiên phải đợi phiên cũ kết thúc và cleanup.
@@ -149,7 +156,7 @@ Ba file tiếp theo thuộc một Angular lab riêng. Chúng không yêu cầu s
 
 Token chỉ dùng nội bộ remote. Shell không phải tạo cùng token; adapter chuyển capability framework-neutral thành provider trong application của catalog.
 
-```ts title="catalog.component.ts"
+```ts title="catalog.component.ts" sourceFile="catalog.component.ts" sourceRegion="main"
 import {
   ChangeDetectionStrategy,
   Component,
@@ -209,6 +216,8 @@ export class CatalogComponent {
 }
 ```
 
+<SourceRef project="ui-va-framework-angular" file="catalog.component.ts" region="main">Đối chiếu catalog.component.ts</SourceRef>
+
 Signal giúp callback sau `await` thông báo thay đổi cho Angular, kể cả trong zoneless mode. Kiểm tra `DestroyRef.destroyed` ngăn callback cập nhật UI đã unmount. Nó **không hủy nghiệp vụ thêm giỏ**: command đã gửi có thể vẫn thành công, và cart controller phải tiếp tục quản lý kết quả đó.
 
 `catalog-title` là ID cố định vì lab chỉ render một catalog trên trang. Nếu production cho phép nhiều instance, thêm instance ID vào contract và tạo các ID khác nhau cho heading, label và ARIA references.
@@ -217,7 +226,7 @@ Signal giúp callback sau `await` thông báo thay đổi cho Angular, kể cả
 
 Adapter tạo một application cho mỗi phiên, attach view và render lần đầu sau khi inputs đã sẵn sàng. `WeakSet` chặn mount chồng vào cùng container trong cùng module instance; shell vẫn cần bảo đảm không có hai version adapter khác nhau tranh quyền sở hữu container.
 
-```ts title="mount.ts — entry được expose cho shell"
+```ts title="mount.ts — entry được expose cho shell" sourceFile="mount.ts" sourceRegion="main"
 import {
   ApplicationRef,
   ComponentRef,
@@ -302,6 +311,8 @@ export const mount: MountCatalog = async (container, context, signal) => {
 };
 ```
 
+<SourceRef project="ui-va-framework-angular" file="mount.ts" region="main">Đối chiếu mount.ts</SourceRef>
+
 `createComponent()` không tự attach view vào application. Nếu bỏ `attachView()`, lần `detectChanges()` thủ công có thể khiến UI ban đầu nhìn đúng, nhưng view không tham gia các chu kỳ change detection của application như bạn mong đợi.
 
 `setInput()` đi qua input API của Angular, đánh dấu view cần cập nhật và hỗ trợ lifecycle của inputs. Đừng thay bằng `component.instance.props = ...`: ở đây `props` là input signal, không phải field để gán snapshot. Với input thông thường, gán field trực tiếp cũng không tương đương `setInput()`.
@@ -312,11 +323,13 @@ Cleanup cố gắng hủy application và trả container ngay cả khi teardown
 
 Để thử local, dùng Angular CLI tạo một standalone app, thêm các file trên vào `src/app/`, rồi thay nội dung `src/main.ts` bằng đoạn dưới. Tạo `div` có ID `catalog-slot` trong `src/index.html`, không để entry cũ tiếp tục bootstrap `AppComponent`. Kiểm tra `angular.json` và test target không còn nạp `zone.js` nếu lab dùng zoneless hoàn toàn.
 
-```html title="src/index.html — vùng nội dung trong body"
+```html title="src/index.html — vùng nội dung trong body" sourceFile="src/index.html" sourceRegion="main"
 <div id="catalog-slot"></div>
 ```
 
-```ts title="src/main.ts — shell tối thiểu trong Angular lab"
+<SourceRef project="ui-va-framework-angular" file="src/index.html" region="main">Đối chiếu src/index.html</SourceRef>
+
+```ts title="src/main.ts — shell tối thiểu trong Angular lab" sourceFile="src/main.ts" sourceRegion="main"
 import { mount } from './app/mount';
 
 async function runLab(): Promise<void> {
@@ -340,6 +353,8 @@ async function runLab(): Promise<void> {
 
 void runLab().catch(console.error);
 ```
+
+<SourceRef project="ui-va-framework-angular" file="src/main.ts" region="main">Đối chiếu src/main.ts</SourceRef>
 
 Chạy `ng serve`, mở trang và bấm thêm sản phẩm. Console phải có command với `productId: 'p-001'`, UI hiển thị thông báo thành công. Sau đó thử trong DevTools:
 

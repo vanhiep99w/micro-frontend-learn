@@ -73,14 +73,14 @@ Nếu lỗi là asset loading, chuyển sang [Remote không tải được](/doc
 
 Manifest khai báo `react: "^19.0.0"` không chứng minh build chứa đúng `19.0.0`; lockfile có thể resolve `19.2.0`. Ngược lại, catalog chứa fallback `19.2.0` cũng không chứng minh catalog đang dùng fallback đó: shared consumer có thể nhận React do shell cung cấp.
 
-```text
-Shell artifact ────► scope default ◄──── Catalog artifact
-                     key react
-                     versions + factories
-                            │
-                            ▼
-                 Consumer chọn theo policy
-                 và trạng thái đã load
+```d2 title="Ba giá trị version phải tách riêng"
+direction: right
+shell: "Shell: cung cấp React"
+catalog: "Catalog: cung cấp React"
+scope: "Scope default\nKey react: versions + factories"
+consumer: "Consumer React\nChọn theo policy và trạng thái\nđã load"
+shell -> scope
+catalog -> scope -> consumer
 ```
 
 Đây là registry runtime, không phải package registry của npm. Có thể hình dung các build mang linh kiện đến một quầy chung, còn consumer kiểm tra nhãn version trước khi nhận. Phép so sánh chỉ giúp hiểu negotiation: quầy không tải linh kiện mới và nhãn hợp lệ không chứng minh mọi behavior tương thích.
@@ -296,12 +296,14 @@ react: {
 
 Giả sử loader chỉ khởi tạo catalog khi người dùng mở route, sau khi shell đã consume React `19.0.0` để render header. Khi catalog đăng ký `19.2.0`, singleton cũ vẫn giữ nguyên. Consumer của catalog không chấp nhận `19.0.0`, nên strict check throw.
 
-```text
-Shell consume React 19.0.0 → Header hoạt động
-                           → Mở catalog
-                           → Catalog đăng ký React 19.2.0
-                           → Catalog yêu cầu ^19.2.0
-                           → Singleton 19.0.0 không thỏa → throw
+```d2 title="Tổ hợp gây lỗi"
+direction: down
+n0: "Shell consume React 19.0.0\nHeader hoạt động"
+n1: "Mở catalog"
+n2: "Catalog đăng ký React 19.2.0"
+n3: "Catalog yêu cầu ^19.2.0"
+n4: "Singleton 19.0.0 không thỏa →\nthrow"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Một remote có bản local đúng requirement không đồng nghĩa nó được fallback sang bản đó trong strict singleton. Nếu fallback sang React khác rồi đưa component vào renderer của shell, bạn còn có thể tạo lỗi identity mà singleton policy đang cố tránh.

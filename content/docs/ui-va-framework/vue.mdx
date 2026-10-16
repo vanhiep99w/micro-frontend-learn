@@ -11,6 +11,8 @@ Giả sử shell của shop dùng React, còn team catalog muốn dùng Vue. B�
   Bài dùng Vue 3, Composition API, TypeScript và client-side rendering. Bạn cần biết props, emits và lifecycle cơ bản của Vue. Repository này là site tài liệu; các file code bên dưới thuộc một lab shop riêng, không phải implementation đã có trong repo. Ví dụ giả định lab đã có compiler cho `.vue` như Vite với Vue plugin; không cần cài Vue vào site docs.
 </Callout>
 
+<SourceRef project="ui-va-framework-vue" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Chọn boundary tích hợp](#chọn-boundary-tích-hợp)
@@ -55,17 +57,18 @@ Bài này chọn dòng thứ hai. Nó có thể được tải bằng build-time
 
 ## Phân công shell và Vue app
 
-```text
-Shell: URL, loading/fallback, cart controller
-  │
-  ├── cấp container + props + services
-  ▼
-Vue adapter: mount / update / unmount
-  │
-  └── Vue app: CatalogApp + local UI state
-        │
-        ├── cart.addItem(...) ──► Cart controller
-        └── emits ──► Adapter ──► Shell callbacks
+```d2 title="Phân công shell và Vue app"
+direction: down
+shell: "Shell: URL, loading/fallback,\ncart controller"
+adapter: "Vue adapter: mount / update /\nunmount"
+app: "Vue app: CatalogApp + local UI\nstate"
+cart: Cart controller
+callbacks: Shell callbacks
+shell -> adapter: Container + props + services
+adapter -> app
+app -> cart: "cart.addItem(...)"
+app -> adapter: Emits
+adapter -> callbacks
 ```
 
 Shell sở hữu element bên ngoài và quyết định khi nào catalog xuất hiện. Vue sở hữu các node bên trong container trong thời gian app được mount. Shell không render con vào cùng container, không sửa DOM nội bộ của Vue và không xóa container trước khi gọi `unmount()`.
@@ -87,7 +90,7 @@ Unmount catalog chỉ hủy **UI của catalog**. Cart controller phải sống 
 
 Public contract chỉ dùng TypeScript và API nền tảng web. Không đưa `Ref`, reactive proxy, Pinia store hay Vue component instance ra ngoài; nếu không, shell sẽ phụ thuộc implementation của catalog dù import boundary nhìn có vẻ sạch.
 
-```ts title="contracts/catalog.ts"
+```ts title="contracts/catalog.ts" sourceFile="contracts/catalog.ts" sourceRegion="main"
 export interface Product {
   readonly sku: string;
   readonly name: string;
@@ -137,6 +140,8 @@ export interface CatalogModule {
 }
 ```
 
+<SourceRef project="ui-va-framework-vue" file="contracts/catalog.ts" region="main">Đối chiếu contracts/catalog.ts</SourceRef>
+
 Props là dữ liệu hiển thị; services là những việc catalog được phép yêu cầu. `update()` nhận **toàn bộ snapshot mới**, không phải partial patch. Shell thay array/object khi dữ liệu đổi, không mutate snapshot đã chuyển cho catalog.
 
 `readonly` giúp kiểm tra lúc compile, không đóng băng object ở runtime. Ví dụ giả định hai phía đã kiểm tra dữ liệu tại ingress: SKU hợp lệ, giá là số nguyên VND không âm, locale nằm trong tập hỗ trợ. Một remote tải động vẫn cần kiểm tra shape/version và validate dữ liệu thực tế; type declaration không xác minh JavaScript tải từ mạng.
@@ -159,7 +164,7 @@ Mỗi lần gọi `mount()` tạo một app mới. Theo API Vue, một app insta
 
 Ví dụ dùng `WeakSet` để chặn mount trùng container qua cùng module. Đây là guard của adapter, không phải registry toàn trang: hai bản module độc lập vẫn có thể có hai tập riêng. Shell vẫn phải đảm bảo mỗi slot chỉ có một owner.
 
-```ts title="catalog/src/mount.ts"
+```ts title="catalog/src/mount.ts" sourceFile="catalog/src/mount.ts" sourceRegion="main"
 import { createApp, defineComponent, h, shallowRef } from 'vue';
 import CatalogApp from './CatalogApp.vue';
 import type {
@@ -246,6 +251,8 @@ export function mount(
 }
 ```
 
+<SourceRef project="ui-va-framework-vue" file="catalog/src/mount.ts" region="main">Đối chiếu catalog/src/mount.ts</SourceRef>
+
 `unmount()` của handle là idempotent: shell có thể gọi cleanup hai lần mà không tạo thêm side effects. Ngược lại, `update()` sau unmount báo lỗi để lộ misuse, thay vì im lặng cập nhật state không còn consumer.
 
 Root có fallback tối thiểu khi Vue báo lỗi. Handler đổi sang cây fallback, không render lại component đã lỗi và không giả định shell framework sẽ bắt được lỗi bên trong Vue. `reportError`, `onEvent` và `navigate` phải là callbacks an toàn, không throw; ở production, adapter cho telemetry cần tự xử lý lỗi của transport.
@@ -262,7 +269,7 @@ Vì sao không chỉ gọi `createApp(CatalogApp, options.props)` rồi sửa ob
 
 Component giữ local UI state, gọi cart capability và phát emits sau khi command thành công. Nó không import store nội bộ của cart và không điều khiển history của shell.
 
-```vue title="catalog/src/CatalogApp.vue"
+```vue title="catalog/src/CatalogApp.vue" sourceFile="catalog/src/CatalogApp.vue" sourceRegion="main"
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
 import type {
@@ -350,6 +357,8 @@ async function add(sku: string) {
 </style>
 ```
 
+<SourceRef project="ui-va-framework-vue" file="catalog/src/CatalogApp.vue" region="main">Đối chiếu catalog/src/CatalogApp.vue</SourceRef>
+
 Ví dụ chỉ cho phép một command pending trong catalog để luồng kiểm tra rõ ràng. Nếu cần nhiều thao tác đồng thời, dùng pending theo SKU và tập controllers, rồi thống nhất ordering/deduplication với cart owner; đừng bỏ guard mà không thêm chính sách.
 
 `disposed` chặn kết quả muộn ghi message hoặc phát emit sau unmount, kể cả service không tuân thủ abort. Template vẫn là tiếng Việt; `locale` ở đây chỉ điều khiển format giá, không phải contract dịch toàn bộ giao diện.
@@ -364,7 +373,7 @@ Người dùng có thể rời `/catalog` khi module còn đang tải. `import()
 
 Hàm dưới không phụ thuộc React hay Vue. Framework của shell gọi `attachCatalog()` sau khi container tồn tại và gọi `unmount()` trong lifecycle cleanup của mình. Loader được truyền vào để boundary không phụ thuộc một bundler cụ thể.
 
-```ts title="shell/src/vue-catalog-slot.ts"
+```ts title="shell/src/vue-catalog-slot.ts" sourceFile="shell/src/vue-catalog-slot.ts" sourceRegion="main"
 import type {
   CatalogHandle,
   CatalogModule,
@@ -422,6 +431,8 @@ export function attachCatalog(
   };
 }
 ```
+
+<SourceRef project="ui-va-framework-vue" file="shell/src/vue-catalog-slot.ts" region="main">Đối chiếu shell/src/vue-catalog-slot.ts</SourceRef>
 
 Nếu props thay đổi trong lúc tải module, slot giữ snapshot mới nhất và dùng nó khi mount. Sau khi đã mount, shell không dùng `show()` hay `replaceChildren()` để cập nhật nội dung nữa; Vue adapter mới là owner của DOM bên trong.
 

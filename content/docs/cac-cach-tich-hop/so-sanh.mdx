@@ -8,7 +8,7 @@ Giả sử bạn cần ghép catalog mới vào shell của shop, trong khi cart
 Bài này giúp bạn chốt cách tích hợp theo yêu cầu thực tế: phần nào cần deploy độc lập, code có đáng tin cậy không, hai phía cần chia sẻ gì và ai chịu trách nhiệm khi một phần lỗi. Mình ưu tiên cơ chế ít nhất đủ đáp ứng yêu cầu, thay vì đưa cả bốn vào cùng một hệ thống ngay từ đầu.
 
 <Callout type="info" title="Phạm vi so sánh">
-  Bài tập trung vào browser-side integration của shop giả định gồm shell, catalog và cart. Module Federation được xét theo mô hình container và shared dependencies của webpack 5; runtime/plugin khác có thể có hành vi khác. single-spa được xét ở vai trò orchestrator, Web Components ở boundary DOM, còn iframe ở boundary document và browsing context. Đây không phải hướng dẫn cấu hình các cơ chế này trong site Next.js hiện tại. Sơ đồ text không cần plugin bổ sung.
+  Bài tập trung vào browser-side integration của shop giả định gồm shell, catalog và cart. Module Federation được xét theo mô hình container và shared dependencies của webpack 5; runtime/plugin khác có thể có hành vi khác. single-spa được xét ở vai trò orchestrator, Web Components ở boundary DOM, còn iframe ở boundary document và browsing context. Đây không phải hướng dẫn cấu hình các cơ chế này trong site Next.js hiện tại.
 </Callout>
 
 ## Mục lục
@@ -199,10 +199,14 @@ interface CartApi {
 
 Catalog chỉ yêu cầu thêm SKU và quantity. Cart xác nhận kết quả, sau đó summary mới được dùng để cập nhật badge; catalog không tự coi một click là thao tác đã thành công. `requestId` phục vụ đối chiếu request/response và có thể hỗ trợ idempotency nếu phía xử lý triển khai nó, không tự ngăn thao tác trùng.
 
-```text
-Catalog ── yêu cầu addItem ──► Cart domain
-Catalog ◄── kết quả thao tác ── Cart domain
-Shell   ◄── summary đã xác nhận ── Cart domain
+```d2 title="Luồng thêm sản phẩm vào giỏ"
+direction: right
+catalog: Catalog
+cart: Cart domain
+shell: Shell
+catalog -> cart: "Yêu cầu addItem"
+cart -> catalog: "Kết quả thao tác"
+cart -> shell: "Summary đã xác nhận"
 ```
 
 Nếu cart UI chưa mount, cart domain vẫn phải nhận được command theo contract đã chọn. Đừng đăng ký listener xử lý giỏ chỉ bên trong trang `/cart` rồi để thao tác từ catalog biến mất khi trang đó inactive.

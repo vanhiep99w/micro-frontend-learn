@@ -8,7 +8,7 @@ Giả sử catalog và cart của shop đã nằm trong hai package, mỗi team 
 Đó là đánh đổi chính của **build-time composition**: bạn tách code và ownership thành các module, rồi ghép chúng khi build ứng dụng tiêu thụ. Cách này có thể rất hợp lý nếu bạn muốn ranh giới rõ mà chưa cần deploy từng domain riêng. Nhưng nếu mục tiêu là catalog lên production mà không rebuild shell, chỉ tách package chưa đủ.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài dùng shop giả định gồm shell, catalog và cart, với React component được ghép trong cùng một cây render. Code và version là ví dụ kiến trúc, không phải các package hoặc script có sẵn trong repository docs. Sơ đồ dùng text để không cần cấu hình Mermaid. Với framework khác, nguyên tắc về contract và release vẫn áp dụng, còn API render sẽ khác.
+  Bài dùng shop giả định gồm shell, catalog và cart, với React component được ghép trong cùng một cây render. Code và version là ví dụ kiến trúc, không phải các package hoặc script có sẵn trong repository docs. Với framework khác, nguyên tắc về contract và release vẫn áp dụng, còn API render sẽ khác.
 </Callout>
 
 ## Mục lục
@@ -84,21 +84,19 @@ Runtime composition giữa các build riêng có thêm một quyết định kh�
 
 Với package publish qua registry, đường đi thông thường là:
 
-```text
-Catalog source → test/build → @shop/catalog@1.5.0
-                                      │
-                                      ▼
-                              Package registry
-                                      │
-                                      ▼
-Shell source + dependency lockfile → install/test/build
-                                      │
-                                      ▼
-                            Artifact của shell
-                         HTML + JS chunks + CSS + assets
-                                      │
-                                      ▼
-                             Deploy → Browser
+```d2 title="Luồng ghép package vào ứng dụng"
+direction: down
+catalog: Catalog source
+build: Test / build
+pkg: "@shop/catalog@1.5.0"
+registry: Package registry
+shell: Shell source + lockfile
+install: Install / test / build
+artifact: "Artifact shell\nHTML + JS chunks + CSS + assets"
+deploy: Deploy
+browser: Browser
+catalog -> build -> pkg -> registry -> install
+shell -> install -> artifact -> deploy -> browser
 ```
 
 Registry là nguồn đầu vào cho build, không phải nơi browser mặc định hỏi “catalog mới nhất là gì?”. Trong một SPA đã bundle package, browser tải file do shell phát hành, rồi catalog gọi backend của nó như bình thường.
@@ -127,14 +125,18 @@ Một domain có thể có nhiều package nội bộ nếu cần. Điều cần
 
 Một dependency graph dễ kiểm soát có hướng rõ:
 
-```text
-Shell ──► Catalog ──► Design system
-  │
-  ├─────► Cart ─────► Design system
-  │
-  └─────► Platform adapters
-
-Không có chiều ngược: Catalog ──X──► Shell internals
+```d2 title="Public contract và dependency direction"
+direction: right
+shell: Shell
+catalog: Catalog
+cart: Cart
+ds: Design system
+platform: Platform adapters
+forbidden: "Không được phụ thuộc Shell\ninternals" {style.stroke-dash: 4}
+shell -> catalog -> ds
+shell -> cart -> ds
+shell -> platform
+catalog -> forbidden: "Cấm chiều ngược" {style.stroke-dash: 4}
 ```
 
 Shell cung cấp các capability nhỏ qua props hoặc adapter. Catalog không import router instance, auth store hay telemetry singleton nằm trong source của shell. Nếu catalog cần thông báo “người dùng muốn thêm sản phẩm”, contract phải nói rõ đó là yêu cầu, không phải xác nhận backend đã cập nhật cart.

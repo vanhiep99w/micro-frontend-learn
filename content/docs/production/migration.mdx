@@ -8,7 +8,7 @@ Giả sử catalog cần release hàng tuần, nhưng mỗi lần sửa một b�
 Mình sẽ không bắt đầu bằng một repository mới hay một lần rewrite toàn bộ. **Bắt đầu bằng một domain có owner rõ, tạo đường chuyển qua lại giữa implementation cũ và mới, rồi chứng minh một release độc lập hoạt động ngoài production happy path.** Khi pilot chưa chứng minh được lợi ích, chưa nên tách tiếp domain thứ hai.
 
 <Callout type="info" title="Phạm vi và giả định">
-  Bài dùng shop giả định gồm shell, catalog và cart. Pilot tách catalog; cart vẫn ở legacy và cung cấp capability qua adapter. Repository này chỉ là site tài liệu, không có ứng dụng shop hay pipeline migration sẵn có. Snippet TypeScript và policy bên dưới dành cho lab riêng, không phụ thuộc một federation runtime cụ thể. Sơ đồ text hiển thị trực tiếp, không cần cấu hình Mermaid. Auth, backend và dữ liệu bền vững là các điều kiện production bổ sung, không phải tính năng đã có trong shop mẫu tối thiểu.
+  Bài dùng shop giả định gồm shell, catalog và cart. Pilot tách catalog; cart vẫn ở legacy và cung cấp capability qua adapter. Repository này chỉ là site tài liệu, không có ứng dụng shop hay pipeline migration sẵn có. Snippet TypeScript và policy bên dưới dành cho lab riêng, không phụ thuộc một federation runtime cụ thể. Auth, backend và dữ liệu bền vững là các điều kiện production bổ sung, không phải tính năng đã có trong shop mẫu tối thiểu.
 </Callout>
 
 import { Step, Steps } from 'fumadocs-ui/components/steps';
@@ -116,17 +116,32 @@ Nếu mọi feature của ứng viên vẫn phải sửa nhiều domain, quay l�
 
 Strangler là thay dần từng phần của hệ thống đang chạy, giữ phần còn lại phục vụ người dùng. Với frontend, một cách dễ kiểm soát là giữ public URL và thay implementation phía sau một route boundary.
 
-```text
-Trước migration:
-/catalog và /cart → Legacy app
-
-Trong pilot:
-                         ┌── /catalog → Legacy catalog hoặc Catalog remote
-URL → Shell / route seam ┤              (chỉ một implementation active)
-                         └── /cart    → Legacy cart
-
-Sau khi đạt gate:
-/catalog → Catalog remote; /cart → Legacy cart
+```d2 title="Strangler theo route"
+direction: down
+before: Trước migration {
+  routes: /catalog và /cart
+  legacy: Legacy app
+  routes -> legacy
+}
+pilot: Trong pilot {
+  shell: URL / route seam
+  choose: "Chỉ một implementation active" {shape: diamond}
+  legacycatalog: Legacy catalog
+  remote: Catalog remote
+  cart: Legacy cart
+  shell -> choose: /catalog
+  choose -> legacycatalog: "Hoặc"
+  choose -> remote: "Hoặc"
+  shell -> cart: /cart
+}
+after: Sau khi đạt gate {
+  catalog: /catalog
+  cart: /cart
+  remote: Catalog remote
+  legacy: Legacy cart
+  catalog -> remote
+  cart -> legacy
+}
 ```
 
 Shell ở đây có thể là một lớp composition mỏng trong monolith hiện tại, chưa cần rewrite thành app mới. Nó nắm route ownership, selection snapshot, loader, fallback và telemetry; logic catalog không chuyển vào shell.

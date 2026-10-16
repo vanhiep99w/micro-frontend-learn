@@ -73,13 +73,15 @@ Mình chọn một auth module do platform team sở hữu, được shell khở
 
 Ranh giới ở frontend có thể hình dung như sau:
 
-```text
-Shell UI ──── đọc snapshot / gửi command ────► Auth module
-Cart UI  ──── đọc snapshot / gửi command ────► Auth module
-                                                 │
-                                           session API
-                                                 ▼
-                                           Backend auth
+```d2 title="Ai sở hữu authentication"
+direction: right
+shell: Shell UI
+cart: Cart UI
+auth: Auth module
+backend: Backend auth
+shell -> auth: "Đọc snapshot / gửi command"
+cart -> auth: "Đọc snapshot / gửi command"
+auth -> backend: Session API
 ```
 
 Đây là ownership, không phải sandbox. JavaScript chạy cùng document có thể gọi API và tác động DOM của nhau. Inject một reader thay vì cả store giảm coupling, nhưng không làm code remote không đáng tin trở nên an toàn.
@@ -94,12 +96,15 @@ Không có yêu cầu rằng micro-frontend phải chia token cho mọi remote. 
 
 Với shop chạy dưới một origin ứng dụng và bạn kiểm soát backend, mình mặc định chọn BFF, tức Backend for Frontend. Browser giữ cookie session; BFF giữ OAuth access/refresh token phía server nếu cần gọi API downstream.
 
-```text
-Browser UI ── cookie session ──► BFF ── access token ──► API domain
-                                 │
-                          token exchange / refresh
-                                 ▼
-                          Identity provider
+```d2 title="BFF và cookie session"
+direction: right
+browser: Browser UI
+bff: BFF
+api: API domain
+idp: Identity provider
+browser -> bff: Cookie session
+bff -> api: Access token
+bff -> idp: Token exchange / refresh
 ```
 
 Browser không đọc được cookie `HttpOnly`, nhưng có thể gọi `/auth/session` để lấy user và UI permissions tối thiểu. Cart gửi request tới endpoint của BFF; nó không cần biết token endpoint, token format hay refresh token.

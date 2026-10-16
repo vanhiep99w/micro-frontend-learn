@@ -12,7 +12,7 @@ Mình mặc định chọn **chạy app đang sửa cùng shell local, còn các
 
   Catalog trong lab đầu tiên dùng container `shop_catalog`, alias `catalog` và expose `./CatalogPage`. Cart dưới đây là phần mở rộng giả định đã có container `shop_cart` và public module tương ứng; bài này không dựng implementation cart. Nếu bạn mới có shell/catalog, bỏ cart khỏi profiles, object `scopes` của helper và mapping production; không chạy script cart. Trong `dev:all`, chỉ giữ hai commands và hai tên `shell,catalog`.
 
-  Các URL `assets.example.com` và release ID bên dưới chỉ minh họa. Hãy thay bằng artifact thật mà browser truy cập được. Sơ đồ dùng ASCII nên không cần cấu hình Mermaid.
+  Các URL `assets.example.com` và release ID bên dưới chỉ minh họa. Hãy thay bằng artifact thật mà browser truy cập được.
 </Callout>
 
 ## Mục lục
@@ -70,11 +70,15 @@ Giữ quy ước của lab thay vì để từng server tự chọn port tiếp 
 
 Trong chế độ focused integration, browser tải như sau:
 
-```text
-Browser: document tại localhost:3000
-  ├─► localhost:3000       shell local
-  ├─► localhost:3001       catalog entry + chunks local
-  └─► assets.example.com   cart entry + chunks của release k09
+```d2 title="Giữ một bản đồ port và runtime rõ ràng"
+direction: right
+browser: "Browser: document tại\nlocalhost:3000"
+shell: "localhost:3000\nShell local"
+catalog: "localhost:3001\nCatalog entry + chunks local"
+cart: "assets.example.com\nCart entry + chunks k09"
+browser -> shell
+browser -> catalog
+browser -> cart
 ```
 
 Cart vẫn chạy trong document shell nếu được tải bằng Federation; origin của file JavaScript không tạo sandbox riêng. Ví dụ, `fetch('/api/cart')` trong code cart sẽ gọi origin document `localhost:3000`, không tự gọi origin CDN của cart. API base URL được nhúng sẵn trong artifact có thể cho hành vi khác, nên phải kiểm tra Network của release đã chọn.

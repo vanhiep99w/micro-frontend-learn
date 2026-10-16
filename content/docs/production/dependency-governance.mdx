@@ -8,7 +8,7 @@ Giả sử catalog nâng React và deploy thành công, nhưng shell đang mở 
 Dependency governance giúp bạn trả lời **ai được thay đổi dependency nào, phải chứng minh tương thích với những release nào, và khi nào được bỏ hỗ trợ bản cũ**. Mục tiêu không phải bắt mọi team dùng cùng một version. Mục tiêu là giữ quyền release độc lập ở những chỗ có thể độc lập, và làm rõ các boundary buộc phải phối hợp.
 
 <Callout type="info" title="Phạm vi và cách dùng ví dụ">
-  Bài dùng shop giả định gồm shell, catalog và cart. Config webpack, package manifests, policy records và lệnh npm là ví dụ cho workspace ứng dụng riêng, không phải thay đổi cần áp dụng vào repository Next.js + Fumadocs này. Version, release ID và thời hạn bên dưới đều minh họa, không phải khuyến nghị về version mới nhất hay SLA mặc định. Sơ đồ text hiển thị trực tiếp, không cần Mermaid.
+  Bài dùng shop giả định gồm shell, catalog và cart. Config webpack, package manifests, policy records và lệnh npm là ví dụ cho workspace ứng dụng riêng, không phải thay đổi cần áp dụng vào repository Next.js + Fumadocs này. Version, release ID và thời hạn bên dưới đều minh họa, không phải khuyến nghị về version mới nhất hay SLA mặc định.
 </Callout>
 
 ## Mục lục
@@ -274,11 +274,14 @@ Giữ artifacts theo lifetime tối đa đã hỗ trợ của document cũ, lazy
 
 ## Quy trình nâng cấp dependency
 
-```text
-Inventory và impact → Candidate bất biến → Compatibility gate
-                                                  │
-                                                  ▼
-                                      Canary → Promote hoặc rollback
+```d2 title="Quy trình nâng cấp dependency"
+direction: right
+n0: "Inventory và impact"
+n1: "Candidate bất biến"
+n2: "Compatibility gate"
+n3: "Canary"
+n4: "Promote hoặc rollback"
+n0 -> n1 -> n2 -> n3 -> n4
 ```
 
 Quy trình này áp dụng theo boundary bị ảnh hưởng. Local utility không cần xin phép cả platform; framework singleton không được coi là local upgrade chỉ vì PR nằm trong catalog.

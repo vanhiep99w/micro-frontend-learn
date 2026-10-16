@@ -59,14 +59,14 @@ Share scope là namespace runtime chứa shared keys và các version do các bu
 
 Có thể hình dung scope như một quầy nhận linh kiện: mỗi build đăng ký linh kiện mình có, còn consumer nói nó cần loại nào và chấp nhận version nào. Nhưng quầy này không tải package từ npm, không tự nâng cấp thư viện và không chứng minh API tương thích; các module đều đến từ artifact đã build.
 
-```text
-Shell cung cấp React ────► scope: default ◄──── Catalog cung cấp React
-                          key: react
-                          các version + factory
-                                │
-                                ▼
-                          Consumer React
-                    chọn theo policy và trạng thái
+```d2 title="Share scope hoạt động thế nào"
+direction: right
+shell: "Shell: cung cấp React"
+catalog: "Catalog: cung cấp React"
+scope: "Scope default\nKey react: versions + factories"
+consumer: "Consumer React\nChọn theo policy và trạng thái\nđã load"
+shell -> scope
+catalog -> scope -> consumer
 ```
 
 Đây là sơ đồ registry, không phải sơ đồ network. Một provider có thể mới đăng ký factory mà chưa tải hoặc đánh giá toàn bộ code dependency.

@@ -8,8 +8,10 @@ Giả sử shop của bạn có catalog và cart do hai team phát triển. Cata
 Application shell giúp ghép các phần thành một trải nghiệm chung: giữ khung trang, chọn domain theo URL, cung cấp ngữ cảnh tích hợp và xử lý lúc một phần chưa sẵn sàng. **Shell điều phối ứng dụng, không sở hữu nghiệp vụ của mọi domain.** Ranh giới này quyết định việc thêm một tính năng có thật sự chỉ cần release một team hay không.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài dùng shop giả định gồm shell, catalog và cart. Code minh họa contract và lifecycle cho client-side composition với các root độc lập; đây không phải implementation có sẵn trong repository docs. Shell là vai trò kiến trúc, không bắt buộc dùng React, Module Federation hay single-spa. Các sơ đồ dùng text để không phụ thuộc cấu hình Mermaid.
+  Bài dùng shop giả định gồm shell, catalog và cart. Code minh họa contract và lifecycle cho client-side composition với các root độc lập; đây không phải implementation có sẵn trong repository docs. Shell là vai trò kiến trúc, không bắt buộc dùng React, Module Federation hay single-spa.
 </Callout>
+
+<SourceRef project="kien-truc-application-shell" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
@@ -112,16 +114,18 @@ Nhưng capability cũng tạo coupling. Hãy version và test semantics của n�
 
 Trước khi chọn thư viện tích hợp, hãy vẽ nơi shell cho remote xuất hiện. Một shop ghép theo route có thể bắt đầu với bố cục này:
 
-```text
-┌────────────────────────────────────────────┐
-│ Shell: header và navigation cấp ứng dụng   │
-├────────────────────────────────────────────┤
-│ Main outlet                                │
-│   /catalog/* → giao diện Catalog           │
-│   /cart/*    → giao diện Cart              │
-├────────────────────────────────────────────┤
-│ Shell: trạng thái tích hợp và hỗ trợ chung │
-└────────────────────────────────────────────┘
+```d2 title="Bố cục và điểm ghép giao diện"
+direction: down
+shell: Shell {
+  header: "Header và navigation cấp ứng\ndụng"
+  outlet: Main outlet {
+    catalog: "/catalog/* → Catalog"
+    cart: "/cart/* → Cart"
+  }
+  support: "Trạng thái tích hợp và hỗ trợ\nchung"
+  header -> outlet: "Chọn theo route"
+  outlet -> support: "Theo dõi tích hợp"
+}
 ```
 
 Đây là bản đồ trách nhiệm, không phải yêu cầu tải catalog và cart cùng lúc. Với route hiện tại, shell chỉ cần remote phù hợp và những phần thật sự dùng chung.
@@ -175,13 +179,16 @@ Shell cũng cần phân biệt ba mốc: **khung đã hiển thị**, **remote �
 
 Tách lifecycle của module khỏi lifecycle của instance đang hiển thị. Một module catalog có thể được load một lần rồi mount nhiều lần. State của lần mount trước không vì thế được phép theo sang user hoặc tenant mới.
 
-```text
-Module:    chưa load ──► load ──► bootstrap nếu cần
-                                    │
-Instance:                           ▼
-                       mount ──► update ──► unmount
-                         ▲                      │
-                         └──── instance mới ────┘
+```d2 title="Lifecycle của một remote"
+direction: right
+unloaded: "Module chưa load"
+load: Load
+bootstrap: "Bootstrap nếu cần"
+mount: Mount
+update: Update
+unmount: Unmount
+unloaded -> load -> bootstrap -> mount -> update -> unmount
+unmount -> mount: "Instance mới"
 ```
 
 Tên và API chính xác tùy runtime. single-spa có lifecycle riêng; React component trong cùng cây đi theo lifecycle của React. Sơ đồ trên mô tả việc cần quản lý, không yêu cầu bạn export tất cả các hàm này trong mọi kiến trúc.
@@ -230,7 +237,7 @@ Contract nên nói remote được nhận gì, được thay đổi gì và tr�
 
 Ví dụ này chọn **mount đồng bộ trả handle ngay**, còn tải dữ liệu nằm trong remote. Cách này giúp shell luôn có handle để cleanup mà không phải chờ một request nghiệp vụ hoàn tất. Nó không phù hợp nguyên trạng với mọi runtime; adapter có lifecycle async cần contract khác.
 
-```ts title="contracts/remote.ts"
+```ts title="contracts/remote.ts" sourceFile="contracts/remote.ts" sourceRegion="main"
 // NavigationPort được mô tả ở bài Routing và navigation.
 import type { NavigationPort } from './navigation';
 
@@ -257,6 +264,8 @@ export interface RemoteModule {
 }
 ```
 
+<SourceRef project="kien-truc-application-shell" file="contracts/remote.ts" region="main">Đối chiếu contracts/remote.ts</SourceRef>
+
 Contract dùng `NavigationPort` đã mô tả trong [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing); các file import trong ví dụ thuộc ứng dụng giả định. Locale và theme là snapshot bất biến. Location không nằm trong `ViewContext` vì navigation port đã có snapshot và subscription của nó.
 
 Semantics cần ghi kèm type:
@@ -275,7 +284,7 @@ Semantics cần ghi kèm type:
 
 Một adapter cho contract trên có thể giữ mỗi React root trong closure của lần mount. Không dùng `let root` toàn module, vì hai instance catalog ở hai slot sẽ ghi đè nhau.
 
-```tsx title="catalog/entry.tsx"
+```tsx title="catalog/entry.tsx" sourceFile="catalog/entry.tsx" sourceRegion="main"
 import { createRoot } from 'react-dom/client';
 import type {
   MountOptions,
@@ -322,6 +331,8 @@ export function mount(options: MountOptions): MountedRemote {
 }
 ```
 
+<SourceRef project="kien-truc-application-shell" file="catalog/entry.tsx" region="main">Đối chiếu catalog/entry.tsx</SourceRef>
+
 `App` là component của catalog, không được triển khai trong snippet. Nó chịu trách nhiệm dùng location snapshot, cleanup effect, xử lý data request và có error boundary thích hợp trong root của mình. Adapter không tự cleanup một timer được tạo ngoài React nếu remote không đăng ký cleanup cho timer đó.
 
 `root.render()` có thể trả trước khi render/effect hoàn tất. Vì thế, `try/catch` trên xử lý lỗi đồng bộ của bước setup, **không bắt mọi lỗi render về sau**. Nếu shell cần biết lúc remote lỗi hoặc nội dung đã usable, bổ sung callback hay telemetry contract có semantics rõ ràng, gắn với instance hiện tại.
@@ -338,18 +349,22 @@ Mình giữ contract platform nhỏ, tách các capability độc lập và inje
 
 Race phổ biến nhất: shell bắt đầu load catalog, người dùng chuyển sang cart, rồi catalog mới load xong. Nếu shell mount bất cứ kết quả nào vừa resolve, URL là `/cart` nhưng nội dung lại thành catalog.
 
-```text
-Thời điểm 1: yêu cầu Catalog ─────────── đang load ───────┐
-Thời điểm 2: yêu cầu Cart ── load xong ── mount Cart     │
-Thời điểm 3:                                            ▼
-                     Catalog load xong → bỏ kết quả cũ
+```d2 title="Ngăn remote cũ mount sau navigation mới"
+shape: sequence_diagram
+shell: Shell
+catalog: Catalog loader
+cart: Cart loader
+shell -> catalog: "1. Yêu cầu Catalog: đang load"
+shell -> cart: "2. Yêu cầu Cart"
+cart -> shell: "Load xong: mount Cart"
+catalog -> shell: "3. Load xong: bỏ kết quả cũ"
 ```
 
 Dùng generation cho outlet: chỉ yêu cầu mới nhất được commit. Abort giúp dừng công việc có hỗ trợ cancellation; generation giúp bỏ qua kết quả của công việc không hủy được, như nhiều trường hợp dynamic import.
 
 Ví dụ dưới đây chỉ quản lý **đổi remote trong một outlet**. Router adapter gọi `show` khi đổi domain hoặc cần remount có chủ đích; đổi subroute trong cùng domain đi qua navigation port. Container `outlet` phải là vùng dành riêng cho controller này, không phải node mà React shell đồng thời quản lý children.
 
-```ts title="shell/outlet-controller.ts"
+```ts title="shell/outlet-controller.ts" sourceFile="shell/outlet-controller.ts" sourceRegion="main"
 import type { NavigationPort } from '../contracts/navigation';
 import type {
   MountedRemote,
@@ -427,6 +442,8 @@ export function createOutletController(
   };
 }
 ```
+
+<SourceRef project="kien-truc-application-shell" file="shell/outlet-controller.ts" region="main">Đối chiếu shell/outlet-controller.ts</SourceRef>
 
 Đây là mẫu tối thiểu cho remote tuân thủ contract đồng bộ, cleanup không throw và không kích hoạt navigation reentrant trong mount/unmount. `load` là adapter của cơ chế tích hợp, không phải API federation có sẵn. Production cần validate shape module ở runtime, phân loại lỗi, timeout, UI retry, telemetry và xử lý cleanup lỗi có chủ đích.
 
