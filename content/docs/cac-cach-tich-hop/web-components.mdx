@@ -11,6 +11,10 @@ Nhưng một tag mới chưa giải quyết hết bài toán micro-frontend. B�
   Repository hiện là site tài liệu, chưa có implementation shop bên dưới. Các tên file và URL trong bài là ví dụ cho lab riêng. Ví dụ dùng autonomous custom element, global registry và client-side rendering; không yêu cầu cài thêm thư viện vào site này.
 </Callout>
 
+<SourceRef project="cac-cach-tich-hop-web-components" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
+Các phương án trong bài nằm ở snapshot riêng; đổi **Phiên bản** trong Source Explorer để đối chiếu, không ghép các config thay thế nhau thành một file. Source tham chiếu giữ nguyên các trích đoạn trong bài, không phải workspace chạy độc lập.
+
 ## Mục lục
 
 - [Web Components giải quyết phần nào](#web-components-giải-quyết-phần-nào)
@@ -156,7 +160,7 @@ Hai đoạn JavaScript dưới có thể dùng trong một lab ES modules. Lưu 
 
 Card chỉ giữ local UI state như pending và message. Nó không tạo cart controller, không ghi `localStorage` và không tính summary giỏ hàng.
 
-```js title="assets/catalog.v1.js"
+```js title="assets/catalog.v1.js" sourceFile="assets/catalog.v1.js" sourceRegion="main" sourceSnapshot="vanilla"
 const template = document.createElement('template');
 template.innerHTML = `
   <style>
@@ -308,6 +312,8 @@ if (!customElements.get('shop-product-card')) {
 }
 ```
 
+<SourceRef project="cac-cach-tich-hop-web-components" snapshot="vanilla" file="assets/catalog.v1.js" region="main">Đối chiếu assets/catalog.v1.js</SourceRef>
+
 Template chứa markup tĩnh do developer kiểm soát; tên sản phẩm được gán bằng `textContent`. Không nội suy tên, mô tả hoặc HTML từ API vào `innerHTML`. Nếu nội dung rich text thật sự cần thiết, hãy có pipeline sanitize riêng.
 
 Mỗi thao tác chụp lại `sku` và function `addItem` trước khi `await`, nên thay property trong lúc pending không đổi command đã gửi. Trong lab, nên giữ nguyên product của một instance suốt một thao tác; khi dùng danh sách, key instance theo SKU thay vì tái sử dụng card đang pending cho sản phẩm khác.
@@ -316,13 +322,15 @@ Mỗi thao tác chụp lại `sku` và function `addItem` trước khi `await`, 
 
 Đoạn sau có một cart owner in-memory rất nhỏ để bạn quan sát kết quả. Đây là mock cho lab, không thay backend validation hoặc controller đầy đủ của shop.
 
-```html title="Vùng render trong shell lab"
+```html title="Vùng render trong shell lab" sourceFile="index.html" sourceRegion="main" sourceSnapshot="vanilla"
 <div id="catalog-slot"></div>
 <p id="cart-count" role="status">Giỏ: 0</p>
 <script type="module" src="/shell.js"></script>
 ```
 
-```js title="shell.js"
+<SourceRef project="cac-cach-tich-hop-web-components" snapshot="vanilla" file="index.html" region="main">Đối chiếu index.html</SourceRef>
+
+```js title="shell.js" sourceFile="shell.js" sourceRegion="main" sourceSnapshot="vanilla"
 const slot = document.querySelector('#catalog-slot');
 const count = document.querySelector('#cart-count');
 const lines = new Map();
@@ -360,6 +368,8 @@ try {
   console.error('Catalog loading failed', error);
 }
 ```
+
+<SourceRef project="cac-cach-tich-hop-web-components" snapshot="vanilla" file="shell.js" region="main">Đối chiếu shell.js</SourceRef>
 
 Mở trang qua HTTP server có hỗ trợ ES modules, không mở trực tiếp bằng `file://`. Khi thành công, bạn thấy một áo giá `150.000 ₫`; bấm thêm hai lần thì badge là `2`, và hai event thành công xuất hiện trong console. Thử cho mock `addItem()` throw trước khi sửa `lines`: card hiện thông báo không xác nhận được, badge giữ nguyên và không phát event thành công.
 
@@ -413,7 +423,7 @@ Mình chọn `open` mặc định để debug và kiểm thử dễ hơn, nhưng
 
 Public styling API của card có thể dùng từ shell như sau:
 
-```css title="Stylesheet của shell"
+```css title="Stylesheet của shell" sourceFile="shell.css" sourceRegion="main" sourceSnapshot="vanilla"
 shop-product-card {
   --shop-accent: #dce8ff;
   max-width: 28rem;
@@ -423,6 +433,8 @@ shop-product-card::part(action) {
   border-radius: 999px;
 }
 ```
+
+<SourceRef project="cac-cach-tich-hop-web-components" snapshot="vanilla" file="shell.css" region="main">Đối chiếu shell.css</SourceRef>
 
 Token và part là contract cần versioning. Nếu shell đã dùng `::part(action)`, đổi tên part mà không thông báo là breaking change dù JavaScript API không đổi. Không hướng dẫn consumer dùng `shadowRoot.querySelector()` để sửa style như một public API.
 
@@ -475,7 +487,7 @@ React 19 hỗ trợ custom HTML elements tốt hơn, bao gồm properties và cu
 
 Adapter nhận `loadDefinition()` từ composition layer để không gắn việc render vào loader của một bundler cụ thể. Function này trả Promise khi bundle đã tải/evaluate, dùng URL release được shell chọn và nên có deadline. Trong lab ES modules, logic của nó có thể giống lệnh `import()` ở trên; với React dùng bundler hoặc Next.js, cấu hình runtime loading và client boundary theo công cụ bạn chọn.
 
-```tsx title="ProductCardAdapter.tsx"
+```tsx title="ProductCardAdapter.tsx" sourceFile="ProductCardAdapter.tsx" sourceRegion="main" sourceSnapshot="react"
 import { useEffect, useRef, useState } from 'react';
 
 type Product = { sku: string; name: string; priceVnd: number };
@@ -558,6 +570,8 @@ export function ProductCardAdapter(props: Props) {
   );
 }
 ```
+
+<SourceRef project="cac-cach-tich-hop-web-components" snapshot="react" file="ProductCardAdapter.tsx" region="main">Đối chiếu ProductCardAdapter.tsx</SourceRef>
 
 React sở hữu `div` container, adapter sở hữu custom element, còn custom element sở hữu shadow tree. React không render children vào vùng mà remote tự quản lý. Effect cập nhật input để thay props không cần unmount element; callback đọc từ ref để không giữ handler cũ.
 

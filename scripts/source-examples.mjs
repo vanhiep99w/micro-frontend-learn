@@ -7,7 +7,6 @@ import remarkParse from 'remark-parse';
 import remarkMdx from 'remark-mdx';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const docsRoot = join(projectRoot, 'content/docs');
 const parser = unified().use(remarkParse).use(remarkMdx);
 
 function walk(node, callback) {
@@ -22,6 +21,10 @@ export function safePath(path) {
   return path;
 }
 
+function validID(id, context) {
+  assert(typeof id === 'string' && /^[a-z][a-z0-9-]*$/.test(id), `${context}: invalid ID ${id}`);
+}
+
 function metadata(meta, key) {
   const matches = [...(meta ?? '').matchAll(new RegExp(`(?:^|\\s)${key}="([^"]+)"`, 'g'))];
   assert(matches.length <= 1, `Duplicate ${key} in code fence metadata`);
@@ -29,25 +32,31 @@ function metadata(meta, key) {
   return matches[0]?.[1];
 }
 
-/** Extract only explicitly opted-in fences; fragments/variants are never guessed from titles. */
-export function collectFiles(tree, context) {
+/** A missing sourceSnapshot belongs ONLY to the project's default, never every variant. */
+export function collectFiles(tree, context, {
+  snapshot = 'document', defaultSnapshot = 'document', snapshotIds = ['document'],
+} = {}) {
   const files = new Map();
   walk(tree, (node) => {
     if (node.type !== 'code') return;
     const path = metadata(node.meta, 'sourceFile');
     const region = metadata(node.meta, 'sourceRegion');
+    const selected = metadata(node.meta, 'sourceSnapshot');
     if (!path) {
-      assert(!region, `${context}: sourceRegion needs sourceFile`);
+      assert(!region && !selected, `${context}: sourceRegion/sourceSnapshot needs sourceFile`);
       return;
     }
+    const snapshotID = selected ?? defaultSnapshot;
+    assert(snapshotIds.includes(snapshotID), `${context}: unknown sourceSnapshot ${snapshotID}`);
     safePath(path);
     assert(region && /^[a-z][a-z0-9-]*$/.test(region), `${context}: missing/invalid sourceRegion for ${path}`);
     assert(node.value.length > 0, `${context}: empty source ${path}`);
     const language = node.lang || 'text';
-    assert(!['d2', 'mermaid', 'bash', 'http'].includes(language), `${context}: not a source file: ${path}`);
+    assert(!['d2', 'mermaid', 'bash', 'powershell', 'http'].includes(language), `${context}: not a source file: ${path}`);
+    if (snapshotID !== snapshot) return;
     const file = files.get(path) ?? { path, language, code: '', regions: {} };
-    assert(file.language === language, `${context}: mixed languages in ${path}`);
-    assert(!Object.hasOwn(file.regions, region), `${context}: duplicate region ${path}#${region}`);
+    assert(file.language === language, `${context}: mixed languages in ${snapshot}/${path}`);
+    assert(!Object.hasOwn(file.regions, region), `${context}: duplicate region ${snapshot}/${path}#${region}`);
     if (file.code) file.code += '\n\n';
     const start = file.code.split('\n').length;
     file.code += node.value;
@@ -67,26 +76,29 @@ function referenceProps(node, context) {
   return props;
 }
 
-export function validateReference(ref, snapshots, context) {
+export function validateReference(ref, projects, context) {
   for (const key of Object.keys(ref)) {
     assert(['project', 'snapshot', 'file', 'region', 'lines', 'variant'].includes(key), `${context}: unknown SourceRef prop ${key}`);
   }
-  const snapshot = snapshots.get(ref.project);
-  assert(snapshot, `${context}: unknown source project ${ref.project}`);
-  assert(!ref.snapshot || ref.snapshot === snapshot.snapshot, `${context}: unknown snapshot ${ref.snapshot}`);
+  const project = projects.get(ref.project);
+  assert(project, `${context}: unknown source project ${ref.project}`);
+  const id = ref.snapshot ?? project.defaultSnapshot;
+  const snapshot = project.snapshots.get(id);
+  assert(snapshot, `${context}: unknown snapshot ${id} in ${ref.project}`);
   assert(!ref.variant || ['inline', 'button'].includes(ref.variant), `${context}: invalid SourceRef variant`);
   assert(!(ref.region && ref.lines), `${context}: cannot combine region and lines`);
   const path = ref.file ?? snapshot.defaultFile;
   const file = snapshot.files.find((entry) => entry.path === path);
-  assert(file, `${context}: unknown source file ${path}`);
-  if (ref.region) assert(Object.hasOwn(file.regions, ref.region), `${context}: unknown region ${path}#${ref.region}`);
+  assert(file, `${context}: unknown source file ${id}/${path}`);
+  if (ref.region) assert(Object.hasOwn(file.regions, ref.region), `${context}: unknown region ${id}/${path}#${ref.region}`);
   if (ref.lines) {
     const range = /^(\d+)(?:-(\d+))?$/.exec(ref.lines);
     assert(range, `${context}: invalid lines ${ref.lines}`);
     const start = Number(range[1]);
     const end = Number(range[2] ?? range[1]);
-    assert(start >= 1 && end >= start && end <= file.code.split('\n').length, `${context}: lines outside ${path}`);
+    assert(start >= 1 && end >= start && end <= file.code.split('\n').length, `${context}: lines outside ${id}/${path}`);
   }
+  return snapshot;
 }
 
 async function mdxPaths(dir) {
@@ -97,39 +109,70 @@ async function mdxPaths(dir) {
   return paths.flat().sort();
 }
 
-export async function loadSourceExamples() {
-  const registry = JSON.parse(await readFile(join(projectRoot, 'source-examples/registry.json'), 'utf8'));
+/** Pure data assembly, also used by fixture tests. Trees are keyed by relative MDX path. */
+export function createSourceExamples(registry, trees) {
   assert(Array.isArray(registry) && registry.length > 0, 'Empty source registry');
+  const projects = new Map();
   const snapshots = new Map();
   const registeredDocs = new Set();
-  const trees = new Map();
-  for (const path of await mdxPaths(docsRoot)) trees.set(path, parser.parse(await readFile(path, 'utf8')));
-
   for (const entry of registry) {
-    assert(/^[a-z][a-z0-9-]*$/.test(entry.id), `Invalid source project ID: ${entry.id}`);
-    assert(!snapshots.has(entry.id), `Duplicate source project ID: ${entry.id}`);
+    validID(entry.id, 'Source project');
+    assert(!projects.has(entry.id), `Duplicate source project ID: ${entry.id}`);
     assert(typeof entry.title === 'string' && entry.title.trim(), `${entry.id}: missing title`);
-    const path = join(docsRoot, safePath(entry.doc));
-    assert(!registeredDocs.has(path), `Duplicate registered doc: ${entry.doc}`);
+    const path = safePath(entry.doc);
+    assert(!registeredDocs.has(path), `Duplicate registered doc: ${path}`);
     registeredDocs.add(path);
     const tree = trees.get(path);
-    assert(tree, `Missing source document: ${entry.doc}`);
-    const files = collectFiles(tree, entry.doc);
-    assert(files.length > 0, `${entry.doc}: no sourceFile fences`);
-    assert(files.some((file) => file.path === entry.defaultFile), `${entry.doc}: missing defaultFile ${entry.defaultFile}`);
-    snapshots.set(entry.id, { project: entry.id, snapshot: 'document', defaultFile: entry.defaultFile, files });
+    assert(tree, `Missing source document: ${path}`);
+    const expanded = entry.snapshots !== undefined;
+    assert(!expanded || !entry.defaultFile, `${path}: use defaultFile inside snapshots, not on the project`);
+    assert(expanded || entry.defaultSnapshot === undefined, `${path}: defaultSnapshot requires snapshots`);
+    const definitions = expanded ? entry.snapshots : [{ id: 'document', title: 'Code trong bài', defaultFile: entry.defaultFile }];
+    assert(Array.isArray(definitions) && definitions.length > 0, `${path}: empty snapshots`);
+    const defaultSnapshot = expanded ? entry.defaultSnapshot : 'document';
+    const ids = definitions.map((definition) => definition.id);
+    ids.forEach((id) => validID(id, path));
+    assert(new Set(ids).size === ids.length, `${path}: duplicate snapshot IDs`);
+    assert(ids.includes(defaultSnapshot), `${path}: invalid defaultSnapshot ${defaultSnapshot}`);
+    const project = {
+      id: entry.id, title: entry.title, defaultSnapshot,
+      snapshotTitles: new Map(definitions.map((definition) => [definition.id, definition.title])),
+      snapshots: new Map(),
+    };
+    for (const definition of definitions) {
+      assert(typeof definition.title === 'string' && definition.title.trim(), `${path}: missing snapshot title`);
+      safePath(definition.defaultFile);
+      const files = collectFiles(tree, path, { snapshot: definition.id, defaultSnapshot, snapshotIds: ids });
+      assert(files.length > 0, `${path}: no sourceFile fences for snapshot ${definition.id}`);
+      assert(files.some((file) => file.path === definition.defaultFile), `${path}: missing defaultFile ${definition.id}/${definition.defaultFile}`);
+      const snapshot = { project: entry.id, snapshot: definition.id, defaultFile: definition.defaultFile, files };
+      project.snapshots.set(definition.id, snapshot);
+      snapshots.set(`${entry.id}/${definition.id}`, snapshot);
+    }
+    projects.set(entry.id, project);
   }
 
   let references = 0;
   for (const [path, tree] of trees) {
     walk(tree, (node) => {
-      if (node.type === 'code' && /\bsourceFile=/.test(node.meta ?? '')) {
-        assert(registeredDocs.has(path), `${path}: sourceFile fence needs a registry entry`);
+      if (node.type === 'code' && /\bsource(?:File|Region|Snapshot)=/.test(node.meta ?? '')) {
+        assert(registeredDocs.has(path), `${path}: source metadata needs a registry entry`);
       }
       if (node.name !== 'SourceRef') return;
-      validateReference(referenceProps(node, path), snapshots, `${path}:${node.position?.start.line}`);
+      validateReference(referenceProps(node, path), projects, `${path}:${node.position?.start.line}`);
       references++;
     });
   }
-  return { registry, snapshots, references };
+  return { registry, projects, snapshots, references };
+}
+
+export async function loadSourceExamples(root = projectRoot) {
+  const docsRoot = join(root, 'content/docs');
+  const registry = JSON.parse(await readFile(join(root, 'source-examples/registry.json'), 'utf8'));
+  const trees = new Map();
+  for (const path of await mdxPaths(docsRoot)) {
+    const name = path.slice(docsRoot.length + 1).replaceAll('\\', '/');
+    trees.set(name, parser.parse({ value: await readFile(path, 'utf8'), path }));
+  }
+  return createSourceExamples(registry, trees);
 }

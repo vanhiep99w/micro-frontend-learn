@@ -9,3 +9,5 @@ out/
 dist/
 .cache/
 public/source-examples/
+playwright-report/
+test-results/

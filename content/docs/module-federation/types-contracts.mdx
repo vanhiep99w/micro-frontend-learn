@@ -11,6 +11,10 @@ Bài này nối hai phần thường bị tách rời: **types giúp kiểm tra 
   Ví dụ dùng shop giả định gồm shell và catalog, không phải source ứng dụng có sẵn trong repository này. Phần declarations thủ công áp dụng cho ứng dụng TypeScript với webpack 5; phần tự động hóa dùng riêng `@module-federation/enhanced/webpack`. Đây không phải hướng dẫn tích hợp Federation vào Next.js hay SSR. Bạn nên nắm [exposes và remotes](/docs/module-federation/exposes-remotes) trước khi đọc.
 </Callout>
 
+<SourceRef project="module-federation-types-contracts" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
+Các phương án trong bài nằm ở snapshot riêng; đổi **Phiên bản** trong Source Explorer để đối chiếu, không ghép các config thay thế nhau thành một file. Source tham chiếu giữ nguyên các trích đoạn trong bài, không phải workspace chạy độc lập.
+
 ## Mục lục
 
 - [Types không phải runtime contract](#types-không-phải-runtime-contract)
@@ -98,7 +102,7 @@ Mình mặc định dùng một public entry nhỏ theo domain, không expose st
 
 Giả sử package `@shop/catalog-contracts` công bố declarations sau qua entry types của package. Đây là package riêng của ví dụ, không cần tạo hay cài vào site docs này.
 
-```ts title="@shop/catalog-contracts — public types"
+```ts title="@shop/catalog-contracts — public types" sourceFile="packages/catalog-contracts/index.ts" sourceRegion="main" sourceSnapshot="manual-types"
 export interface ProductSummaryV1 {
   readonly productId: string;
   readonly name: string;
@@ -118,6 +122,8 @@ export interface CatalogProductModuleV1 {
 }
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="packages/catalog-contracts/index.ts" region="main">Đối chiếu packages/catalog-contracts/index.ts</SourceRef>
+
 Interface này đi kèm các quy tắc:
 
 - `productId` và `name` là string không rỗng sau khi trim. ID có phân biệt chữ hoa/thường; không tự trim hay sửa ID trước lookup.
@@ -132,7 +138,7 @@ Interface này đi kèm các quy tắc:
 
 Public entry dưới đây dùng fixture để minh họa contract; chưa có backend, cache hay policy timeout của ứng dụng thật.
 
-```ts title="catalog/src/public/productApi.ts"
+```ts title="catalog/src/public/productApi.ts" sourceFile="catalog/src/public/productApi.ts" sourceRegion="main" sourceSnapshot="manual-types"
 import type {
   CatalogProductModuleV1,
   ProductSummaryV1,
@@ -162,25 +168,31 @@ export const getProductSummary:
   };
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="catalog/src/public/productApi.ts" region="main">Đối chiếu catalog/src/public/productApi.ts</SourceRef>
+
 Gắn public entry vào remote config:
 
-```js title="Trích phần exposes trong config catalog"
+```js title="Trích phần exposes trong config catalog" sourceFile="catalog/fragments/exposes.js" sourceRegion="main" sourceSnapshot="manual-types"
 exposes: {
   './productApi': './src/public/productApi.ts',
 }
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="catalog/fragments/exposes.js" region="main">Đối chiếu catalog/fragments/exposes.js</SourceRef>
+
 Bundler vẫn cần loader hoặc integration để build TypeScript; đoạn này chỉ minh họa mapping, không phải config webpack hoàn chỉnh. Host dùng alias `catalog` trong `remotes` và import `catalog/productApi`. Tên container có thể là `catalog_app`, không bắt buộc giống alias.
 
 Gắn type vào từng export phát hiện nhiều lỗi implementation ngay trong catalog. Nhưng vẫn cần kiểm tra **namespace export thật**: nếu ai đó xóa `getProductSummary` khỏi public entry, type của function ở file nội bộ không bảo vệ host.
 
-```ts title="catalog/type-tests/public-api.ts"
+```ts title="catalog/type-tests/public-api.ts" sourceFile="catalog/type-tests/public-api.ts" sourceRegion="main" sourceSnapshot="manual-types"
 import * as publicApi from '../src/public/productApi';
 import type { CatalogProductModuleV1 } from '@shop/catalog-contracts';
 
 // Chạy bằng tsc --noEmit cùng source của catalog.
 publicApi satisfies CatalogProductModuleV1;
 ```
+
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="catalog/type-tests/public-api.ts" region="main">Đối chiếu catalog/type-tests/public-api.ts</SourceRef>
 
 `satisfies` kiểm tra cấu trúc ở compile time, không sinh runtime validator và không chứng minh Promise luôn trả dữ liệu hợp lệ từ backend.
 
@@ -190,7 +202,7 @@ publicApi satisfies CatalogProductModuleV1;
 
 Với webpack gốc, cách khởi đầu đơn giản là để host khai báo public request chính xác, rồi tham chiếu types từ contract package thay vì chép lại interface.
 
-```ts title="shell/src/types/catalog.d.ts"
+```ts title="shell/src/types/catalog.d.ts" sourceFile="shell/src/types/catalog.d.ts" sourceRegion="main" sourceSnapshot="manual-types"
 declare module 'catalog/productApi' {
   import type { CatalogProductModuleV1 } from '@shop/catalog-contracts';
 
@@ -200,11 +212,13 @@ declare module 'catalog/productApi' {
 }
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/src/types/catalog.d.ts" region="main">Đối chiếu shell/src/types/catalog.d.ts</SourceRef>
+
 File này là ambient module declaration. **Không thêm `import` hoặc `export {}` ở top level của file** trong cách khai báo này: file sẽ thành external module, và `declare module` có thể được hiểu là module augmentation thay vì định nghĩa một remote module mới. Import type nằm bên trong block như ví dụ là chủ ý.
 
 Đảm bảo file được TypeScript đưa vào program. Với app frontend dùng bundler, một cấu hình tối thiểu có thể là:
 
-```json title="shell/tsconfig.json — minh họa, ghép với cấu hình app"
+```json title="shell/tsconfig.json — minh họa, ghép với cấu hình app" sourceFile="shell/tsconfig.json" sourceRegion="main" sourceSnapshot="manual-types"
 {
   "compilerOptions": {
     "strict": true,
@@ -216,11 +230,13 @@ File này là ambient module declaration. **Không thêm `import` hoặc `export
 }
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/tsconfig.json" region="main">Đối chiếu shell/tsconfig.json</SourceRef>
+
 `include: ["src"]` bao gồm `.d.ts` trong `src/types`; app React cần giữ thêm các option JSX và cấu hình riêng hiện có. Contract package phải resolve được trong shell. Không đổi app Node/SSR sang `moduleResolution: "bundler"` chỉ để làm mất một lỗi resolution.
 
 Sau đó TypeScript hiểu module:
 
-```ts title="shell/src/catalog-usage.ts"
+```ts title="shell/src/catalog-usage.ts" sourceFile="shell/src/catalog-usage.ts" sourceRegion="main" sourceSnapshot="manual-types"
 export async function showProductSummary() {
   const catalog = await import('catalog/productApi');
   const product = await catalog.getProductSummary('sku-123');
@@ -230,6 +246,8 @@ export async function showProductSummary() {
   }
 }
 ```
+
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/src/catalog-usage.ts" region="main">Đối chiếu shell/src/catalog-usage.ts</SourceRef>
 
 Đây là ví dụ type usage, chưa có xử lý lỗi runtime. Trong app, caller cần bắt lỗi và hiển thị fallback như phần validation bên dưới.
 
@@ -267,7 +285,7 @@ Trade-off là declarations vẫn có thể lệch implementation. Vì vậy prov
 
 Sinh declarations từ public entries giảm công sức đồng bộ chữ ký function. Với TypeScript thuần, bước build declarations có thể dùng config riêng:
 
-```json title="catalog/tsconfig.public-types.json — minh họa"
+```json title="catalog/tsconfig.public-types.json — minh họa" sourceFile="catalog/tsconfig.public-types.json" sourceRegion="main" sourceSnapshot="declaration-build"
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -279,6 +297,8 @@ Sinh declarations từ public entries giảm công sức đồng bộ chữ ký 
   "include": ["src/public/productApi.ts"]
 }
 ```
+
+<SourceRef project="module-federation-types-contracts" snapshot="declaration-build" file="catalog/tsconfig.public-types.json" region="main">Đối chiếu catalog/tsconfig.public-types.json</SourceRef>
 
 ```bash title="Chạy trong project catalog"
 npx tsc -p tsconfig.public-types.json
@@ -306,7 +326,7 @@ Không nên re-export type của remote thứ hai qua catalog chỉ vì tiện. 
 
 Ví dụ dưới đây là phần plugins của hai webpack config dùng enhanced; các phần entry, output, TypeScript loader và shared dependencies không được lặp lại. Pin version integration và kiểm tra API của version đó trước khi áp dụng.
 
-```js title="catalog/webpack.config.cjs — phần plugins"
+```js title="catalog/webpack.config.cjs — phần plugins" sourceFile="catalog/webpack.config.cjs" sourceRegion="main" sourceSnapshot="generated-types"
 const { ModuleFederationPlugin } = require('@module-federation/enhanced/webpack');
 
 module.exports = {
@@ -327,7 +347,9 @@ module.exports = {
 };
 ```
 
-```js title="shell/webpack.config.cjs — phần plugins"
+<SourceRef project="module-federation-types-contracts" snapshot="generated-types" file="catalog/webpack.config.cjs" region="main">Đối chiếu catalog/webpack.config.cjs</SourceRef>
+
+```js title="shell/webpack.config.cjs — phần plugins" sourceFile="shell/webpack.config.cjs" sourceRegion="main" sourceSnapshot="generated-types"
 const { ModuleFederationPlugin } = require('@module-federation/enhanced/webpack');
 
 module.exports = {
@@ -347,6 +369,8 @@ module.exports = {
 };
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="generated-types" file="shell/webpack.config.cjs" region="main">Đối chiếu shell/webpack.config.cjs</SourceRef>
+
 Ví dụ giả định publisher đã phát hành manifest hợp lệ cho enhanced. Theo tài liệu hiện hành, type archive mặc định có tên `@mf-types.zip`; consumer tải rồi giải nén vào thư mục `@mf-types`. Tooling cũng có declarations cho runtime API như `loadRemote` khi các option tương ứng bật.
 
 Upload artifacts types mà integration sinh cùng release, không chỉ upload entry JavaScript. Nếu types nằm ở location khác địa chỉ tooling suy ra, enhanced có `dts.consumeTypes.remoteTypeUrls` để chỉ định URL thực; cấu hình đúng remote name, host alias và artifact URLs theo version plugin.
@@ -357,7 +381,7 @@ Upload artifacts types mà integration sinh cùng release, không chỉ upload e
 
 Sau khi declarations đã được tải, TypeScript cần resolve public request về output đó. Với layout mặc định có các file public dưới `@mf-types/catalog`, có thể giới hạn mapping vào alias catalog:
 
-```json title="shell/tsconfig.json — phần bổ sung"
+```json title="shell/tsconfig.json — phần bổ sung" sourceFile="shell/tsconfig.json" sourceRegion="main" sourceSnapshot="generated-types"
 {
   "compilerOptions": {
     "paths": {
@@ -368,17 +392,21 @@ Sau khi declarations đã được tải, TypeScript cần resolve public reques
 }
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="generated-types" file="shell/tsconfig.json" region="main">Đối chiếu shell/tsconfig.json</SourceRef>
+
 Kiểm tra cây output thực tế trước khi copy mapping; nếu đổi `typesFolder` hoặc alias, mapping phải đổi theo. Tài liệu enhanced cũng minh họa wildcard `"*": ["./@mf-types/*"]`; mình ưu tiên mapping hẹp để một thư mục generated không vô tình chi phối các request khác.
 
 `include` còn hữu ích cho declarations augment runtime API. Giữ các `paths` và `include` hiện có khi ghép cấu hình, không thay nguyên object rồi làm mất alias của app. Nếu đang dùng generated types cho `catalog/productApi`, bỏ ambient declaration thủ công tương ứng để chỉ còn một nguồn mô tả module.
 
 Với webpack watch, loại thư mục downloaded types khỏi watcher của bundler để tránh vòng lặp fetch types → thay file → build → fetch lại:
 
-```js title="Phần watchOptions trong config shell"
+```js title="Phần watchOptions trong config shell" sourceFile="shell/fragments/watch-options.js" sourceRegion="main" sourceSnapshot="generated-types"
 watchOptions: {
   ignored: ['**/node_modules/**', '**/@mf-types/**'],
 }
 ```
+
+<SourceRef project="module-federation-types-contracts" snapshot="generated-types" file="shell/fragments/watch-options.js" region="main">Đối chiếu shell/fragments/watch-options.js</SourceRef>
 
 Đây là cấu hình watcher của webpack, không phải yêu cầu TypeScript bỏ qua declarations. Editor vẫn cần thấy types để cập nhật gợi ý.
 
@@ -404,7 +432,7 @@ Với dynamic remotes, một shell có thể chọn nhiều build ở runtime. T
 
 Ngay cả khi import đã có type, dữ liệu thực tế vẫn cần kiểm tra ở boundary phù hợp. Ví dụ dưới đây đặt decoder ở shell; trong hệ thống lớn, validator thuần có thể được công bố cùng contract package.
 
-```ts title="shell/src/catalog-boundary.ts — decoder"
+```ts title="shell/src/catalog-boundary.ts — decoder" sourceFile="shell/src/catalog-boundary.ts" sourceRegion="decoder" sourceSnapshot="manual-types"
 import type {
   CatalogProductModuleV1,
   ProductSummaryV1,
@@ -445,6 +473,8 @@ export function decodeProductSummaryV1(
 }
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/src/catalog-boundary.ts" region="decoder">Đối chiếu shell/src/catalog-boundary.ts</SourceRef>
+
 Decoder chấp nhận field bổ sung nhưng loại chúng khỏi model consumer. Nó không coercion `"199000"` thành `199000` hay biến giá sai thành `0`, vì những cách “cứu dữ liệu” đó dễ che lỗi producer.
 
 `Object.freeze` ở đây là shallow freeze và đủ cho DTO chỉ có primitive fields. Nó không phải cơ chế bảo mật, cũng không thay chính sách copy cho model có object lồng nhau. Nếu dùng Zod, Valibot hoặc JSON Schema thay decoder thủ công, giữ cùng quy tắc về unknown fields, null và coercion.
@@ -455,7 +485,7 @@ Descriptor `contract` trong ví dụ là **named export do hai team tự thỏa 
 
 Thêm hàm dưới đây vào cùng file decoder:
 
-```ts title="shell/src/catalog-boundary.ts — adapter"
+```ts title="shell/src/catalog-boundary.ts — adapter" sourceFile="shell/src/catalog-boundary.ts" sourceRegion="adapter" sourceSnapshot="manual-types"
 export function adaptCatalogProductV1(
   raw: unknown,
 ): CatalogProductModuleV1 {
@@ -493,9 +523,11 @@ export function adaptCatalogProductV1(
 }
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/src/catalog-boundary.ts" region="adapter">Đối chiếu shell/src/catalog-boundary.ts</SourceRef>
+
 Adapter chỉ xác minh descriptor và sự tồn tại của function trước khi tạo client. Function có thể trả sai dữ liệu ở lần gọi sau, nên mỗi kết quả vẫn phải decode. `await` chấp nhận cả giá trị đồng bộ, vì vậy adapter chuẩn hóa kết quả thành Promise; nó không chứng minh remote tuân thủ mọi chi tiết hành vi async.
 
-```ts title="shell/src/load-catalog.ts"
+```ts title="shell/src/load-catalog.ts" sourceFile="shell/src/load-catalog.ts" sourceRegion="main" sourceSnapshot="manual-types"
 import { adaptCatalogProductV1 } from './catalog-boundary';
 
 export async function loadCatalogProductV1() {
@@ -504,6 +536,8 @@ export async function loadCatalogProductV1() {
   return adaptCatalogProductV1(raw);
 }
 ```
+
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/src/load-catalog.ts" region="main">Đối chiếu shell/src/load-catalog.ts</SourceRef>
 
 Không có cast cả module sang interface. Client trả về có type vì shell tự xây dựng adapter, kiểm tra input và decode output. Tuy nhiên, adapter không chứng minh giá được tính đúng, request không có side effect hay provider đáp ứng SLA; những điều đó cần behavior tests và chính sách vận hành.
 
@@ -568,7 +602,7 @@ Có thể triển khai cùng public key và từ chối protocol không hỗ tr�
 
 Type tests kiểm tra trải nghiệm mà declarations đưa cho consumer. Ví dụ sau chạy bằng `tsc --noEmit`, không cần tải remote:
 
-```ts title="shell/type-tests/catalog.ts"
+```ts title="shell/type-tests/catalog.ts" sourceFile="shell/type-tests/catalog.ts" sourceRegion="main" sourceSnapshot="manual-types"
 import type { CatalogProductModuleV1 } from '@shop/catalog-contracts';
 
 function checkConsumerTypes(api: CatalogProductModuleV1) {
@@ -584,11 +618,13 @@ function checkConsumerTypes(api: CatalogProductModuleV1) {
 void checkConsumerTypes;
 ```
 
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/type-tests/catalog.ts" region="main">Đối chiếu shell/type-tests/catalog.ts</SourceRef>
+
 `@ts-expect-error` khiến test fail nếu dòng đó bất ngờ không còn báo lỗi, chẳng hạn vì API bị đổi thành `any`. Ngoài test interface package, thêm test import từ `catalog/productApi` trong program của shell để bảo vệ ambient/generated declarations thực sự được resolve.
 
 Decoder tests kiểm tra cả fixture hợp lệ và lỗi runtime:
 
-```ts title="shell/tests/catalog-boundary.test.ts"
+```ts title="shell/tests/catalog-boundary.test.ts" sourceFile="shell/tests/catalog-boundary.test.ts" sourceRegion="main" sourceSnapshot="manual-types"
 import assert from 'node:assert/strict';
 import { decodeProductSummaryV1 } from '../src/catalog-boundary';
 
@@ -618,6 +654,8 @@ for (const invalid of [
   assert.throws(() => decodeProductSummaryV1(invalid), TypeError);
 }
 ```
+
+<SourceRef project="module-federation-types-contracts" snapshot="manual-types" file="shell/tests/catalog-boundary.test.ts" region="main">Đối chiếu shell/tests/catalog-boundary.test.ts</SourceRef>
 
 Chạy bằng test runner hỗ trợ TypeScript hoặc compile sang JavaScript trước. Test này không tải Federation container; nó chỉ bảo vệ decoder. Thêm test adapter từ chối descriptor sai, thiếu function, function trả sai ID và Promise reject mà không bị chuyển thành `null`.
 

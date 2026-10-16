@@ -11,6 +11,8 @@ Events giải quyết phần thông báo: bên sở hữu dữ liệu phát mộ
   Ví dụ dùng TypeScript và React cho các micro-frontend chạy trong cùng trang, cùng JavaScript realm. Bus chạy trong memory, không lưu lịch sử và không tự retry. Các đường dẫn trong code là gợi ý cho ứng dụng shop, không phải file triển khai có sẵn trong repository docs này.
 </Callout>
 
+<SourceRef project="giao-tiep-va-trang-thai-events" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Khi nào nên dùng events](#khi-nào-nên-dùng-events)
@@ -172,7 +174,7 @@ Ví dụ chỉ có một event để bạn thấy trọn đường đi. Khi thê
 
 TypeScript chỉ kiểm tra lúc build. Một remote cũ, một bridge nhận dữ liệu ngoài hoặc JavaScript thuần vẫn có thể gửi payload sai, nên cần validate ở runtime.
 
-```ts title="contracts/cart-events.ts"
+```ts title="contracts/cart-events.ts" sourceFile="contracts/cart-events.ts" sourceRegion="main"
 export const CART_UPDATED = 'shop.cart.updated.v1' as const;
 
 export type CartSnapshot = Readonly<{
@@ -222,13 +224,15 @@ export function isCartUpdated(value: unknown): value is CartUpdated {
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-events" file="contracts/cart-events.ts" region="main">Đối chiếu contracts/cart-events.ts</SourceRef>
+
 Giới hạn độ dài ID là lựa chọn minh họa; thống nhất giới hạn thật với API của bạn. Validator này chấp nhận field mới chưa biết để hỗ trợ additive changes. Nó kiểm tra chuỗi thời gian parse được; nếu contract bắt buộc ISO UTC chuẩn, dùng validator chặt hơn cho định dạng đó.
 
 `Readonly` không bảo vệ dữ liệu ở runtime. Vì payload ở đây chỉ chứa primitive, bus có thể copy và freeze cả envelope lẫn payload. Nếu sau này thêm object lồng sâu, cần chiến lược immutability tương ứng.
 
 ### Publish và subscribe
 
-```ts title="platform/cart-event-bus.ts"
+```ts title="platform/cart-event-bus.ts" sourceFile="platform/cart-event-bus.ts" sourceRegion="main"
 import {
   CART_UPDATED,
   isCartUpdated,
@@ -314,6 +318,8 @@ export function createCartEventBus(
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-events" file="platform/cart-event-bus.ts" region="main">Đối chiếu platform/cart-event-bus.ts</SourceRef>
+
 Ở bus này, `publish` trả `void`, không trả ACK. Nếu không có subscriber, event biến mất. Một async handler thất bại được report nhưng không khiến mutation đã thành công trở thành thất bại.
 
 `dispatchEvent` chạy phần đồng bộ của listener ngay trong lúc gọi `publish`. Tuy nhiên, nó không đợi Promise do handler trả về; handler nặng vẫn có thể block main thread trước lần `await` đầu tiên. Đừng hiểu pub/sub là tự động chuyển việc sang background.
@@ -324,7 +330,7 @@ export function createCartEventBus(
 
 ### Shell sở hữu bus instance
 
-```ts title="shell/bootstrap.ts"
+```ts title="shell/bootstrap.ts" sourceFile="shell/bootstrap.ts" sourceRegion="main"
 import { createCartEventBus } from '../platform/cart-event-bus';
 
 // Chạy một lần khi bootstrap ứng dụng trong browser.
@@ -336,6 +342,8 @@ const bus = createCartEventBus((issue) => {
 // qua mount context, dependency injection hoặc props.
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-events" file="shell/bootstrap.ts" region="main">Đối chiếu shell/bootstrap.ts</SourceRef>
+
 Không để mỗi remote tự gọi `createCartEventBus()`. Publisher và subscriber sẽ đứng ở hai bus khác nhau, dù import cùng một file và dùng cùng một tên event.
 
 Mình ưu tiên dependency injection thay vì một singleton export từ package chung. Package có thể bị bundle thành nhiều bản; Module Federation `shared` cũng không tự bảo đảm mọi cấu hình load đều dùng đúng một instance. Inject object từ shell làm ownership hiện rõ trong mount contract.
@@ -346,7 +354,7 @@ Trong Next.js/SSR, không tạo một bus chứa dữ liệu người dùng dùn
 
 Giả sử `CartApi.addItem` đã validate response và trả snapshot có revision do backend cấp. Interface dưới đây là port mẫu; ứng dụng của bạn cần implementation gọi API thật.
 
-```ts title="cart/add-item.ts"
+```ts title="cart/add-item.ts" sourceFile="cart/add-item.ts" sourceRegion="main"
 import { CART_UPDATED, type CartSnapshot } from '../contracts/cart-events';
 import type { CartEventBus } from '../platform/cart-event-bus';
 
@@ -392,6 +400,8 @@ export async function addItem(
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-events" file="cart/add-item.ts" region="main">Đối chiếu cart/add-item.ts</SourceRef>
+
 Caller tạo `operationId` cho một thao tác logic và giữ nguyên nó khi retry thao tác đó. Backend phải thực sự hỗ trợ semantics của idempotency key; gửi header hoặc option này không tự làm request trở nên idempotent.
 
 Vì mutation đã commit trước `publish`, lỗi notification không nên khiến UI yêu cầu người dùng thêm lại sản phẩm. Nếu network timeout trước khi biết backend đã commit hay chưa, đó là bài toán command retry/reconciliation, không phải bài toán dedupe event.
@@ -406,7 +416,7 @@ Subscriber đến sau không nhận được event cũ. Badge cần query snapsh
 
 Ví dụ dưới đây subscribe **trước khi** fetch snapshot, rồi dùng revision để merge cả hai nguồn. Nhờ vậy, event mới về trong lúc fetch không bị một response snapshot cũ ghi đè.
 
-```tsx title="shell/CartBadge.tsx"
+```tsx title="shell/CartBadge.tsx" sourceFile="shell/CartBadge.tsx" sourceRegion="main"
 import { useEffect, useState } from 'react';
 import type { CartSnapshot } from '../contracts/cart-events';
 import type { CartEventBus } from '../platform/cart-event-bus';
@@ -478,6 +488,8 @@ export function CartBadge({ bus, reader, cartId }: {
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-events" file="shell/CartBadge.tsx" region="main">Đối chiếu shell/CartBadge.tsx</SourceRef>
+
 `bus` và `reader` cần identity ổn định từ shell, không được tạo lại ở mỗi render. Khi `cartId` đổi, effect cũ cleanup, fetch cũ bị abort, guard `active` chặn response đến muộn, và revision được reset cho cart mới.
 
 Code này giải quyết race lúc mount, không giải quyết mọi khoảng trống delivery. Nếu mutation xảy ra ở tab khác, trên thiết bị khác hoặc notification bị lỗi, bạn vẫn cần policy refetch khi focus/reconnect, query invalidation hoặc server push. Bus trong trang không có khả năng tự phát hiện mọi dữ liệu đã thay đổi.
@@ -502,7 +514,7 @@ Dedupe theo `eventId` chỉ nhận ra cùng một event logic. Hai event tạo r
 
 Một cache nhỏ cho consumer có thể trông như sau:
 
-```ts title="platform/recent-event-ids.ts"
+```ts title="platform/recent-event-ids.ts" sourceFile="platform/recent-event-ids.ts" sourceRegion="main"
 export function createRecentEventIds(ttlMs = 60_000, maxEntries = 1_000) {
   const seen = new Map<string, number>();
 
@@ -532,6 +544,8 @@ export function createRecentEventIds(ttlMs = 60_000, maxEntries = 1_000) {
   };
 }
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-events" file="platform/recent-event-ids.ts" region="main">Đối chiếu platform/recent-event-ids.ts</SourceRef>
 
 TTL và kích thước trên chỉ là giá trị minh họa. Cache nên thuộc consumer hoặc lifecycle session cụ thể, không là một `Set` tăng mãi ở singleton. Consumer A xử lý xong không có nghĩa consumer B cũng đã xử lý, nên không dùng chung cache dedupe để loại event cho tất cả listener.
 
@@ -588,7 +602,7 @@ Trong cùng realm, code đã load có thể tiếp cận nhiều API của trang
 
 Trước hết, kiểm thử bus bằng test runner chạy trong browser hoặc môi trường hỗ trợ `EventTarget`/`CustomEvent` tương thích. Những assertion cốt lõi không phụ thuộc vào framework:
 
-```ts title="cart-event-bus.spec.ts — ý tưởng assertion"
+```ts title="cart-event-bus.spec.ts — ý tưởng assertion" sourceFile="fragments/cart-event-bus.spec.ts" sourceRegion="main"
 const issues: string[] = [];
 const bus = createCartEventBus((issue) => issues.push(issue.kind));
 let received = 0;
@@ -613,6 +627,8 @@ unsubscribe(); // Cleanup gọi lại vẫn an toàn.
 bus.publish(event);
 // expect(received).toBe(1);
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-events" file="fragments/cart-event-bus.spec.ts" region="main">Đối chiếu fragments/cart-event-bus.spec.ts</SourceRef>
 
 Đoạn này minh họa assertion; import các type/factory từ ví dụ trước và dùng API `expect` của test runner bạn chọn. Nó cũng cho thấy bus không dedupe: nếu chưa unsubscribe, publish hai lần sẽ gọi listener hai lần.
 

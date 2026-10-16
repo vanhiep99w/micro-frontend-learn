@@ -15,6 +15,10 @@ Mình mặc định chọn **chạy app đang sửa cùng shell local, còn các
   Các URL `assets.example.com` và release ID bên dưới chỉ minh họa. Hãy thay bằng artifact thật mà browser truy cập được.
 </Callout>
 
+<SourceRef project="kiem-thu-va-tooling-local-development" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
+Các phương án trong bài nằm ở snapshot riêng; đổi **Phiên bản** trong Source Explorer để đối chiếu, không ghép các config thay thế nhau thành một file. Source tham chiếu giữ nguyên các trích đoạn trong bài, không phải workspace chạy độc lập.
+
 ## Mục lục
 
 - [Chọn vòng lặp phát triển phù hợp](#chọn-vòng-lặp-phát-triển-phù-hợp)
@@ -103,13 +107,15 @@ npm install --save-dev --save-exact concurrently@9
 
 Thêm các scripts sau vào `package.json` root, **giữ các fields và scripts đang có**:
 
-```json title="shop-workspace/package.json — phần scripts bổ sung"
+```json title="shop-workspace/package.json — phần scripts bổ sung" sourceFile="fragments/package-dev-scripts.json" sourceRegion="main" sourceSnapshot="profiles"
 {
   "scripts": {
     "dev:all": "concurrently --kill-others --names shell,catalog,cart \"npm run dev:shell\" \"npm run dev:catalog\" \"npm run dev:cart\""
   }
 }
 ```
+
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="profiles" file="fragments/package-dev-scripts.json" region="main">Đối chiếu fragments/package-dev-scripts.json</SourceRef>
 
 `--kill-others` dừng các lệnh còn lại nếu một lệnh kết thúc, dù thành công hay thất bại. Điều này hợp với một nhóm dev server cần sống cùng nhau; không đặt một lệnh build ngắn trong cùng nhóm, vì build xong sẽ làm các server bị dừng.
 
@@ -145,7 +151,7 @@ Ví dụ bên dưới chọn profile lúc webpack khởi động. Đây là **bu
 
 Tạo file cấu hình trong workspace thực hành:
 
-```json title="shop-workspace/dev/remotes.profiles.json — schema do ứng dụng tự quy định"
+```json title="shop-workspace/dev/remotes.profiles.json — schema do ứng dụng tự quy định" sourceFile="dev/remotes.profiles.json" sourceRegion="main" sourceSnapshot="profiles"
 {
   "all-local": {
     "catalog": "http://localhost:3001/remoteEntry.js",
@@ -162,6 +168,8 @@ Tạo file cấu hình trong workspace thực hành:
 }
 ```
 
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="profiles" file="dev/remotes.profiles.json" region="main">Đối chiếu dev/remotes.profiles.json</SourceRef>
+
 File này không phải `mf-manifest.json` và webpack không tự đọc nó. Nó chỉ là input cho helper của shell. Release URL phải giữ entry **và toàn bộ chunks/assets liên quan**; trỏ entry versioned vào chunks mutable vẫn không tái lập được môi trường.
 
 Pin release giúp bạn biết mình đang kiểm tra candidate local với consumer nào. Tránh tên `latest` cho baseline chia sẻ giữa team. Hai người mở cùng profile nhưng nhận hai build cart khác nhau sẽ khó so sánh lỗi.
@@ -170,7 +178,7 @@ Pin release giúp bạn biết mình đang kiểm tra candidate local với cons
 
 Helper sau chuyển profile thành cấu hình `remotes` kiểu script container. Scope được giữ cố định theo contract của lab, không suy ra từ alias hoặc tên package.
 
-```js title="shop-workspace/tools/dev-remotes.cjs"
+```js title="shop-workspace/tools/dev-remotes.cjs" sourceFile="tools/dev-remotes.cjs" sourceRegion="main" sourceSnapshot="profiles"
 const profiles = require('../dev/remotes.profiles.json');
 
 const scopes = {
@@ -212,11 +220,13 @@ module.exports = function createDevRemotes(env = {}) {
 };
 ```
 
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="profiles" file="tools/dev-remotes.cjs" region="main">Đối chiếu tools/dev-remotes.cjs</SourceRef>
+
 Khi thay domain minh họa, thay cả `allowedOrigins`. Đây là kiểm tra lỗi cấu hình ở local, **không phải một security policy hoàn chỉnh**: origin được phép vẫn có thể phục vụ code xấu hoặc redirect. Mỗi remote vẫn cần nguồn artifact tin cậy và scope đúng.
 
 Webpack config hiện đang export object thì chuyển thành function nhận `(env, argv)` và trả lại cấu hình đó. Phần liên quan tới lựa chọn remote có dạng sau; đây là **trích đoạn để ghép vào config đang có**, không phải file đầy đủ:
 
-```js title="apps/shell/webpack.config.cjs — trích đoạn trong config function"
+```js title="apps/shell/webpack.config.cjs — trích đoạn trong config function" sourceFile="apps/shell/webpack.config.cjs" sourceRegion="main" sourceSnapshot="profiles"
 const createDevRemotes = require('../../tools/dev-remotes.cjs');
 
 // Trong function module.exports = (env = {}, argv = {}) => { ... }
@@ -252,6 +262,8 @@ new ModuleFederationPlugin({
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="profiles" file="apps/shell/webpack.config.cjs" region="main">Đối chiếu apps/shell/webpack.config.cjs</SourceRef>
+
 `ModuleFederationPlugin` và `dependencies` là các biến đã có trong config lab đầu tiên. Giữ entry, JSX loader, `resolve.extensions`, `publicPath`, `uniqueName`, HTML plugin và async bootstrap. Thay option `remotes` của plugin hiện có, không thêm một plugin Federation thứ hai. Giữ shared policy phù hợp với JSX runtime thật nếu bạn đã thay cấu hình lab.
 
 Nhánh production trong trích đoạn chỉ minh họa sự tách biệt. Dùng release mapping hoặc loader production của bạn thay cho URL mẫu; không đưa profile local vào đường build production. Với hệ thống dùng dynamic remotes sẵn, áp dụng profile ở lớp config của loader đó thay vì thêm một loader khác song song.
@@ -260,7 +272,7 @@ Nhánh production trong trích đoạn chỉ minh họa sự tách biệt. Dùng
 
 Bổ sung scripts root sau khi helper/config đã được nối:
 
-```json title="shop-workspace/package.json — scripts chọn profile"
+```json title="shop-workspace/package.json — scripts chọn profile" sourceFile="fragments/package-profile-scripts.json" sourceRegion="main" sourceSnapshot="profiles"
 {
   "scripts": {
     "dev:shell:catalog": "npm run dev --workspace=@shop/shell -- --env profile=catalog-local",
@@ -269,6 +281,8 @@ Bổ sung scripts root sau khi helper/config đã được nối:
   }
 }
 ```
+
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="profiles" file="fragments/package-profile-scripts.json" region="main">Đối chiếu fragments/package-profile-scripts.json</SourceRef>
 
 Chạy công việc catalog bằng:
 
@@ -329,7 +343,7 @@ CLI tạo `apps/shell/public/mockServiceWorker.js` và lưu worker directory tro
 
 Thay `static: false` trong **dev server shell** bằng directory phục vụ worker, giữ các options khác:
 
-```js title="apps/shell/webpack.config.cjs — option devServer"
+```js title="apps/shell/webpack.config.cjs — option devServer" sourceFile="apps/shell/fragments/dev-server.js" sourceRegion="main" sourceSnapshot="msw"
 devServer: {
   host: 'localhost',
   static: {
@@ -338,9 +352,11 @@ devServer: {
 },
 ```
 
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="msw" file="apps/shell/fragments/dev-server.js" region="main">Đối chiếu apps/shell/fragments/dev-server.js</SourceRef>
+
 `path` là import `node:path` đã có trong config. `/mockServiceWorker.js` phải trả JavaScript từ origin shell, không phải HTML do history fallback. localhost được browser xem là môi trường phù hợp cho service worker; khi truy cập qua hostname hoặc IP mạng khác, cần kiểm tra secure context và HTTPS.
 
-```js title="apps/shell/src/mocks/handlers.js"
+```js title="apps/shell/src/mocks/handlers.js" sourceFile="apps/shell/src/mocks/handlers.js" sourceRegion="main" sourceSnapshot="msw"
 import { delay, http, HttpResponse } from 'msw';
 
 const products = [
@@ -368,12 +384,16 @@ export const handlers = [
 ];
 ```
 
-```js title="apps/shell/src/mocks/browser.js"
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="msw" file="apps/shell/src/mocks/handlers.js" region="main">Đối chiếu apps/shell/src/mocks/handlers.js</SourceRef>
+
+```js title="apps/shell/src/mocks/browser.js" sourceFile="apps/shell/src/mocks/browser.js" sourceRegion="main" sourceSnapshot="msw"
 import { setupWorker } from 'msw/browser';
 import { handlers } from './handlers';
 
 export const worker = setupWorker(...handlers);
 ```
+
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="msw" file="apps/shell/src/mocks/browser.js" region="main">Đối chiếu apps/shell/src/mocks/browser.js</SourceRef>
 
 Ba request `/api/products`, `/api/products?scenario=empty` và `/api/products?scenario=error` lần lượt tạo success, empty và error. Query này là convention của mock endpoint, không tự đọc query trên URL trang shell. Muốn nút chọn scenario trong dev UI, dev adapter phải chuyển lựa chọn đó thành request tương ứng; không bắt production API hỗ trợ tham số mock.
 
@@ -381,7 +401,7 @@ Ba request `/api/products`, `/api/products?scenario=empty` và `/api/products?sc
 
 Trong config function webpack của shell, thêm `DefinePlugin` vào plugins hiện có:
 
-```js title="apps/shell/webpack.config.cjs — plugin flag dành cho browser"
+```js title="apps/shell/webpack.config.cjs — plugin flag dành cho browser" sourceFile="apps/shell/fragments/mock-flag.js" sourceRegion="main" sourceSnapshot="msw"
 const { DefinePlugin } = require('webpack');
 
 // Thêm instance này vào plugins trong config function.
@@ -393,11 +413,13 @@ new DefinePlugin({
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="msw" file="apps/shell/fragments/mock-flag.js" region="main">Đối chiếu apps/shell/fragments/mock-flag.js</SourceRef>
+
 Thêm import `DefinePlugin` cạnh các imports webpack hiện có, còn instance plugin nằm trong config function để đọc được `env` và `argv`. Flag chỉ bật ở development; `--env mockApi=false` không được hiểu thành true chỉ vì chuỗi không rỗng. Nếu dùng TypeScript, khai báo type cho global flag trong file declarations của app.
 
 Giữ async bootstrap và await worker trước khi code UI bắt đầu request:
 
-```js title="apps/shell/src/index.js — thay entry bootstrap hiện có"
+```js title="apps/shell/src/index.js — thay entry bootstrap hiện có" sourceFile="apps/shell/src/index.js" sourceRegion="main" sourceSnapshot="msw"
 async function start() {
   if (__SHOP_MOCK_API__) {
     const { worker } = await import('./mocks/browser.js');
@@ -419,6 +441,8 @@ start().catch((error) => {
   console.error('[shell] Startup failed', error);
 });
 ```
+
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="msw" file="apps/shell/src/index.js" region="main">Đối chiếu apps/shell/src/index.js</SourceRef>
 
 Handler không khai báo cho `/api/` sẽ tạo lỗi thay vì âm thầm đi backend. Asset, entry và chunk không bị coi là API mock bị thiếu. Không coi cách phân loại theo path này là allowlist production; nếu app gọi API với prefix khác, cập nhật policy cho đúng.
 
@@ -457,7 +481,7 @@ Một mock luôn trả `200` và mảng đủ đẹp chỉ chứng minh UI chạ
 
 Khi cần backend thật, proxy API qua origin shell giúp giảm cấu hình cross-origin ở browser. Với webpack-dev-server major 5, cấu hình proxy dùng array:
 
-```js title="apps/shell/webpack.config.cjs — trích devServer khi dùng backend local"
+```js title="apps/shell/webpack.config.cjs — trích devServer khi dùng backend local" sourceFile="apps/shell/webpack.config.cjs" sourceRegion="main" sourceSnapshot="backend"
 devServer: {
   host: 'localhost',
   proxy: [
@@ -469,6 +493,8 @@ devServer: {
   ],
 },
 ```
+
+<SourceRef project="kiem-thu-va-tooling-local-development" snapshot="backend" file="apps/shell/webpack.config.cjs" region="main">Đối chiếu apps/shell/webpack.config.cjs</SourceRef>
 
 Ghép vào config đang có thay vì ghi đè `static` phục vụ mock worker nếu vẫn cần nó cho chế độ khác. Backend phải hiểu path `/api/...`; nếu backend dùng path khác, cấu hình rewrite theo API thực tế. Remote gọi URL absolute sẽ không tự đi qua proxy này.
 

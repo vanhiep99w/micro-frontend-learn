@@ -11,6 +11,8 @@ Data fetching trong micro-frontend cần hai quyết định riêng: **domain n�
   Bài dùng shop giả định gồm shell, catalog và cart. Các endpoint, contract và code là mẫu thiết kế, không phải API có sẵn trong repository. Ví dụ React dùng TanStack Query v5; site tài liệu này không cần cài thư viện đó để hiển thị code. Nguyên tắc ownership và cache scope vẫn áp dụng khi bạn dùng SWR, Apollo hoặc framework khác.
 </Callout>
 
+<SourceRef project="giao-tiep-va-trang-thai-data-fetching" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Phân định API ownership](#phân-định-api-ownership)
@@ -229,7 +231,7 @@ Ví dụ dưới đây chọn mô hình cùng client cho summary. Nó cố ý kh
 
 ### Key factory và response contract
 
-```ts title="cart/data-contract.ts"
+```ts title="cart/data-contract.ts" sourceFile="cart/data-contract.ts" sourceRegion="main"
 export type CartScope = Readonly<{
   tenantId: string;
   subjectKey: string; // User/guest tag, không phải credential.
@@ -278,11 +280,13 @@ export function parseSummary(
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="cart/data-contract.ts" region="main">Đối chiếu cart/data-contract.ts</SourceRef>
+
 Ví dụ giả định backend trả revision tăng đơn điệu cho từng cart. Nếu backend dùng ETag hoặc opaque version, hãy dùng contract thật của nó; không so sánh string version tùy ý như số. `sessionEpoch` chỉ cách ly lifecycle ở browser, không phải server revision.
 
 ### Query options do cart domain cung cấp
 
-```ts title="cart/summary-query.ts"
+```ts title="cart/summary-query.ts" sourceFile="cart/summary-query.ts" sourceRegion="main"
 import { queryOptions } from '@tanstack/react-query';
 import { cartKeys, parseSummary, type CartScope } from './data-contract';
 
@@ -319,6 +323,8 @@ export function cartSummaryOptions(scope: CartScope) {
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="cart/summary-query.ts" region="main">Đối chiếu cart/summary-query.ts</SourceRef>
+
 `fetch` không tự reject khi server trả 404 hoặc 500, nên phải kiểm tra `response.ok`. TypeScript type assertion cũng không validate JSON; parser bảo vệ boundary trước khi đưa dữ liệu vào cache.
 
 Các thời gian trong ví dụ là policy minh họa, không phải khuyến nghị cố định cho mọi cart. Retry ở đây chỉ áp dụng cho một số lỗi gateway/service tạm thời; lỗi mạng, timeout, 429 và quy trình refresh session cần policy transport riêng trong implementation thực tế.
@@ -327,7 +333,7 @@ Endpoint giả định cùng origin và dùng cookie session. Backend vẫn ph�
 
 ### Inject cùng instance cho các consumer
 
-```tsx title="shell/cart-runtime.tsx"
+```tsx title="shell/cart-runtime.tsx" sourceFile="shell/cart-runtime.tsx" sourceRegion="main"
 import { QueryClient, useQuery } from '@tanstack/react-query';
 import type { CartScope } from '../cart/data-contract';
 import { cartSummaryOptions } from '../cart/summary-query';
@@ -372,6 +378,8 @@ export function CartBadge({
 }
 ```
 
+<SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="shell/cart-runtime.tsx" region="main">Đối chiếu shell/cart-runtime.tsx</SourceRef>
+
 Tham số thứ hai của `useQuery` là client được inject tường minh. Cart UI cũng dùng chính `runtime.queryClient` và `cartSummaryOptions(scope)` nếu muốn quan sát summary đó. Mô hình này không phụ thuộc việc các root nhận cùng provider context, nhưng vẫn phụ thuộc runtime thư viện tương thích.
 
 Khi không dùng provider, owner gọi `mount()`/`unmount()` để client đăng ký và gỡ focus/online subscriptions. Nếu dùng `QueryClientProvider`, provider quản lý phần lifecycle này. `dispose()` chỉ dành cho composition layer khi kết thúc toàn runtime tương ứng, không phải cleanup khi một remote unmount.
@@ -401,7 +409,7 @@ Invalidate theo prefix domain/scope phù hợp khi summary và detail cùng bị
 
 ### Ví dụ thêm sản phẩm và revalidate giỏ
 
-```tsx title="cart/use-add-item.ts"
+```tsx title="cart/use-add-item.ts" sourceFile="cart/use-add-item.ts" sourceRegion="main"
 import { useMutation, type QueryClient } from '@tanstack/react-query';
 import { cartKeys, type CartScope } from './data-contract';
 import { ApiError, cartBaseUrl } from './summary-query';
@@ -449,6 +457,8 @@ export function useAddItem(
   }, queryClient);
 }
 ```
+
+<SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="cart/use-add-item.ts" region="main">Đối chiếu cart/use-add-item.ts</SourceRef>
 
 Caller tạo idempotency key một lần cho một ý định thêm hàng và giữ nguyên khi gửi lại ý định đó, ví dụ sau lỗi transport không rõ kết quả. Chỉ một thao tác mới mới có key mới. Header `Idempotency-Key` trong ví dụ là contract giả định: backend phải thật sự lưu và xử lý key, bao gồm trường hợp cùng key nhưng body khác.
 

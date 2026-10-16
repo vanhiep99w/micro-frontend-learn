@@ -11,6 +11,8 @@ Resilience không có nghĩa là làm cho mọi remote luôn chạy. Mục tiêu
   Bài dùng shop giả định gồm shell, catalog và cart. Ví dụ TypeScript/React dành cho một lab CSR riêng, dùng React 18 trở lên, DOM types và target hỗ trợ `Error.cause`; repository hiện chỉ chứa tài liệu, không có shop để chạy các snippet. Loader được truyền qua contract, không giả định một federation runtime cụ thể. Với SSR, cần thêm error handling phía server theo framework.
 </Callout>
 
+<SourceRef project="production-resilience" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Chốt mức suy giảm chấp nhận được](#chốt-mức-suy-giảm-chấp-nhận-được)
@@ -123,7 +125,7 @@ Shell phải bỏ qua kết quả muộn của attempt đã timeout hoặc route
 
 Helper dưới bắt cả exception đồng bộ từ `start()` và Promise rejection. Nó dọn timer khi load kết thúc, nhưng cố ý không tuyên bố có cancellation.
 
-```ts title="src/resilience/remote-load.ts"
+```ts title="src/resilience/remote-load.ts" sourceFile="src/resilience/remote-load.ts" sourceRegion="main"
 export type LoadFailureKind =
   | 'timeout'
   | 'transient'
@@ -168,6 +170,8 @@ export function normalizeLoadError(error: unknown): RemoteLoadError {
 }
 ```
 
+<SourceRef project="production-resilience" file="src/resilience/remote-load.ts" region="main">Đối chiếu src/resilience/remote-load.ts</SourceRef>
+
 `Promise.race` đã gắn handlers vào `work`, nên một rejection muộn của Promise đó không trở thành unhandled rejection chỉ vì deadline thắng. Các Promise khác do remote tự tạo mà không trả về cho loader vẫn phải được remote xử lý.
 
 Timer cũng không phải hard real-time deadline: callback có thể chạy trễ khi main thread bận hoặc tab bị browser throttle. Helper giới hạn thời gian chờ theo event loop, không preempt được JavaScript đồng bộ.
@@ -210,7 +214,7 @@ Ví dụ chọn policy bảo thủ: không auto-retry; chỉ cho người dùng 
 
 ### Boundary do shell sở hữu
 
-```tsx title="src/resilience/RemoteBoundary.tsx"
+```tsx title="src/resilience/RemoteBoundary.tsx" sourceFile="src/resilience/RemoteBoundary.tsx" sourceRegion="main"
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 
@@ -248,11 +252,13 @@ export class RemoteBoundary extends Component<
 }
 ```
 
+<SourceRef project="production-resilience" file="src/resilience/RemoteBoundary.tsx" region="main">Đối chiếu src/resilience/RemoteBoundary.tsx</SourceRef>
+
 Production nên giữ thông tin lỗi gốc trong diagnostics được redact, không đưa stack trace hoặc `cause` ra UI. `onError` ở đây là callback đồng bộ; nếu transport trả Promise, facade phải tự xử lý rejection của nó.
 
 ### Slot giữ identity theo từng attempt
 
-```tsx title="src/resilience/CatalogSlot.tsx"
+```tsx title="src/resilience/CatalogSlot.tsx" sourceFile="src/resilience/CatalogSlot.tsx" sourceRegion="main"
 import { lazy, Suspense, useState } from 'react';
 import type { ComponentType } from 'react';
 import { RemoteBoundary } from './RemoteBoundary';
@@ -337,6 +343,8 @@ export function CatalogSlot({
 }
 ```
 
+<SourceRef project="production-resilience" file="src/resilience/CatalogSlot.tsx" region="main">Đối chiếu src/resilience/CatalogSlot.tsx</SourceRef>
+
 Mỗi attempt giữ một lazy component type ổn định trong state. Không tạo `lazy()` mới ở mỗi render: việc đó thay identity và có thể reset state của remote. Đây là ngoại lệ có chủ đích so với quy tắc thường dùng là khai báo lazy ở module scope: tạo type mới chỉ để bắt đầu **attempt phục hồi mới**, đồng thời đổi key để reset boundary.
 
 `loadCatalog` phải gắn với một config/release snapshot ổn định suốt đời slot; không đổi release âm thầm qua prop rồi kỳ vọng attempt cũ tự tải bản mới. Nếu route rời rồi quay lại, slot có thể được tạo lại và budget trong ví dụ bắt đầu lại. Budget theo document hoặc circuit breaker cần được giữ ở integration service bên ngoài slot.
@@ -351,7 +359,7 @@ Adapter production cần validate export/contract trước khi trả module, ghi
 
 Để kiểm chứng nhánh retry mà không cần CDN, dùng loader giả này trong một lab. `HealthyCatalog` là component local của lab, không có sẵn trong repository docs:
 
-```ts title="Loader giả cho component test"
+```ts title="Loader giả cho component test" sourceFile="fragments/component-test-loader.ts" sourceRegion="main"
 import type { CatalogLoader } from './CatalogSlot';
 import { RemoteLoadError } from './remote-load';
 import HealthyCatalog from '../catalog/App';
@@ -365,6 +373,8 @@ export function makeFlakyLoader(): CatalogLoader {
   };
 }
 ```
+
+<SourceRef project="production-resilience" file="fragments/component-test-loader.ts" region="main">Đối chiếu fragments/component-test-loader.ts</SourceRef>
 
 Tạo loader một lần bên ngoài render hoặc trong fixture của test. Lần đầu phải hiện fallback, bấm retry phải gọi loader lần hai và render catalog. Thay loader bằng một Promise không settle để kiểm tra timeout; thay bằng component throw trong render để kiểm tra nhánh không có nút retry. Trong development, StrictMode và error logging có thể làm số log khác production; assertion nên tập trung vào UI và số invocation của loader trong attempt.
 

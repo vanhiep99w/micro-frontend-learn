@@ -11,6 +11,8 @@ Giả sử shell vẫn mở bình thường, nhưng catalog hiển thị fallbac
   Bài dùng shop gồm shell, catalog và cart trong một lab client-side riêng. Các file TypeScript bên dưới là ví dụ bạn tạo trong lab, không phải implementation có sẵn trong repository tài liệu này. Phần telemetry facade không phụ thuộc vendor; phần tracing cần các package OpenTelemetry đã nêu.
 </Callout>
 
+<SourceRef project="kiem-thu-va-tooling-observability" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+
 ## Mục lục
 
 - [Chọn tín hiệu và phân quyền sở hữu](#chọn-tín-hiệu-và-phân-quyền-sở-hữu)
@@ -123,7 +125,7 @@ Giả sử manifest mới trỏ catalog build B, nhưng một tab đã load buil
 
 Remote nên expose metadata được nhúng lúc build qua public module hoặc mount handshake. Shell ghi release đã resolve trước khi tải; khi module thực sự chạy, ghi thêm release do remote khai báo. Trước khi tải thành công, `subject_release` chỉ là candidate từ manifest, chưa phải bằng chứng code đó đã thực thi.
 
-```json title="Ví dụ metadata của một event sau khi remote đã chạy"
+```json title="Ví dụ metadata của một event sau khi remote đã chạy" sourceFile="examples/telemetry-event.json" sourceRegion="main"
 {
   "event_name": "mfe.render_error",
   "environment": "production",
@@ -135,6 +137,8 @@ Remote nên expose metadata được nhúng lúc build qua public module hoặc 
   "error_code": "RENDER_FAILED"
 }
 ```
+
+<SourceRef project="kiem-thu-va-tooling-observability" file="examples/telemetry-event.json" region="main">Đối chiếu examples/telemetry-event.json</SourceRef>
 
 Tên release và revision trên chỉ là giá trị minh họa. Đừng gom mọi app vào cùng version `1.0.0` nếu pipeline không đảm bảo version đó nhận diện đúng artifact. Với lỗi phối hợp nhiều app, lưu **release map của các app đang tham gia** trong error context; không biến toàn bộ tổ hợp version thành một metric label.
 
@@ -161,7 +165,7 @@ Instrumentation phải giữ nguyên hành vi của code được đo: thành c�
 
 Ví dụ dưới dùng TypeScript với DOM types trong lab browser. Sink chỉ nhận structured event, không nhận `Error`, URL, props hay request body. Đây là phần core có thể thử bằng sink giả; chưa phải queue và transport production.
 
-```ts title="src/observability/telemetry.ts"
+```ts title="src/observability/telemetry.ts" sourceFile="src/observability/telemetry.ts" sourceRegion="main"
 export type AppName = 'shell' | 'catalog' | 'cart';
 export type ReleaseContext = Readonly<{
   environment: 'local' | 'preview' | 'production';
@@ -226,6 +230,8 @@ export function createTelemetry(
 }
 ```
 
+<SourceRef project="kiem-thu-va-tooling-observability" file="src/observability/telemetry.ts" region="main">Đối chiếu src/observability/telemetry.ts</SourceRef>
+
 Context được snapshot nên hai facade không ghi đè nhau. Khi route hoặc mount context đổi, tạo facade mới cho operation mới; operation đang chạy giữ snapshot của nó. Không đọc `window.location.href` khi event kết thúc vì route có thể đã đổi và URL có thể chứa dữ liệu nhạy cảm.
 
 TypeScript không phải runtime validator. Adapter và ingestion vẫn cần kiểm tra enum, độ dài string, format release/ID và route allowlist, nhất là dữ liệu đến từ `postMessage` hay remote không cùng trust boundary. Sink production nên enqueue nhanh, có batch, giới hạn queue và backoff; không gọi một exporter đồng bộ nặng trong mỗi event.
@@ -234,7 +240,7 @@ TypeScript không phải runtime validator. Adapter và ingestion vẫn cần ki
 
 Wrapper sau đo thời gian loader resolve hoặc reject. Nó chưa đo UI ready, chưa phân tích các subphase của federation runtime, và chưa cài timeout. Nếu runtime loader đã có deadline, wrapper quan sát kết quả đó; nếu chưa, hãy thiết kế deadline/cancellation ở loader, không tự coi `Promise.race` là đã hủy download.
 
-```ts title="src/observability/load-remote.ts"
+```ts title="src/observability/load-remote.ts" sourceFile="src/observability/load-remote.ts" sourceRegion="main"
 import type { AppName, Telemetry } from './telemetry';
 
 export async function observeRemoteLoad<T>(
@@ -270,6 +276,8 @@ export async function observeRemoteLoad<T>(
   }
 }
 ```
+
+<SourceRef project="kiem-thu-va-tooling-observability" file="src/observability/load-remote.ts" region="main">Đối chiếu src/observability/load-remote.ts</SourceRef>
 
 Shell gọi wrapper bằng facade có `app_name: 'shell'` và `app_release` của shell; target là catalog cùng candidate release đã resolve từ manifest. Tạo `correlationId` một lần ở đầu thao tác, truyền nó cho cả load và mount thay vì mỗi event tự tạo một ID mới.
 
@@ -417,7 +425,7 @@ npm install @opentelemetry/api @opentelemetry/sdk-trace-web \
 
 Chọn các version tương thích, giữ lockfile. Bootstrap một lần trước khi mount app; không import file bootstrap này từ mỗi remote.
 
-```ts title="src/observability/tracing-bootstrap.ts"
+```ts title="src/observability/tracing-bootstrap.ts" sourceFile="src/observability/tracing-bootstrap.ts" sourceRegion="main"
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import {
   ConsoleSpanExporter,
@@ -433,9 +441,11 @@ provider.register({
 });
 ```
 
+<SourceRef project="kiem-thu-va-tooling-observability" file="src/observability/tracing-bootstrap.ts" region="main">Đối chiếu src/observability/tracing-bootstrap.ts</SourceRef>
+
 Ví dụ sau tạo một root span riêng cho lần đọc cart, tạo client span làm con và truyền đúng context cho request same-origin. Nó không dựa vào giả định `context.active()` tự giữ đúng operation qua mọi `await` trong browser.
 
-```ts title="src/cart/read-cart.ts"
+```ts title="src/cart/read-cart.ts" sourceFile="src/cart/read-cart.ts" sourceRegion="main"
 import {
   propagation,
   ROOT_CONTEXT,
@@ -488,6 +498,8 @@ export async function readCart(
   }
 }
 ```
+
+<SourceRef project="kiem-thu-va-tooling-observability" file="src/cart/read-cart.ts" region="main">Đối chiếu src/cart/read-cart.ts</SourceRef>
 
 Contract của `correlationId` trong ví dụ là UUID do ứng dụng tạo ở đầu operation, không phải string người dùng nhập. Backend phải có instrumentation extract W3C context, tạo server span và export đến nơi bạn có thể query. Header đến server đúng nhưng backend không tạo span thì chưa có trace end-to-end.
 

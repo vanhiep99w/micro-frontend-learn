@@ -43,7 +43,13 @@ const registry = JSON.parse(readFileSync(join(project, 'source-examples/registry
 const sourceDir = join(output, 'source-examples');
 const manifest = JSON.parse(readFileSync(join(sourceDir, 'manifest.json'), 'utf8'));
 assert.deepEqual(manifest.map((entry) => entry.id), registry.map((entry) => entry.id), 'Stale Source Explorer manifest');
-const { snapshots: canonicalSources } = await loadSourceExamples();
+const { projects: canonicalProjects, snapshots: canonicalSources } = await loadSourceExamples();
+assert.deepEqual(manifest.map(({ id, title, defaultSnapshot, snapshots }) => ({
+  id, title, defaultSnapshot, snapshots: snapshots.map(({ id, title }) => ({ id, title })),
+})), [...canonicalProjects.values()].map((project) => ({
+  id: project.id, title: project.title, defaultSnapshot: project.defaultSnapshot,
+  snapshots: [...project.snapshots.keys()].map((id) => ({ id, title: project.snapshotTitles.get(id) })),
+})), 'Stale source snapshot metadata');
 let sourceFiles = 0;
 for (const entry of manifest) {
   assert(entry.snapshots.some((snapshot) => snapshot.id === entry.defaultSnapshot), `Invalid default snapshot: ${entry.id}`);
@@ -52,7 +58,8 @@ for (const entry of manifest) {
     const asset = JSON.parse(readFileSync(join(sourceDir, snapshot.asset), 'utf8'));
     assert.equal(asset.project, entry.id);
     assert.equal(asset.snapshot, snapshot.id);
-    const canonical = canonicalSources.get(entry.id);
+    const canonical = canonicalSources.get(`${entry.id}/${snapshot.id}`);
+    assert(canonical, `Unknown exported snapshot: ${entry.id}/${snapshot.id}`);
     assert.equal(asset.defaultFile, canonical.defaultFile);
     assert.deepEqual(asset.files.map(({ html, ...file }) => file), canonical.files, `Stale source code: ${entry.id}`);
     assert(asset.files.some((file) => file.path === asset.defaultFile), `Missing default file: ${entry.id}`);

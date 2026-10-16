@@ -19,7 +19,10 @@ Mở http://localhost:3000/docs. Đường dẫn `/` chuyển đến `/docs`.
 
 `npm install` chạy `postinstall` để sinh `.source/`; không viết tay hoặc commit thư mục đó.
 `npm run dev` và `npm run build` tự sinh assets Source Explorer trước khi chạy Next.js.
-Sau khi sửa code trong MDX lúc dev đang chạy, chạy lại `npm run build:source` để cập nhật drawer.
+Khi dev chạy, watcher theo dõi MDX và registry, tự sinh lại assets sau khi lưu.
+Drawer đang mở cũng tự cập nhật theo revision, không cần reload trang. Bản production
+không polling. Nếu bản nháp có reference sai, watcher báo lỗi và giữ assets hợp lệ gần nhất;
+sửa lỗi rồi lưu để tiếp tục. Có thể chạy riêng `npm run watch:source` nếu không dùng lệnh dev.
 
 Kiểm tra sau khi cài:
 
@@ -33,7 +36,8 @@ npm run check:export
 ```
 
 Build xuất các assets vào `out/`. Để preview bản build trên máy có mạng,
-chạy `npx serve out` và mở địa chỉ mà lệnh in ra. Không dùng `next start` với static export.
+chạy `npm run preview` và mở http://127.0.0.1:3210/docs. Server preview xử lý cả
+HTML extensionless và RSC assets của Next export. Không dùng `next start` với static export.
 
 Commit `package-lock.json` sau khi cài và kiểm tra thành công để cố định dependency graph.
 
@@ -152,7 +156,40 @@ Các fence cùng `sourceFile` được nối theo thứ tự trong bài, ngăn b
 mỗi `sourceRegion` phải duy nhất trong file. Dùng tên file khác cho biến thể độc lập,
 không nối những bản config thay thế nhau. Các trích đoạn cấu hình được đặt trong
 `fragments/`; đây là **source tham chiếu**, không phải cam kết project chạy độc lập.
-Mỗi bài hiện có snapshot `document` với nhãn “Code trong bài”.
+Các bài dùng schema ngắn (`defaultFile` ở project) giữ snapshot `document` với nhãn
+“Code trong bài”; các deep link cũ vẫn hoạt động.
+
+### Nhiều snapshot cho các phương án khác nhau
+
+Dùng `defaultSnapshot` và `snapshots` trong registry khi bài có nhiều phương án.
+Mỗi snapshot khai báo `defaultFile` riêng; không đồng thời đặt `defaultFile` ở project:
+
+```json
+{
+  "id": "demo",
+  "title": "Demo",
+  "doc": "demo.mdx",
+  "defaultSnapshot": "basic",
+  "snapshots": [
+    { "id": "basic", "title": "Cơ bản", "defaultFile": "src/main.ts" },
+    { "id": "advanced", "title": "Nâng cao", "defaultFile": "src/main.ts" }
+  ]
+}
+```
+
+Thêm `sourceSnapshot="advanced"` vào metadata fence và `snapshot="advanced"` vào
+`SourceRef` tương ứng. Fence không có `sourceSnapshot` chỉ thuộc snapshot mặc định,
+**không tự xuất hiện ở mọi snapshot**. Các fence cùng đường dẫn chỉ được nối trong
+cùng snapshot; region có thể trùng tên giữa các snapshot khác nhau.
+
+Hiện các bài Web Components, Types/contracts và Local development đã tách phương án
+thành snapshot riêng. Dropdown **Phiên bản** của drawer chọn đúng tập file, không
+trộn ambient types với generated types hoặc MSW với proxy backend.
+
+Assets snapshot có tên chứa content hash. Pipeline ghi assets trước rồi mới cập nhật
+manifest/revision bằng atomic rename; watcher không xóa assets cũ trong phiên dev.
+Build thông thường dọn các snapshot cũ. Cache của viewer được làm mới theo revision
+manifest khi dev, tránh drawer giữ JSON cũ dù MDX đã hot-reload.
 
 Pipeline dùng parser Markdown/MDX, validate project/file/region/line trước khi build,
 rồi highlight Shiki light/dark với `.line[data-line]`. Assets sinh vào
@@ -160,6 +197,26 @@ rồi highlight Shiki light/dark với `.line[data-line]`. Assets sinh vào
 `npm run check:export` kiểm tra cả SVG đã render lẫn snapshot JSON/highlight.
 Chỉ đưa code công khai, không có secrets vào fence: assets được publish nguyên văn.
 Không nhận manifest hoặc HTML highlight từ nguồn không tin cậy.
+
+## Browser tests và CI
+
+Sau khi build, chạy:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+Playwright tự mở server static export, kiểm tra Chromium ở viewport desktop/mobile:
+D2 light/dark, lazy assets, 7 bài mới, chọn file/snapshot, region highlight, deep link,
+reload, Back/Forward, Escape, clipboard (desktop), navigation reset và reference lỗi.
+Lỗi lưu screenshot/trace trong `test-results/`; xem report bằng `npx playwright show-report`.
+Nếu cần browser cài sẵn, truyền `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
+
+`npm test` kiểm tra extraction, snapshot isolation, validation và watcher thật trên
+fixture tạm: atomic save, thay registry, phục hồi sau lỗi, giữ assets hợp lệ và dọn cache.
+`.github/workflows/docs.yml` chạy các kiểm tra, build/export và browser tests trên push
+vào `main` hoặc pull request; upload report khi lỗi. CI không tự deploy website.
 
 ## Các file chính
 

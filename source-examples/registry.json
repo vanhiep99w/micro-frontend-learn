@@ -118,5 +118,93 @@
     "title": "Lab routing và authentication",
     "doc": "thuc-hanh/routing-auth.mdx",
     "defaultFile": "apps/shell/src/App.jsx"
+  },
+  {
+    "id": "giao-tiep-va-trang-thai-events",
+    "title": "Events và message bus",
+    "doc": "giao-tiep-va-trang-thai/events.mdx",
+    "defaultFile": "platform/cart-event-bus.ts"
+  },
+  {
+    "id": "cac-cach-tich-hop-web-components",
+    "title": "Web Components",
+    "doc": "cac-cach-tich-hop/web-components.mdx",
+    "defaultSnapshot": "vanilla",
+    "snapshots": [
+      {
+        "id": "vanilla",
+        "title": "Custom element + shell thuần",
+        "defaultFile": "assets/catalog.v1.js"
+      },
+      {
+        "id": "react",
+        "title": "Trích đoạn React adapter",
+        "defaultFile": "ProductCardAdapter.tsx"
+      }
+    ]
+  },
+  {
+    "id": "module-federation-types-contracts",
+    "title": "Types và contracts",
+    "doc": "module-federation/types-contracts.mdx",
+    "defaultSnapshot": "manual-types",
+    "snapshots": [
+      {
+        "id": "manual-types",
+        "title": "Contract package + ambient types + runtime boundary",
+        "defaultFile": "shell/src/catalog-boundary.ts"
+      },
+      {
+        "id": "declaration-build",
+        "title": "Trích đoạn build declarations",
+        "defaultFile": "catalog/tsconfig.public-types.json"
+      },
+      {
+        "id": "generated-types",
+        "title": "Trích đoạn Enhanced generated types",
+        "defaultFile": "shell/webpack.config.cjs"
+      }
+    ]
+  },
+  {
+    "id": "giao-tiep-va-trang-thai-data-fetching",
+    "title": "Data fetching và cache",
+    "doc": "giao-tiep-va-trang-thai/data-fetching.mdx",
+    "defaultFile": "shell/cart-runtime.tsx"
+  },
+  {
+    "id": "kiem-thu-va-tooling-local-development",
+    "title": "Local development nhiều ứng dụng",
+    "doc": "kiem-thu-va-tooling/local-development.mdx",
+    "defaultSnapshot": "profiles",
+    "snapshots": [
+      {
+        "id": "profiles",
+        "title": "Remote profiles: trích đoạn cấu hình",
+        "defaultFile": "tools/dev-remotes.cjs"
+      },
+      {
+        "id": "msw",
+        "title": "MSW: browser mocks",
+        "defaultFile": "apps/shell/src/mocks/handlers.js"
+      },
+      {
+        "id": "backend",
+        "title": "Backend local: trích đoạn proxy",
+        "defaultFile": "apps/shell/webpack.config.cjs"
+      }
+    ]
+  },
+  {
+    "id": "kiem-thu-va-tooling-observability",
+    "title": "Logs, metrics và tracing",
+    "doc": "kiem-thu-va-tooling/observability.mdx",
+    "defaultFile": "src/observability/telemetry.ts"
+  },
+  {
+    "id": "production-resilience",
+    "title": "Resilience khi remote lỗi",
+    "doc": "production/resilience.mdx",
+    "defaultFile": "src/resilience/CatalogSlot.tsx"
   }
 ]
