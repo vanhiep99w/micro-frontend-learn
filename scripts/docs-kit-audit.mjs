@@ -90,7 +90,7 @@ export async function auditDocsKit() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const result = await auditDocsKit();
   const report = {
-    docsKitVersion: '0.9.0',
+    docsKitVersion: JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).dependencies['@vanhiep99w/docs-kit'],
     scope: 'README.md and all Markdown/MDX under content/',
     remainingLegacyDiagrams: [],
     ...result,
