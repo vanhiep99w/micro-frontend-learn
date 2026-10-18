@@ -154,8 +154,19 @@ Mở `http://localhost:3001` nếu remote có trang standalone. Trang này giúp
 
 Từ **terminal thứ hai**, chạy phép thử dùng `fetch` có sẵn của Node:
 
-```bash
-node -e "fetch('http://localhost:3001/remoteEntry.js').then(async (res) => { console.log('status:', res.status); console.log('content-type:', res.headers.get('content-type')); console.log('body-start:', (await res.text()).slice(0, 160)); if (!res.ok) process.exitCode = 1; }).catch((error) => { console.error(error); process.exitCode = 1; });"
+Đây là lệnh để bạn chạy trong lab, không phải transcript đã được thực thi trên site tài liệu.
+
+```terminal-session
+title: Kiểm tra entry từ terminal thứ hai
+context:
+  kind: local
+  cwd: shop-workspace
+  label: Terminal 2 — catalog đang chạy ở terminal 1
+steps:
+  - id: entry
+    command: |-
+      node -e "fetch('http://localhost:3001/remoteEntry.js').then(async (res) => { console.log('status:', res.status); console.log('content-type:', res.headers.get('content-type')); console.log('body-start:', (await res.text()).slice(0, 160)); if (!res.ok) process.exitCode = 1; }).catch((error) => { console.error(error); process.exitCode = 1; });"
+    expected: Status 200, MIME JavaScript và body-start là code, không phải HTML fallback. Fetch không khởi tạo container hay kiểm chứng CORS.
 ```
 
 Bạn cần thấy status `200`, `Content-Type` phù hợp với JavaScript và phần đầu body là code, không phải `<!DOCTYPE html>` hoặc markup của trang lỗi. MIME JavaScript và nội dung cụ thể có thể khác theo version tooling; không đối chiếu từng ký tự của output.

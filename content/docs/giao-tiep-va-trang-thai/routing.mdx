@@ -48,10 +48,17 @@ Bài này đi từ **vấn đề cần giải quyết**, sau đó mới đến g
 
 Trước khi tách app, bạn có thể khai báo tất cả màn hình ở một nơi:
 
-```text
-/catalog                    → Danh sách sản phẩm
-/catalog/products/42        → Chi tiết sản phẩm 42
-/cart                       → Giỏ hàng
+```d2 title="URL và màn hình trước khi tách app"
+direction: right
+catalog: /catalog
+product: /catalog/products/42
+cart: /cart
+list: Danh sách sản phẩm
+detail: Chi tiết sản phẩm 42
+basket: Giỏ hàng
+catalog -> list: Hiển thị
+product -> detail: Hiển thị
+cart -> basket: Hiển thị
 ```
 
 Một **route** là quy tắc nối đường dẫn với nội dung cần hiển thị. **Routing** là việc tìm và hiển thị nội dung theo URL hiện tại. **Navigation** là hành động chuyển sang một URL khác, chẳng hạn click vào sản phẩm để mở trang chi tiết.
@@ -73,10 +80,16 @@ Nếu không phân chia hai việc đó, shell dễ phải biết mọi màn hì
 
 Giả sử shell đang liệt kê từng đường dẫn:
 
-```text
-/catalog               → Catalog
-/catalog/products/:id  → Catalog
-/cart                  → Cart
+```d2 title="Shell liệt kê từng route cụ thể"
+direction: right
+list: /catalog
+product: /catalog/products/:id
+basket: /cart
+catalog: Catalog
+cart: Cart
+list -> catalog: Shell chọn app
+product -> catalog: Shell chọn app
+basket -> cart: Shell chọn app
 ```
 
 Catalog thêm trang `/catalog/search`. Nếu shell chỉ nhận những đường dẫn đã liệt kê, Catalog đã có trang mới nhưng shell vẫn chưa biết cần tải nó.
@@ -104,13 +117,20 @@ Hai router dùng browser history trong cùng document không tạo ra hai lịch
 
 Giả sử shell và Catalog có hai router độc lập, đều đang nhận location `/catalog`. Catalog dùng router của nó để chuyển tới `/cart`. Nếu chưa có cơ chế thông báo cho shell, bạn có thể thấy:
 
-```text
-Sau khi Catalog điều hướng:
-
-URL trên thanh địa chỉ        = /cart
-History entry hiện tại        = /cart
-Location trong router Catalog = /cart
-Location trong router shell   = /catalog  ← chưa được cập nhật
+```d2 title="Sau khi Catalog điều hướng: browser đã đổi, shell chưa nhận thông báo"
+direction: down
+navigation: Catalog điều hướng tới /cart
+browser: Browser {
+  address: "URL trên thanh địa chỉ = /cart"
+  history: "History entry hiện tại = /cart"
+}
+catalog: "Location trong router Catalog = /cart"
+shell: "Location trong router shell = /catalog\nChưa được cập nhật" {
+  style.stroke: "#b45309"
+}
+navigation -> browser: pushState thành công
+navigation -> catalog: Router Catalog cập nhật
+browser -> shell: "Không tự phát popstate\nShell chưa được thông báo" {style.stroke-dash: 4}
 ```
 
 URL và browser history đã khớp. Thứ chưa khớp là **location trong router shell**, nên shell có thể vẫn hiển thị Catalog thay vì Cart.
@@ -161,15 +181,26 @@ Những vấn đề trên không phải các loại routing để chọn một v
 
 Giải pháp cho hai vấn đề đầu là để shell nhận **nhóm đường dẫn**, còn remote nhận **màn hình cụ thể**:
 
-```text
-Shell:
-/catalog và /catalog/*  → Catalog
-/cart và /cart/*        → Cart
-
-Catalog:
-/catalog               → Danh sách sản phẩm
-/catalog/products/:id  → Chi tiết sản phẩm
-/catalog/search        → Tìm kiếm
+```d2 title="Shell chọn app theo prefix; Catalog chọn màn hình"
+direction: down
+shell: Shell {
+  catalog_paths: /catalog và /catalog/*
+  cart_paths: /cart và /cart/*
+}
+catalog: Catalog {
+  list_path: /catalog
+  product_path: /catalog/products/:id
+  search_path: /catalog/search
+  list: Danh sách sản phẩm
+  product: Chi tiết sản phẩm
+  search: Tìm kiếm
+  list_path -> list: Hiển thị
+  product_path -> product: Hiển thị
+  search_path -> search: Hiển thị
+}
+cart: Cart
+shell.catalog_paths -> catalog: Chọn app
+shell.cart_paths -> cart: Chọn app
 ```
 
 Trong bản đồ trên, `*` biểu diễn phần đường dẫn phía sau prefix. Với React Router, điểm gắn `/catalog/*` cũng nhận URL `/catalog`; không cần khai báo thêm một route trùng cho nó.
@@ -478,11 +509,15 @@ Browser history là chuỗi điểm đến mà browser dùng để xử lý Back
 
 Ví dụ, mở sản phẩm rồi mở giỏ hàng thường dùng push:
 
-```text
-/catalog → /catalog/products/42 → /cart
-
-Back → /catalog/products/42
-Back → /catalog
+```d2 title="Push tạo entry; Back quay về entry trước"
+direction: right
+catalog: /catalog
+product: /catalog/products/42
+cart: /cart
+catalog -> product: Push mở sản phẩm
+product -> cart: Push mở giỏ hàng
+cart -> product: Back lần 1
+product -> catalog: Back lần 2
 ```
 
 Chuẩn hóa URL hoặc thay route cũ bằng route mới thường dùng replace, để Back không quay lại một điểm chỉ làm nhiệm vụ redirect. Khi browser đã chuyển entry do Back/Forward, app chỉ cập nhật UI; không push lại URL đó.

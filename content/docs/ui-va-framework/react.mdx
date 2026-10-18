@@ -62,7 +62,7 @@ Remote export component; shell render nó như component local. Đây là mặc 
 
 ```d2 title="Component trong tree của shell"
 direction: right
-n0: "Shell root"
+n0: "Shell root" {icon: ../../d2-icons/react.svg}
 n1: "ThemeProvider"
 n2: "ErrorBoundary"
 n3: "Suspense"
@@ -103,13 +103,13 @@ Remote export adapter, nhận một DOM container và tự tạo root. Shell có
 ```d2 title="Ứng dụng có root riêng"
 direction: down
 shell: Shell React tree {
-  root: Shell root
+  root: Shell root {icon: ../../d2-icons/react.svg}
   theme: ThemeProvider
   container: div dành cho catalog
   root -> theme -> container
 }
 catalog: Catalog React tree riêng {
-  root: Catalog root
+  root: Catalog root {icon: ../../d2-icons/react.svg}
   providers: CatalogProviders
   app: CatalogApp
   root -> providers -> app

@@ -12,6 +12,7 @@
     "postinstall": "fumadocs-mdx",
     "typecheck": "fumadocs-mdx && tsc --noEmit",
     "check:docs": "node scripts/check-docs.mjs",
+    "check:visuals": "node scripts/docs-kit-audit.mjs --check",
     "check:export": "node scripts/check-export.mjs",
     "build:source": "node scripts/build-source-examples.mjs",
     "check:source": "node scripts/check-source-examples.mjs",
@@ -22,7 +23,7 @@
     "preview": "node scripts/serve-export.mjs"
   },
   "dependencies": {
-    "@vanhiep99w/docs-kit": "0.5.0",
+    "@vanhiep99w/docs-kit": "0.9.0",
     "fumadocs-core": "16.17.5",
     "fumadocs-mdx": "15.4.7",
     "fumadocs-ui": "16.17.5",

@@ -4,7 +4,7 @@ Site tài liệu tiếng Việt dùng Next.js App Router, Fumadocs MDX/UI và Ta
 
 Có **81 trang MDX** tiếng Việt trong 12 nhóm, từ nền tảng đến production và troubleshooting.
 Đây là repository tài liệu, không phải workspace chạy ứng dụng shop trong các bài lab.
-Sơ đồ D2 và Source Explorer dùng `@vanhiep99w/docs-kit@0.5.0`.
+Sơ đồ D2, 5 learning components và Source Explorer dùng đúng `@vanhiep99w/docs-kit@0.9.0` từ npm registry.
 
 ## Chạy trên máy có mạng
 
@@ -29,6 +29,7 @@ Kiểm tra sau khi cài:
 ```bash
 npm run check:docs
 npm run check:source
+npm run check:visuals
 npm test
 npm run typecheck
 npm run build
@@ -103,7 +104,7 @@ Bạn có thể yêu cầu: **“Dùng fumadocs-technical-writer viết chi ti�
 - `Callout` và các thành phần MDX mặc định được đăng ký trong `mdx-components.tsx`.
 - Viết sơ đồ kiến trúc/flow/lifecycle bằng fenced `d2`; giữ cây thư mục, log, URL và công thức ở dạng text khi phù hợp. Mermaid không được cấu hình.
 
-## D2 và Source Explorer
+## D2, learning components và Source Explorer
 
 ### Sơ đồ D2
 
@@ -123,6 +124,49 @@ catalog -> cart: addItem
 
 Dùng nhãn ngắn; tách flow dài thành giai đoạn. Diagram cuộn ngang trên màn hình nhỏ.
 Chỉ compile source D2 đáng tin cậy trong repository vì SVG được nhúng trực tiếp.
+
+### Learning components
+
+`source.config.ts`, `mdx-components.tsx` và `app/global.css` đăng ký đồng bộ plugin,
+component và CSS cho cả 5 loại fence. Descriptor YAML được validate khi build,
+không thực thi lệnh, code hoặc HTTP request:
+
+| Fence | Dùng khi cần giải thích | Ví dụ trong curriculum |
+| --- | --- | --- |
+| `code-walkthrough` | Từng bước đọc source và highlight dòng | Shared dependencies: async bootstrap |
+| `code-diff` | Thay đổi chính xác trước/sau | Remote không tải: sửa `publicPath` |
+| `terminal-session` | Command, môi trường chạy và kết quả kỳ vọng | Chạy local: kiểm tra container entry |
+| `protocol-exchange` | HTTP request/response và các biến thể | Caching: lấy config rồi revalidation `304` |
+| `span-waterfall` | Start/duration, overlap và provenance | Performance: chuỗi nối tiếp giả định `730 ms` |
+
+Không ép code, log, payload hay cây thư mục vào diagram/viewer. Giữ thông tin thiết yếu
+trong prose bao quanh; số giả định không phải benchmark. `D2InteractiveDiagram` cũng
+được đăng ký cho fence opt-in khi thật sự cần khám phá sơ đồ lớn; các sơ đồ hiện tại
+ưu tiên SVG tĩnh.
+
+Icons React/Vue lấy từ catalog https://icons.d2lang.com/, lưu bản đã rà soát và checksum
+trong `content/d2-icons/README.md`. D2 nhúng data URL lúc build qua `assetsRoot`, không
+gọi catalog ở browser. Không dùng icon AngularJS cho Angular hiện đại.
+
+### Kiểm kê diagram
+
+`docs-kit-inventory.json` ghi số fence theo từng tài liệu và 5 text artifacts được giữ
+lại có lý do rõ ràng (incident template, Network/Console evidence và 2 cây thư mục).
+Bài Routing đã chuyển 5 bản đồ/luồng Unicode còn sót sang D2, gồm trạng thái shell
+router chưa cập nhật và Back hai lần. Tổng curriculum: **143 D2, 0 Mermaid, không còn
+ASCII/Unicode diagram đã nhận diện chưa chuyển**, 5 ví dụ learning components.
+
+```bash
+npm run check:visuals
+# Sau khi review thay đổi nội dung, cập nhật snapshot kiểm kê:
+node scripts/docs-kit-audit.mjs --write
+```
+
+Audit dùng Markdown/MDX AST, không nhầm code/HTML comments hoặc log có mũi tên với
+sơ đồ. Nó chặn Mermaid và text/box-diagram candidates mới chưa được review; đây là
+regression guard dựa trên dấu hiệu, không thay thế semantic review mọi code fence.
+`npm test` chạy audit và parsers của docs-kit; `check:export` kiểm tra đủ mọi figure,
+5 learning components, icons đã nhúng và Source Explorer trong HTML export.
 
 ### Source Explorer
 
@@ -210,6 +254,11 @@ npm run test:e2e
 Playwright tự mở server static export, kiểm tra Chromium ở viewport desktop/mobile:
 D2 light/dark, lazy assets, 7 bài mới, chọn file/snapshot, region highlight, deep link,
 reload, Back/Forward, Escape, clipboard (desktop), navigation reset và reference lỗi.
+Bộ smoke bổ sung kiểm tra cả 81 route, learning controls/copy, HTTP variants, timing
+table, icons nhúng, light/dark và mobile. Các ví dụ vẫn đọc được khi tắt JavaScript;
+Source Explorer drawer/copy/step controls cần JavaScript. Clipboard chỉ kiểm tra trên
+desktop Chromium, không giả lập quyền clipboard trên mobile.
+
 Lỗi lưu screenshot/trace trong `test-results/`; xem report bằng `npx playwright show-report`.
 Nếu cần browser cài sẵn, truyền `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
 

@@ -137,6 +137,26 @@ Trong DevTools Network, bật các cột Initiator, Priority, Size và Waterfall
 
 Ví dụ giả định: config mất `100 ms`, entry `120 ms`, chunks `180 ms`, data `250 ms`, render `80 ms`. Nếu tất cả nối tiếp, phần chuỗi này là `730 ms`, chưa tính HTML và bootstrap. Tăng compression chỉ tác động một phần duration; nó không xóa năm bước phụ thuộc.
 
+Waterfall dưới đặt mốc `0` tại lúc bắt đầu lấy config để đọc duration và sự nối tiếp. Đây là số **giả định**, không phải trace đo, Web Vitals hay benchmark của repo; quan hệ phụ thuộc phải được xác minh riêng bằng Initiator và code.
+
+```span-waterfall
+title: Từ runtime config đến render — ví dụ nối tiếp
+unit: ms
+provenance:
+  kind: illustrative
+  description: Số giả định trong bài; chưa tính HTML và bootstrap, không phải kết quả đo site hay lab.
+spans:
+  - {id: journey, name: Config đến render, service: shell, start: 0, duration: 730, status: ok}
+  - {id: config, parent: journey, name: Runtime config, service: config, start: 0, duration: 100, status: ok}
+  - {id: entry, parent: journey, name: Catalog entry, service: catalog-cdn, start: 100, duration: 120, status: ok}
+  - {id: chunks, parent: journey, name: Route chunks, service: catalog-cdn, start: 220, duration: 180, status: ok}
+  - {id: data, parent: journey, name: Catalog API, service: catalog-api, start: 400, duration: 250, status: ok}
+  - {id: render, parent: journey, name: Render, service: catalog-ui, start: 650, duration: 80, status: ok}
+```
+
+Parent `journey` là khoảng bao toàn bộ, không cộng thêm vào tổng duration của các span con. Viewer hiển thị dữ liệu tĩnh; nó không tự xác định critical path.
+
+
 Nếu API catalog đã có contract rõ và được phép gọi ngay sau config/auth, có thể bắt đầu data song song với entry và chunks:
 
 ```d2 title="Tìm dependency nối tiếp thay vì chỉ đếm request"

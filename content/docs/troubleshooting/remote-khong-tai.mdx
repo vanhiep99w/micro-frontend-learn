@@ -346,6 +346,25 @@ Console                                         → ChunkLoadError
 
 **Sửa phía catalog.** Trong `shop-workspace/apps/catalog/webpack.config.cjs`, đổi `output.publicPath` về `'auto'`, giữ các output options khác. Restart `npm run dev:catalog` từ root `shop-workspace`. Với artifact production, build/deploy lại remote; sửa config trên source không đổi artifact đang serve.
 
+```code-diff
+title: shop-workspace/apps/catalog/webpack.config.cjs — chỉ phần output
+language: javascript
+before:
+  label: Sai — chunk theo origin của shell
+  code: |-
+    output: {
+      publicPath: '/',
+    }
+after:
+  label: Đúng cho lab — suy ra asset base từ script
+  code: |-
+    output: {
+      publicPath: 'auto',
+    }
+```
+
+Diff chỉ trích option cần sửa, không phải toàn bộ file để ghi đè. Giữ nguyên các output options khác; `auto` không khôi phục chunk đã bị xóa hoặc sửa CORS ở CDN.
+
 </Step>
 <Step>
 

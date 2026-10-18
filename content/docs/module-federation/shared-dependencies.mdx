@@ -265,12 +265,29 @@ Mình ưu tiên liệt kê request cụ thể với một boundary nhỏ. Khi ch
 
 Lỗi `Shared module is not available for eager consumption` thường xuất hiện khi entry cố consume đồng bộ một dependency mà runtime chưa thể cung cấp đồng bộ. Cách sửa khởi đầu với webpack là tách bootstrap bằng dynamic import, không phải bật eager cho mọi package.
 
-```js title="shell/src/index.js — entry nhẹ"
-import('./bootstrap').catch((error) => {
-  console.error('Shell bootstrap failed', error);
-  document.getElementById('root').textContent =
-    'Ứng dụng chưa khởi động được. Vui lòng tải lại trang.';
-});
+```code-walkthrough
+title: shell/src/index.js — entry nhẹ
+language: javascript
+snapshots:
+  - id: entry
+    title: shell/src/index.js
+    code: |-
+      import('./bootstrap').catch((error) => {
+        console.error('Shell bootstrap failed', error);
+        document.getElementById('root').textContent =
+          'Ứng dụng chưa khởi động được. Vui lòng tải lại trang.';
+      });
+steps:
+  - id: boundary
+    snapshot: entry
+    title: Tạo async boundary
+    description: Dynamic import tách bootstrap khỏi entry đồng bộ; entry không kéo React vào trước khi shared runtime sẵn sàng.
+    ranges: [[1, 1]]
+  - id: failure
+    snapshot: entry
+    title: Giữ thông báo lỗi tại shell
+    description: Ghi lỗi bootstrap và thay nội dung root bằng thông báo local, không phụ thuộc remote đang lỗi. Viewer chỉ đọc code, không chạy bootstrap.
+    ranges: [[2, 4]]
 ```
 
 ```jsx title="shell/src/bootstrap.jsx — code render sau async boundary"

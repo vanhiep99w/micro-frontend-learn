@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSourceExamples } from './source-examples.mjs';
+import { auditDocsKit } from './docs-kit-audit.mjs';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(project, 'out');
@@ -22,6 +23,9 @@ assert(existsSync(join(output, '_next/static')), 'Missing JS/CSS assets.');
 
 const docs = walk(content).filter((path) => path.endsWith('.mdx'));
 let diagrams = 0;
+let learningExamples = 0;
+const inventory = await auditDocsKit();
+const learningKinds = ['code-walkthrough', 'code-diff', 'terminal-session', 'protocol-exchange', 'span-waterfall'];
 for (const path of docs) {
   const slug = relative(content, path).replaceAll('\\', '/').replace(/\.mdx$/, '');
   const route = 'docs' + (slug === 'index' ? '' : '/' + slug.replace(/\/index$/, ''));
@@ -32,6 +36,18 @@ for (const path of docs) {
   const figures = [...html.matchAll(/<figure\b[^>]*class="[^"]*\bd2-diagram\b/g)].length;
   assert.equal(figures, expected, `Missing rendered D2 diagrams: ${route}`);
   diagrams += figures;
+  const counts = inventory.rows.find((row) => row.path === relative(project, path).replaceAll('\\', '/')).counts;
+  for (const kind of learningKinds) {
+    const rendered = [...html.matchAll(/<figure\b[^>]*class="([^"]*)"/g)]
+      .filter((match) => match[1].split(/\s+/).includes(kind)).length;
+    assert.equal(rendered, counts[kind] ?? 0, `Missing rendered ${kind}: ${route}`);
+    learningExamples += rendered;
+  }
+  if (['docs/ui-va-framework/react', 'docs/ui-va-framework/vue'].includes(route)) {
+    const icons = [...html.matchAll(/<image\b[^>]*(?:href|xlink:href)="([^"]+)"/g)];
+    assert(icons.length >= 2, `Missing light/dark catalog icons: ${route}`);
+    for (const icon of icons) assert(icon[1].startsWith('data:image/svg+xml;base64,'), `Non-embedded D2 icon: ${route}`);
+  }
 }
 
 const searchPath = join(output, 'api/search.json');
@@ -77,4 +93,4 @@ for (const entry of manifest) {
   }
 }
 
-console.log(`OK: out/ contains ${docs.length} docs, ${diagrams} rendered D2 diagrams, ${manifest.length} source projects/${sourceFiles} files, home, 404, assets and static search JSON.`);
+console.log(`OK: out/ contains ${docs.length} docs, ${diagrams} rendered D2 diagrams, ${learningExamples} learning examples, ${manifest.length} source projects/${sourceFiles} files, home, 404, assets and static search JSON.`);

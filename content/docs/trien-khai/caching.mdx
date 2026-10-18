@@ -116,19 +116,37 @@ Nếu không gửi cache headers rõ ràng, một số response có thể bị h
 
 Khi chọn revalidation, server cấp validator cho representation, thường là `ETag`, và có thể thêm `Last-Modified`. Ví dụ dưới đây là **policy thay thế `no-store`**, không phải header để ghép thêm vào policy mặc định của config:
 
-```http title="Response đầu tiên của /runtime/config.json với policy revalidation"
-HTTP/1.1 200 OK
-Content-Type: application/json
-Cache-Control: no-cache
-ETag: "config-demo-42"
-```
+Hai biến thể dưới đây minh họa lần lấy đầu và lần validate khi representation chưa đổi. Response `200` chỉ trích headers (body config được lược khỏi ví dụ); response `304` thực sự không có body. Viewer không gửi request.
 
-Browser đã lưu body và validator có thể gửi:
-
-```http
-GET /runtime/config.json HTTP/1.1
-Host: shop.example.com
-If-None-Match: "config-demo-42"
+```protocol-exchange
+title: GET runtime config và conditional GET
+variants:
+  - id: initial
+    title: Lần đầu — 200
+    request:
+      method: GET
+      url: /runtime/config.json
+      headers:
+        - {id: host, name: Host, value: shop.example.com}
+    response:
+      status: 200
+      headers:
+        - {id: type, name: Content-Type, value: application/json}
+        - {id: cache, name: Cache-Control, value: no-cache}
+        - {id: etag, name: ETag, value: '"config-demo-42"'}
+  - id: unchanged
+    title: Browser đã lưu body — 304
+    request:
+      method: GET
+      url: /runtime/config.json
+      headers:
+        - {id: host, name: Host, value: shop.example.com}
+        - {id: validator, name: If-None-Match, value: '"config-demo-42"'}
+    response:
+      status: 304
+      headers:
+        - {id: cache, name: Cache-Control, value: no-cache}
+        - {id: etag, name: ETag, value: '"config-demo-42"'}
 ```
 
 Nếu representation chưa đổi, server trả `304 Not Modified` không có body; cache dùng lại body đã lưu. Nếu config đổi, server phải trả `200` với body và validator mới. Headers caching và validators trên response `304` cũng phải nhất quán với representation được validate.

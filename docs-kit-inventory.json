@@ -1,0 +1,776 @@
+{
+  "docsKitVersion": "0.9.0",
+  "scope": "README.md and all Markdown/MDX under content/",
+  "remainingLegacyDiagrams": [],
+  "rows": [
+    {
+      "path": "README.md",
+      "counts": {
+        "bash": 4,
+        "mdx": 2,
+        "json": 1
+      }
+    },
+    {
+      "path": "content/d2-icons/README.md",
+      "counts": {}
+    },
+    {
+      "path": "content/docs/bat-dau/bai-toan-shop.mdx",
+      "counts": {
+        "d2": 2
+      }
+    },
+    {
+      "path": "content/docs/bat-dau/chay-local.mdx",
+      "counts": {
+        "bash": 7,
+        "js": 2,
+        "terminal-session": 1,
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/bat-dau/host-remote-dau-tien.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 5,
+        "jsx": 6,
+        "js": 4
+      }
+    },
+    {
+      "path": "content/docs/bat-dau/index.mdx",
+      "counts": {
+        "bash": 4,
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/bat-dau/moi-truong.mdx",
+      "counts": {
+        "bash": 11,
+        "text": 3,
+        "d2": 1,
+        "powershell": 1
+      }
+    },
+    {
+      "path": "content/docs/bat-dau/workspace.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 9,
+        "json": 4,
+        "text": 2,
+        "js": 4
+      }
+    },
+    {
+      "path": "content/docs/cac-cach-tich-hop/iframe.mdx",
+      "counts": {
+        "d2": 1,
+        "http": 2,
+        "ts": 1,
+        "json": 1,
+        "html": 2,
+        "js": 2,
+        "bash": 2
+      }
+    },
+    {
+      "path": "content/docs/cac-cach-tich-hop/import-maps.mdx",
+      "counts": {
+        "js": 9,
+        "html": 2,
+        "json": 3,
+        "d2": 1,
+        "text": 1,
+        "bash": 1
+      }
+    },
+    {
+      "path": "content/docs/cac-cach-tich-hop/index.mdx",
+      "counts": {
+        "d2": 2,
+        "ts": 1
+      }
+    },
+    {
+      "path": "content/docs/cac-cach-tich-hop/single-spa.mdx",
+      "counts": {
+        "d2": 3,
+        "js": 7,
+        "bash": 2,
+        "html": 1,
+        "jsx": 1
+      }
+    },
+    {
+      "path": "content/docs/cac-cach-tich-hop/so-sanh.mdx",
+      "counts": {
+        "ts": 1,
+        "d2": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/cac-cach-tich-hop/web-components.mdx",
+      "counts": {
+        "d2": 2,
+        "js": 2,
+        "html": 1,
+        "css": 1,
+        "tsx": 1
+      }
+    },
+    {
+      "path": "content/docs/giao-tiep-va-trang-thai/authentication.mdx",
+      "counts": {
+        "d2": 2,
+        "http": 1,
+        "ts": 3
+      }
+    },
+    {
+      "path": "content/docs/giao-tiep-va-trang-thai/contracts.mdx",
+      "counts": {
+        "d2": 1,
+        "ts": 4,
+        "json": 4
+      }
+    },
+    {
+      "path": "content/docs/giao-tiep-va-trang-thai/data-fetching.mdx",
+      "counts": {
+        "ts": 4,
+        "d2": 1,
+        "tsx": 2
+      }
+    },
+    {
+      "path": "content/docs/giao-tiep-va-trang-thai/events.mdx",
+      "counts": {
+        "d2": 1,
+        "json": 1,
+        "ts": 6,
+        "tsx": 1
+      }
+    },
+    {
+      "path": "content/docs/giao-tiep-va-trang-thai/index.mdx",
+      "counts": {
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/giao-tiep-va-trang-thai/routing.mdx",
+      "counts": {
+        "d2": 11,
+        "tsx": 2,
+        "ts": 1
+      }
+    },
+    {
+      "path": "content/docs/giao-tiep-va-trang-thai/state-ownership.mdx",
+      "counts": {
+        "d2": 1,
+        "ts": 2,
+        "tsx": 1
+      }
+    },
+    {
+      "path": "content/docs/index.mdx",
+      "counts": {
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/kiem-thu-va-tooling/contract-tests.mdx",
+      "counts": {
+        "d2": 2,
+        "tsx": 1,
+        "bash": 1,
+        "json": 2,
+        "ts": 6
+      }
+    },
+    {
+      "path": "content/docs/kiem-thu-va-tooling/index.mdx",
+      "counts": {
+        "json": 2,
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/kiem-thu-va-tooling/integration-e2e.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 4,
+        "ts": 7
+      }
+    },
+    {
+      "path": "content/docs/kiem-thu-va-tooling/local-development.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 7,
+        "json": 3,
+        "js": 9
+      }
+    },
+    {
+      "path": "content/docs/kiem-thu-va-tooling/monorepo-multi-repo.mdx",
+      "counts": {
+        "d2": 2,
+        "bash": 2,
+        "yaml": 1,
+        "json": 4,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/kiem-thu-va-tooling/observability.mdx",
+      "counts": {
+        "d2": 3,
+        "json": 1,
+        "ts": 4,
+        "bash": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/kiem-thu-va-tooling/unit-component-tests.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 2,
+        "ts": 5,
+        "json": 2,
+        "tsx": 6
+      }
+    },
+    {
+      "path": "content/docs/kien-truc/application-shell.mdx",
+      "counts": {
+        "d2": 3,
+        "ts": 2,
+        "tsx": 1
+      }
+    },
+    {
+      "path": "content/docs/kien-truc/build-time-composition.mdx",
+      "counts": {
+        "ts": 2,
+        "d2": 2,
+        "tsx": 3,
+        "json": 2,
+        "bash": 4
+      }
+    },
+    {
+      "path": "content/docs/kien-truc/chia-domain.mdx",
+      "counts": {
+        "d2": 2,
+        "ts": 1,
+        "yaml": 1
+      }
+    },
+    {
+      "path": "content/docs/kien-truc/chon-kien-truc.mdx",
+      "counts": {
+        "d2": 2,
+        "yaml": 1
+      }
+    },
+    {
+      "path": "content/docs/kien-truc/index.mdx",
+      "counts": {
+        "d2": 4
+      }
+    },
+    {
+      "path": "content/docs/kien-truc/runtime-composition.mdx",
+      "counts": {
+        "d2": 1,
+        "text": 1,
+        "json": 1,
+        "ts": 1
+      }
+    },
+    {
+      "path": "content/docs/kien-truc/server-side-composition.mdx",
+      "counts": {
+        "html": 1,
+        "d2": 2,
+        "ts": 1,
+        "text": 2,
+        "http": 2
+      }
+    },
+    {
+      "path": "content/docs/module-federation/co-che.mdx",
+      "counts": {
+        "d2": 4,
+        "js": 7,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/module-federation/dynamic-remotes.mdx",
+      "counts": {
+        "js": 8,
+        "json": 1,
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/module-federation/exposes-remotes.mdx",
+      "counts": {
+        "d2": 1,
+        "js": 9,
+        "bash": 4,
+        "html": 1,
+        "ts": 3
+      }
+    },
+    {
+      "path": "content/docs/module-federation/index.mdx",
+      "counts": {
+        "d2": 1,
+        "js": 4
+      }
+    },
+    {
+      "path": "content/docs/module-federation/shared-dependencies.mdx",
+      "counts": {
+        "d2": 1,
+        "js": 5,
+        "code-walkthrough": 1,
+        "jsx": 1
+      }
+    },
+    {
+      "path": "content/docs/module-federation/types-contracts.mdx",
+      "counts": {
+        "d2": 1,
+        "ts": 11,
+        "js": 4,
+        "json": 3,
+        "bash": 2
+      }
+    },
+    {
+      "path": "content/docs/module-federation/version-compatibility.mdx",
+      "counts": {
+        "js": 4,
+        "ts": 2,
+        "d2": 2,
+        "json": 1
+      }
+    },
+    {
+      "path": "content/docs/nen-tang/index.mdx",
+      "counts": {
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/nen-tang/khi-nao-nen-dung.mdx",
+      "counts": {
+        "d2": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/nen-tang/kien-thuc-can-co.mdx",
+      "counts": {
+        "js": 7,
+        "ts": 3,
+        "d2": 2,
+        "http": 1,
+        "css": 1
+      }
+    },
+    {
+      "path": "content/docs/nen-tang/micro-frontend-la-gi.mdx",
+      "counts": {
+        "d2": 2,
+        "json": 1
+      }
+    },
+    {
+      "path": "content/docs/nen-tang/team-ownership.mdx",
+      "counts": {
+        "d2": 2,
+        "json": 1,
+        "yaml": 1
+      }
+    },
+    {
+      "path": "content/docs/nen-tang/thuat-ngu.mdx",
+      "counts": {
+        "d2": 2,
+        "ts": 1
+      }
+    },
+    {
+      "path": "content/docs/production/dependency-governance.mdx",
+      "counts": {
+        "json": 2,
+        "js": 1,
+        "bash": 2,
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/production/index.mdx",
+      "counts": {
+        "d2": 1
+      }
+    },
+    {
+      "path": "content/docs/production/migration.mdx",
+      "counts": {
+        "d2": 1,
+        "ts": 3
+      }
+    },
+    {
+      "path": "content/docs/production/performance.mdx",
+      "counts": {
+        "d2": 2,
+        "span-waterfall": 1,
+        "ts": 2,
+        "js": 2,
+        "http": 1,
+        "bash": 2,
+        "json": 2
+      }
+    },
+    {
+      "path": "content/docs/production/resilience.mdx",
+      "counts": {
+        "d2": 3,
+        "ts": 2,
+        "tsx": 2
+      }
+    },
+    {
+      "path": "content/docs/production/security.mdx",
+      "counts": {
+        "d2": 2,
+        "ts": 1,
+        "http": 4,
+        "bash": 1,
+        "html": 2
+      }
+    },
+    {
+      "path": "content/docs/thuc-hanh/checklist-danh-gia.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 2,
+        "text": 1,
+        "md": 1
+      }
+    },
+    {
+      "path": "content/docs/thuc-hanh/deploy-doc-lap.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 8,
+        "html": 1,
+        "js": 8,
+        "json": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/thuc-hanh/index.mdx",
+      "counts": {
+        "d2": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/thuc-hanh/remote-loi.mdx",
+      "counts": {
+        "d2": 2,
+        "bash": 7,
+        "js": 5,
+        "html": 1,
+        "json": 1
+      }
+    },
+    {
+      "path": "content/docs/thuc-hanh/routing-auth.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 9,
+        "js": 11,
+        "jsx": 7
+      }
+    },
+    {
+      "path": "content/docs/thuc-hanh/shop-shell-catalog-cart.mdx",
+      "counts": {
+        "d2": 2,
+        "ts": 2,
+        "bash": 5,
+        "js": 8,
+        "jsx": 5
+      }
+    },
+    {
+      "path": "content/docs/trien-khai/caching.mdx",
+      "counts": {
+        "d2": 1,
+        "protocol-exchange": 1,
+        "ts": 1,
+        "text": 1,
+        "http": 1,
+        "nginx": 1,
+        "bash": 2
+      }
+    },
+    {
+      "path": "content/docs/trien-khai/cdn-assets.mdx",
+      "counts": {
+        "d2": 1,
+        "json": 1,
+        "js": 2,
+        "bash": 3,
+        "ts": 4,
+        "http": 1,
+        "text": 1,
+        "nginx": 1
+      }
+    },
+    {
+      "path": "content/docs/trien-khai/ci-cd.mdx",
+      "counts": {
+        "d2": 1,
+        "text": 1,
+        "json": 1,
+        "yaml": 1,
+        "bash": 1
+      }
+    },
+    {
+      "path": "content/docs/trien-khai/index.mdx",
+      "counts": {
+        "d2": 2,
+        "json": 1
+      }
+    },
+    {
+      "path": "content/docs/trien-khai/preview-environments.mdx",
+      "counts": {
+        "d2": 4,
+        "json": 2,
+        "ts": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/trien-khai/rollout-rollback.mdx",
+      "counts": {
+        "d2": 4,
+        "js": 1,
+        "http": 1,
+        "text": 1,
+        "bash": 1
+      }
+    },
+    {
+      "path": "content/docs/trien-khai/runtime-configuration.mdx",
+      "counts": {
+        "json": 1,
+        "d2": 2,
+        "ts": 4,
+        "http": 2,
+        "bash": 2
+      }
+    },
+    {
+      "path": "content/docs/troubleshooting/debug-checklist.mdx",
+      "counts": {
+        "d2": 1,
+        "bash": 1,
+        "js": 2,
+        "text": 2
+      }
+    },
+    {
+      "path": "content/docs/troubleshooting/duplicate-react.mdx",
+      "counts": {
+        "d2": 1,
+        "jsx": 2,
+        "bash": 5,
+        "js": 7,
+        "json": 1,
+        "ts": 1
+      }
+    },
+    {
+      "path": "content/docs/troubleshooting/index.mdx",
+      "counts": {
+        "d2": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/troubleshooting/remote-khong-tai.mdx",
+      "counts": {
+        "d2": 1,
+        "js": 5,
+        "bash": 2,
+        "text": 2,
+        "code-diff": 1
+      }
+    },
+    {
+      "path": "content/docs/troubleshooting/routing-css.mdx",
+      "counts": {
+        "d2": 2,
+        "nginx": 1,
+        "bash": 1,
+        "tsx": 3,
+        "js": 3,
+        "css": 2
+      }
+    },
+    {
+      "path": "content/docs/troubleshooting/shared-version-mismatch.mdx",
+      "counts": {
+        "d2": 2,
+        "text": 2,
+        "bash": 1,
+        "js": 5
+      }
+    },
+    {
+      "path": "content/docs/troubleshooting/stale-cache.mdx",
+      "counts": {
+        "d2": 3,
+        "bash": 2,
+        "js": 1,
+        "text": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/accessibility.mdx",
+      "counts": {
+        "d2": 1,
+        "html": 4,
+        "ts": 5,
+        "css": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/angular.mdx",
+      "counts": {
+        "d2": 1,
+        "ts": 7,
+        "html": 1,
+        "js": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/css-isolation.mdx",
+      "counts": {
+        "d2": 2,
+        "css": 7,
+        "tsx": 1,
+        "html": 2,
+        "js": 1,
+        "ts": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/design-system.mdx",
+      "counts": {
+        "d2": 1,
+        "css": 2,
+        "html": 1,
+        "ts": 2,
+        "tsx": 2,
+        "json": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/index.mdx",
+      "counts": {
+        "d2": 3,
+        "ts": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/nextjs-ssr.mdx",
+      "counts": {
+        "d2": 3,
+        "js": 3,
+        "tsx": 5,
+        "json": 1,
+        "bash": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/react.mdx",
+      "counts": {
+        "d2": 3,
+        "tsx": 4,
+        "ts": 3,
+        "html": 1,
+        "bash": 1,
+        "js": 1
+      }
+    },
+    {
+      "path": "content/docs/ui-va-framework/vue.mdx",
+      "counts": {
+        "d2": 1,
+        "ts": 3,
+        "vue": 1
+      }
+    }
+  ],
+  "fences": 752,
+  "reviewed": [
+    "content/docs/cac-cach-tich-hop/import-maps.mdx|import-map-shop/",
+    "content/docs/kien-truc/runtime-composition.mdx|Catalog release catalog-r17",
+    "content/docs/troubleshooting/debug-checklist.mdx|Tab A:",
+    "content/docs/troubleshooting/index.mdx|Journey/route: mở sản phẩm từ catalog",
+    "content/docs/troubleshooting/remote-khong-tai.mdx|GET http://localhost:3001/remoteEntry.js          → 200 JavaScript"
+  ],
+  "totals": {
+    "bash": 131,
+    "mdx": 2,
+    "json": 53,
+    "d2": 143,
+    "js": 154,
+    "terminal-session": 1,
+    "jsx": 22,
+    "text": 30,
+    "powershell": 1,
+    "http": 16,
+    "ts": 115,
+    "html": 21,
+    "css": 14,
+    "tsx": 35,
+    "yaml": 5,
+    "code-walkthrough": 1,
+    "span-waterfall": 1,
+    "md": 1,
+    "protocol-exchange": 1,
+    "nginx": 3,
+    "code-diff": 1,
+    "vue": 1
+  },
+  "retainedArtifacts": {
+    "content/docs/troubleshooting/index.mdx|Journey/route: mở sản phẩm từ catalog": "Incident record template; arrows are placeholder text, not a diagram.",
+    "content/docs/troubleshooting/remote-khong-tai.mdx|GET http://localhost:3001/remoteEntry.js          → 200 JavaScript": "Illustrative Network/Console evidence; preserve request URLs, statuses and error.",
+    "content/docs/troubleshooting/debug-checklist.mdx|Tab A:": "Illustrative diagnostic record for two tabs; preserve release metadata and HTTP result.",
+    "content/docs/kien-truc/runtime-composition.mdx|Catalog release catalog-r17": "Literal artifact directory listing, not architecture.",
+    "content/docs/cac-cach-tich-hop/import-maps.mdx|import-map-shop/": "Literal file tree used by the implementation, not architecture."
+  }
+}
