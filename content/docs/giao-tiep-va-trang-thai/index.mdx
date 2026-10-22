@@ -152,16 +152,20 @@ Bạn có thể kiểm tra các ý trên bằng một Catalog viết bằng Reac
 
 Bấm **Chạy thử** để tải app. URL dùng deployment riêng của example-learn; nếu Pages chưa được deploy hoặc iframe bị chặn, xem source qua link phía trên. Có thể chạy lab local theo README của repo đó. Chưa có JavaScript trên trang docs thì link **Mở tab mới** vẫn dùng được.
 
-Ban đầu giỏ có hai chiếc áo. Giữ quantity bằng 1 rồi thử theo thứ tự:
+Demo trông như một shop nhỏ: có ảnh sản phẩm, giá minh họa, nút tăng/giảm số lượng và giỏ có tạm tính. Trên mobile, chọn **Giỏ hàng** ở header để cuộn tới giỏ. Mở mục **Xem luồng giao tiếp** bên dưới shop khi muốn xem log hoặc thử các nút ẩn/mount và mô phỏng lỗi.
+
+Ban đầu giỏ có hai chiếc áo. Giữ số lượng ở thẻ cốc bằng 1 rồi thử theo thứ tự:
 
 | Thao tác | Kết quả cần quan sát |
 | --- | --- |
-| Bấm **Thêm cốc** | Log đi qua COMMAND, COMMIT rồi EVENT. Header và Cart Vue cùng hiện 3 sản phẩm, nhưng giỏ chỉ có hai dòng hàng. |
+| Bấm **Thêm vào giỏ** ở thẻ cốc | Log đi qua COMMAND, COMMIT rồi EVENT. Header và Cart Vue cùng hiện 3 sản phẩm, nhưng giỏ chỉ có hai dòng hàng. |
 | Bấm **Ẩn Header** và **Ẩn Cart Vue**, rồi thêm cốc | Listener về 0 nhưng command vẫn thành công vì cart owner chưa bị tháo. |
 | Bấm **Mount Header** và **Mount Cart Vue** | Cả hai đọc snapshot mới và hiện 4, không chờ một event tiếp theo. |
 | Ẩn/mount Cart Vue vài lần | Listener quay lại đúng 2: một cho header, một cho Cart Vue. Không tích lũy listener cũ. |
 | Bấm **Phát lại event cuối** hoặc **Gửi event sai schema** | Event lặp bị bỏ qua theo revision; event sai bị từ chối trước dispatch. Quantity không bị cộng thêm. |
-| Bấm **Từ chối lần thêm tiếp theo**, rồi **Thêm áo** | API giả lập từ chối; không COMMIT snapshot mới và không phát event cập nhật giỏ. |
+| Bấm **Từ chối lần thêm tiếp theo**, rồi **Thêm vào giỏ** ở thẻ áo | API giả lập từ chối; không COMMIT snapshot mới và không phát event cập nhật giỏ. |
+
+Bạn cũng có thể tăng/giảm số lượng hoặc **Xóa** một dòng trong giỏ Vue. Thao tác đó gọi command `setQuantity` qua cart owner; badge header, tổng quantity và tạm tính cùng cập nhật sau xác nhận giả lập. Đây là thao tác bổ sung để quan sát cùng một owner, không phải cho component Vue sửa thẳng store. Giá chỉ là fixture hiển thị; lab không xác nhận giá qua backend và không có checkout.
 
 Log QUERY thể hiện việc consumer đọc snapshot; đó không phải request HTTP. **Xóa log** chỉ xóa lịch sử quan sát, không reset cart. Muốn bắt đầu lại từ hai chiếc áo, chọn **Tải lại demo**.
 
