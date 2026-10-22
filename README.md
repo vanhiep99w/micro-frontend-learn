@@ -318,12 +318,17 @@ Chưa kiểm tra trực quan layout trong bước scaffold.
 `.agents/`, dependencies hay build artifacts. Giải nén, vào thư mục
 `micro-frontend-learn/`, rồi chạy các lệnh cài đặt ở trên.
 
-## Demo chạy thật từ example-learn
+## Example dialog từ example-learn
 
-Trang `/docs/giao-tiep-va-trang-thai` dùng `LiveDemo` của docs-kit 0.10.0 để nhúng Catalog React + Cart Vue. Component được đăng ký trong `mdx-components.tsx`; CSS ở `app/global.css`, không cần remark plugin mới.
+Trang `/docs/giao-tiep-va-trang-thai` dùng **Example Explorer** của docs-kit 0.11.0. Bỏ khung LiveDemo inline: các link `ExampleRef` và nút nổi **Example** mở app trong modal, không thu hẹp layout/TOC của bài như Source Explorer.
 
-Source runnable chuẩn nằm tại [example-learn](https://github.com/vanhiep99w/example-learn/tree/main/examples/micro-frontend/communication/v1), không copy vào repo docs. Các snippet/Source Explorer tĩnh hiện có vẫn giữ nguồn biên soạn riêng của bài.
+- Registry host: `lib/examples.ts`. Có shop React/Vue và EventTarget JavaScript thuần.
+- Provider: `app/example-provider.tsx`, truyền usePathname làm navigationKey, được đặt trong root layout.
+- MDX map: `ExampleRef` trong `mdx-components.tsx`; CSS: `styles/example-explorer.css` trong `app/global.css`. Không cần remark plugin.
+- Shop có hai biến thể thật: mặc định đọc snapshot + subscribe; `?mode=events-only` cố ý chỉ nghe event để thấy lỗi mount muộn. Đây là hai hành vi của cùng lab v1, không phải hai release độc lập.
 
-URL dự kiến: `https://example-learn.pages.dev/micro-frontend/communication/v1/`. Chủ repo cần deploy Pages theo README của example-learn rồi xác nhận URL và iframe thật. Nếu Cloudflare cấp domain khác, đổi `src` trong bài, build/deploy lại docs; không phải phát hành lại docs-kit.
+Một trang có thể thêm nhiều ExampleRef trỏ tới các ID/version của registry. Dialog chọn ví dụ/phiên bản, tải lại, mở app/source ở tab mới và đóng; chỉ một iframe chạy khi mở. Query example/exampleVersion giữ deep link và Back/Forward, không ghi đè source/snapshot của Source Explorer. Đổi route sẽ bỏ các reference của bài cũ.
 
-Demo chỉ tải sau khi bấm Chạy thử; có link mở tab mới và source kể cả khi tắt JavaScript. Test browser của site dùng iframe fixture để kiểm tra wiring, **không chứng nhận deployment bên ngoài đã online**. Demo thật được test riêng trong example-learn. Khi đổi CSP, cho phép origin demo qua frame-src và cho phép origin docs qua frame-ancestors ở server demo.
+Source runnable chuẩn nằm trong [example-learn](https://github.com/vanhiep99w/example-learn), không copy vào docs-kit hoặc repo docs. Cấu hình src phải khớp domain Pages thực; nếu domain đổi, sửa registry và build/deploy lại docs, không phải phát hành docs-kit. Các snippet/Source Explorer tĩnh vẫn có nguồn biên soạn riêng.
+
+No-JavaScript hoặc Ctrl/Cmd-click đi thẳng tới app qua href thật. Browser tests của docs dùng iframe fixture để kiểm tra wiring, không chứng nhận production bên ngoài đã deploy đúng commit. Demo thật được test riêng trong example-learn, gồm event-only, CSP và missing asset 404. Host CSP cần frame-src; server demo cần frame-ancestors cho phép domain docs. Phím Escape trong app khác origin không bubble về parent; nút đóng của dialog luôn ở ngoài iframe.
