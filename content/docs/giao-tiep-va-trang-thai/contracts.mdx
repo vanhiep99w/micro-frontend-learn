@@ -1,175 +1,93 @@
 ---
 title: "Hợp đồng giao tiếp"
-description: "Thiết kế props, capabilities và event schemas cho micro-frontend, với runtime validation, versioning và quy tắc tương thích khi deploy độc lập."
+description: "Thiết kế một API nhỏ giữa catalog và cart: dữ liệu có nghĩa gì, kết quả được xử lý ra sao và đổi phiên bản mà không làm hỏng bên dùng."
 ---
 
-Giả sử cart vừa deploy và đổi `itemCount` từ tổng quantity sang số dòng sản phẩm. Shell vẫn đọc một `number`, TypeScript vẫn build thành công, nhưng badge bỗng hiển thị sai. Một thay đổi khác dễ thấy hơn: catalog bắt đầu gửi field bắt buộc mới trong command, trong khi cart mà người dùng đang mở vẫn là bản cũ.
-
-Để các micro-frontend deploy độc lập, bạn cần thống nhất nhiều hơn tên field và type. **Contract phải nói rõ dữ liệu có nghĩa gì, ai được gọi, kết quả được bảo đảm đến đâu và phiên bản nào dùng được với nhau.** Bài này giúp bạn thiết kế boundary đó trước khi chọn transport hoặc thư viện chia sẻ state.
-
-<Callout type="info" title="Phạm vi ví dụ">
-  Bài dùng shop giả định gồm shell, catalog và cart, nối tiếp ví dụ trong các trang events và state ownership. Code TypeScript, tên package và đường dẫn bên dưới là mẫu thiết kế, không phải implementation có sẵn trong repository docs. Functions và DOM element chỉ dùng cho các remote cùng JavaScript realm; dữ liệu đi qua iframe cần protocol message riêng.
+<Callout type="info" title="Bạn cần biết gì trước khi đọc">
+  Bạn chỉ cần đọc được function, object và Promise trong TypeScript. Ví dụ dùng shop giả định gồm shell (khung ứng dụng), catalog (sản phẩm) và cart (giỏ hàng). Code là mẫu contract để học, chưa phải implementation gọi backend. Các function truyền trực tiếp trong bài dành cho remote chạy cùng môi trường JavaScript của trang; iframe cần message protocol riêng.
 </Callout>
-
-<SourceRef project="giao-tiep-va-trang-thai-contracts" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
-- [Contract không chỉ là interface](#contract-không-chỉ-là-interface)
-  - [Những gì cần ghi trong contract](#những-gì-cần-ghi-trong-contract)
-  - [Public boundary và implementation nội bộ](#public-boundary-và-implementation-nội-bộ)
-- [Chọn hình thức giao tiếp](#chọn-hình-thức-giao-tiếp)
-- [Thiết kế props và lifecycle](#thiết-kế-props-và-lifecycle)
-  - [Mount contract cho catalog](#mount-contract-cho-catalog)
-  - [Quy tắc cập nhật và cleanup](#quy-tắc-cập-nhật-và-cleanup)
+- [Vấn đề bắt đầu từ một con số](#vấn-đề-bắt-đầu-từ-một-con-số)
+- [Contract là thỏa thuận để hai phần dùng được nhau](#contract-là-thỏa-thuận-để-hai-phần-dùng-được-nhau)
 - [Thiết kế command và kết quả](#thiết-kế-command-và-kết-quả)
-  - [Capability thêm sản phẩm](#capability-thêm-sản-phẩm)
-  - [Semantics thành công và lỗi](#semantics-thành-công-và-lỗi)
-- [Thiết kế event và schema](#thiết-kế-event-và-schema)
-  - [Envelope và ý nghĩa payload](#envelope-và-ý-nghĩa-payload)
+  - [Bắt đầu từ việc catalog cần làm](#bắt-đầu-từ-việc-catalog-cần-làm)
+  - [Đọc interface theo từng phần](#đọc-interface-theo-từng-phần)
+  - [Phân biệt bị từ chối và chưa biết kết quả](#phân-biệt-bị-từ-chối-và-chưa-biết-kết-quả)
+  - [Retry không được vô tình thêm hàng hai lần](#retry-không-được-vô-tình-thêm-hàng-hai-lần)
+- [Event thông báo gì cho header](#event-thông-báo-gì-cho-header)
+  - [Phân biệt dữ liệu và thông tin truy vết](#phân-biệt-dữ-liệu-và-thông-tin-truy-vết)
+  - [Event không thay thế dữ liệu hiện tại](#event-không-thay-thế-dữ-liệu-hiện-tại)
+- [Kiểm tra dữ liệu trước khi dùng](#kiểm-tra-dữ-liệu-trước-khi-dùng)
+  - [TypeScript không kiểm tra dữ liệu lúc chạy](#typescript-không-kiểm-tra-dữ-liệu-lúc-chạy)
+  - [Decoder kiểm tra một snapshot](#decoder-kiểm-tra-một-snapshot)
   - [Schema kiểm tra ở runtime](#schema-kiểm-tra-ở-runtime)
-  - [Decode dữ liệu tại boundary](#decode-dữ-liệu-tại-boundary)
-- [Quy tắc tương thích](#quy-tắc-tương-thích)
-  - [Hai chiều cần kiểm tra](#hai-chiều-cần-kiểm-tra)
-  - [Các thay đổi tưởng nhỏ nhưng có thể breaking](#các-thay-đổi-tưởng-nhỏ-nhưng-có-thể-breaking)
-- [Versioning và capability negotiation](#versioning-và-capability-negotiation)
-  - [Phân biệt các loại version](#phân-biệt-các-loại-version)
-  - [Kiểm tra capability trước khi mount](#kiểm-tra-capability-trước-khi-mount)
-- [Migration không bắt buộc deploy đồng thời](#migration-không-bắt-buộc-deploy-đồng-thời)
-  - [Expand và chuyển consumer](#expand-và-chuyển-consumer)
-  - [Rollback và gỡ contract cũ](#rollback-và-gỡ-contract-cũ)
-- [Phân phối và kiểm thử contract](#phân-phối-và-kiểm-thử-contract)
-  - [Package chung nhưng không chung implementation](#package-chung-nhưng-không-chung-implementation)
-  - [Ma trận kiểm thử và fixture](#ma-trận-kiểm-thử-và-fixture)
-- [Failure modes và quan sát](#failure-modes-và-quan-sát)
-- [Checklist trước khi công bố contract](#checklist-trước-khi-công-bố-contract)
+- [Shell truyền chức năng cart cho catalog thế nào](#shell-truyền-chức-năng-cart-cho-catalog-thế-nào)
+  - [Đọc mount contract](#đọc-mount-contract)
+  - [Quy tắc update và cleanup](#quy-tắc-update-và-cleanup)
+- [Đổi contract mà không làm hỏng phiên bản cũ](#đổi-contract-mà-không-làm-hỏng-phiên-bản-cũ)
+  - [Thêm field khác với đổi nghĩa field](#thêm-field-khác-với-đổi-nghĩa-field)
+  - [Kiểm tra cả hai chiều phiên bản](#kiểm-tra-cả-hai-chiều-phiên-bản)
+  - [Khi nào cần version mới](#khi-nào-cần-version-mới)
+  - [Triển khai từng bước và giữ đường rollback](#triển-khai-từng-bước-và-giữ-đường-rollback)
+- [Kiểm thử điều đã cam kết](#kiểm-thử-điều-đã-cam-kết)
+- [Đóng gói và xử lý khi contract không khớp](#đóng-gói-và-xử-lý-khi-contract-không-khớp)
+- [Bài tập tự kiểm tra](#bài-tập-tự-kiểm-tra)
 - [Đọc tiếp](#đọc-tiếp)
 - [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Contract không chỉ là interface
+## Vấn đề bắt đầu từ một con số
 
-Contract là cam kết công khai giữa bên cung cấp và bên sử dụng một boundary. Nó giống một mẫu phiếu giao hàng: người gửi và người nhận thống nhất phải điền gì, từng ô có nghĩa gì, và khi phiếu không hợp lệ thì xử lý thế nào. Điểm khác là các remote có thể giữ những phiên bản mẫu khác nhau trong cùng một phiên browser; vì vậy, tương thích phải được thiết kế chứ không thể chỉ dựa vào việc hai team đã thống nhất một lần.
+Giỏ hàng có hai chiếc áo và một chiếc cốc. Header nên hiện số **3** hay **2**?
 
-Một interface như `{ itemCount: number }` mô tả shape, nhưng không trả lời `0` có nghĩa là giỏ rỗng hay chưa tải. Nó cũng không nói con số là tổng quantity hay số SKU khác nhau. Khi hai bên tự suy đoán khác nhau, dữ liệu đúng type vẫn tạo UI sai.
+Cả hai đều có thể hợp lý: 3 là tổng số đơn vị sản phẩm, còn 2 là số dòng trong giỏ. Nhưng nếu cart trả `itemCount: 2` theo cách đếm dòng, còn shell hiểu đó là tổng quantity, badge sẽ sai mà không có lỗi TypeScript nào.
 
-### Những gì cần ghi trong contract
+Một lỗi khác xuất hiện khi cart deploy trước: cart bắt đầu yêu cầu field mới, nhưng catalog đang mở trong browser vẫn gửi input cũ. Hai bên không nâng cấp cùng lúc, nên không thể dựa vào việc source mới nhất của chúng đang khớp nhau.
 
-| Phần | Câu hỏi phải trả lời | Ví dụ với cart |
-| --- | --- | --- |
-| Owner | Ai quyết định semantics và duyệt thay đổi? | Cart domain sở hữu cart command và cart events |
-| Consumer | Ai cần boundary này, cần quyền gì? | Catalog gửi command; shell chỉ đọc summary |
-| Shape | Field nào bắt buộc, optional, nullable? | `itemCount` là số nguyên không âm khi dữ liệu đã xác nhận |
-| Semantics | Đơn vị, phạm vi và nguồn chuẩn là gì? | `itemCount` là tổng quantity của một `cartId` |
-| Lifecycle | Khi nào gọi được, khi nào hết hiệu lực? | Capability sống theo session, không theo route cart |
-| Delivery | Có lưu lịch sử, ACK hoặc retry không? | Bus trong memory không replay cho subscriber đến muộn |
-| Failure | Kết quả nào là lỗi nghiệp vụ, lỗi nào chưa biết? | Timeout không chứng minh backend chưa commit |
-| Compatibility | Consumer và provider nào được ghép? | Consumer v1 tiếp tục hoạt động với provider còn hỗ trợ v1 |
-| Security | Ai authorize, dữ liệu nào không được truyền? | Backend kiểm tra quyền; không gửi token qua event |
-| Migration | Khi nào ngừng hỗ trợ và rollback thế nào? | Giữ v1 trong cửa sổ chuyển tiếp đã công bố |
+Bài này đi từ lời gọi thêm hàng nhỏ nhất đến cách giữ nó dùng được qua nhiều phiên bản. Mình dùng **tổng quantity** cho `itemCount`: hai chiếc áo cộng một chiếc cốc luôn cho ra 3.
 
-Không phải mọi contract đều cần nhiều trang mô tả. Với một capability nhỏ, một interface, bảng semantics và vài fixture có thể đủ. Nhưng đừng bỏ các quy tắc hành vi chỉ vì chúng không biểu diễn được trong TypeScript.
+## Contract là thỏa thuận để hai phần dùng được nhau
 
-### Public boundary và implementation nội bộ
+Catalog cần nhờ cart thêm hàng mà không biết cart dùng Redux, Zustand hay thư viện nào. Cart công bố một hàm `addItem`; catalog gọi hàm đó và xử lý kết quả. Thỏa thuận về cách gọi và kết quả nhận lại chính là **contract**.
 
-Mình mặc định công bố contract theo domain, không theo thư viện đang dùng. Catalog cần `addItem`, không cần reducer, store instance hay query key nội bộ của cart.
+Trong quan hệ này, cart là **provider**, tức bên cung cấp chức năng. Catalog là **consumer**, tức bên dùng chức năng. Cùng một module có thể cung cấp API này nhưng lại dùng API khác; đây không phải hai loại micro-frontend cố định.
 
-```d2 title="Public boundary và implementation nội bộ"
-direction: right
-catalog: Catalog remote
-cart: Cart domain
-backend: Backend
-shell: Shell
-catalog -> cart: Command contract
-cart -> backend
-cart -> shell: Summary / event
-shell -> catalog: Mount context + capabilities
-```
+Interface TypeScript mô tả một phần contract. Phần còn lại là những quy tắc mà type chưa nói hết:
 
-Shell wiring các capability vào remote; cart domain vẫn sở hữu ý nghĩa của mutation. Nếu đổi cart từ Redux sang một controller khác mà catalog phải sửa import, boundary đang lộ implementation.
+| Điều cần thống nhất | Quyết định trong ví dụ |
+| --- | --- |
+| Ai chịu trách nhiệm? | Cart team sở hữu API giỏ ở frontend; backend xác nhận dữ liệu nghiệp vụ |
+| Catalog được làm gì? | Yêu cầu thêm sản phẩm, không sửa trực tiếp store cart |
+| Số lượng có nghĩa gì? | `quantity` là lượng muốn thêm; `itemCount` là tổng quantity sau cập nhật |
+| Khi nào coi là thành công? | Khi backend đã xác nhận thao tác |
+| Khi chưa biết server đã xử lý chưa? | Trả kết quả `unknown`, không coi như bị từ chối |
+| Header mở muộn thì sao? | Đọc snapshot hiện tại, không chờ event cũ được phát lại |
 
-Không cần tạo public contract cho mọi helper nội bộ. Các component cùng owner và cùng vòng release có thể chia sẻ code trực tiếp; contract có version hữu ích nhất ở ranh giới mà hai bên thật sự cần tiến hóa độc lập.
+Bạn có thể nghĩ contract như phần hướng dẫn đi kèm một ổ cắm: không chỉ cần cắm vừa mà còn phải dùng đúng điện áp. Với phần mềm, “cắm vừa” là field đúng type; “dùng đúng” là hai bên hiểu cùng ý nghĩa và hành vi. So sánh này chỉ để nhấn mạnh rằng đúng cấu trúc chưa đủ.
 
-## Chọn hình thức giao tiếp
-
-| Nhu cầu | Lựa chọn mặc định | Contract cần mô tả |
-| --- | --- | --- |
-| Container truyền cấu hình hiển thị | Props hoặc mount context | Giá trị ban đầu, update, default và phạm vi hiệu lực |
-| Consumer yêu cầu owner làm việc và cần kết quả | Function capability hoặc request-response API | Input, result, lỗi, cancellation và retry |
-| Owner thông báo một thay đổi đã xảy ra | Event | Envelope, payload, delivery và cách lấy snapshot hiện tại |
-| Consumer cần dữ liệu khi mount muộn | Query hoặc read-only snapshot API | Loading/error, freshness, scope và revision nếu có |
-| Shell nói chuyện với iframe | Message protocol qua `postMessage` | Schema serializable, request ID, handshake, origin/source validation |
-
-Props phù hợp với mối quan hệ container–remote. Event phù hợp khi publisher không cần biết subscriber nào đang tồn tại. Với thao tác “thêm sản phẩm và cho biết kết quả”, mình chọn capability thay vì phát một event `add-item` rồi chờ một event khác không có timeout rõ ràng.
-
-Cùng một domain có thể công bố nhiều boundary. Cart nhận command, trả snapshot và phát notification; ba phần đó bổ sung cho nhau chứ không phải ba lựa chọn loại trừ nhau.
-
-<Callout type="warn" title="Transport không thay thế contract">
-  Module Federation quyết định cách tải module, không tự bảo đảm payload tương thích. `CustomEvent` truyền dữ liệu, không định nghĩa ownership. `postMessage` đưa message tới context khác, không tự authorize nội dung message.
-</Callout>
-
-## Thiết kế props và lifecycle
-
-### Mount contract cho catalog
-
-Một remote độc lập framework có thể expose `mount` thay vì buộc shell import React component. Ví dụ này dùng `productId` làm ID sản phẩm thống nhất với trang events; nếu ứng dụng dùng SKU, hãy công bố rõ loại định danh thay vì coi hai tên là tương đương.
-
-```ts title="contracts/catalog-mount.ts" sourceFile="contracts/catalog-mount.ts" sourceRegion="main"
-import type { CartCommandsV1 } from './cart-commands';
-
-export type CatalogPropsV1 = Readonly<{
-  locale: string;
-  currency: string;
-  theme: 'light' | 'dark';
-}>;
-
-export type CatalogMountContextV1 = Readonly<{
-  contract: 'shop.catalog.mount.v1';
-  container: HTMLElement;
-  props: CatalogPropsV1;
-  capabilities: Readonly<{
-    cart: CartCommandsV1;
-  }>;
-}>;
-
-export type CatalogHandleV1 = Readonly<{
-  updateProps(next: CatalogPropsV1): void;
-  unmount(): void;
-}>;
-
-export interface CatalogRemoteV1 {
-  mount(context: CatalogMountContextV1): CatalogHandleV1;
-}
-```
-
-<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/catalog-mount.ts" region="main">Đối chiếu contracts/catalog-mount.ts</SourceRef>
-
-`locale` là language tag mà provider hỗ trợ, còn `currency` là mã tiền tệ mà UI hỗ trợ; `string` không có nghĩa mọi chuỗi đều hợp lệ. Contract thật cần công bố tập giá trị hoặc chính sách fallback. `currency` ở props chỉ là cấu hình hiển thị, không cho catalog tự đổi tiền tệ của giỏ hàng đã được backend xác nhận.
-
-Context truyền một capability nhỏ, không truyền toàn bộ shell service container. Nhờ vậy, test catalog chỉ cần mock command cart, không cần dựng toàn bộ platform.
-
-### Quy tắc cập nhật và cleanup
-
-Interface trên đi kèm các quy tắc sau:
-
-- `mount` chỉ gọi khi container chưa có instance đang hoạt động của remote này; remote chỉ sở hữu DOM bên trong container.
-- `updateProps` nhận **toàn bộ props mới**, không phải partial patch. Remote cập nhật locale, currency và theme mà không remount; draft và state tương tác không liên quan được giữ lại.
-- Capability có identity ổn định trong lifecycle mount. Nếu cần thay session hoặc thay capability, shell unmount rồi mount context mới theo policy này.
-- `unmount` có thể gọi nhiều lần và phải cleanup listener, timer, subscription và DOM do instance tạo. `updateProps` sau unmount bị từ chối bằng lỗi lập trình, không âm thầm dựng lại UI.
-- Nếu `mount` throw, implementation phải cleanup phần đã tạo trước khi throw; shell hiển thị fallback và không gọi `unmount` trên handle chưa tồn tại.
-
-Đây là lựa chọn cho ví dụ, không phải chuẩn bắt buộc của mọi micro-frontend. Bạn có thể dùng mount bất đồng bộ, partial update hoặc một hàm `updateContext`, nhưng phải công bố hành vi tương ứng và test nó.
-
-Có cleanup UI không đồng nghĩa mutation backend đã bị hủy. Remote cần ngăn response muộn cập nhật instance đã unmount hoặc session cũ; nếu command đã gửi tới backend, owner vẫn phải reconcile kết quả theo contract command.
-
-<Callout type="info" title="Functions không phải wire data">
-  `HTMLElement` và function capability không truyền được như dữ liệu qua `postMessage`. Với iframe, chuyển mount/config thành message serializable và xây request-response adapter cho command. Đừng cố serialize object context này hoặc coi một cast TypeScript là bridge.
-</Callout>
+Mình sẽ giữ API công khai nhỏ. Nếu catalog chỉ cần thêm hàng, đừng đưa cho nó cả store, reducer hoặc cache key nội bộ của cart. Khi cart đổi implementation, catalog không nên phải sửa theo.
 
 ## Thiết kế command và kết quả
 
-### Capability thêm sản phẩm
+### Bắt đầu từ việc catalog cần làm
 
-Catalog không nên có quyền `setCartState`. Nó chỉ cần yêu cầu thêm một sản phẩm, còn cart domain quyết định gọi backend và cập nhật state thế nào.
+Giả sử người dùng muốn thêm một chiếc cốc. Catalog cần gửi ba dữ liệu: giỏ nào, sản phẩm nào và thêm bao nhiêu. Nó cũng cần chờ kết quả để cập nhật nút bấm.
+
+```ts
+const result = await cart.addItem(
+  { cartId: 'cart-demo', productId: 'mug', quantity: 1 },
+  { operationId: 'operation-demo-001' },
+);
+```
+
+Đây là một **command**: lời yêu cầu thay đổi dữ liệu. Object đầu là input nghiệp vụ. Object thứ hai chứa tùy chọn của lần gọi; `operationId` nhận diện một ý định thêm hàng để theo dõi và xử lý retry. Ta sẽ quay lại ID này sau khi hiểu các kết quả.
+
+`cart` ở đây là API của cart service trong frontend, không phải component màn hình cart. API này phải dùng được khi catalog đang mở và người dùng chưa truy cập `/cart`.
+
+### Đọc interface theo từng phần
+
+Contract đầy đủ cho lời gọi trên như sau. Bạn không cần đọc hết một lượt: đọc `AddItemInputV1`, rồi `CartSnapshotV1`, cuối cùng `AddItemResultV1` và hàm `addItem`.
 
 ```ts title="contracts/cart-commands.ts" sourceFile="contracts/cart-commands.ts" sourceRegion="main"
 export type CartSnapshotV1 = Readonly<{
@@ -209,36 +127,54 @@ export interface CartCommandsV1 {
 }
 ```
 
-<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/cart-commands.ts" region="main">Đối chiếu contracts/cart-commands.ts</SourceRef>
+Có bốn điểm cần hiểu trong đoạn này:
 
-Các ID là chuỗi không rỗng trong phạm vi đã thống nhất. `quantity` là số nguyên dương, không phải delta âm để xóa sản phẩm. `revision` và `itemCount` là số nguyên không âm trong giới hạn safe integer của JavaScript; revision tăng theo thay đổi được backend xác nhận trong cùng `cartId`.
+1. **Input:** `quantity` là số nguyên dương. Giá trị 2 nghĩa là thêm hai đơn vị, không phải đặt tổng số lượng trong giỏ thành 2. Xóa sản phẩm cần thao tác khác, không gửi quantity âm.
+2. **Snapshot:** là bản dữ liệu tại một thời điểm đã được xác nhận. `itemCount` là tổng quantity của đúng `cartId`.
+3. **Revision:** là số phiên bản dữ liệu tăng khi backend xác nhận thay đổi trong giỏ đó. Nó giúp nhận ra snapshot cũ; chỉ so revision trong cùng một cart, không so hai giỏ khác nhau.
+4. **Result:** có ba trạng thái. `status` giúp consumer chọn cách xử lý bằng `switch`; không phải lần gọi nào cũng trả snapshot.
 
-Provider chịu trách nhiệm validate input. Đặt interface ở package chung giúp kiểm tra khi build, nhưng JavaScript thuần hoặc remote cũ vẫn có thể gọi sai ở runtime. Backend tiếp tục validate và authorize; cart frontend không được tin một `cartId` chỉ vì caller gửi nó.
+Dấu `|` trong `AddItemResultV1` nghĩa là kết quả thuộc một trong ba dạng được liệt kê. `Readonly` yêu cầu code TypeScript không gán lại các field qua type này; nó không tự khóa object lúc chạy.
 
-### Semantics thành công và lỗi
+Các ID trong ví dụ là chuỗi không rỗng. `revision` và `itemCount` là số nguyên không âm trong giới hạn safe integer của JavaScript, tức khoảng số nguyên JavaScript biểu diễn chính xác. Đây là các điều kiện phải kiểm tra khi chạy, không chỉ ghi bằng type `number`.
 
-| Kết quả | Cam kết | Consumer nên làm gì |
+<Callout type="info" title="V1 là version của cam kết">
+  Hậu tố `V1` giúp gọi tên phiên bản contract trong code. Nó không tự kiểm tra remote nào đang chạy, cũng không bảo đảm bên kia thực sự hỗ trợ v1. Phần phiên bản bên dưới sẽ giải thích cách kiểm tra việc đó.
+</Callout>
+
+### Phân biệt bị từ chối và chưa biết kết quả
+
+Giả sử backend báo cốc hết hàng: catalog biết thao tác không được áp dụng. Đó là `rejected`.
+
+Nhưng nếu request timeout thì khác. Backend có thể đã thêm cốc, chỉ có response không tới browser. Khi đó provider chưa biết kết quả cuối cùng; contract trả `unknown`.
+
+| `status` | Điều provider biết | Catalog nên làm gì |
 | --- | --- | --- |
-| `committed` | Backend đã xác nhận mutation; snapshot thuộc đúng cart và scope hiện tại | Bỏ trạng thái pending, dùng kết quả xác nhận hoặc đọc lại owner |
-| `rejected` | Provider xác định thao tác này không được áp dụng | Hiển thị thông báo theo code; không tạo success event |
-| `unknown` | Chưa xác định được thao tác đã commit hay chưa | Reconcile qua owner; nếu retry cùng ý định thì giữ `operationId` |
-| Promise reject | Lỗi ngoài các kết quả đã mô hình hóa, như lỗi lập trình hoặc adapter hỏng | Report, hiển thị lỗi an toàn và không suy ra “chưa commit” |
+| `committed` | Backend đã xác nhận thêm hàng; snapshot thuộc cart và phiên hiện tại | Bỏ pending, hiển thị thành công |
+| `rejected` | Thao tác không được áp dụng, có code giải thích | Hiển thị lỗi tương ứng, chẳng hạn hết hàng |
+| `unknown` | Chưa xác định thao tác đã được áp dụng hay chưa | Báo đang kiểm tra và nhờ cart owner xác định lại kết quả |
 
-Nếu request timeout sau khi backend đã thêm sản phẩm, trả `rejected` sẽ làm consumer hiểu sai rằng có thể tạo thao tác mới. Vì vậy, ví dụ này tách `unknown` để giữ trạng thái “chưa biết” thành một phần của contract.
+API thật còn cần cách kiểm tra một operation đang `unknown`, chẳng hạn endpoint tra cứu operation nếu backend hỗ trợ. Đọc lại giỏ giúp biết state hiện tại, nhưng không phải lúc nào cũng chứng minh được chính operation nào đã thêm hàng. Interface trên cố ý chỉ mô tả thao tác thêm; nó chưa cung cấp toàn bộ quy trình khôi phục.
 
-`operationId` xác định một ý định logic. Dùng cùng ID khi retry cùng input; tạo ID mới khi người dùng thật sự muốn thêm lần nữa. Backend phải hỗ trợ deduplication/idempotency với scope và thời hạn cụ thể; một field tên `operationId` không tự tạo ra bảo đảm đó.
+Promise vẫn có thể reject do lỗi ngoài ba kết quả này, như adapter hỏng hoặc lỗi lập trình. Consumer cần `catch`, nhưng không được suy ra mọi exception đều có nghĩa “server chưa thêm”. Nếu chưa xác định được, đừng tự phát thêm một command mới.
 
-`signal` cho phép yêu cầu dừng chờ hoặc hủy request nếu adapter hỗ trợ. Nó **không cam kết rollback** một mutation đã được server xử lý. Contract cần ghi rõ cancellation trả `unknown` hay reject Promise trong implementation thật; ở ví dụ này, khi đã gửi request và không biết kết quả, provider trả `unknown`.
+Khi đã commit, cart service cập nhật snapshot rồi mới thông báo thay đổi. Một listener của badge bị lỗi không được biến thao tác đã thành công ở backend thành kết quả thêm hàng thất bại.
 
-Consumer cũng phải viết nhánh xử lý `unknown` và `catch`. Chỉ test happy path `committed` là chưa đủ để đưa command vào production.
+### Retry không được vô tình thêm hàng hai lần
 
-Event `shop.cart.updated.v1` chỉ phát sau xác nhận, không dùng để quyết định Promise command có thành công hay không. Một subscriber badge hỏng không được biến mutation đã commit thành lỗi thêm sản phẩm.
+Người dùng bấm thêm một chiếc cốc là **một ý định**. Nếu gửi lại đúng ý định đó sau timeout, hãy giữ cùng `operationId` và cùng input. Nếu người dùng thực sự muốn thêm một chiếc nữa, đó là ý định mới và cần ID mới.
 
-## Thiết kế event và schema
+Cách xử lý nhiều request của cùng một ý định mà không áp dụng thao tác lặp gọi là **idempotency**. Nó cần backend hỗ trợ: backend phải ghi nhận ID, kiểm tra input và công bố thời hạn chống trùng. Chỉ thêm field `operationId` vào frontend không tạo ra khả năng này.
 
-### Envelope và ý nghĩa payload
+`signal?: AbortSignal` cho phép yêu cầu hủy chờ hoặc hủy request nếu adapter hỗ trợ. Nó không rút lại thao tác server đã xử lý. Theo quy ước của ví dụ, nếu request đã gửi và việc hủy khiến provider không biết kết quả, provider trả `unknown`.
 
-Dùng lại event trong trang [Events và message bus](/docs/giao-tiep-va-trang-thai/events), với các giá trị minh họa:
+Nói ngắn gọn: **timeout hoặc abort không phải bằng chứng rằng giỏ chưa đổi**. Chỉ retry mutation theo chính sách chống trùng đã được backend hỗ trợ.
+
+## Event thông báo gì cho header
+
+### Phân biệt dữ liệu và thông tin truy vết
+
+Catalog cần kết quả command. Header lại cần biết cart vừa thay đổi để lấy số mới. Cart có thể phát event sau khi backend xác nhận:
 
 ```json
 {
@@ -255,26 +191,102 @@ Dùng lại event trong trang [Events và message bus](/docs/giao-tiep-va-trang-
 }
 ```
 
-| Field | Semantics |
-| --- | --- |
-| `type` | Namespace, domain, sự việc đã xảy ra và major version |
-| `eventId` | ID của một event logic; giữ nguyên khi relay hoặc phát lại |
-| `source` | Owner khai báo phát event; chỉ hỗ trợ routing/debug, không xác thực danh tính |
-| `occurredAt` | Thời điểm publisher tạo event; không dùng để xếp revision |
-| `correlationId` | Liên kết thao tác với notification; có thể dùng `operationId` của command |
-| `payload.cartId` | Phạm vi dữ liệu; chỉ so revision trong cùng cart |
-| `payload.revision` | Revision của snapshot do backend xác nhận, không phải số event consumer đã nhận |
-| `payload.itemCount` | Tổng quantity, không phải số dòng và không phải delta |
+Hãy đọc `payload` trước: giỏ `cart-demo`, tại revision 42, có tổng quantity bằng 3. Đây là số lượng hiện tại, **không phải yêu cầu cộng thêm 3**. Event này dùng cùng tên và ý nghĩa với bài [Events và message bus](/docs/giao-tiep-va-trang-thai/events).
 
-Contract v1 giả định bus trong memory: không replay, không ACK, không tự retry. Subscriber đến muộn query snapshot từ owner. Nếu đổi sang một transport có delivery khác, cần mô tả lại bridge và recovery policy; giữ nguyên JSON shape không đủ để giữ nguyên hành vi.
+Các field bên ngoài payload thường gọi là **envelope**, tức phần mô tả thông báo:
+
+| Field | Dùng để làm gì |
+| --- | --- |
+| `type` | Chọn loại event và phiên bản cần xử lý |
+| `eventId` | Nhận diện một event; giữ nguyên nếu chuyển tiếp hoặc phát lại chính event đó |
+| `source` | Ghi bên khai báo phát thông báo; không phải bằng chứng danh tính |
+| `occurredAt` | Hỗ trợ debug thời điểm phát; không thay revision để xếp thứ tự dữ liệu |
+| `correlationId` | Nối event với thao tác liên quan, ở đây là `operationId` |
+
+Không cần đoán ý nghĩa từ tên field. Ghi những quy tắc này cùng schema để team làm header biết chính xác thứ nó đang dùng.
+
+### Event không thay thế dữ liệu hiện tại
+
+Contract event trong ví dụ dùng bus trong memory: không lưu lịch sử cho nơi đến muộn, không tự retry và không có ACK — phản hồi xác nhận đã nhận. Đây là lựa chọn của ví dụ, không phải thuộc tính của mọi event bus.
+
+Nếu header mount sau khi event được phát, nó phải đọc snapshot từ cart owner. Nếu đã mount, nó có thể dùng thông báo để cập nhật hoặc yêu cầu đọc lại theo chính sách của owner. Phần command ở trên chưa định nghĩa API đọc/subscription; xem [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) cho phần đó.
+
+Contract phải ghi cả hành vi chuyển thông báo. Đổi bus sang cách có lưu lịch sử hoặc phát lại event có thể làm consumer gặp event lặp; giữ nguyên JSON chưa đủ để bảo đảm hành vi giữ nguyên.
+
+## Kiểm tra dữ liệu trước khi dùng
+
+### TypeScript không kiểm tra dữ liệu lúc chạy
+
+Giả sử một remote gửi `itemCount: "3"` dưới dạng string. Đoạn này không phát hiện lỗi:
+
+```ts
+const snapshot = JSON.parse(text) as CartSnapshotV1;
+```
+
+`as CartSnapshotV1` chỉ yêu cầu compiler coi dữ liệu là type đó. Khi code chạy, không có bước kiểm tra nào được thêm vào. Với dữ liệu từ phiên bản khác hoặc message bên ngoài, hãy nhận là `unknown` rồi kiểm tra trước khi dùng.
+
+**Runtime validation** là bước kiểm tra dữ liệu lúc chương trình đang chạy. Nó trả lời “object này có đúng field và giá trị được phép không?”, chưa trả lời “người gửi có quyền sửa giỏ không?”. Backend vẫn phải kiểm tra quyền.
+
+### Decoder kiểm tra một snapshot
+
+Một **decoder** kiểm tra input rồi chuyển nó thành dữ liệu consumer có thể dùng. Decoder nhỏ dưới đây kiểm tra riêng snapshot, chưa kiểm tra toàn bộ event envelope:
+
+```ts title="contracts/decode-cart-snapshot.ts" sourceFile="contracts/decode-cart-snapshot.ts" sourceRegion="main"
+import type { CartSnapshotV1 } from './cart-commands';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value);
+}
+
+function isId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length <= 200
+    && value.trim().length > 0;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+export function decodeCartSnapshotV1(value: unknown): CartSnapshotV1 {
+  if (!isRecord(value)
+    || !isId(value.cartId)
+    || !isCount(value.revision)
+    || !isCount(value.itemCount)) {
+    throw new TypeError('Invalid cart snapshot v1');
+  }
+
+  // Copy các field public: không giữ reference tới object của publisher.
+  return Object.freeze({
+    cartId: value.cartId,
+    revision: value.revision,
+    itemCount: value.itemCount,
+  });
+}
+```
+
+`isId` không chấp nhận chuỗi rỗng hoặc toàn khoảng trắng; giới hạn 200 ký tự là policy minh họa cần thống nhất với backend. `isCount` loại số âm, số thập phân và số ngoài giới hạn safe integer.
+
+Hàm không sửa `"3"` thành `3`, cũng không đổi dữ liệu lỗi thành số `0`. Làm vậy sẽ giấu lỗi của bên gửi và có thể hiển thị “giỏ rỗng” khi thật ra dữ liệu không hợp lệ.
+
+Decoder trả một object mới chỉ chứa ba field v1 và khóa object bằng `Object.freeze`. Nhờ vậy, bên gửi sửa object gốc cũng không làm snapshot đã đọc đổi theo. Vì ba field đều là giá trị đơn giản, cách copy này đủ cho ví dụ; object lồng nhau cần chính sách copy riêng.
 
 ### Schema kiểm tra ở runtime
 
-TypeScript type bị xóa khi compile. `JSON.parse(text) as CartUpdatedV1` không kiểm tra một field nào; nó chỉ khiến compiler tin lời bạn.
+Khi nhiều consumer cần kiểm tra cùng một cấu trúc, có thể mô tả nó bằng **schema** — bộ quy tắc về dữ liệu hợp lệ — rồi dùng validator thực thi. JSON Schema là một định dạng làm việc đó; nó không tự chạy chỉ vì có file `.json`.
 
-Với wire contract cần nhiều ngôn ngữ/tooling cùng đọc, mình ưu tiên JSON Schema và sinh type hoặc validator từ nguồn đó nếu toolchain hỗ trợ. Với ứng dụng thuần TypeScript, một schema library có type inference cũng hợp lý. Tránh duy trì schema và interface riêng mà không có test kiểm tra chúng khớp nhau.
+Schema đầy đủ bên dưới kiểm tra cả envelope và payload của event. Bạn có thể đọc ba quy tắc trước rồi mở chi tiết khi cần triển khai:
 
-Schema rút gọn cho event trên dùng JSON Schema Draft 2020-12:
+- `properties` mô tả field hợp lệ; `required` mới buộc field phải có.
+- `additionalProperties: true` cho phép nhận thêm field chưa biết, miễn field v1 vẫn hợp lệ.
+- `minimum`, `maximum` và `type: integer` ràng buộc số lượng, thay vì chỉ nói chung là `number`.
+
+<details>
+<summary>Schema đầy đủ cho shop.cart.updated.v1</summary>
 
 ```json title="contracts/cart-updated.v1.schema.json" sourceFile="contracts/cart-updated.v1.schema.json" sourceRegion="main"
 {
@@ -318,151 +330,138 @@ Schema rút gọn cho event trên dùng JSON Schema Draft 2020-12:
 }
 ```
 
-<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/cart-updated.v1.schema.json" region="main">Đối chiếu contracts/cart-updated.v1.schema.json</SourceRef>
+</details>
 
-Giới hạn ID 200 ký tự là policy minh họa, cần thống nhất với API thật. Pattern yêu cầu có ít nhất một ký tự không phải whitespace; nó không tự trim hoặc chuẩn hóa ID.
+<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/cart-updated.v1.schema.json" region="main">Mở schema trong Source Explorer</SourceRef>
 
-`properties` mô tả field, còn `required` mới bắt buộc field phải có. `additionalProperties: true` chủ động cho phép consumer v1 đọc event có thêm field, miễn các field cũ vẫn giữ type và nghĩa.
+Cho phép field bổ sung giúp một header v1 vẫn đọc được event có thêm `lineCount`. Decoder v1 chỉ lấy phần nó hiểu. Tuy nhiên, không áp dụng quy tắc bỏ qua field mới một cách máy móc cho command: nếu một tùy chọn mới thay đổi nghiệp vụ, provider cũ bỏ qua nó có thể thực hiện sai ý định. Khi đó hãy kiểm tra khả năng hỗ trợ trước hoặc từ chối rõ ràng.
 
-Vậy có nên luôn cho phép unknown fields? Không. Với command chứa lựa chọn ảnh hưởng nghiệp vụ, silently bỏ qua một option mới có thể khiến thao tác được thực hiện sai ý định. Mình cho phép field bổ sung ở notification này, nhưng command cần policy riêng: reject option không hiểu hoặc kiểm tra capability trước khi gửi.
+Với Draft 2020-12 trong ví dụ, validator phải hỗ trợ đúng draft và được cấu hình kiểm tra `format: date-time` nếu timestamp là điều bắt buộc. Một số cấu hình coi `format` chỉ là thông tin mô tả. Hãy test timestamp sai bằng đúng validator/cấu hình dùng ở runtime.
 
-<Callout type="warn" title="Format không luôn là validation">
-  Với Draft 2020-12, `format` mặc định có thể chỉ là annotation. Chọn validator hỗ trợ đúng draft và bật format assertion hoặc cấu hình kiểm tra `date-time` phù hợp. Nếu protocol bắt buộc timestamp ISO UTC chuẩn như ví dụ, bổ sung ràng buộc đó; `date-time` cũng có thể cho phép timezone offset khác UTC.
-</Callout>
+Nếu giao tiếp qua iframe, kiểm tra `event.origin` và `event.source` trước khi decode; bên gửi dùng `targetOrigin` chính xác. Field `source: "cart"` trong JSON không thay được các kiểm tra đó. Function và DOM element cũng không truyền trực tiếp được qua `postMessage` như context trong phần tiếp theo.
 
-### Decode dữ liệu tại boundary
+## Shell truyền chức năng cart cho catalog thế nào
 
-Boundary nhận dữ liệu bên ngoài nên bắt đầu từ `unknown`, validate rồi chuyển thành model mà consumer dùng. Ví dụ dưới đây minh họa một decoder nhỏ chỉ cho payload; envelope và timestamp cần validator riêng như schema phía trên.
+### Đọc mount contract
 
-```ts title="contracts/decode-cart-snapshot.ts" sourceFile="contracts/decode-cart-snapshot.ts" sourceRegion="main"
-import type { CartSnapshotV1 } from './cart-commands';
+Đến đây đã có API cart. Còn một câu hỏi: catalog lấy object `cart` ở đâu?
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object'
-    && value !== null
-    && !Array.isArray(value);
-}
+Trong thiết kế này, shell khởi tạo hoặc tải cart service rồi truyền API cần thiết vào lúc gắn catalog lên trang. API được truyền vào là một **capability**: chức năng catalog được cấp để dùng. Nó chỉ có `addItem`, không có quyền sửa mọi state của shell.
 
-function isId(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length <= 200
-    && value.trim().length > 0;
-}
+Sơ đồ này mô tả cách nối module, không phải thứ tự các request HTTP:
 
-function isCount(value: unknown): value is number {
-  return typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value >= 0;
-}
+```d2 interactive=false title="Shell cấp API nhỏ thay vì store nội bộ"
+direction: down
+shell: "Shell\nNối các module"
+catalog: "Catalog\nDùng addItem"
+cart: "Cart service\nCung cấp addItem"
+backend: Backend
+shell -> cart: "Khởi tạo hoặc tải service"
+shell -> catalog: "Mount với API cart"
+catalog -> cart: "Gọi addItem"
+cart -> backend: "Gửi request giỏ hàng"
+```
 
-export function decodeCartSnapshotV1(value: unknown): CartSnapshotV1 {
-  if (!isRecord(value)
-    || !isId(value.cartId)
-    || !isCount(value.revision)
-    || !isCount(value.itemCount)) {
-    throw new TypeError('Invalid cart snapshot v1');
-  }
+Contract `mount` có thể độc lập với React hoặc Vue. Shell cần biết nơi gắn UI, cấu hình ban đầu và cách dọn UI, không cần import component nội bộ:
 
-  // Copy các field public: không giữ reference tới object của publisher.
-  return Object.freeze({
-    cartId: value.cartId,
-    revision: value.revision,
-    itemCount: value.itemCount,
-  });
+```ts title="contracts/catalog-mount.ts" sourceFile="contracts/catalog-mount.ts" sourceRegion="main"
+import type { CartCommandsV1 } from './cart-commands';
+
+export type CatalogPropsV1 = Readonly<{
+  locale: string;
+  currency: string;
+  theme: 'light' | 'dark';
+}>;
+
+export type CatalogMountContextV1 = Readonly<{
+  contract: 'shop.catalog.mount.v1';
+  container: HTMLElement;
+  props: CatalogPropsV1;
+  capabilities: Readonly<{
+    cart: CartCommandsV1;
+  }>;
+}>;
+
+export type CatalogHandleV1 = Readonly<{
+  updateProps(next: CatalogPropsV1): void;
+  unmount(): void;
+}>;
+
+export interface CatalogRemoteV1 {
+  mount(context: CatalogMountContextV1): CatalogHandleV1;
 }
 ```
 
-<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/decode-cart-snapshot.ts" region="main">Đối chiếu contracts/decode-cart-snapshot.ts</SourceRef>
+Đọc từ ngoài vào trong:
 
-Decoder chấp nhận unknown fields nhưng chỉ trả phần v1 công bố. Consumer không phụ thuộc vào field mới bằng cách đọc lén object thô. Vì các field trong snapshot đều là primitive, shallow freeze đủ cho model này; thêm object lồng nhau thì phải xét lại chính sách copy/freeze.
+| Phần | Ý nghĩa |
+| --- | --- |
+| `container` | DOM element nơi catalog được phép render |
+| `props` | Cấu hình hiển thị: ngôn ngữ, tiền tệ, theme |
+| `capabilities.cart` | API cart được truyền vào; catalog gọi `addItem` qua đây |
+| `mount(...)` | Gắn UI và trả handle, tức object dùng điều khiển instance vừa gắn |
+| `updateProps(...)` | Đổi cấu hình hiển thị cho instance đang tồn tại |
+| `unmount()` | Tháo instance và dọn tài nguyên của nó |
 
-Decoder cũng không biến `"3"` thành `3`, không gán count sai thành `0`. Coercion và default tại boundary có thể che lỗi producer và biến “không hợp lệ” thành “giỏ rỗng”. Chỉ dùng default khi contract đã công bố rõ hành vi đó.
+`locale` và `currency` có type `string`, nhưng ứng dụng vẫn phải công bố tập giá trị hỗ trợ hoặc fallback khi không hỗ trợ. `currency` ở đây chỉ cấu hình hiển thị; nó không cho UI tự đổi tiền tệ nghiệp vụ của cart.
 
-Với message iframe, kiểm tra `event.origin` và `event.source` trước khi decode; bên gửi dùng `targetOrigin` cụ thể. Schema validation kiểm tra shape, không kiểm tra quyền của người gửi. Với props/capabilities cùng realm, kiểm tra các cấu hình và function cần thiết khi mount, còn command input vẫn validate mỗi lần gọi.
+Shell chỉ nối các module. Cart team vẫn chịu trách nhiệm cho ý nghĩa và implementation của `addItem`.
 
-## Quy tắc tương thích
+### Quy tắc update và cleanup
 
-### Hai chiều cần kiểm tra
+Giả sử shell đổi theme từ sáng sang tối. `updateProps` nên đổi theme, không làm mất số lượng đang chọn của người dùng. Interface không tự bảo đảm điều này, nên contract của ví dụ ghi rõ:
 
-Khi deploy độc lập, cần kiểm tra ít nhất hai tổ hợp:
+- `mount` chỉ gọi khi container chưa có instance catalog đang hoạt động. Catalog chỉ sở hữu DOM bên trong container đó.
+- `updateProps` nhận toàn bộ props mới, không phải một phần cần ghép vào props cũ. Nó cập nhật hiển thị mà không reset draft không liên quan.
+- API cart giữ ổn định trong một lần mount. Với thiết kế này, khi đổi session hoặc thay API, shell unmount rồi mount context mới.
+- `unmount` gọi nhiều lần vẫn an toàn. Listener, timer, subscription và DOM do instance tạo phải được dọn.
+- `updateProps` sau unmount là lỗi lập trình. Nếu `mount` lỗi giữa chừng, remote dọn phần đã tạo trước khi throw để shell hiển thị fallback.
 
-1. **Consumer cũ với provider mới**: provider mới có tiếp tục nhận input cũ và cung cấp output mà consumer cũ hiểu không?
-2. **Consumer mới với provider cũ**: consumer mới có fallback khi provider chưa có field hoặc capability mới không?
+Đây là những lựa chọn cần test, không phải chuẩn bắt buộc cho mọi remote. Bạn có thể thiết kế update một phần hoặc mount bất đồng bộ, nhưng phải viết rõ hành vi tương ứng.
 
-“Thêm field optional là an toàn” thường chỉ đúng sau khi biết field nằm ở input hay output, consumer xử lý unknown field thế nào và field có làm đổi nghĩa thao tác hay không.
+Cleanup UI cũng không có nghĩa request backend đã bị thu hồi. Đừng để response đến muộn cập nhật instance đã unmount hoặc phiên user mới.
 
-| Thay đổi | Consumer cũ + provider mới | Consumer mới + provider cũ |
-| --- | --- | --- |
-| Thêm field output optional, giữ nghĩa field cũ | Thường tương thích nếu consumer bỏ qua field chưa biết | Tương thích nếu consumer không bắt buộc field mới và có fallback |
-| Thêm input optional với default giữ hành vi cũ | Input cũ vẫn chạy được | Chỉ an toàn nếu consumer không yêu cầu hành vi mới từ provider cũ |
-| Thêm input bắt buộc | Breaking: request cũ thiếu field | Không bảo đảm semantics nếu provider cũ bỏ qua field |
-| Xóa hoặc đổi tên field output đã công bố | Breaking với consumer dùng field đó | Consumer mới có thể đọc provider cũ qua adapter, không tự động tương thích |
-| Đổi `number` sang `string` | Breaking | Breaking nếu không có adapter rõ ràng |
-| Thêm giá trị enum trong output | Có thể breaking với switch exhaustive của consumer cũ | Consumer mới có thể xử lý tập giá trị cũ, nhưng vẫn phải test |
-| Thêm giá trị được nhận trong input | Provider mới vẫn nhận giá trị cũ | Provider cũ có thể reject giá trị mới |
-| Đổi nghĩa field dù giữ type | Breaking về semantics | Hai bên hiểu khác nhau, không sửa được bằng cast |
-| Siết giới hạn quantity hoặc ID | Có thể từ chối input từng hợp lệ | Cần kiểm tra producer cũ và policy lỗi mới |
+<SourceRef project="giao-tiep-va-trang-thai-contracts" variant="button">Mở các file contract để đối chiếu</SourceRef>
 
-Trong hệ thống cần rollout thứ tự bất kỳ, hai chiều đều phải đạt yêu cầu. Nếu chỉ hỗ trợ consumer cũ với provider mới, bạn vẫn có thể deploy độc lập theo thứ tự provider trước; hãy ghi điều kiện đó thay vì hứa “deploy lúc nào cũng được”.
+## Đổi contract mà không làm hỏng phiên bản cũ
 
-### Các thay đổi tưởng nhỏ nhưng có thể breaking
+### Thêm field khác với đổi nghĩa field
 
-Thêm `status: 'partially-committed'` vào result của `addItem` không đơn giản là mở rộng union. Consumer cũ có thể chỉ biết `committed`, `rejected` và `unknown`; nhánh mới khiến UI không biết giỏ đã thay đổi đến đâu. Với result v1 đang là tập trạng thái đóng, mình chọn version mới hoặc capability mới.
+Shell mới muốn biết cả tổng quantity lẫn số dòng. Đừng đổi `itemCount` từ 3 thành 2. Thay vào đó, nếu contract v1 cho phép field bổ sung, provider có thể trả:
 
-Ngược lại, nếu ngay từ đầu contract định nghĩa mã lỗi là tập mở và consumer có fallback “Không thực hiện được thao tác”, thêm một mã có thể không breaking. Tính tương thích nằm trong cam kết đã công bố, không nằm ở nhận xét “chỉ thêm một string”.
-
-`optional`, `null` và thiếu field cũng không giống nhau. Ví dụ `couponCode?: string` có thể nghĩa là “không yêu cầu đổi coupon”; `couponCode: null` có thể nghĩa là “xóa coupon”. Nếu provider tự coi cả hai là chuỗi rỗng, consumer và provider đã mất một phần ý nghĩa thao tác.
-
-Thay đổi hành vi đồng bộ thành bất đồng bộ, publish event trước commit, đổi từ snapshot sang delta, hoặc reset draft khi update theme đều có thể breaking dù interface giữ nguyên. Test contract phải quan sát hành vi, không chỉ so schema.
-
-<Callout type="warn" title="Không dùng tolerance để đoán nghiệp vụ">
-  Bỏ qua field mới trong một notification có thể hợp lý. Bỏ qua `reservationRequired: true` trong một command đặt hàng thì không. Với option làm thay đổi kết quả nghiệp vụ, negotiate capability hoặc reject rõ ràng; đừng đoán ý định của caller.
-</Callout>
-
-## Versioning và capability negotiation
-
-### Phân biệt các loại version
-
-| Version | Ví dụ minh họa | Dùng để làm gì |
-| --- | --- | --- |
-| Contract package | `@shop/contracts@1.4.0` | Quản lý artifact chứa types, schemas và tài liệu theo SemVer |
-| Protocol major | `shop.cart.updated.v1` | Nhận diện wire contract mà runtime phải xử lý |
-| Remote build | `cart-build-abc123` | Debug, rollout và rollback implementation |
-
-Một build mới có thể giữ nguyên protocol v1. Package `1.4.0` có thể bổ sung schema/capability không breaking mà không đổi mọi event thành `.v1.4`. SemVer yêu cầu public API rõ: major cho breaking change, minor cho chức năng tương thích và patch cho sửa lỗi tương thích.
-
-Nhưng chỉ bump major của package là chưa đủ. Consumer đã bundle type v1 vẫn có thể tải provider v2 qua remote URL; lockfile của consumer không điều khiển artifact remote tại runtime. Cần version trong protocol, manifest hoặc export tương ứng để tránh ghép sai.
-
-Mình đặt major trong tên event, còn các capability dùng định danh rõ như `shop.cart.add-item.v1`. Không cần một “global version” buộc locale, navigation và cart cùng nâng cấp chỉ vì một domain thay đổi.
-
-### Kiểm tra capability trước khi mount
-
-Shell có thể đọc một descriptor ổn định trước khi inject capabilities. Ví dụ dưới đây minh họa quy ước descriptor; loader thật phải kiểm tra cấu trúc descriptor ở runtime và xác minh provider export tương ứng.
-
-```json title="Ví dụ descriptor của catalog remote"
+```json
 {
-  "descriptorVersion": 1,
-  "name": "catalog",
-  "buildId": "catalog-build-example",
-  "mountContract": "shop.catalog.mount.v1",
-  "requires": ["shop.cart.add-item.v1"],
-  "optional": ["shop.cart.apply-coupon.v1"]
+  "cartId": "cart-demo",
+  "revision": 42,
+  "itemCount": 3,
+  "lineCount": 2
 }
 ```
 
-Nếu provider có `add-item.v1` nhưng chưa có `apply-coupon.v1`, catalog mount bình thường và ẩn tính năng coupon. Nếu thiếu capability bắt buộc hoặc không hiểu mount contract, shell không gọi `mount`; nó chọn build đã biết tương thích hoặc hiển thị fallback có telemetry.
+Header cũ tiếp tục đọc `itemCount`. Header mới dùng `lineCount` nếu có; nếu provider cũ chưa trả field đó thì ẩn phần hiển thị số dòng. Không tự gán `lineCount = itemCount`, vì hai con số không cùng nghĩa.
 
-Capability phải mô tả một hành vi đủ cụ thể. Cờ `supportsCart: true` không nói cart có nhận quantity, hỗ trợ idempotency hay trả snapshot gì. Descriptor cũng không phải bằng chứng bảo mật: implementation có thể khai báo sai, nên vẫn cần contract tests.
+“Tương thích” nghĩa là bên đang dùng vẫn hoạt động theo cam kết cũ. Nó bao gồm ý nghĩa và hành vi, không chỉ việc JSON còn parse được.
 
-Protocol descriptor/handshake cần ổn định, có timeout và quy tắc từ chối version không hiểu. Với iframe, chỉ mark remote ready sau handshake đã validate; với module cùng realm, kiểm tra export/capability trước mount. Negotiation không thay cho một adapter hoặc implementation thật của capability đó.
+### Kiểm tra cả hai chiều phiên bản
 
-## Migration không bắt buộc deploy đồng thời
+Để rollout và rollback không làm lỗi trang, cần nghĩ tới cả hai cách ghép:
 
-### Expand và chuyển consumer
+| Tổ hợp | Câu hỏi cần test với ví dụ trên |
+| --- | --- |
+| Header cũ + cart mới | Header cũ có bỏ qua `lineCount` và vẫn đọc `itemCount: 3` không? |
+| Header mới + cart cũ | Khi không có `lineCount`, header mới có ẩn thông tin đó mà vẫn dùng được không? |
 
-Giả sử shell muốn hiển thị cả số dòng và tổng quantity. Không đổi nghĩa `itemCount` trong v1. Ví dụ v2 có thể công bố:
+Thêm field output có thể an toàn nhờ quy tắc này. Thêm field input bắt buộc lại khác: catalog cũ không gửi field, nên cart mới sẽ từ chối request cũ. Khi đó phải giữ cách gọi cũ hoặc công bố API mới.
 
-```json title="Payload v2 minh họa"
+Tương tự, thêm một giá trị `status` mới có thể làm consumer cũ không biết phải render gì. Nếu `status` v1 được công bố chỉ có ba trạng thái, đừng tự bổ sung trạng thái thứ tư rồi gọi là thay đổi không breaking. *Breaking change* là thay đổi làm bên dùng theo contract cũ không còn hoạt động đúng.
+
+Field thiếu và field bằng `null` cũng cần phân biệt khi có nghiệp vụ liên quan. Chẳng hạn, thiếu `couponCode` có thể nghĩa là giữ nguyên coupon, còn `couponCode: null` có thể nghĩa là xóa. Type và tài liệu phải diễn đạt đúng lựa chọn đó.
+
+### Khi nào cần version mới
+
+Nếu muốn đổi tên hoặc đổi nghĩa field công khai, hãy công bố contract mới. Ví dụ event `shop.cart.updated.v2` có thể dùng tên rõ hơn:
+
+```json
 {
   "cartId": "cart-demo",
   "revision": 42,
@@ -471,59 +470,41 @@ Giả sử shell muốn hiển thị cả số dòng và tổng quantity. Không
 }
 ```
 
-`unitCount` là tổng quantity, `lineCount` là số dòng trong giỏ theo quy tắc gộp dòng của backend. Hai dòng có thể khác variant hoặc cấu hình dù cùng sản phẩm; hãy định nghĩa “dòng” theo domain thật. Provider cần API có đủ dữ liệu, không suy `lineCount` từ `itemCount`.
+`unitCount` là tổng quantity; `lineCount` là số dòng theo cách backend gộp sản phẩm/variant. Không suy ra số dòng chỉ từ tổng quantity. Provider phải có dữ liệu thật để tạo cả hai.
 
-Với thay đổi này, một trình tự rollout có thể là:
+Cần phân biệt ba số phiên bản thường gặp:
 
-1. **Công bố v2** cùng semantics, fixtures, validator và bảng consumer bị ảnh hưởng; giữ v1 nguyên nghĩa.
-2. **Mở rộng provider** để hỗ trợ v1 và v2. Khi cart commit snapshot có đủ dữ liệu, provider tạo projection đúng cho từng version.
-3. **Nâng consumer dần**: shell mới ưu tiên v2 nếu provider có capability tương ứng, vẫn chạy v1 khi rollback về provider cũ. Với v1, badge tổng quantity vẫn chạy; thông tin số dòng bị ẩn thay vì đoán.
-4. **Đo adoption và lỗi** theo contract major/build, test người dùng có phiên browser cũ và consumer đã cache bundle.
-5. **Ngừng v1** chỉ sau khi consumer còn được hỗ trợ không cần nó và cửa sổ rollback đã kết thúc.
-
-Nếu chỉ cần thêm `lineCount` optional vào output hiện có, giữ v1 cũng có thể phù hợp khi consumer cũ cho phép unknown fields và consumer mới có fallback. Ví dụ trên dùng v2 để minh họa migration khi thay đổi public naming/shape; không phải cứ thêm một field là phải nâng major.
-
-Khi provider phát cả event v1 và v2 cho cùng một thay đổi, một consumer nên chọn một version làm đường cập nhật chính. Nếu bridge relay và consumer nghe cả hai, cần dedupe theo operation/revision và cart scope; đừng coi chúng là hai mutation rồi cộng badge hai lần. Việc map identity giữa các representation cũng phải được ghi trong migration contract.
-
-### Rollback và gỡ contract cũ
-
-Rollback provider là bài kiểm tra consumer mới với provider cũ trong thực tế. Nếu shell mới bắt buộc v2 mà cart rollback chỉ có v1, hai build dù đều “đã qua CI” vẫn không chạy cùng nhau.
-
-Giữ fallback trong consumer hoặc giới hạn rollback vào các build còn hỗ trợ capability cần thiết. Khi không có tổ hợp tương thích, fallback có kiểm soát tốt hơn một màn hình trông bình thường nhưng dùng semantics sai.
-
-Không gỡ v1 chỉ vì mọi deployment trên dashboard đã là bản mới. Tab đang mở có thể còn bundle cũ; CDN, service worker hoặc cơ chế rollback có thể phục vụ artifact cũ. Cửa sổ hỗ trợ phải dựa vào chính sách cache, tuổi thọ phiên và cách buộc reload an toàn của ứng dụng, không có một số ngày chung cho mọi hệ thống.
-
-Telemetry là dữ liệu hỗ trợ quyết định, không chứng minh tuyệt đối rằng không còn consumer cũ. Kết hợp quan sát với danh sách consumer, lịch deprecation và policy hỗ trợ đã thống nhất.
-
-## Phân phối và kiểm thử contract
-
-### Package chung nhưng không chung implementation
-
-Một package contract có thể chứa:
-
-- Public types và định danh event/capability.
-- Schemas hoặc runtime validators nhỏ, không phụ thuộc framework UI.
-- Fixtures hợp lệ/không hợp lệ cùng test helpers.
-- Tài liệu semantics, changelog và policy deprecation.
-
-Không đưa Redux store, React Context, query client hoặc service đang giữ session vào package đó. Types được import bằng `import type` không tạo runtime singleton; validator có thể bundle nhiều bản mà không sao, nhưng bus/controller có state thì không nên trông chờ package chung để bảo đảm một instance.
-
-Consumer chỉ nâng dependency khi cần, provider vẫn phải giữ public protocol đã hứa hỗ trợ. Nếu mỗi lần package thay đổi đều buộc tất cả remote rebuild cùng nhau, bạn đã có một release train chung chứ chưa có deploy độc lập.
-
-Trong monorepo, chạy test provider–consumer cùng workspace giúp phát hiện lỗi sớm nhưng dễ bỏ sót phiên bản đã deploy. Cần giữ fixtures và test cho consumer cũ còn được hỗ trợ, không chỉ test mọi package ở HEAD.
-
-### Ma trận kiểm thử và fixture
-
-Tối thiểu hãy kiểm tra các tổ hợp được policy của bạn cho phép:
-
-| Consumer | Provider | Mục tiêu |
+| Loại | Ví dụ | Cho biết điều gì |
 | --- | --- | --- |
-| Cũ còn hỗ trợ | Mới | Input cũ vẫn chạy, output mới vẫn đọc được |
-| Mới | Cũ trong cửa sổ rollback | Fallback/capability negotiation hoạt động |
-| Mới | Mới | Tính năng mới đúng semantics |
-| Version không hỗ trợ | Bất kỳ | Từ chối có kiểm soát, không mount hoặc mutate nhầm |
+| Version package contract | `@shop/contracts@1.4.0` | Bản package chứa type, schema và tài liệu |
+| Version API/event | `shop.cart.updated.v1` | Thỏa thuận mà consumer phải hiểu khi chạy |
+| Version build remote | `cart-build-abc123` | Bản implementation đang được tải để debug/rollback |
 
-Một test nhỏ cho decoder phía trên có thể chạy bằng Node với TypeScript đã compile, hoặc test runner có hỗ trợ TypeScript:
+Với API ổn định từ 1.0.0, SemVer dùng major cho thay đổi không tương thích, minor cho chức năng tương thích và patch cho sửa lỗi tương thích. Tuy nhiên, nâng version package không kiểm soát được remote mà browser tải từ URL. Consumer build với types v1 vẫn có thể gặp implementation mới; runtime cần chọn đúng API được hỗ trợ.
+
+Một cách là provider công bố các capability có ID rõ như `shop.cart.add-item.v1`. Shell kiểm tra ID cần thiết trước mount. Việc hai bên kiểm tra chức năng/version có thể dùng với nhau gọi là **capability negotiation**.
+
+Nếu thiếu capability bắt buộc, không mount và hiển thị fallback. Nếu thiếu chức năng tùy chọn, như áp coupon, có thể ẩn tính năng đó. Đừng dùng một cờ chung `supportsCart: true`: nó không nói provider hỗ trợ cách thêm hàng nào.
+
+Descriptor khai báo capability vẫn cần được kiểm tra cấu trúc và đối chiếu export thật. Khai báo hỗ trợ không tự chứng minh implementation đúng; contract tests mới kiểm tra hành vi đó. Với iframe, phần trao đổi ban đầu này còn cần timeout và kiểm tra origin/source.
+
+### Triển khai từng bước và giữ đường rollback
+
+Với thay đổi từ event v1 sang v2, một trình tự dễ kiểm soát là:
+
+1. Công bố ý nghĩa v2 và các fixture — dữ liệu mẫu cho test — nhưng giữ nguyên v1.
+2. Nâng cart để hỗ trợ cả hai version, tạo output đúng cho mỗi version từ cùng dữ liệu backend.
+3. Nâng header để ưu tiên v2 khi có, vẫn dùng v1 khi thiếu v2. Với v1 thì không hiển thị thông tin số dòng chưa biết.
+4. Test rollback cart về bản cũ. Header mới vẫn phải dùng được v1, hoặc rollback phải bị giới hạn ở build còn hỗ trợ v2.
+5. Chỉ bỏ v1 khi các consumer còn được hỗ trợ và các bản trong cửa sổ rollback đều không cần nó nữa.
+
+Nếu cart phát cả event v1 và v2 cho một lần thay đổi, header nên chọn một version làm đường cập nhật chính. Hai thông báo không phải hai lần thêm hàng. Nếu cần nghe cả hai trong giai đoạn chuyển tiếp, phải nhận diện cùng thay đổi theo cart/revision hoặc quy tắc identity đã thống nhất.
+
+Dashboard deploy toàn bản mới chưa chứng minh không còn consumer cũ. Tab browser đang mở hoặc bundle được cache vẫn có thể dùng v1. Quyết định gỡ v1 cần dựa vào danh sách consumer, chính sách cache, tuổi thọ phiên, dữ liệu quan sát và kế hoạch reload an toàn; không có số ngày cố định đúng cho mọi ứng dụng.
+
+## Kiểm thử điều đã cam kết
+
+Bắt đầu bằng test decoder: chấp nhận snapshot hợp lệ, bỏ qua field bổ sung được cho phép và từ chối dữ liệu sai. File dưới đây dùng Node assert; chạy sau khi compile TypeScript hoặc qua runner hỗ trợ TypeScript.
 
 ```ts title="contracts/decode-cart-snapshot.test.ts" sourceFile="contracts/decode-cart-snapshot.test.ts" sourceRegion="main"
 import assert from 'node:assert/strict';
@@ -562,59 +543,64 @@ assert.equal(decoded.itemCount, 3);
 assert.equal(Object.isFrozen(decoded), true);
 ```
 
-<SourceRef project="giao-tiep-va-trang-thai-contracts" file="contracts/decode-cart-snapshot.test.ts" region="main">Đối chiếu contracts/decode-cart-snapshot.test.ts</SourceRef>
+Test này chứng minh decoder hoạt động theo các quy tắc đã viết. Nó **chưa chứng minh** provider tính `itemCount` đúng. Muốn kiểm tra ý nghĩa, hãy cho provider xử lý giỏ có hai chiếc áo và một chiếc cốc, rồi assert tổng quantity là 3, không phải 2.
 
-Test này kiểm tra payload shape và projection, chưa chứng minh event envelope, command hay lifecycle đúng. Với schema đầy đủ, thêm test event sai `type`, thiếu `correlationId`, timestamp sai và các field bổ sung; dùng cấu hình validator giống production.
+Những hành vi sau cần test riêng với implementation provider và adapter thật:
 
-Với semantics, tạo scenario có hai dòng quantity lần lượt là 2 và 1, rồi assert badge nhận 3 chứ không phải 2. Fixture chứa `itemCount: 3` tự nó không phát hiện provider tính sai con số.
+| Điều cam kết | Tình huống test |
+| --- | --- |
+| Không coi timeout là chắc chắn thất bại | Backend commit nhưng response mất; consumer đi vào nhánh chưa biết và không tự tạo operation mới |
+| Chống trùng theo chính sách backend | Retry cùng operation/input không thêm lần hai trong phạm vi đã hứa |
+| Mount/update/unmount rõ ràng | Đổi theme giữ draft; unmount lặp không để listener cũ sống |
+| Snapshot cho nơi đến muộn | Header mount sau lần cập nhật vẫn đọc được số 3 |
+| Phiên bản dùng được với nhau | Consumer cũ/provider mới; consumer mới/provider cũ; hai bản mới |
+| Version không hỗ trợ bị từ chối | Thiếu capability bắt buộc thì không mount/mutate nhầm |
 
-Với behavior, test mount/update/unmount, timeout không rõ commit, retry cùng operation, subscriber mount muộn và rollback build. Consumer-driven contract tests giúp ghi nhận kỳ vọng thật của từng consumer; provider phải chạy chúng với implementation thật hoặc adapter sát thực tế, không chỉ mock cũng trả đúng fixture đó.
+Với event schema, thêm test sai `type`, thiếu `correlationId`, timestamp lỗi và field bổ sung, dùng đúng cấu hình validator production. Chỉ dùng fixture đúng không thể phát hiện validator chưa bật kiểm tra timestamp.
 
-## Failure modes và quan sát
+Test mong đợi do consumer cung cấp thường gọi là **consumer-driven contract test**. Provider chạy các test đó để biết mình còn đáp ứng cách consumer thật sử dụng API không. Nếu mock luôn trả fixture đúng mà không chạy provider, test chỉ chứng minh mock khớp kỳ vọng, không chứng minh hai bên tích hợp được.
 
-| Triệu chứng | Nguyên nhân có thể | Hành động |
-| --- | --- | --- |
-| Build thành công nhưng badge sai | Đổi semantics count, dùng sai cart scope hoặc snapshot cũ | Kiểm tra owner, đơn vị, cart ID và revision; thêm test nghiệp vụ |
-| Chỉ lỗi sau deploy hoặc rollback | Ghép consumer/provider ngoài ma trận hỗ trợ | Ghi contract major và build IDs; kiểm tra negotiation |
-| Consumer cũ reject event mới | Validator cũ cấm unknown fields | Xác nhận policy v1, sửa compatibility hoặc phát version mới |
-| Bấm thêm hai lần sau timeout gây duplicate | Consumer coi timeout là reject, tạo operation mới | Mô hình hóa unknown và kiểm tra idempotency backend |
-| Mount thành công nhưng listener nhân đôi | Lifecycle cleanup chưa được test | Test unmount lặp, remount và response muộn |
-| Event có `source: 'cart'` nhưng từ nơi không tin cậy | Tin field trong payload như danh tính | Kiểm tra transport origin/source và authorization backend |
+## Đóng gói và xử lý khi contract không khớp
 
-Ở boundary, ghi metadata đủ để tái hiện tổ hợp: remote name/build, contract ID, capability đã chọn, loại lỗi validation, `eventId` hoặc `correlationId` khi phù hợp. Không log nguyên payload theo mặc định; event có thể chứa dữ liệu cá nhân khi contract mở rộng.
+Type, schema, fixture và tài liệu hành vi có thể nằm trong package `@shop/contracts`. Không cần đưa Redux store, React Context hoặc cart service đang giữ state vào package đó. Package contract chia sẻ **thỏa thuận**, không mặc nhiên tạo một instance dùng chung.
 
-Policy khi lỗi phải phân biệt boundary. Mount thiếu capability bắt buộc thì không mount. Event không hợp lệ thì drop/report và revalidate snapshot nếu cần, không fallback count về `0`. Command input không hợp lệ thì từ chối trước mutation; command đã gửi mà chưa biết kết quả thì reconcile, không tự động phát một command mới.
+Mình ưu tiên một nguồn định nghĩa schema/type có thể sinh lẫn nhau khi toolchain cho phép. Nếu viết riêng cả hai, cần test để chúng không trôi khỏi nhau. Consumer có thể nâng package khi cần, còn provider vẫn giữ API cũ trong thời hạn đã cam kết.
 
-## Checklist trước khi công bố contract
+Khi dữ liệu không khớp, cách xử lý phụ thuộc nơi phát hiện:
 
-- [ ] Có owner và danh sách consumer, không expose store hoặc model nội bộ không cần thiết.
-- [ ] Input/output ghi rõ required, optional, null, đơn vị, scope và nguồn chuẩn.
-- [ ] Command phân biệt committed, rejected và chưa biết kết quả; policy retry/cancellation được công bố.
-- [ ] Event ghi rõ snapshot hay delta, delivery, replay và cách lấy state hiện tại.
-- [ ] Props có quy tắc update; mount/unmount, cleanup và response muộn đã được test.
-- [ ] Dữ liệu ngoài được validate từ `unknown`; policy unknown fields và format được cấu hình rõ.
-- [ ] Security không dựa vào field `source`, UI permission hoặc TypeScript type.
-- [ ] Contract version được phân biệt với package version và remote build.
-- [ ] Test cả consumer cũ/provider mới và consumer mới/provider cũ trong phạm vi hỗ trợ.
-- [ ] Có capability negotiation hoặc routing version rõ, cùng fallback khi không tương thích.
-- [ ] Có kế hoạch expand/migrate/remove, telemetry adoption và cửa sổ rollback.
-- [ ] Fixtures và behavior tests bảo vệ semantics, không chỉ schema.
+| Chỗ phát hiện | Xử lý mặc định |
+| --- | --- |
+| Thiếu capability bắt buộc lúc mount | Không mount; shell hiển thị fallback có thể hiểu được |
+| Event không hợp lệ | Bỏ event, ghi nhận lỗi và đọc lại snapshot nếu cần; không đổi badge về 0 |
+| Command input sai trước khi gửi | Từ chối, không mutate; backend vẫn validate/authorize độc lập |
+| Đã gửi command nhưng không biết kết quả | Đưa về quy trình xác định lại, không retry mù bằng operation mới |
 
-Bước thực hành: chọn một boundary đang khiến hai remote phải deploy cùng nhau, ghi lại input, output và hành vi mà consumer thật sự cần. Sau đó thử thay implementation provider hoặc chạy consumer với build provider cũ. Những chỗ phải đoán hay sửa đồng thời chính là phần contract cần làm rõ trước tiên.
+Ghi đủ metadata để debug: build shell/cart, contract ID, loại lỗi validation và operation/event ID phù hợp. Không log token hoặc nguyên payload theo mặc định. Metadata giúp tìm đúng hai phiên bản đang lệch, không biến frontend validation thành kiểm tra bảo mật.
+
+## Bài tập tự kiểm tra
+
+Thử viết contract cho badge trong ứng dụng của bạn bằng năm câu:
+
+1. Con số đếm tổng quantity hay số dòng?
+2. Ai cung cấp số đó và ai chỉ được đọc?
+3. Lúc chưa tải hoặc dữ liệu lỗi, UI hiển thị gì?
+4. Header mount muộn lấy số hiện tại bằng cách nào?
+5. Nếu ngày mai đổi cách đếm, header cũ còn hoạt động ra sao?
+
+Sau đó thử thay implementation cart mà không sửa catalog/header. Nếu bên dùng vẫn phải import store hoặc query key nội bộ để hoạt động, hãy thu nhỏ API công khai trước khi thêm cơ chế giao tiếp mới.
 
 ## Đọc tiếp
 
 <Cards>
-  <Card title="Events và message bus" href="/docs/giao-tiep-va-trang-thai/events" description="Triển khai bus, runtime validation, cleanup và khôi phục snapshot." />
-  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Phân định nguồn chuẩn, quyền ghi và lifecycle của domain state." />
-  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm tra boundary giữa provider và consumer khi release độc lập." />
-  <Card title="Routing và navigation" href="/docs/giao-tiep-va-trang-thai/routing" description="Áp dụng ownership và contract cho URL và điều hướng." />
+  <Card title="Events và message bus" href="/docs/giao-tiep-va-trang-thai/events" description="Cài đặt đường thông báo, kiểm tra payload và cleanup listener." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Thiết kế API đọc hiện tại và quyền thay đổi state." />
+  <Card title="Contract tests" href="/docs/kiem-thu-va-tooling/contract-tests" description="Kiểm tra provider và consumer qua nhiều phiên bản." />
 </Cards>
 
 ## Tài liệu tham khảo
 
-- [Semantic Versioning 2.0.0](https://semver.org/): phân biệt major, minor và patch dựa trên public API và tính tương thích.
-- [TypeScript — Everyday Types](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-assertions): type assertion không tạo runtime validation.
-- [JSON Schema — Object](https://json-schema.org/understanding-json-schema/reference/object): `properties`, `required` và policy additional properties.
-- [JSON Schema — Format](https://json-schema.org/understanding-json-schema/reference/type#format): khác biệt giữa format annotation và validation.
-- [MDN — Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage): kiểm tra origin/source và chỉ định `targetOrigin` khi giao tiếp giữa context.
+- [TypeScript — Type Assertions](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-assertions): type assertion không tạo kiểm tra runtime.
+- [JSON Schema — Object](https://json-schema.org/understanding-json-schema/reference/object): `properties`, `required`, `additionalProperties` và sự khác nhau giữa field thiếu với `null`.
+- [JSON Schema — Format](https://json-schema.org/understanding-json-schema/reference/type#format): cấu hình kiểm tra format.
+- [Semantic Versioning 2.0.0](https://semver.org/): version dựa trên tính tương thích của public API.
+- [MDN — Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage): message giữa context và kiểm tra origin/source.

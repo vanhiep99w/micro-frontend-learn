@@ -1,5 +1,5 @@
 {
-  "docsKitVersion": "0.9.6",
+  "docsKitVersion": "0.9.8",
   "scope": "README.md and all Markdown/MDX under content/",
   "remainingLegacyDiagrams": [],
   "rows": [
@@ -134,9 +134,9 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/contracts.mdx",
       "counts": {
-        "d2": 1,
-        "ts": 4,
-        "json": 4
+        "ts": 6,
+        "json": 4,
+        "d2": 1
       }
     },
     {
@@ -159,6 +159,7 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/index.mdx",
       "counts": {
+        "ts": 1,
         "d2": 1
       }
     },
@@ -734,7 +735,7 @@
       }
     }
   ],
-  "fences": 752,
+  "fences": 755,
   "reviewed": [
     "content/docs/cac-cach-tich-hop/import-maps.mdx|import-map-shop/",
     "content/docs/kien-truc/runtime-composition.mdx|Catalog release catalog-r17",
@@ -753,7 +754,7 @@
     "text": 30,
     "powershell": 1,
     "http": 16,
-    "ts": 115,
+    "ts": 118,
     "html": 21,
     "css": 14,
     "tsx": 35,
