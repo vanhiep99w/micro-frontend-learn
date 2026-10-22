@@ -4,7 +4,7 @@ description: "Hiểu cách chia trách nhiệm và trao đổi dữ liệu giữ
 ---
 
 <Callout type="info" title="Cách đọc nhóm bài">
-  Trang này giải thích bức tranh chung, chưa yêu cầu bạn chọn Redux, event bus hay thư viện cache. Ví dụ là một shop giả định; các tên hàm và event dùng để minh họa thiết kế, không phải API có sẵn trong repository.
+  Trang này giải thích bức tranh chung, chưa yêu cầu bạn chọn Redux, event bus hay thư viện cache. Ví dụ là một shop giả định. Các snippet mô tả thiết kế; phần “Thử trực tiếp React và Vue” liên kết một lab chạy thật trong repo example-learn, không phải backend shop production.
 </Callout>
 
 ## Mục lục
@@ -19,6 +19,7 @@ description: "Hiểu cách chia trách nhiệm và trao đổi dữ liệu giữ
   - [Event là thông báo việc đã xảy ra](#event-là-thông-báo-việc-đã-xảy-ra)
 - [Đi hết một lần bấm thêm vào giỏ](#đi-hết-một-lần-bấm-thêm-vào-giỏ)
 - [Vì sao chỉ nghe event vẫn chưa đủ](#vì-sao-chỉ-nghe-event-vẫn-chưa-đủ)
+- [Thử trực tiếp React và Vue](#thử-trực-tiếp-react-và-vue)
 - [Nên nối các phần với nhau bằng cách nào](#nên-nối-các-phần-với-nhau-bằng-cách-nào)
   - [Bắt đầu bằng lời gọi nhỏ thay vì một global store](#bắt-đầu-bằng-lời-gọi-nhỏ-thay-vì-một-global-store)
   - [Thống nhất ý nghĩa trước khi chọn công cụ](#thống-nhất-ý-nghĩa-trước-khi-chọn-công-cụ)
@@ -137,6 +138,36 @@ Nếu header chỉ chờ event tiếp theo, nó không biết con số hiện t�
 Có thể hình dung event là tiếng chuông báo “sổ vừa đổi”, còn snapshot là nội dung sổ hiện tại. Người đến muộn không nghe được tiếng chuông cũ nhưng vẫn phải đọc được sổ.
 
 Implementation còn phải tránh bỏ lỡ thay đổi giữa lúc đọc và lúc bắt đầu nghe. Với snapshot đồng bộ, đăng ký listener trước rồi đọc là một cách xử lý. Với query bất đồng bộ, owner còn phải ngăn response cũ ghi đè dữ liệu mới. Hai bài [Events và message bus](/docs/giao-tiep-va-trang-thai/events) và [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) đi sâu vào phần này.
+
+## Thử trực tiếp React và Vue
+
+Bạn có thể kiểm tra các ý trên bằng một Catalog viết bằng React, một Cart viết bằng Vue và header do shell JavaScript render. Chúng dùng cùng cart owner qua command, snapshot và subscription; Catalog không import store của Vue, còn Cart không cần biết component React nào đã gửi yêu cầu.
+
+<LiveDemo
+  src="https://example-learn.pages.dev/micro-frontend/communication/v1/"
+  title="React Catalog và Vue Cart — command, snapshot, event"
+  sourceUrl="https://github.com/vanhiep99w/example-learn/tree/main/examples/micro-frontend/communication/v1"
+  height={760}
+/>
+
+Bấm **Chạy thử** để tải app. URL dùng deployment riêng của example-learn; nếu Pages chưa được deploy hoặc iframe bị chặn, xem source qua link phía trên. Có thể chạy lab local theo README của repo đó. Chưa có JavaScript trên trang docs thì link **Mở tab mới** vẫn dùng được.
+
+Ban đầu giỏ có hai chiếc áo. Giữ quantity bằng 1 rồi thử theo thứ tự:
+
+| Thao tác | Kết quả cần quan sát |
+| --- | --- |
+| Bấm **Thêm cốc** | Log đi qua COMMAND, COMMIT rồi EVENT. Header và Cart Vue cùng hiện 3 sản phẩm, nhưng giỏ chỉ có hai dòng hàng. |
+| Bấm **Ẩn Header** và **Ẩn Cart Vue**, rồi thêm cốc | Listener về 0 nhưng command vẫn thành công vì cart owner chưa bị tháo. |
+| Bấm **Mount Header** và **Mount Cart Vue** | Cả hai đọc snapshot mới và hiện 4, không chờ một event tiếp theo. |
+| Ẩn/mount Cart Vue vài lần | Listener quay lại đúng 2: một cho header, một cho Cart Vue. Không tích lũy listener cũ. |
+| Bấm **Phát lại event cuối** hoặc **Gửi event sai schema** | Event lặp bị bỏ qua theo revision; event sai bị từ chối trước dispatch. Quantity không bị cộng thêm. |
+| Bấm **Từ chối lần thêm tiếp theo**, rồi **Thêm áo** | API giả lập từ chối; không COMMIT snapshot mới và không phát event cập nhật giỏ. |
+
+Log QUERY thể hiện việc consumer đọc snapshot; đó không phải request HTTP. **Xóa log** chỉ xóa lịch sử quan sát, không reset cart. Muốn bắt đầu lại từ hai chiếc áo, chọn **Tải lại demo**.
+
+<Callout type="info" title="Giới hạn của lab">
+  API chỉ là mô phỏng bất đồng bộ trong memory với thời gian chờ 350 ms; không gọi backend, không lưu giỏ qua reload. React và Vue được build cùng một demo, chưa minh họa tải remote bằng Module Federation hoặc deploy độc lập. Event schema được rút gọn cho thực hành. Iframe chỉ tách app demo khỏi trang docs; các phần bên trong vẫn giao tiếp trong cùng document.
+</Callout>
 
 ## Nên nối các phần với nhau bằng cách nào
 

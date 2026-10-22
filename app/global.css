@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/style.css';
+@import '@vanhiep99w/docs-kit/styles/live-demo.css';
 @import '@vanhiep99w/docs-kit/styles/d2.css';
 @import '@vanhiep99w/docs-kit/styles/code-walkthrough.css';
 @import '@vanhiep99w/docs-kit/styles/code-diff.css';

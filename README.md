@@ -317,3 +317,13 @@ Chưa kiểm tra trực quan layout trong bước scaffold.
 `dist/micro-frontend-learn.zip` chứa project, không chứa `.git/`,
 `.agents/`, dependencies hay build artifacts. Giải nén, vào thư mục
 `micro-frontend-learn/`, rồi chạy các lệnh cài đặt ở trên.
+
+## Demo chạy thật từ example-learn
+
+Trang `/docs/giao-tiep-va-trang-thai` dùng `LiveDemo` của docs-kit 0.10.0 để nhúng Catalog React + Cart Vue. Component được đăng ký trong `mdx-components.tsx`; CSS ở `app/global.css`, không cần remark plugin mới.
+
+Source runnable chuẩn nằm tại [example-learn](https://github.com/vanhiep99w/example-learn/tree/main/examples/micro-frontend/communication/v1), không copy vào repo docs. Các snippet/Source Explorer tĩnh hiện có vẫn giữ nguồn biên soạn riêng của bài.
+
+URL dự kiến: `https://example-learn.pages.dev/micro-frontend/communication/v1/`. Chủ repo cần deploy Pages theo README của example-learn rồi xác nhận URL và iframe thật. Nếu Cloudflare cấp domain khác, đổi `src` trong bài, build/deploy lại docs; không phải phát hành lại docs-kit.
+
+Demo chỉ tải sau khi bấm Chạy thử; có link mở tab mới và source kể cả khi tắt JavaScript. Test browser của site dùng iframe fixture để kiểm tra wiring, **không chứng nhận deployment bên ngoài đã online**. Demo thật được test riêng trong example-learn. Khi đổi CSP, cho phép origin demo qua frame-src và cho phép origin docs qua frame-ancestors ở server demo.

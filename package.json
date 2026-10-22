@@ -23,7 +23,7 @@
     "preview": "node scripts/serve-export.mjs"
   },
   "dependencies": {
-    "@vanhiep99w/docs-kit": "0.9.8",
+    "@vanhiep99w/docs-kit": "0.10.0",
     "fumadocs-core": "16.17.5",
     "fumadocs-mdx": "15.4.7",
     "fumadocs-ui": "16.17.5",

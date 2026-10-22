@@ -50,6 +50,12 @@ for (const path of docs) {
   }
 }
 
+const demoLesson = readFileSync(join(output, 'docs/giao-tiep-va-trang-thai.html'), 'utf8');
+assert.match(demoLesson, /class="live-demo"/, 'Missing LiveDemo in static export');
+assert.match(demoLesson, /https:\/\/example-learn.pages.dev\/micro-frontend\/communication\/v1\//, 'Wrong demo URL');
+assert.match(demoLesson, /Chạy thử/, 'Missing click-to-load fallback');
+assert(!/<iframe\b/.test(demoLesson), 'LiveDemo must not load an iframe during SSR');
+
 const searchPath = join(output, 'api/search.json');
 assert(existsSync(searchPath), 'Missing static search index: api/search.json.');
 const index = JSON.parse(readFileSync(searchPath, 'utf8'));
