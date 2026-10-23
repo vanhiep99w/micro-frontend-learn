@@ -80,6 +80,12 @@ Auth, deploy độc lập và giả lập remote lỗi sẽ được thêm ở c
 
 ## Ranh giới shell catalog và cart
 
+Mở shop dưới đây để gắn tên module với vùng giao diện: Shell màu vàng đất, Catalog React màu xanh dương, Cart Vue màu xanh lá. Thêm một cốc rồi quan sát badge và giỏ cùng tăng từ 2 lên 3; thay số lượng chưa bấm thêm chỉ là local state của Catalog.
+
+<ExampleRef example="mfe-cart" version="snapshot">Example: ranh giới shop mẫu</ExampleRef>
+
+Demo chạy chung một build và dùng API memory, không chứng minh deploy độc lập hay cách tách backend. Viền màu chỉ đánh dấu vùng module, không tạo CSS isolation. Các quy tắc và công thức trong bài vẫn cần contract của cart, không được suy ra từ màu giao diện.
+
 Đây là ba phần của **frontend**, không phải yêu cầu tạo ba backend service. Bạn có thể dùng cùng mock data hoặc cùng backend khi thực hành; frontend boundary và backend boundary là hai quyết định khác nhau.
 
 ```d2 title="Ranh giới shell catalog và cart"

@@ -39,6 +39,12 @@ description: "Thiết kế một API nhỏ giữa catalog và cart: dữ liệu 
 
 ## Vấn đề bắt đầu từ một con số
 
+Mở shop, giữ quantity cốc bằng 1 rồi thêm vào giỏ đang có 2 áo. Giỏ có hai dòng hàng nhưng badge hiện 3: đó là tổng quantity, không phải số dòng. Tiếp theo, bật lỗi API trong mục “Xem luồng giao tiếp” và thêm hàng để kiểm tra command bị từ chối không đổi snapshot.
+
+<ExampleRef example="mfe-cart" version="snapshot">Example: itemCount và kết quả command</ExampleRef>
+
+Demo chỉ có success/rejected qua API memory. Nó chưa mô phỏng outcome **unknown**, idempotency hoặc compatibility giữa release; không dùng kết quả chạy này để kết luận các contract đó đã được kiểm chứng.
+
 Giỏ hàng có hai chiếc áo và một chiếc cốc. Header nên hiện số **3** hay **2**?
 
 Cả hai đều có thể hợp lý: 3 là tổng số đơn vị sản phẩm, còn 2 là số dòng trong giỏ. Nhưng nếu cart trả `itemCount: 2` theo cách đếm dòng, còn shell hiểu đó là tổng quantity, badge sẽ sai mà không có lỗi TypeScript nào.

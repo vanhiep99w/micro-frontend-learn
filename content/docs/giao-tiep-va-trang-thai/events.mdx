@@ -352,6 +352,14 @@ Trong Next.js/SSR, không tạo một bus chứa dữ liệu người dùng dùn
 
 ## Publish sau khi mutation thành công
 
+Thử hai tình huống trên shop: thêm cốc thành công thì log đi qua COMMAND, COMMIT, EVENT; bật “Từ chối lần thêm tiếp theo” thì không có snapshot hoặc event cập nhật mới. Phát lại event cuối để thấy consumer bỏ revision đã nhận.
+
+<ExampleRef example="mfe-cart" version="snapshot">Example: mutation và event</ExampleRef>
+
+<ExampleRef example="mfe-cart" version="events-only" variant="inline">So sánh consumer chỉ nghe event</ExampleRef>
+
+Ở bản event-only, ẩn consumer, thêm hàng rồi mount lại: dấu — là chưa biết snapshot, không phải giỏ rỗng. Demo có API memory và schema rút gọn; nó chưa thực hiện fetch snapshot bất đồng bộ hay idempotency backend của ví dụ chi tiết bên dưới.
+
 Giả sử `CartApi.addItem` đã validate response và trả snapshot có revision do backend cấp. Interface dưới đây là port mẫu; ứng dụng của bạn cần implementation gọi API thật.
 
 ```ts title="cart/add-item.ts" sourceFile="cart/add-item.ts" sourceRegion="main"

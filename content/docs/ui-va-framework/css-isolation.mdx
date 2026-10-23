@@ -40,6 +40,12 @@ CSS isolation giúp bạn giới hạn vùng ảnh hưởng của style. Nhưng 
 
 ## Style leakage xảy ra ở đâu
 
+Bật CSS của Catalog trong demo: cùng selector `.buy-button` sẽ đổi cả nút Cart ở bản Global. Chuyển **Phiên bản** sang Root namespace hoặc Shadow DOM rồi thử bật/tắt lại để thấy phạm vi selector khác nhau thật sự.
+
+<ExampleRef example="css-isolation" version="global">Example: CSS lan sang module khác</ExampleRef>
+
+Root namespace là selector được giới hạn theo ancestor, không phải CSS Modules hay security boundary. Shadow DOM trong lab dùng stylesheet trong shadow root; font và CSS variables vẫn có thể kế thừa. Viền xanh/vàng ở các demo chỉ là nhãn học tập, không phải cơ chế isolation.
+
 ### Selector và cascade dùng chung
 
 Trong light DOM, một stylesheet được gắn vào document không biết node nào thuộc shell hay remote. Nó chỉ tìm những element khớp selector rồi tham gia cascade.

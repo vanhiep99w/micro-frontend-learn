@@ -154,6 +154,12 @@ Nếu muốn dùng event cho command thay vì function property, bạn phải th
 
 ## Viết custom element tối thiểu
 
+Thử custom element chạy thật: thêm cốc, unmount/mount vài lần rồi thêm tiếp. Mỗi thao tác chỉ gọi command một lần; bật Disabled, đổi locale hoặc style `::part(action)` để quan sát public API thay vì sửa DOM bên trong.
+
+<ExampleRef example="web-components">Example: custom element và cleanup</ExampleRef>
+
+Lab dùng shadow root mở, function capability trong cùng JS realm và notification `bubbles`/`composed` sau command thành công. API giỏ là memory fixture; không phải iframe, không phải app Federation và không thay các đoạn source minh họa dưới đây thành package đã phát hành.
+
 Hai đoạn JavaScript dưới có thể dùng trong một lab ES modules. Lưu implementation thành `/assets/catalog.v1.js` trong ứng dụng lab rồi để shell import nó. URL này không phải asset đã có trong repository tài liệu.
 
 ### Implementation của product card

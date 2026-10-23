@@ -175,6 +175,12 @@ Vì thế, khai báo route ở frontend chưa đủ. Server cũng phải phục 
 
 ## Các giải pháp
 
+Demo cho phép mở sản phẩm, xem chi tiết, thêm hàng rồi chuyển giỏ; thử Back/Forward, lọc “áo” và reload. Ở bản **Remote tự đổi URL**, bấm “Xem chi tiết”: URL đổi nhưng outlet vẫn cũ vì shell không được thông báo.
+
+<ExampleRef example="routing" version="coordinated">Example: shell điều phối navigation</ExampleRef>
+
+Lab dùng navigation port JavaScript và query `route` bên trong iframe để deep link hoạt động trên static Pages. Nó không dùng React/Vue Router, không mô phỏng HTTP rewrite cho `/catalog/products/...`; URL iframe cũng độc lập với URL trang docs. Chuyển route giữ cart memory, còn reload tạo session demo mới.
+
 Những vấn đề trên không phải các loại routing để chọn một và bỏ những loại còn lại. Một ứng dụng thường cần giải quyết nhiều vấn đề cùng lúc. Mình bắt đầu bằng cách chia route, rồi chọn cơ chế phối hợp router theo cách các app được tích hợp.
 
 ### Chia route cấp app và route bên trong app

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -17,10 +17,11 @@
     "build:source": "node scripts/build-source-examples.mjs",
     "check:source": "node scripts/check-source-examples.mjs",
     "test": "node --test tests/*.test.mjs",
-    "prebuild": "npm run build:source",
+    "prebuild": "npm run build:source && npm run check:examples",
     "watch:source": "node scripts/watch-source-examples.mjs",
     "test:e2e": "playwright test",
-    "preview": "node scripts/serve-export.mjs"
+    "preview": "node scripts/serve-export.mjs",
+    "check:examples": "node scripts/check-examples.mjs"
   },
   "dependencies": {
     "@vanhiep99w/docs-kit": "0.11.0",

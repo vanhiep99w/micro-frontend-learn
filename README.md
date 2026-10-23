@@ -4,11 +4,11 @@ Site tài liệu tiếng Việt dùng Next.js App Router, Fumadocs MDX/UI và Ta
 
 Có **81 trang MDX** tiếng Việt trong 12 nhóm, từ nền tảng đến production và troubleshooting.
 Đây là repository tài liệu, không phải workspace chạy ứng dụng shop trong các bài lab.
-Sơ đồ D2, 5 learning components và Source Explorer dùng đúng `@vanhiep99w/docs-kit@0.9.0` từ npm registry.
+Sơ đồ D2, 5 learning components, Source Explorer và Example Explorer dùng `@vanhiep99w/docs-kit@0.11.0` từ npm registry.
 
 ## Chạy trên máy có mạng
 
-Dùng Node.js 22 trở lên (`.nvmrc` chọn Node 22):
+Dùng Node.js 22.18 trở lên (`.nvmrc` chọn Node 22):
 
 ```bash
 npm install
@@ -18,7 +18,7 @@ npm run dev
 Mở http://localhost:3000/docs. Đường dẫn `/` chuyển đến `/docs`.
 
 `npm install` chạy `postinstall` để sinh `.source/`; không viết tay hoặc commit thư mục đó.
-`npm run dev` và `npm run build` tự sinh assets Source Explorer trước khi chạy Next.js.
+`npm run dev` và `npm run build` tự sinh assets Source Explorer trước khi chạy Next.js. Build cũng validate toàn bộ ExampleRef qua `check:examples`.
 Khi dev chạy, watcher theo dõi MDX và registry, tự sinh lại assets sau khi lưu.
 Drawer đang mở cũng tự cập nhật theo revision, không cần reload trang. Bản production
 không polling. Nếu bản nháp có reference sai, watcher báo lỗi và giữ assets hợp lệ gần nhất;
@@ -29,6 +29,7 @@ Kiểm tra sau khi cài:
 ```bash
 npm run check:docs
 npm run check:source
+npm run check:examples
 npm run check:visuals
 npm test
 npm run typecheck
@@ -53,7 +54,7 @@ Trong **Workers & Pages → project → Settings → Build**, đặt:
 | Build output directory | `out` |
 | Root directory | Gốc repo (để trống nếu dashboard đã mặc định) |
 | Production branch | `main` |
-| Node.js | 22+ |
+| Node.js | 22.18+ |
 
 Lưu settings rồi deploy commit mới. `dist/` chỉ chứa ZIP đóng gói mã nguồn,
 không phải assets để publish. `.next/` cũng không phải output cho static Pages.
@@ -332,3 +333,11 @@ Một trang có thể thêm nhiều ExampleRef trỏ tới các ID/version của
 Source runnable chuẩn nằm trong [example-learn](https://github.com/vanhiep99w/example-learn), không copy vào docs-kit hoặc repo docs. Cấu hình src phải khớp domain Pages thực; nếu domain đổi, sửa registry và build/deploy lại docs, không phải phát hành docs-kit. Các snippet/Source Explorer tĩnh vẫn có nguồn biên soạn riêng.
 
 No-JavaScript hoặc Ctrl/Cmd-click đi thẳng tới app qua href thật. Browser tests của docs dùng iframe fixture để kiểm tra wiring, không chứng nhận production bên ngoài đã deploy đúng commit. Demo thật được test riêng trong example-learn, gồm event-only, CSP và missing asset 404. Host CSP cần frame-src; server demo cần frame-ancestors cho phép domain docs. Phím Escape trong app khác origin không bubble về parent; nút đóng của dialog luôn ở ngoài iframe.
+
+### Phủ example trên các bài liên quan
+
+Hiện có **13 bài, 16 reference, 9 demo**: trang giao tiếp tổng quan, bài toán shop, chia domain, events, state ownership, contracts, CSS isolation, routing, resilience, data fetching/cache, Web Components, iframe và design system. Năm bài đầu trong đợt mở rộng dùng lại shop/EventTarget hiện có; bảy bài kỹ thuật có lab riêng trong example-learn.
+
+`npm run check:examples` parse JSX thật trong MDX (không tính tag trong code fence), kiểm tra tất cả ID/version với `lib/examples.ts`. `check:export` đối chiếu số reference trên từng bài và đảm bảo SSR không tạo iframe/dialog. Browser coverage kiểm tra mỗi bài mở đúng app/version; lab repo tự kiểm tra hành vi chạy thật. Không phải 27 Source Explorer projects đều là app runnable.
+
+Source runnable có thể cố ý khác chi tiết snippet bài: root namespace không phải CSS Modules; routing lab dùng query; query transport là Promise memory; iframe parent/child cùng origin; resilience dùng fault injection có nhãn. Đọc phần giới hạn cạnh mỗi ExampleRef trước khi đối chiếu implementation. Không quảng bá shop build chung thành minh chứng deploy độc lập, Federation, auth thật hoặc backend production.

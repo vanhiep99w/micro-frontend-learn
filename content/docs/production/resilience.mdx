@@ -64,6 +64,12 @@ Nếu cart controller được nạp cùng cart UI, lỗi remote cart có thể 
 
 ## Phân loại lỗi theo giai đoạn
 
+Chọn lần lượt các phiên bản Asset 404, sai contract, lỗi React render và timeout. Trong mọi trường hợp, nút thêm áo của Shell và Cart vẫn dùng được. Chỉ bản **Transient fixture** có một lần retry; lỗi khác không được giải quyết bằng một nút thử lại mù.
+
+<ExampleRef example="resilience" version="transient">Example: lỗi nằm trong đúng boundary</ExampleRef>
+
+Dynamic import chunk và React Error Boundary chạy thật; Asset 404 gọi URL không tồn tại thật. Các lỗi contract, render, transient và thời gian chờ là fault injection có chủ đích, không phải một sự cố remote production. Timeout không hủy import; module đến muộn được ghi log nhưng không mount vào slot. Lab build chung, không có Federation.
+
 Không gộp mọi lỗi thành “network error”. Khi remote entry trả HTML thay vì JavaScript, retry liên tục không sửa được hosting rule. Khi component đã render nhưng API trả lỗi, tải lại module cũng không phải hướng xử lý đầu tiên.
 
 | Giai đoạn | Ví dụ failure | Owner xử lý | Hướng phục hồi |

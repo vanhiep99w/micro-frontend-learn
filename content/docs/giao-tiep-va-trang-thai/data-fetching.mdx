@@ -210,6 +210,12 @@ Mình đặt freshness theo loại dữ liệu, không theo một TTL chung cho 
 
 ## Request deduplication hoạt động ở đâu
 
+Ở bản cùng QueryClient, hai observer Header/Cart chỉ khởi động một query function. Đổi sang hai client riêng sẽ thấy hai lần gọi. Bấm “Trả response đang chờ”, thêm hàng và invalidate, rồi thử ẩn Header trong khi Cart còn đọc query.
+
+<ExampleRef example="query-cache" version="shared">Example: cache scope và request sharing</ExampleRef>
+
+Muốn thử race, khởi động một GET bằng invalidate, bấm “Mutation khi GET đang chờ”, rồi trả response cũ. Demo cancel attempt cũ trước khi commit revision mới nên cache không lùi lại. Dùng TanStack Query Core thật, nhưng API là Promise memory do nút điều khiển; bộ đếm không phải số HTTP request. Chưa minh họa auth scope, optimistic rollback hoặc mọi policy của React Query.
+
 TanStack Query có thể chia sẻ request đang chạy cho cùng query key trong cùng client. Đó là deduplication theo query, không phải một cơ chế gom tất cả HTTP request cùng URL trên toàn browser.
 
 | Trường hợp | Có dùng chung request ở query layer không? |

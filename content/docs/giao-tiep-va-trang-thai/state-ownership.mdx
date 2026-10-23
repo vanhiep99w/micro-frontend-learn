@@ -275,6 +275,12 @@ Ví dụ nút chỉ minh họa một thao tác trong UI đang mount và cùng se
 
 ## Giữ state đúng qua lifecycle
 
+Trong dialog, mở “Xem luồng giao tiếp”, ẩn cả Header và Cart Vue rồi tiếp tục thêm cốc. Mount lại: dữ liệu vẫn ở cart owner và consumer đọc được snapshot mới. Listener phải trở về đúng 2, không tăng theo số lần mount.
+
+<ExampleRef example="mfe-cart" version="snapshot">Example: owner sống lâu hơn UI</ExampleRef>
+
+Chuyển phiên bản sang **Event-only (bản lỗi)** để thấy hậu quả khi consumer không đọc snapshot lúc mount. Đây là memory state trong một document; reload reset dữ liệu, không minh họa persistence, logout hoặc backend session scope.
+
 Giờ đường đọc và ghi đã rõ, nhưng owner phải sống bao lâu? Đây là nơi nhiều hệ thống bị lỗi dù contract trông hợp lý.
 
 ### Unmount remote không đồng nghĩa với xóa domain state

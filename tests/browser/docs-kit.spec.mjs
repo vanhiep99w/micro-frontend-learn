@@ -20,7 +20,11 @@ test('D2 themes render without fetching source assets; diagrams scroll inside mo
   for (const route of ['nen-tang/micro-frontend-la-gi', 'kien-truc/application-shell', 'nen-tang/khi-nao-nen-dung', 'ui-va-framework/css-isolation']) {
     await page.goto('/docs/' + route);
     const figure = page.locator('.d2-diagram').first();
-    await figure.scrollIntoViewIfNeeded();
+    // A lazy viewer may replace the static figure while Playwright begins scrolling.
+    await expect(async () => {
+      await figure.scrollIntoViewIfNeeded();
+      await expect(figure).toBeVisible();
+    }).toPass({ timeout: 10000 });
     for (const theme of ['light', 'dark']) {
       await page.evaluate((theme) => {
         document.documentElement.classList.remove('light', 'dark');

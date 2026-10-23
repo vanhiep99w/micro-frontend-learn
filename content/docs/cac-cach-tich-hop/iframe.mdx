@@ -159,6 +159,12 @@ Kiểm tra cả `X-Frame-Options` do server hoặc proxy thêm vào. `DENY` ho�
 
 ## Thiết kế contract postMessage
 
+Trong demo, shell gửi INIT/THEME, child trả READY/RESIZE. Đổi theme và chiều cao, rồi thử gửi schema sai hoặc giả READY từ window shell: receiver phải từ chối message không đúng contract/source.
+
+<ExampleRef example="iframe-bridge">Example: protocol giữa hai window</ExampleRef>
+
+Đây là iframe thật với hai browsing context, nhưng parent/child của lab cùng origin trên Pages, không chứng minh một deployment cross-origin. Code so `origin`, `source`, session và schema, luôn dùng targetOrigin cụ thể; unit tests có kiểm tra origin sai. Child là code tin cậy; `allow-scripts` cùng `allow-same-origin` không tạo sandbox an toàn cho code độc hại cùng origin. Không có auth/token trong message.
+
 `postMessage` gửi dữ liệu qua structured clone. Bạn có thể gửi plain object, array và những loại dữ liệu được hỗ trợ mà không cần `JSON.stringify`; không thể gửi function, DOM node hay mutable store rồi mong phía kia sử dụng trực tiếp.
 
 Quan trọng hơn, API này không trả kết quả nghiệp vụ. Nó gửi một message bất đồng bộ, không bảo đảm listener đã tồn tại và không báo cho sender biết handler phía kia đã thành công.

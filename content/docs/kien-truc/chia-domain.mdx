@@ -148,6 +148,12 @@ Owner phải tham gia quyết định này. Một ranh giới mà không team n�
 
 ## Bản đồ ranh giới cho shop mẫu
 
+Trong shop chạy thử, nút “Thêm vào giỏ” nằm trong Catalog nhưng command được cart owner xử lý. Thử thêm cốc, sửa quantity hoặc xóa dòng ở Cart; badge của Shell chỉ đọc dữ liệu đã cập nhật, không tự cộng từ thao tác người dùng.
+
+<ExampleRef example="mfe-cart">Example: vị trí UI và ownership</ExampleRef>
+
+Các nhãn màu phân biệt vùng Shell, React và Vue. Lab chưa có routing theo domain hoặc release riêng; dùng nó để quan sát đường đọc/ghi, không coi một khung màu là một deployment boundary.
+
 ### Phần thuộc catalog cart và shell
 
 Trong ví dụ này, chọn `/catalog` làm nhánh tìm sản phẩm và `/cart` làm nhánh giỏ hàng. Tên path là contract URL của ví dụ, không phải yêu cầu rằng domain catalog phải mang đúng tên đó ở mọi ứng dụng.

@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSourceExamples } from './source-examples.mjs';
 import { auditDocsKit } from './docs-kit-audit.mjs';
+import { loadExamplePages } from './example-references.mjs';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(project, 'out');
@@ -56,6 +57,13 @@ assert.match(demoLesson, /https:\/\/example-learn.pages.dev\/micro-frontend\/com
 assert.match(demoLesson, /Example: shop React/, 'Missing compact example link');
 assert(!/live-demo-toolbar|live-demo-footer|class="live-demo"/.test(demoLesson), 'Old inline frame chrome must be removed');
 assert(!/<(?:iframe|dialog)\b/.test(demoLesson), 'Examples must not load a dialog/frame during SSR');
+
+for (const page of await loadExamplePages()) {
+  const slug = page.path.replace(/\.mdx$/, '').replace(/\/index$/, '');
+  const html = readFileSync(join(output, 'docs/' + slug + '.html'), 'utf8');
+  assert.equal([...html.matchAll(/class="example-ref /g)].length, page.references.length, `Missing exported ExampleRef: ${page.path}`);
+  assert(!/<(?:iframe|dialog)\b/.test(html), `Example must stay closed during SSR: ${page.path}`);
+}
 
 const searchPath = join(output, 'api/search.json');
 assert(existsSync(searchPath), 'Missing static search index: api/search.json.');

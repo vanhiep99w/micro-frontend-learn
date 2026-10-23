@@ -111,7 +111,10 @@ test('converted routing maps and embedded catalog icons render in both themes wi
         document.documentElement.classList.add(value);
       }, theme);
       const diagram = page.locator('.d2-diagram').first();
-      await diagram.scrollIntoViewIfNeeded();
+      await expect(async () => {
+        await diagram.scrollIntoViewIfNeeded();
+        await expect(diagram).toBeVisible();
+      }).toPass({ timeout: 10000 });
       await expect(diagram.locator('.d2-diagram-' + theme)).toBeVisible();
       if (route.startsWith('ui-')) {
         const icons = diagram.locator('.d2-diagram-' + theme + ' image');

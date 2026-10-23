@@ -62,6 +62,14 @@ test('each reference selects its own version, deep links survive reload, and nav
   await page.getByRole('button',{name:'Đóng example',exact:true}).click();
   await page.getByRole('link',{name:'Hợp đồng giao tiếp',exact:true}).first().click();
   await expect(page).toHaveURL(/\/contracts$/);
+  // Contracts now has its own shop reference; stale EventTarget selection must not leak across routes.
+  await expect(page.locator('.example-ref')).toHaveCount(1);
+  await page.getByRole('button',{name:'Mở example',exact:true}).click();
+  await expect(page.getByRole('combobox',{name:'Chọn example',exact:true})).toHaveValue('mfe-cart');
+  await expect(page.getByRole('combobox',{name:'Chọn example',exact:true}).locator('option')).toHaveCount(1);
+  await page.getByRole('button',{name:'Đóng example',exact:true}).click();
+  await page.getByRole('link',{name:'Micro-frontend Learning',exact:true}).first().click();
+  await expect(page).toHaveURL(/\/docs$/);
   await expect(page.getByRole('button',{name:'Mở example',exact:true})).toHaveCount(0);
   await expect(page.locator('dialog,iframe')).toHaveCount(0);
 });

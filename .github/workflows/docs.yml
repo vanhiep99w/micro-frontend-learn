@@ -23,7 +23,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run check:docs && npm run check:source && npm run check:visuals && npm test
+      - run: npm run check:docs && npm run check:source && npm run check:examples && npm run check:visuals && npm test
       - run: npm run typecheck
       - run: npm run build && npm run check:export
       - run: npx playwright install --with-deps chromium

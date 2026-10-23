@@ -146,6 +146,12 @@ Nếu hai team cùng ghi `--color-primary` vào `:root`, kết quả phụ thu�
 
 ## Ví dụ theme bằng CSS custom properties
 
+Thêm cốc ở React rồi đổi theme, màu nút và density từ shell. Nút React và Vue cùng đổi nhưng quantity và local state không reset. Chuyển **Phiên bản** sang bản Vue override token để thấy consumer hardcode màu làm giao diện lệch nhau.
+
+<ExampleRef example="design-tokens" version="shared">Example: token contract cho React và Vue</ExampleRef>
+
+Hai runtime chạy thật và đọc CSS custom properties trong scope `shop-v1`; lab build chung, không phân phối UI component React sang Vue hay kiểm chứng package compatibility. Giá và giỏ là fixture. Các token trong source bài là contract mẫu chi tiết hơn, không phải tên package đã tồn tại trong lab.
+
 ### Token stylesheet
 
 Stylesheet này không dùng `:root` và không reset toàn document. Consumer standalone tự tạo scope giống shell để component có cùng điều kiện chạy local và integrated.
