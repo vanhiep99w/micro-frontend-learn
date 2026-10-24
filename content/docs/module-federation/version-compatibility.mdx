@@ -218,7 +218,26 @@ n0 -> n1 -> n2 -> n3
 
 Runtime registry có thể chọn candidate theo host build, contract hoặc cohort. Sau đó host vẫn nên kiểm tra descriptor trước khi thực thi remote. Gate này giúp từ chối một cặp không được hỗ trợ trước khi container có cơ hội đăng ký shared providers hoặc chạy code.
 
-```d2 title="Kiểm tra compatibility trước khi tải remote"
+> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
+
+```d2 title="Kiểm tra compatibility trước khi tải remote" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: compatible
+#     label: "Tương thích: tải remote"
+#     steps:
+#       - edge: "(registry -> check)[0]"
+#         description: "Tiếp tục tại Host kiểm tra descriptor."
+#       - edge: "(check -> loader)[0]"
+#         description: "Host kiểm tra descriptor → Loader tải đúng artifact: Phù hợp"
+#   - id: incompatible
+#     label: "Không tương thích: fallback"
+#     steps:
+#       - edge: "(registry -> check)[0]"
+#         description: "Tiếp tục tại Host kiểm tra descriptor."
+#       - edge: "(check -> fallback)[0]"
+#         description: "Host kiểm tra descriptor → Fallback: Không phù hợp"
+# @endflow
 direction: right
 registry: "Registry chọn candidate"
 check: "Host kiểm tra descriptor" {shape: diamond}
@@ -228,6 +247,8 @@ registry -> check
 check -> loader: "Phù hợp"
 check -> fallback: "Không phù hợp"
 ```
+
+Descriptor tương thích mới đi vào loader. Candidate không tương thích dừng ở fallback, không thử tải remote rồi mới kiểm tra contract.
 
 Gate là nơi thực thi policy, không phải nơi tự động “tìm đại version chạy được”. Mình ưu tiên candidate từ danh sách đã được kiểm thử và routing rõ ràng, thay vì quét toàn bộ lịch sử releases rồi chọn số lớn nhất.
 

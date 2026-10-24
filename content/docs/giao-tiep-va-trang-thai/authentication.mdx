@@ -247,7 +247,28 @@ Các module đặt cạnh nhau để tập trung vào luồng giao tiếp. Impor
 
 Với ứng dụng có backend cùng origin, một lựa chọn là **BFF — Backend for Frontend** giữ session/token phía server. Browser gửi cookie; frontend gọi endpoint như `/auth/session` để lấy projection tối thiểu. Tên endpoint là ví dụ, không phải tính năng sẵn có của site docs.
 
-```d2 title="BFF và cookie session"
+> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
+
+```d2 title="BFF và cookie session" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: session
+#     label: "Session đã có token"
+#     steps:
+#       - edge: "(browser -> bff)[0]"
+#         description: "Browser UI → BFF: Cookie session"
+#       - edge: "(bff -> api)[0]"
+#         description: "BFF → API domain: Access token"
+#   - id: refresh
+#     label: "Đổi hoặc refresh token"
+#     steps:
+#       - edge: "(browser -> bff)[0]"
+#         description: "Browser UI → BFF: Cookie session"
+#       - edge: "(bff -> idp)[0]"
+#         description: "BFF → Identity provider: Token exchange / refresh"
+#       - edge: "(bff -> api)[0]"
+#         description: "BFF → API domain: Access token"
+# @endflow
 direction: right
 browser: Browser UI
 bff: BFF
@@ -257,6 +278,8 @@ browser -> bff: Cookie session
 bff -> api: Access token
 bff -> idp: Token exchange / refresh
 ```
+
+Kịch bản session hợp lệ giả định BFF đã giữ access token. Chỉ khi cần đổi/refresh token, BFF mới gọi IdP trước khi gọi API; token không trả về Browser UI.
 
 Cookie `HttpOnly` không đọc được từ JavaScript, nên remote không cần lấy nó để render. Backend phải cấu hình cookie phù hợp với HTTPS, scope và luồng redirect; endpoint session không được cache công khai. Mutation như logout cần bảo vệ CSRF thực sự ở backend. `HttpOnly` hay `SameSite` riêng lẻ không giải quyết toàn bộ CSRF/XSS.
 
