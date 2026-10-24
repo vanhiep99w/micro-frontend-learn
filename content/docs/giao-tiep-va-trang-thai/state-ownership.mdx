@@ -1,416 +1,242 @@
 ---
 title: "State ownership"
-description: "Phân định local state, server state và shared state; giữ một owner cho mỗi miền dữ liệu thay vì để global store điều khiển mọi remote."
+description: "Ai giữ state trong micro-frontend: ví dụ module theme dùng chung, đọc snapshot, subscribe, unmount và giới hạn của localStorage."
 ---
 
-Giả sử bạn bấm “Thêm vào giỏ” trong catalog. Trang cart đã có sản phẩm mới, nhưng badge trên header vẫn hiện số cũ. Cách sửa nhanh là đưa tất cả vào một global store; vấn đề là từ đó catalog, cart và shell đều có thể sửa giỏ hàng, và một lần đổi reducer lại kéo theo nhiều remote phải sửa cùng lúc.
+Ở bài [events](/docs/giao-tiep-va-trang-thai/events), app đăng ký muộn không biết lựa chọn đã xảy ra trước đó. Muốn giải quyết, cần có nơi **giữ dữ liệu hiện tại** để app mới mở đọc được, thay vì chỉ chờ thông báo mới.
 
-State ownership giúp bạn trả lời câu hỏi trước khi chọn Redux, Zustand hay Context: **ai có quyền quyết định giá trị của state này, và những nơi khác được đọc hoặc yêu cầu thay đổi nó bằng cách nào?** Mình mặc định giữ state trong domain sở hữu nó, chỉ chia sẻ phần contract thật sự cần dùng xuyên domain.
+Bài này đi theo nhánh **module/state dùng chung** của [bản đồ giao tiếp](/docs/giao-tiep-va-trang-thai#các-cách-giao-tiếp-và-bài-đọc-tiếp). Ví dụ dùng theme vì không cần backend: shell và một remote cùng đọc một lựa chọn sáng/tối, nhưng không import store nội bộ của nhau.
 
-<Callout type="info" title="Phạm vi bài viết">
-  Bài dùng shop giả định gồm shell, catalog và cart. Tên contract và code bên dưới là ví dụ thiết kế, không phải API đã có trong repository. Bạn không cần dùng cùng framework hoặc cùng thư viện store để áp dụng các nguyên tắc này.
+<Callout type="info" title="Ownership là trách nhiệm, không phải thư viện">
+  Owner là module chịu trách nhiệm cập nhật một phần dữ liệu và công bố API cho bên khác dùng. Shell có thể tạo instance của module đó mà không phải tự viết mọi nghiệp vụ bên trong. Ví dụ dùng JavaScript thuần trong cùng document, không yêu cầu Redux, Pinia hay React Context.
 </Callout>
 
 ## Mục lục
 
-- [Ownership không phải là vị trí lưu state](#ownership-không-phải-là-vị-trí-lưu-state)
-  - [Một owner không có nghĩa là một bản sao](#một-owner-không-có-nghĩa-là-một-bản-sao)
-  - [Owner khác với nơi render](#owner-khác-với-nơi-render)
-- [Phân loại state trước khi chia sẻ](#phân-loại-state-trước-khi-chia-sẻ)
-  - [Local UI state](#local-ui-state)
-  - [Server state và cache](#server-state-và-cache)
-  - [URL state](#url-state)
-  - [Shared application state](#shared-application-state)
-- [Bản đồ ownership cho shop](#bản-đồ-ownership-cho-shop)
-- [Thiết kế ranh giới đọc và ghi](#thiết-kế-ranh-giới-đọc-và-ghi)
-  - [Command là yêu cầu còn event là kết quả](#command-là-yêu-cầu-còn-event-là-kết-quả)
-  - [Snapshot cho nơi đọc đến muộn](#snapshot-cho-nơi-đọc-đến-muộn)
-  - [Contract giỏ hàng tối thiểu](#contract-giỏ-hàng-tối-thiểu)
-- [Ví dụ consumer không biết store của cart](#ví-dụ-consumer-không-biết-store-của-cart)
-- [Giữ state đúng qua lifecycle](#giữ-state-đúng-qua-lifecycle)
-  - [Unmount remote không đồng nghĩa với xóa domain state](#unmount-remote-không-đồng-nghĩa-với-xóa-domain-state)
-  - [Logout và đổi phạm vi dữ liệu](#logout-và-đổi-phạm-vi-dữ-liệu)
-  - [Persist không tạo ra nguồn dữ liệu chuẩn](#persist-không-tạo-ra-nguồn-dữ-liệu-chuẩn)
-- [Consistency khi có nhiều thay đổi](#consistency-khi-có-nhiều-thay-đổi)
-  - [Response về sai thứ tự](#response-về-sai-thứ-tự)
-  - [Optimistic update chỉ có một nơi điều phối](#optimistic-update-chỉ-có-một-nơi-điều-phối)
-- [Khi nào nên dùng shared store](#khi-nào-nên-dùng-shared-store)
-- [Các anti-pattern thường gặp](#các-anti-pattern-thường-gặp)
-- [Checklist kiểm thử ownership](#checklist-kiểm-thử-ownership)
+- [State riêng thì cứ để riêng](#state-riêng-thì-cứ-để-riêng)
+- [Một module giữ theme cho cả shell và remote](#một-module-giữ-theme-cho-cả-shell-và-remote)
+- [Remote đọc trước hay nghe trước](#remote-đọc-trước-hay-nghe-trước)
+- [Shell tạo một instance và giữ lâu hơn UI](#shell-tạo-một-instance-và-giữ-lâu-hơn-ui)
+- [Áp dụng sang dữ liệu Cart có gì khác](#áp-dụng-sang-dữ-liệu-cart-có-gì-khác)
+- [localStorage lưu lại nhưng không tự đồng bộ UI](#localstorage-lưu-lại-nhưng-không-tự-đồng-bộ-ui)
+- [Vòng đời cần quyết định trước khi dùng store chung](#vòng-đời-cần-quyết-định-trước-khi-dùng-store-chung)
+- [Những lỗi cần thử](#những-lỗi-cần-thử)
 - [Đọc tiếp](#đọc-tiếp)
-- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Ownership không phải là vị trí lưu state
+## State riêng thì cứ để riêng
 
-State ownership là trách nhiệm đối với một phần trạng thái: định nghĩa ý nghĩa, kiểm soát đường ghi, xác định vòng đời và công bố contract cho những bên cần đọc. Một giá trị nằm trong store của shell chưa chắc thuộc về shell. Nếu giá trị đó là tổng số sản phẩm trong giỏ, cart domain vẫn phải quyết định nó được tính và cập nhật ra sao.
+Nội dung đang gõ trong form Catalog không cần xuất hiện ở Cart. Đưa nó lên global store chỉ làm Cart có cơ hội phụ thuộc vào phần không liên quan.
 
-Khi review một state, bạn cần trả lời được bốn câu hỏi:
-
-| Câu hỏi | Ví dụ với giỏ hàng |
+| Dữ liệu | Nơi nên bắt đầu giữ |
 | --- | --- |
-| Nguồn dữ liệu chuẩn là đâu? | Backend cart giữ giỏ hàng đã được xác nhận |
-| Ai điều phối thay đổi ở frontend? | Cart controller gửi mutation, cập nhật cache và thông báo kết quả |
-| Ai chỉ đọc? | Header đọc tổng số lượng; catalog có thể đọc trạng thái thao tác |
-| Khi nào dữ liệu hết hiệu lực? | Khi đổi user, đổi cart hoặc session kết thúc |
+| Input chưa submit, modal trong Catalog | Bên trong Catalog |
+| Tab tạm thời trong Cart | Bên trong Cart UI |
+| Bộ lọc cần mở lại từ link | URL, theo contract của Catalog |
+| Theme dùng toàn trang | Module cấu hình chung |
+| Giỏ đã được server xác nhận | Backend là nguồn chuẩn; module Cart giữ dữ liệu frontend |
 
-Nếu cả catalog và cart đều có reducer tự xử lý `ADD_ITEM`, nhưng mỗi reducer áp dụng một quy tắc khác nhau, bạn chưa có một owner rõ ràng. Việc hai reducer nhận cùng event không làm chúng tự nhiên nhất quán.
+**Có nhiều nơi đọc không có nghĩa mọi nơi phải tự ghi một bản.** Shell và remote có thể giữ dữ liệu để render, nhưng phải lấy từ một đường cập nhật đã thống nhất.
 
-### Một owner không có nghĩa là một bản sao
+## Một module giữ theme cho cả shell và remote
 
-Backend có bản ghi cart, cart UI có query cache, header có snapshot tổng số lượng. Nhiều bản sao là bình thường. Điều cần tránh là nhiều nơi cùng tự nhận quyền quyết định giá trị đúng cuối cùng.
+Module dưới giữ đúng một snapshot. Snapshot là **bản dữ liệu hiện tại để đọc**, không phải lịch sử các lần thay đổi.
 
-Bạn có thể nghĩ owner như người giữ sổ gốc, còn nơi đọc giữ bản trích lục. Bản trích lục được cập nhật theo sổ gốc, không tự ghi thêm nghiệp vụ rồi yêu cầu các bản khác làm theo. Điểm giới hạn của ví dụ này là frontend có thể có optimistic state chưa được server xác nhận; khi đó owner phải phân biệt rõ trạng thái dự đoán với trạng thái đã commit.
+```js title="basic/theme.js" sourceFile="basic/theme.js" sourceRegion="main"
+export function createTheme() {
+  let snapshot = Object.freeze({ theme: 'light' });
+  const listeners = new Set();
 
-### Owner khác với nơi render
-
-Shell render header, nhưng không vì thế mà shell sở hữu nghiệp vụ tính số lượng giỏ hàng. Shell có thể khởi tạo một cart controller và inject contract vào các remote, trong khi cart team vẫn sở hữu implementation và quy tắc cập nhật.
-
-Tương tự, “lift state up” trong một cây React hữu ích để phối hợp các component. Qua ranh giới micro-frontend, đưa mọi state lên shell lại có thể khiến shell thành nơi chứa toàn bộ nghiệp vụ. Mình chỉ đưa lên composition layer phần wiring cần thiết, không đưa lên toàn bộ domain model.
-
-## Phân loại state trước khi chia sẻ
-
-Một boolean mở modal và một giỏ hàng đã được server xác nhận không nên có cùng chính sách lưu trữ. Phân loại trước giúp bạn tránh dùng một giải pháp global cho những nhu cầu khác nhau.
-
-### Local UI state
-
-Tab đang mở, hover, modal đang hiển thị, giá trị input chưa submit và trạng thái pending của một nút thường thuộc component hoặc remote đang dùng chúng.
-
-Ví dụ, catalog có thể giữ `selectedVariant` và `isAdding` ngay trong UI. Cart không cần biết người dùng đang chọn biến thể nào cho đến khi catalog gửi command thêm sản phẩm. Chia sẻ draft quá sớm khiến domain khác phải hiểu cả các bước tương tác chưa hoàn tất.
-
-Mặc định reset loại state này khi component unmount. Nếu draft phải tồn tại qua navigation, hãy quyết định rõ owner và thời hạn lưu; đừng giữ lại toàn bộ store chỉ để bảo vệ một form.
-
-### Server state và cache
-
-Giá sản phẩm, tồn kho, giỏ hàng đã xác nhận và trạng thái đơn hàng là dữ liệu do backend quản lý. Frontend giữ cache để hiển thị và giảm request, nhưng cache không thay thế backend trong việc kiểm tra nghiệp vụ.
-
-Catalog sở hữu cách query và trình bày sản phẩm; cart sở hữu cách query và mutate giỏ hàng. Không cần ép hai bên dùng chung một query client chỉ vì đôi lúc đọc cùng API. Chỉ thêm cơ chế cache dùng chung khi nhu cầu deduplication hoặc consistency thực sự đáng với coupling mà nó tạo ra.
-
-<Callout type="warn" title="Tổng tiền ở UI không phải quyết định thanh toán">
-  Backend phải kiểm tra lại giá, tồn kho, khuyến mãi và quyền truy cập khi xử lý nghiệp vụ. Một snapshot frontend, dù do đúng owner phát ra, không phải ranh giới bảo mật hay bằng chứng rằng đơn hàng hợp lệ.
-</Callout>
-
-### URL state
-
-Từ khóa tìm kiếm đã submit, bộ lọc, sort và pagination thường hợp với URL nếu bạn muốn bookmark, chia sẻ link hoặc dùng Back/Forward.
-
-Shell sở hữu điều hướng cấp ứng dụng; remote sở hữu ý nghĩa của các route và query parameter đã được phân công. Với bộ lọc đã áp dụng, URL là nguồn để dựng UI; input đang gõ nhưng chưa submit vẫn có thể là local state.
-
-Đừng duy trì hai nguồn ghi độc lập: một filter trong global store và một filter khác trong URL. Nếu cần cache giá trị từ URL, hãy xem nó là dữ liệu dẫn xuất và xác định rõ hướng đồng bộ.
-
-### Shared application state
-
-Theme, locale và trạng thái session để hiển thị có thể cần xuất hiện ở nhiều remote. Những giá trị này phù hợp với một contract cấp nền tảng do shell hoặc module chuyên trách quản lý.
-
-Nhưng “nhiều nơi cần đọc” không có nghĩa là “mọi nơi được ghi”. Header và cart đều cần locale; cả hai không cần được sửa trực tiếp object cấu hình nền tảng. Hãy tách capability đọc với command như `setLocale` nếu consumer thực sự được phép yêu cầu thay đổi.
-
-## Bản đồ ownership cho shop
-
-Với shop giả định, mình sẽ bắt đầu bằng bảng này trước khi thêm store hoặc message bus:
-
-| State | Owner | Consumer | Đường thay đổi | Vòng đời |
-| --- | --- | --- | --- | --- |
-| Modal và biến thể đang chọn | Catalog UI | Catalog UI | Local setter | Theo component hoặc route |
-| Bộ lọc đã áp dụng | Catalog route contract | Catalog UI | Navigation cập nhật URL | Theo URL |
-| Dữ liệu sản phẩm và cache | Catalog data layer; backend là nguồn chuẩn | Catalog UI | Query hoặc revalidate | Theo query key và chính sách cache |
-| Giỏ hàng đã xác nhận | Backend cart; cart controller điều phối frontend | Cart UI | Cart command gọi backend | Theo user và cart hiện tại |
-| Tổng số lượng ở badge | Cart controller, dẫn xuất từ cart | Header của shell | Snapshot từ owner | Cùng phạm vi với cart |
-| Theme và locale | Module nền tảng | Các remote cần dùng | Platform command | Theo app hoặc tùy chọn user |
-| Session hiển thị | Auth module; backend xác thực session | Shell và các remote | Login, refresh, logout | Theo session |
-
-“Tổng số lượng” ở đây là tổng quantity, không phải số dòng sản phẩm. Chi tiết tưởng nhỏ này phải nằm trong contract; nếu header đếm dòng còn cart cộng quantity, cả hai có thể hiển thị khác nhau dù dùng cùng dữ liệu.
-
-Sơ đồ đơn giản dưới đây thể hiện quyền yêu cầu và quyền đọc, không phải cấu trúc bundle:
-
-```d2 title="Bản đồ ownership cho shop"
-direction: right
-catalog: Catalog UI
-cart: Cart UI
-controller: Cart controller
-backend: Backend cart
-header: Header shell
-catalog -> controller: addItem
-cart -> controller: Command
-controller -> backend: Mutation / query
-controller -> header: "Snapshot chỉ đọc"
-```
-
-Cart controller là một module không phụ thuộc màn hình cart có đang mount hay không. Shell có thể nối các bên với nó, nhưng không tự tính badge hoặc tự cập nhật cart reducer.
-
-## Thiết kế ranh giới đọc và ghi
-
-Một boundary tốt che implementation nhưng vẫn cho consumer làm đúng việc. Consumer không cần biết cart dùng Redux, Zustand hay một cache tự viết; nó cần biết cách đọc summary và cách yêu cầu thêm sản phẩm.
-
-### Command là yêu cầu còn event là kết quả
-
-`addItem` là command: catalog đề nghị cart domain thực hiện một thay đổi và cần biết thành công hay thất bại. Owner kiểm tra input, gọi backend và xử lý response. Backend vẫn là nơi enforce quy tắc nghiệp vụ cuối cùng.
-
-`cart.changed` là event: owner thông báo rằng trạng thái đã thay đổi. Consumer có thể cập nhật projection hoặc revalidate, nhưng không nên xử lý event này như một lời mời tự thực hiện lại mutation.
-
-Mình ưu tiên function hoặc request-response contract cho command khi cần báo lỗi trực tiếp cho nút thao tác. Event phù hợp để thông báo cho nhiều bên sau thay đổi. Với iframe hoặc tiến trình khác, bạn cần message protocol có request ID và response tương ứng; function trực tiếp không đi qua boundary đó được.
-
-<Callout type="warn" title="Event bus không quyết định ownership">
-  Đổi `store.dispatch` thành `window.dispatchEvent` chỉ đổi cách truyền tín hiệu. Nếu mọi remote vẫn tự sửa cùng một dữ liệu từ event, bạn vẫn có nhiều writer và nguy cơ vòng lặp đồng bộ.
-</Callout>
-
-### Snapshot cho nơi đọc đến muộn
-
-Nếu header mount sau event “cart đã đổi”, nó sẽ không nhận lại event cũ trên một event bus thông thường. Vì thế, event đơn lẻ không đủ để cung cấp state hiện tại.
-
-Owner nên có cả khả năng đọc snapshot hiện tại lẫn subscribe thay đổi, hoặc một cơ chế subscribe có replay tương đương. Consumer đọc lại snapshot khi được thông báo, thay vì tự cộng trừ từ chuỗi event mà nó có thể đã bỏ lỡ.
-
-Đăng ký subscription trước rồi đọc snapshot ban đầu giúp tránh khoảng trống giữa lần đọc và lúc bắt đầu nghe. Contract vẫn phải quy định cách publish, cleanup và trạng thái chưa tải; không thể chỉ dựa vào thứ tự gọi để giải quyết mọi race bất đồng bộ.
-
-### Contract giỏ hàng tối thiểu
-
-Ví dụ sau tách quyền đọc của header khỏi quyền gửi command của catalog:
-
-```ts
-export type CartSummary =
-  | Readonly<{ status: 'loading'; itemCount: null }>
-  | Readonly<{ status: 'ready'; itemCount: number }>
-  | Readonly<{ status: 'error'; itemCount: null }>;
-
-export type AddItemInput = Readonly<{
-  sku: string;
-  quantity: number;
-}>;
-
-export interface CartSummaryReader {
-  getSnapshot(): CartSummary;
-  subscribe(listener: () => void): () => void;
-}
-
-export interface CartCommands {
-  addItem(input: AddItemInput): Promise<void>;
-}
-
-export interface CartPort extends CartSummaryReader, CartCommands {}
-```
-
-Trong contract minh họa này:
-
-- `itemCount` chỉ có giá trị khi summary sẵn sàng, và tính bằng tổng quantity của cart được backend xác nhận.
-- `addItem` resolve sau khi backend xác nhận và owner đã cập nhật snapshot trong phạm vi hiện tại; reject nếu thao tác thất bại hoặc phạm vi đó đã bị thay thế.
-- Owner validate quantity là số nguyên dương trước khi gửi request; backend cũng phải validate.
-- `getSnapshot` trả cùng reference khi dữ liệu không đổi; mỗi lần đổi tạo snapshot immutable mới. Không trả object store nội bộ có thể bị consumer sửa.
-- `subscribe` thông báo khi snapshot đổi và trả hàm unsubscribe. Consumer gọi `getSnapshot` để đọc, không suy ra giá trị mới từ số lần callback chạy.
-
-`Readonly` chỉ bảo vệ ở mức TypeScript, không phải khóa object lúc runtime. Owner phải giữ implementation không cho lộ mutable state, chẳng hạn tạo snapshot riêng và freeze snapshot nếu phù hợp. Việc chỉ inject reader cho header cũng là cách giảm coupling, không phải cơ chế sandbox cho JavaScript cùng trang.
-
-Contract cố ý không có `setCart`, `replaceState` hay tên reducer. Những API đó cho phép consumer bỏ qua quy tắc domain. Khi cần nghiệp vụ mới như đổi quantity, thêm command có ý nghĩa cụ thể thay vì mở cửa cho sửa tùy ý.
-
-## Ví dụ consumer không biết store của cart
-
-Header có thể dùng một adapter độc lập framework như sau. `render` là hàm cập nhật UI do header cung cấp; implementation của cart không xuất hiện ở đây.
-
-```ts
-function connectCartBadge(
-  reader: CartSummaryReader,
-  render: (label: string) => void,
-): () => void {
-  const refresh = () => {
-    const snapshot = reader.getSnapshot();
-
-    switch (snapshot.status) {
-      case 'loading':
-        render('Giỏ hàng: đang tải');
-        break;
-      case 'ready':
-        render(`Giỏ hàng: ${snapshot.itemCount}`);
-        break;
-      case 'error':
-        render('Giỏ hàng: chưa tải được');
-        break;
-    }
+  return {
+    getSnapshot() {
+      return snapshot;
+    },
+    setTheme(theme) {
+      if (!['light', 'dark'].includes(theme)) {
+        throw new Error('Theme không được hỗ trợ');
+      }
+      if (snapshot.theme === theme) return;
+      snapshot = Object.freeze({ theme });
+      for (const notify of [...listeners]) notify();
+    },
+    subscribe(notify) {
+      listeners.add(notify);
+      return () => listeners.delete(notify);
+    },
   };
-
-  const unsubscribe = reader.subscribe(refresh);
-  refresh();
-  return unsubscribe;
 }
 ```
 
-Khi header unmount, gọi hàm cleanup mà `connectCartBadge` trả về. Đừng biến lỗi tải thành số `0`: “chưa biết giỏ có gì” khác với “giỏ đã xác nhận là rỗng”. Với React, bạn có thể dùng adapter `useSyncExternalStore` theo contract snapshot phù hợp thay vì tự viết subscription bằng effect.
+Ba hàm có ba vai trò:
 
-Catalog chỉ cần command. Component dưới đây dùng React để minh họa local state của thao tác, không phải để chia sẻ store:
+- `getSnapshot()` trả theme hiện tại, kể cả app vừa mount.
+- `setTheme(...)` là đường yêu cầu thay đổi. Module kiểm tra giá trị, tạo snapshot mới rồi thông báo.
+- `subscribe(...)` đăng ký nghe; hàm trả về dùng để ngừng nghe.
 
-```tsx
-import { useState } from 'react';
+`Object.freeze` ở đây đủ cho object chỉ có một string. Consumer không được sửa `snapshot.theme` để thay đổi state; phải gọi `setTheme`. Snapshot giữ nguyên reference nếu dữ liệu không đổi, thuận tiện khi nối với các adapter như React `useSyncExternalStore`.
 
-type AddToCartButtonProps = {
-  sku: string;
-  commands: CartCommands;
-};
+Không có event bus riêng trong mẫu này. Danh sách listener bên trong module đã đủ cho nhu cầu theo dõi một state nhỏ. Nó chưa cô lập lỗi listener; handler demo chỉ cập nhật text đồng bộ. Với app thật, bổ sung chính sách lỗi và lifecycle theo dữ liệu.
 
-export function AddToCartButton({ sku, commands }: AddToCartButtonProps) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+## Remote đọc trước hay nghe trước
 
-  async function add() {
-    setPending(true);
-    setError(null);
-    try {
-      await commands.addItem({ sku, quantity: 1 });
-    } catch {
-      setError('Chưa thêm được sản phẩm. Bạn có thể thử lại.');
-    } finally {
-      setPending(false);
-    }
+Remote Settings dùng module đã nhận từ shell, không tự gọi `createTheme()`:
+
+```js title="basic/settings.js" sourceFile="basic/settings.js" sourceRegion="main"
+export function mount({ container, theme }) {
+  const button = document.createElement('button');
+  let active = true;
+
+  function render() {
+    button.textContent = `Remote đang dùng theme: ${theme.getSnapshot().theme}`;
+  }
+  function toggle() {
+    const current = theme.getSnapshot().theme;
+    theme.setTheme(current === 'light' ? 'dark' : 'light');
   }
 
-  return (
-    <div>
-      <button type="button" disabled={pending} onClick={add}>
-        {pending ? 'Đang thêm…' : 'Thêm vào giỏ'}
-      </button>
-      {error && <p role="alert">{error}</p>}
-    </div>
-  );
+  const unsubscribe = theme.subscribe(render);
+  render();
+  button.addEventListener('click', toggle);
+  container.append(button);
+
+  return {
+    unmount() {
+      if (!active) return;
+      active = false;
+      unsubscribe();
+      button.removeEventListener('click', toggle);
+      button.remove();
+    },
+  };
 }
 ```
 
-`pending` và `error` thuộc nút trong catalog. Cart contents và summary vẫn thuộc cart owner. Catalog không làm `badgeCount + 1` khi Promise resolve; owner đã publish snapshot đúng, kể cả khi backend gộp quantity vào một dòng có sẵn.
+Nhìn ba dòng liên tiếp: `subscribe(render)` → `render()` → gắn UI. Đăng ký trước rồi đọc snapshot giúp app vừa mở biết **theme hiện tại**, sau đó nhận thay đổi tiếp theo. Đây là cách nối cho snapshot đồng bộ trong bộ nhớ; query bất đồng bộ còn cần xử lý response về muộn.
 
-Ví dụ nút chỉ minh họa một thao tác trong UI đang mount và cùng session. Controller thực tế cần xử lý đổi session, request đang chạy, retry và lỗi có cấu trúc. Disable nút là hỗ trợ trải nghiệm, không thay thế idempotency hoặc kiểm soát concurrency ở backend.
+Remote chỉ đổi giao diện của nó. Shell cũng cần một listener riêng để đổi phần do shell quản lý. Không để remote tìm DOM của shell rồi sửa hộ.
 
-## Giữ state đúng qua lifecycle
+## Shell tạo một instance và giữ lâu hơn UI
 
-Trong dialog, mở “Xem luồng giao tiếp”, ẩn cả Header và Cart Vue rồi tiếp tục thêm cốc. Mount lại: dữ liệu vẫn ở cart owner và consumer đọc được snapshot mới. Listener phải trở về đúng 2, không tăng theo số lần mount.
+```js title="basic/shell.js" sourceFile="basic/shell.js" sourceRegion="main"
+import { createTheme } from './theme.js';
+import { mount } from './settings.js';
+
+const theme = createTheme();
+const label = document.querySelector('#shell-theme');
+const render = () => {
+  label.textContent = `Shell đang dùng theme: ${theme.getSnapshot().theme}`;
+};
+theme.subscribe(render);
+render();
+
+let settings;
+document.querySelector('#open').addEventListener('click', () => {
+  settings ??= mount({ container: document.querySelector('#settings'), theme });
+});
+document.querySelector('#close').addEventListener('click', () => {
+  settings?.unmount();
+  settings = undefined;
+});
+document.querySelector('#dark').addEventListener('click', () => {
+  theme.setTheme('dark');
+});
+```
+
+Shell tạo `theme` một lần. Nó dùng object đó cho nhãn của mình, đồng thời truyền chính object đó khi mở Settings.
+
+```d2 interactive=false title="Một state phục vụ nhiều UI"
+direction: down
+owner: "Module theme\nMột instance do shell tạo"
+shell: "UI shell"
+remote: "UI Settings"
+owner -> shell: "Snapshot và thông báo"
+owner -> remote: "Snapshot và thông báo"
+```
+
+Unmount Settings chỉ hủy listener và nút của Settings; biến `theme` vẫn tồn tại trong shell. Mở Settings lần nữa phải đọc theme hiện tại, không mặc định quay về sáng. Khi toàn runtime kết thúc, shell cũng cần dọn listener của mình; ở bài tập này nó sống cùng document.
+
+<details>
+<summary>HTML để chạy ví dụ theme</summary>
+
+```html title="basic/index.html" sourceFile="basic/index.html" sourceRegion="main"
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>State dùng chung giữa hai app</title>
+</head>
+<body>
+  <p id="shell-theme"></p>
+  <div id="settings"></div>
+  <button id="open">Mở Settings</button>
+  <button id="close">Đóng Settings</button>
+  <button id="dark">Shell chọn tối</button>
+  <script type="module" src="./shell.js"></script>
+</body>
+</html>
+```
+
+</details>
+
+Lưu các file `basic/` theo đúng tên trong bài. Từ thư mục chứa `basic/`, chạy:
+
+```bash
+python3 -m http.server 8080 --directory basic
+```
+
+Mở `http://localhost:8080`. Bấm **Shell chọn tối** trước khi mở Settings. Bấm **Mở Settings**: remote hiện theme tối ngay. Bấm nút trong remote: cả nhãn shell lẫn remote đổi sang sáng. Đóng remote, chọn tối ở shell rồi mở lại để kiểm tra state sống lâu hơn UI.
+
+Các module đặt cạnh nhau để tập trung vào luồng giao tiếp. Import tương đối không minh họa tải remote, Module Federation hay pipeline deploy độc lập. Khi tách bundle, loader phải cung cấp đúng API đã thống nhất; thứ tự truyền và gọi hàm vẫn như trong ví dụ.
+
+
+<SourceRef project="giao-tiep-va-trang-thai-state-ownership" variant="button">Đọc basic/shell.js rồi mở module theme và remote</SourceRef>
+
+## Áp dụng sang dữ liệu Cart có gì khác
+
+Theme có thể đổi ngay trong bộ nhớ. Giỏ hàng lại cần backend xác nhận. Module Cart vẫn có thể công bố API tương tự, nhưng đường thay đổi là `addItem`, `setQuantity` và bước đọc có thể ở trạng thái đang tải/lỗi.
+
+Không thêm `setCart` tùy ý chỉ để mọi remote sửa cùng object. Catalog gửi yêu cầu; Cart owner cập nhật snapshot từ kết quả đã xác nhận; header và Cart UI đọc snapshot. Mỗi UI không tự tính lại nghiệp vụ bằng cách đếm event.
+
+Thử trong demo có sẵn:
 
 <ExampleRef example="mfe-cart" version="snapshot">Example: owner sống lâu hơn UI</ExampleRef>
 
-Chuyển phiên bản sang **Event-only (bản lỗi)** để thấy hậu quả khi consumer không đọc snapshot lúc mount. Đây là memory state trong một document; reload reset dữ liệu, không minh họa persistence, logout hoặc backend session scope.
+Thêm một cốc, mở **Xem luồng giao tiếp**, ẩn Header và Cart Vue, thêm tiếp rồi chờ xong. Mount lại cả hai: dữ liệu vẫn còn và listener trở về 2. Đổi sang bản **Event-only (bản lỗi)** để thấy việc không đọc snapshot khi mount làm UI hiện dấu **—**. Demo chỉ giữ state trong bộ nhớ, không gọi backend và không mô phỏng logout.
 
-Giờ đường đọc và ghi đã rõ, nhưng owner phải sống bao lâu? Đây là nơi nhiều hệ thống bị lỗi dù contract trông hợp lý.
+## localStorage lưu lại nhưng không tự đồng bộ UI
 
-### Unmount remote không đồng nghĩa với xóa domain state
+Nếu muốn giữ theme qua reload, owner có thể đọc `localStorage` khi khởi tạo, kiểm tra giá trị rồi dùng làm snapshot đầu. Khi `setTheme` thành công, nó cập nhật memory, báo listener và lưu preference. Lỗi truy cập storage phải được xử lý theo chính sách; theme vẫn có thể hoạt động trong memory khi không lưu được.
 
-Nếu cart controller chỉ được tạo khi vào trang `/cart`, catalog không thể thêm sản phẩm lúc trang cart chưa mount. Nếu controller bị hủy khi rời trang cart, badge có thể mất dữ liệu dù session vẫn còn.
+Chỉ gọi `localStorage.setItem` không khiến hai remote cùng trang tự render lại. Event `storage` không báo lại document vừa ghi; với `localStorage`, nó báo các document khác cùng origin đủ điều kiện như tab khác. Tab nhận cần validate và gọi đường cập nhật owner, tránh ghi qua lại thành vòng lặp.
 
-Mình tách lifecycle của UI khỏi lifecycle của controller:
+Giỏ hàng, quyền truy cập hoặc thông tin user không được coi là hợp lệ chỉ vì đọc được từ storage. Với dữ liệu backend, tải lại và kiểm tra scope hiện tại. Nếu persist draft, cần version cấu trúc, thời hạn và phạm vi user; không lưu token/thông tin thanh toán để tiện chia sẻ.
 
-| Sự kiện | Local UI state | Cart controller |
+## Vòng đời cần quyết định trước khi dùng store chung
+
+| Sự kiện | Phần phải dọn | Phần có thể giữ |
 | --- | --- | --- |
-| Rời trang catalog | Reset modal và state thao tác theo thiết kế | Tiếp tục phục vụ session hiện tại |
-| Rời trang cart | Cleanup subscription của cart UI | Không xóa cart chỉ vì màn hình unmount |
-| Reload trang | Khởi tạo lại UI | Query lại backend hoặc hydrate rồi revalidate |
-| Logout hoặc đổi user | Xóa draft nhạy cảm | Đổi scope, xóa cache cũ và chặn response cũ |
+| Đóng một remote | Listener, timer và DOM của instance | State mà UI khác còn cần |
+| Reload | Runtime trong bộ nhớ mất | Preference đã lưu hợp lệ; dữ liệu backend được tải lại |
+| Logout/đổi user | Dữ liệu riêng tư, request/subscription scope cũ | Theme public nếu chính sách cho phép |
+| SSR xử lý người khác | Không dùng state user của request trước | Chỉ module/stateless code; state tạo theo request |
 
-Shell hoặc composition layer nên tạo một instance controller cho phạm vi được chọn và inject nó cho consumer. Instance đó có thể tải lazy khi cần, nhưng không được gắn quyền tồn tại vào một màn hình tùy ý.
+Trong ví dụ theme, mọi caller được phép yêu cầu `setTheme`. Với Cart, header có thể chỉ nhận API đọc; Catalog nhận API gửi command. Đây là phân chia trách nhiệm để dễ bảo trì, **không phải sandbox bảo mật** cho JavaScript cùng trang.
 
-Nếu mỗi remote bundle tự import rồi khởi tạo một store, bạn có thể có nhiều instance dù code giống nhau. Chia sẻ cùng package hoặc cấu hình singleton cho thư viện store không tự chứng minh rằng các consumer đang dùng cùng object state. Hãy kiểm tra wiring và lifecycle instance thực tế.
+Hai remote tự tạo hai store vẫn là hai bản state dù cùng cài một package. Nếu một lần đổi reducer bắt mọi team sửa theo, hãy đưa API nhỏ trước store thay vì expose cả cấu trúc bên trong.
 
-### Logout và đổi phạm vi dữ liệu
+## Những lỗi cần thử
 
-Hình dung request cart của user A còn pending, rồi người dùng logout và đăng nhập thành user B. Xóa store lúc logout là chưa đủ: response của A có thể về sau và ghi dữ liệu cũ vào UI của B.
+1. Chọn theme trước khi mở remote: app mới có đọc được hiện tại không?
+2. Đóng/mở remote nhiều lần: một thay đổi có render nhiều lần do listener cũ không?
+3. Giữ reference snapshot cũ rồi đổi theme: snapshot cũ có bị sửa theo không?
+4. Với dữ liệu user: logout lúc request cũ đang chạy, response cũ có bị chặn không?
 
-Owner cần gắn dữ liệu và request với scope, chẳng hạn `{ userId, cartId, generation }`. Khi scope đổi, tăng generation, reset snapshot và bỏ qua kết quả không còn thuộc generation hiện tại. Hủy request nếu transport hỗ trợ, nhưng vẫn kiểm tra scope khi commit vì cancellation không phải lúc nào cũng ngăn được kết quả đã hoàn tất.
-
-Nếu hệ thống có tenant hoặc cửa hàng đang chọn, đưa chúng vào scope khi chúng làm thay đổi ý nghĩa của cart. Việc merge giỏ khách vào giỏ đăng nhập cũng là nghiệp vụ của cart/backend, không phải phép cộng do shell tự làm.
-
-<Callout type="warn" title="Một instance frontend không có nghĩa là một instance cho cả server">
-  Với SSR, không giữ cart hoặc session của user trong mutable singleton cấp process. Tạo phạm vi theo request để tránh chia sẻ dữ liệu giữa người dùng; khi hydrate ở browser, bootstrap controller đúng session và dùng snapshot tương thích với dữ liệu đã render.
-</Callout>
-
-### Persist không tạo ra nguồn dữ liệu chuẩn
-
-`localStorage` hoặc IndexedDB giúp dữ liệu sống qua reload, nhưng không xác định ai được ghi hay dữ liệu nào đúng. Nếu ba remote ghi cùng key, bạn chỉ chuyển xung đột từ RAM xuống storage.
-
-Theme có thể persist như một preference đơn giản. Draft checkout cần version schema, TTL, phạm vi user và quyết định trường nào được lưu. Cart server-backed cần reconcile với backend; đừng khôi phục tổng tiền từ storage rồi coi đó là giá trị đã xác nhận.
-
-Với nhiều tab, mỗi tab có một runtime riêng. `BroadcastChannel` hoặc storage notification có thể báo cho tab khác revalidate, nhưng các tab vẫn có thể cùng gửi mutation. Cơ chế nhất quán cuối cùng phải nằm trong contract backend, không chỉ ở store của một tab.
-
-## Consistency khi có nhiều thay đổi
-
-Một owner frontend giảm số nơi điều phối, nhưng không tự loại bỏ concurrency từ nhiều tab, thiết bị hoặc request song song. Bạn vẫn cần chính sách rõ cho commit, retry và optimistic update.
-
-### Response về sai thứ tự
-
-Giả sử backend hỗ trợ revision tăng đơn điệu cho cùng một cart. Các số sau chỉ minh họa:
-
-| Thời điểm | Điều xảy ra |
-| --- | --- |
-| 1 | Owner gửi hai mutation A và B |
-| 2 | Backend xử lý A thành revision 11, rồi B thành revision 12 |
-| 3 | Response B về trước; owner commit revision 12 |
-| 4 | Response A về sau; owner không được ghi đè snapshot bằng revision 11 |
-
-Owner có thể bỏ qua snapshot có revision thấp hơn revision đã commit, miễn backend cam kết revision có ý nghĩa đó trong cùng cart scope. Không so revision của hai cart khác nhau và không tự tạo revision theo thứ tự gửi request rồi gọi nó là revision backend.
-
-Nếu API không có revision, serialize mutation trong một controller là lựa chọn khởi đầu dễ hiểu. Cách này chỉ quản lý thứ tự trong instance đó, không giải quyết mutation từ tab khác. Khi không thể xác định snapshot response nào mới hơn, hãy revalidate nguồn chuẩn thay vì đoán bằng timestamp frontend.
-
-Retry cũng cần quy tắc riêng. Timeout không chứng minh mutation chưa xảy ra; backend có thể đã thêm sản phẩm rồi response mới bị mất. Với thao tác không được phép lặp, thiết kế idempotency key và giữ cùng key khi retry cùng một ý định.
-
-### Optimistic update chỉ có một nơi điều phối
-
-Optimistic update hợp lý khi độ trễ làm thao tác thêm giỏ thiếu phản hồi, nhưng mình sẽ để cart controller điều phối. Catalog chỉ gửi command, header và cart UI đọc projection do owner công bố.
-
-Nếu catalog cộng badge trước, cart UI thêm dòng trước và owner cũng cập nhật cache trước, một thao tác có thể hiện thành nhiều lần cập nhật. Khi thất bại, ba nơi rollback theo ba quy tắc khác nhau.
-
-Nếu bật optimistic update, mở rộng contract để phân biệt pending projection với dữ liệu đã xác nhận và đối soát từng operation. Với nhiều mutation đang pending, đừng rollback bằng cách khôi phục toàn bộ snapshot cũ: thao tác thất bại có thể xóa luôn kết quả của thao tác khác đã thành công. Reconcile từ trạng thái xác nhận và các operation còn pending, hoặc refetch theo chính sách owner.
-
-## Khi nào nên dùng shared store
-
-Mình không mặc định cấm shared store. Một domain có nhiều widget cần phối hợp chặt và cùng owner có thể dùng một store rất hiệu quả. Điều kiện là consumer dùng public contract ổn định, đường ghi vẫn do domain kiểm soát và lifecycle đã được phân định.
-
-| Tình huống | Lựa chọn mặc định |
-| --- | --- |
-| State chỉ dùng trong một remote | Giữ local trong remote |
-| Nhiều component cùng một domain cần phối hợp | Store hoặc Context nội bộ domain |
-| Header cần số lượng cart | Read-only summary từ cart owner |
-| Catalog muốn thêm sản phẩm | Cart command, không import reducer |
-| Nhiều remote dùng theme và locale | Contract nền tảng nhỏ, có owner rõ |
-| Hai domain cùng đọc dữ liệu backend | Query theo nhu cầu; cân nhắc cache facade nếu thật sự cần |
-| Nhiều domain phải thay đổi atomically | Thiết kế workflow hoặc transaction backend; shared frontend store không đủ |
-
-Nếu các remote phải import cùng store shape, action name và selector nội bộ, đổi implementation của một remote rất dễ trở thành thay đổi toàn ứng dụng. Đó là distributed monolith ở đường dữ liệu, dù deployment vẫn tách thành nhiều bundle.
-
-Có thể giữ một store chung trong giai đoạn migration từ monolith, nhưng hãy đặt facade trước nó, ghi rõ owner từng slice và chuyển consumer khỏi direct dispatch dần dần. Nếu state thật sự đan chặt đến mức không tạo được boundary hữu ích, giữ một frontend thống nhất có thể hợp lý hơn việc tách remote bằng mọi giá.
-
-## Các anti-pattern thường gặp
-
-| Anti-pattern | Vì sao có vấn đề | Cách sửa |
-| --- | --- | --- |
-| Shell giữ product, cart, checkout và mọi reducer | Shell trở thành nơi sửa nghiệp vụ của nhiều team | Shell chỉ wiring; domain giữ model và command |
-| Remote import store nội bộ của remote khác | Phụ thuộc implementation và lịch release | Expose contract nhỏ hoặc inject capability |
-| Hai remote tự ghi cùng cart từ event | Quy tắc cập nhật khác nhau, dễ double update | Một owner commit; consumer đọc projection |
-| Header tự cộng trừ badge | Bỏ lỡ event, không biết backend gộp hoặc từ chối mutation | Đọc summary từ owner |
-| Chỉ subscribe event mà không đọc snapshot | Consumer mount muộn không biết trạng thái hiện tại | Snapshot kết hợp subscribe hoặc replay |
-| Có cả URL filter và store filter cùng được ghi | Back/Forward và UI dễ lệch nhau | Chọn URL làm nguồn cho filter đã áp dụng |
-| Dùng global store để đồng bộ theme với cả cart | Gom những state có lifecycle khác nhau | Tách platform state khỏi domain state |
-| Chỉ clear cache khi logout | Response cũ có thể ghi lại dữ liệu đã xóa | Scope/generation guard trước mọi commit |
-| Persistence không có scope hay schema version | Draft cũ hoặc dữ liệu user khác được khôi phục | Namespace, version, TTL và reset theo scope |
-
-## Checklist kiểm thử ownership
-
-Đừng chỉ test reducer cộng quantity đúng. Test cả boundary và những lúc owner thay đổi phạm vi:
-
-- [ ] Mỗi state có nguồn chuẩn, owner frontend, đường ghi và thời điểm hết hiệu lực được ghi rõ.
-- [ ] Catalog và header chạy với mock contract, không phải dựng store nội bộ của cart.
-- [ ] Header mount sau mutation vẫn đọc đúng snapshot hiện tại.
-- [ ] Consumer không thể làm thay đổi state owner bằng cách sửa object snapshot.
-- [ ] Unmount/remount UI không nhân đôi listener; cleanup được gọi đúng.
-- [ ] Rời trang cart không làm mất controller mà catalog đang cần.
-- [ ] Lỗi tải được phân biệt với giỏ rỗng; lỗi mutation không tạo success event giả.
-- [ ] Response về sai thứ tự không ghi đè snapshot mới hơn theo chính sách đã chọn.
-- [ ] Logout hoặc đổi user khi request pending không đưa dữ liệu scope cũ vào scope mới.
-- [ ] Optimistic rollback không xóa kết quả của operation khác đã thành công.
-- [ ] Retry sau timeout tuân thủ contract idempotency backend khi cần.
-- [ ] Nếu hỗ trợ nhiều tab hoặc SSR, có test phạm vi dữ liệu tương ứng.
-- [ ] Đổi thư viện store trong cart không buộc catalog và shell đổi contract.
-
-Bước thực hành tiếp theo: liệt kê các state hiện có trong shop, điền bốn câu hỏi ownership cho từng state, rồi chọn một chỗ đang direct dispatch xuyên remote để thay bằng command và read-only snapshot. Khi boundary đó kiểm thử được độc lập, bạn mới cần quyết định liệu nó có đáng dùng shared store hay không.
+Đối với backend, thứ tự response còn cần scope/generation hoặc version do server công bố. Nếu optimistic update — hiển thị trước kết quả dự đoán — được dùng, để một owner điều phối dự đoán và rollback. Không để mỗi UI cộng/trừ một bản riêng.
 
 ## Đọc tiếp
 
 <Cards>
-  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Định nghĩa props, commands và schemas ổn định qua các phiên bản." />
-  <Card title="Events và message bus" href="/docs/giao-tiep-va-trang-thai/events" description="Thiết kế payload, cleanup và xử lý tín hiệu bị lặp." />
-  <Card title="Data fetching và cache" href="/docs/giao-tiep-va-trang-thai/data-fetching" description="Phân định query cache, deduplication và invalidation." />
-  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="Phối hợp login và logout mà không nhầm UI state với authorization." />
+  <Card title="Routing và navigation" href="/docs/giao-tiep-va-trang-thai/routing" description="Dùng URL giữ màn hình và bộ lọc, shell và remote phối hợp điều hướng." />
+  <Card title="Data fetching và cache" href="/docs/giao-tiep-va-trang-thai/data-fetching" description="Chuyển từ state memory sang dữ liệu tải từ backend và cache dùng chung." />
+  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="Dọn dữ liệu theo phiên và chặn response của user cũ." />
 </Cards>
-
-## Tài liệu tham khảo
-
-- [React — Sharing State Between Components](https://react.dev/learn/sharing-state-between-components): một nguồn quyết định cho mỗi phần state không có nghĩa là toàn bộ state phải ở một chỗ.
-- [single-spa — How can I share application state between applications?](https://single-spa.js.org/docs/faq/#how-can-i-share-application-state-between-applications): giữ càng nhiều state trong từng ứng dụng càng tốt và chỉ chia sẻ qua public interface khi cần.

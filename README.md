@@ -153,9 +153,10 @@ gọi catalog ở browser. Không dùng icon AngularJS cho Angular hiện đại
 
 `docs-kit-inventory.json` ghi số fence theo từng tài liệu và 5 text artifacts được giữ
 lại có lý do rõ ràng (incident template, Network/Console evidence và 2 cây thư mục).
-Bài Routing đã chuyển 5 bản đồ/luồng Unicode còn sót sang D2, gồm trạng thái shell
-router chưa cập nhật và Back hai lần. Tổng curriculum: **143 D2, 0 Mermaid, không còn
-ASCII/Unicode diagram đã nhận diện chưa chuyển**, 5 ví dụ learning components.
+Bài Routing giữ ba sơ đồ tập trung vào phân chia trách nhiệm, trạng thái shell
+router chưa cập nhật và Back hai lần; các sơ đồ lặp đã được gộp. Tổng curriculum:
+**135 D2, 0 Mermaid, không còn ASCII/Unicode diagram đã nhận diện chưa chuyển**,
+5 ví dụ learning components.
 
 ```bash
 npm run check:visuals
@@ -338,6 +339,29 @@ No-JavaScript hoặc Ctrl/Cmd-click đi thẳng tới app qua href thật. Brows
 
 Hiện có **13 bài, 16 reference, 9 demo**: trang giao tiếp tổng quan, bài toán shop, chia domain, events, state ownership, contracts, CSS isolation, routing, resilience, data fetching/cache, Web Components, iframe và design system. Năm bài đầu trong đợt mở rộng dùng lại shop/EventTarget hiện có; bảy bài kỹ thuật có lab riêng trong example-learn.
 
-`npm run check:examples` parse JSX thật trong MDX (không tính tag trong code fence), kiểm tra tất cả ID/version với `lib/examples.ts`. `check:export` đối chiếu số reference trên từng bài và đảm bảo SSR không tạo iframe/dialog. Browser coverage kiểm tra mỗi bài mở đúng app/version; lab repo tự kiểm tra hành vi chạy thật. Không phải 27 Source Explorer projects đều là app runnable.
+`npm run check:examples` parse JSX thật trong MDX (không tính tag trong code fence), kiểm tra tất cả ID/version với `lib/examples.ts`. `check:export` đối chiếu số reference trên từng bài và đảm bảo SSR không tạo iframe/dialog. Browser coverage kiểm tra mỗi bài mở đúng app/version; lab repo tự kiểm tra hành vi chạy thật. Không phải 29 Source Explorer projects đều là app runnable.
 
 Source runnable có thể cố ý khác chi tiết snippet bài: root namespace không phải CSS Modules; routing lab dùng query; query transport là Promise memory; iframe parent/child cùng origin; resilience dùng fault injection có nhãn. Đọc phần giới hạn cạnh mỗi ExampleRef trước khi đối chiếu implementation. Không quảng bá shop build chung thành minh chứng deploy độc lập, Federation, auth thật hoặc backend production.
+
+### Luồng học giao tiếp và state
+
+`content/docs/giao-tiep-va-trang-thai/` đi theo thứ tự: tổng quan các cách → API qua
+`mount` (contracts) → event bus → owner/snapshot → navigation/URL → data cache →
+session. Năm bài sau contracts có các file `basic/` trong code fence, được trích
+nguyên văn vào Source Explorer; mặc định mở `basic/shell.js` để thấy bên nối trước.
+TypeScript nâng cao được giữ riêng trong disclosure để không trộn với bài tập nhỏ.
+
+Các bài tập `basic/` chạy local bằng HTTP server theo hướng dẫn trong từng bài;
+không tự được deploy thành app trong `example-learn`. API cache/session giả được
+đánh dấu rõ, không phải backend hoặc cơ chế xác thực production. Ví dụ routing
+History API chưa có SPA fallback cho refresh URL sâu. Không suy từ các bài tập này
+ra kết luận đã kiểm chứng deploy độc lập hay mọi cơ chế session backend.
+
+```bash
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npm run test:e2e -- \
+  tests/browser/communication-lessons.spec.mjs tests/browser/contract-example.spec.mjs
+```
+
+Build trước khi chạy browser tests. Suite đọc trực tiếp các snippet canonical trong
+MDX, kiểm tra hai phía giao tiếp, cleanup, late mount, Back/Forward, cache sharing,
+response cũ và lỗi session; không giữ một implementation demo riêng để test.

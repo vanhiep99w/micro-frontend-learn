@@ -1,241 +1,281 @@
 ---
 title: "Data fetching và cache"
-description: "Phân định API ownership, chọn phạm vi query cache, deduplicate request và invalidation đúng domain mà không buộc các remote dùng chung mọi implementation."
+description: "Các app phối hợp qua dữ liệu backend: ai tải API, dùng chung cache thế nào và vì sao thay đổi dữ liệu phải làm mới các UI liên quan."
 ---
 
-Giả sử shell tải tổng số lượng giỏ hàng để vẽ badge, cart tải lại cùng dữ liệu để vẽ trang giỏ, còn catalog gọi thêm một API khi người dùng bấm “Thêm vào giỏ”. Mỗi màn hình chạy đúng khi đứng riêng, nhưng khi ghép lại bạn thấy request trùng và badge không đổi sau mutation. Đưa tất cả vào một query client có thể giảm request, nhưng chưa trả lời được câu hỏi ai chịu trách nhiệm cập nhật dữ liệu.
+Header và Cart cùng cần số lượng giỏ hàng. Nếu mỗi app gọi API riêng thì có thể tải trùng. Nếu chỉ dùng cache mà không làm mới sau khi thêm hàng, hai nơi có thể tiếp tục hiện số cũ. **Cùng một endpoint không có nghĩa là cùng một cache.**
 
-Data fetching trong micro-frontend cần hai quyết định riêng: **domain nào sở hữu đường đọc và ghi API, và cache nào phục vụ những consumer nào**. Mình mặc định để mỗi domain quản lý data layer của mình; chỉ chia sẻ cache hoặc data port khi có nhu cầu đọc chung cụ thể, thay vì biến shell thành nơi biết mọi endpoint.
+Bài này nối tiếp [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership): owner không chỉ giữ state trong memory mà còn tải dữ liệu từ backend. Đây là nhánh **backend/cache dùng chung** trong [bản đồ giao tiếp](/docs/giao-tiep-va-trang-thai#các-cách-giao-tiếp-và-bài-đọc-tiếp), có thể kết hợp API qua `mount` và event.
 
-<Callout type="info" title="Phạm vi ví dụ">
-  Bài dùng shop giả định gồm shell, catalog và cart. Các endpoint, contract và code là mẫu thiết kế, không phải API có sẵn trong repository. Ví dụ React dùng TanStack Query v5; site tài liệu này không cần cài thư viện đó để hiển thị code. Nguyên tắc ownership và cache scope vẫn áp dụng khi bạn dùng SWR, Apollo hoặc framework khác.
+<Callout type="info" title="Bắt đầu bằng cache nhỏ, chưa cần học thư viện">
+  Ví dụ đầu dùng JavaScript và API giả trong memory để nhìn rõ thứ tự gọi. Phần sau có mẫu TanStack Query v5 đầy đủ hơn. Không có endpoint shop thật được triển khai bởi site docs; số lần đọc trong bài tập không phải số request HTTP.
 </Callout>
-
-<SourceRef project="giao-tiep-va-trang-thai-data-fetching" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
-- [Phân định API ownership](#phân-định-api-ownership)
-  - [Backend là nguồn chuẩn còn frontend sở hữu data contract](#backend-là-nguồn-chuẩn-còn-frontend-sở-hữu-data-contract)
-  - [Shell điều phối hạ tầng không điều phối mọi nghiệp vụ](#shell-điều-phối-hạ-tầng-không-điều-phối-mọi-nghiệp-vụ)
-- [Phân biệt các lớp cache](#phân-biệt-các-lớp-cache)
-- [Chọn phạm vi query cache](#chọn-phạm-vi-query-cache)
-  - [Cache riêng theo domain](#cache-riêng-theo-domain)
-  - [Query client dùng chung](#query-client-dùng-chung)
-  - [Data port cho consumer khác runtime](#data-port-cho-consumer-khác-runtime)
-- [Thiết kế query key](#thiết-kế-query-key)
-  - [Namespace và schema của kết quả](#namespace-và-schema-của-kết-quả)
-  - [Scope và tham số làm thay đổi dữ liệu](#scope-và-tham-số-làm-thay-đổi-dữ-liệu)
-- [Freshness và vòng đời cache](#freshness-và-vòng-đời-cache)
-- [Request deduplication hoạt động ở đâu](#request-deduplication-hoạt-động-ở-đâu)
-- [Ví dụ query giỏ hàng bằng TanStack Query](#ví-dụ-query-giỏ-hàng-bằng-tanstack-query)
-  - [Key factory và response contract](#key-factory-và-response-contract)
-  - [Query options do cart domain cung cấp](#query-options-do-cart-domain-cung-cấp)
-  - [Inject cùng instance cho các consumer](#inject-cùng-instance-cho-các-consumer)
-- [Mutation và invalidation](#mutation-và-invalidation)
-  - [Invalidate theo dữ liệu bị ảnh hưởng](#invalidate-theo-dữ-liệu-bị-ảnh-hưởng)
-  - [Ví dụ thêm sản phẩm và revalidate giỏ](#ví-dụ-thêm-sản-phẩm-và-revalidate-giỏ)
-  - [Khi nào cập nhật cache trực tiếp](#khi-nào-cập-nhật-cache-trực-tiếp)
-  - [Thông báo thay đổi giữa cache riêng](#thông-báo-thay-đổi-giữa-cache-riêng)
-- [Lifecycle cancellation và đổi session](#lifecycle-cancellation-và-đổi-session)
-  - [Unmount consumer khác với hủy domain cache](#unmount-consumer-khác-với-hủy-domain-cache)
-  - [Logout đổi user và đổi tenant](#logout-đổi-user-và-đổi-tenant)
-  - [Response về sai thứ tự và optimistic update](#response-về-sai-thứ-tự-và-optimistic-update)
-- [SSR hydration và prefetch](#ssr-hydration-và-prefetch)
-- [Retry lỗi và trải nghiệm người dùng](#retry-lỗi-và-trải-nghiệm-người-dùng)
-- [Failure modes và cách debug](#failure-modes-và-cách-debug)
-- [Ma trận kiểm thử](#ma-trận-kiểm-thử)
-- [Checklist trước khi chia sẻ cache](#checklist-trước-khi-chia-sẻ-cache)
+- [Ba việc khác nhau khi lấy dữ liệu](#ba-việc-khác-nhau-khi-lấy-dữ-liệu)
+- [Module data chia sẻ kết quả và lần tải đang chạy](#module-data-chia-sẻ-kết-quả-và-lần-tải-đang-chạy)
+- [Hai UI nhận cùng data API từ shell](#hai-ui-nhận-cùng-data-api-từ-shell)
+  - [Code một UI đọc dữ liệu](#code-một-ui-đọc-dữ-liệu)
+  - [API giả và code shell](#api-giả-và-code-shell)
+- [Chạy và quan sát cache](#chạy-và-quan-sát-cache)
+- [Khi nào dùng cache riêng và khi nào dùng chung](#khi-nào-dùng-cache-riêng-và-khi-nào-dùng-chung)
+- [Làm mới dữ liệu sau thay đổi](#làm-mới-dữ-liệu-sau-thay-đổi)
+- [Mẫu TanStack Query để tra cứu](#mẫu-tanstack-query-để-tra-cứu)
+- [Cache nào đang làm dữ liệu cũ](#cache-nào-đang-làm-dữ-liệu-cũ)
+- [Kiểm tra trước khi ghép thêm remote](#kiểm-tra-trước-khi-ghép-thêm-remote)
 - [Đọc tiếp](#đọc-tiếp)
-- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phân định API ownership
+## Ba việc khác nhau khi lấy dữ liệu
 
-### Backend là nguồn chuẩn còn frontend sở hữu data contract
+| Việc | Ai làm trong thiết kế này? |
+| --- | --- |
+| Xác nhận dữ liệu nghiệp vụ | Backend Cart |
+| Gọi API, lưu cache, quyết định làm mới | Module data do team Cart cung cấp |
+| Hiển thị loading, số lượng hoặc lỗi | Header và Cart UI |
 
-Cart backend quyết định giỏ hàng đã được xác nhận. Cart frontend team chịu trách nhiệm định nghĩa cách query giỏ, gửi command, xử lý lỗi, cập nhật cache và cung cấp phần dữ liệu mà domain khác cần đọc. Đây là hai trách nhiệm khác nhau: frontend owner không có quyền thay thế kiểm tra nghiệp vụ của backend.
+Header không cần biết endpoint, key cache hay thư viện của Cart. Nó nhận một API như `getSummary()` qua tham số mount. Backend vẫn kiểm tra quyền và nghiệp vụ; cache frontend chỉ giữ bản dữ liệu để hiển thị.
 
-Với shop giả định, bản đồ ownership có thể bắt đầu như sau:
+```d2 interactive=false title="Hai UI đọc cùng data API"
+direction: down
+header: "Header và Cart UI"
+data: "Data API\nCache frontend"
+backend: "Backend Cart"
+header -> data: "getSummary"
+data -> backend: "Tải khi cần"
+```
 
-| Dữ liệu hoặc thao tác | Frontend owner | Consumer khác | Boundary nên công bố |
-| --- | --- | --- | --- |
-| Sản phẩm, bộ lọc và kết quả tìm kiếm | Catalog | Trang gợi ý nếu có | Query hoặc read port theo contract catalog |
-| Giỏ hàng và thêm, sửa, xóa dòng hàng | Cart | Catalog gửi yêu cầu thêm hàng | Cart command port |
-| Tổng quantity để vẽ badge | Cart | Header của shell | Summary chỉ đọc, không phải toàn bộ cart store |
-| Session hiện tại | Auth module | Các data layer cần scope | Session snapshot và lifecycle notification |
-| Dữ liệu ghép nhiều backend cho một màn hình | Domain sở hữu màn hình hoặc BFF chuyên trách | UI của màn hình đó | View model có contract riêng |
+Nếu hai app độc lập cùng tải backend, chúng vẫn phối hợp gián tiếp qua dữ liệu server, nhưng không tự biết app kia vừa sửa gì. Cần chọn lúc tải lại, event báo dữ liệu cũ hoặc server push. Dùng chung một data API là lựa chọn khi cần tránh lặp việc và kiểm soát một đường cập nhật.
 
-Header không cần biết cart dùng REST hay GraphQL. Nó cần biết số lượng hiện tại, trạng thái loading/error và cách nhận cập nhật. Ngược lại, catalog cần kết quả của command thêm hàng, không cần tự gọi một endpoint cart rồi tự sửa badge.
+## Module data chia sẻ kết quả và lần tải đang chạy
 
-Nếu mỗi remote tự viết lại logic “thêm hàng rồi tính tổng”, bạn có nhiều implementation cùng quyết định một nghiệp vụ. Một query client dùng chung không sửa được vấn đề đó; hãy thống nhất command owner trước. Xem thêm [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership).
+Mẫu tối thiểu dưới đây giữ một summary và một Promise đang tải. Promise là kết quả sẽ hoàn tất về sau; hai app có thể chờ cùng Promise thay vì gọi API hai lần.
 
-### Shell điều phối hạ tầng không điều phối mọi nghiệp vụ
+```js title="basic/cart-data.js" sourceFile="basic/cart-data.js" sourceRegion="main"
+export function createCartData(api) {
+  let cached;
+  let pending;
+  let generation = 0;
 
-Shell hoặc platform module có thể cung cấp transport chung: API base URL, request tracing, timeout, cơ chế session và chuẩn lỗi. Nhưng mapping response thành `CartSummary`, key factory và danh sách query cần invalidate vẫn thuộc cart domain.
+  function invalidate() {
+    generation += 1;
+    cached = undefined;
+    pending = undefined;
+  }
 
-Mình chỉ đưa logic ghép dữ liệu lên BFF khi màn hình thật sự cần một view model từ nhiều backend, hoặc khi muốn giảm các vòng request từ browser. BFF phải có owner và contract riêng; nó không mặc nhiên là một endpoint toàn cục trả tất cả dữ liệu cho mọi remote.
+  function getSummary() {
+    if (cached !== undefined) return Promise.resolve(cached);
+    if (pending) return pending;
 
-<Callout type="warn" title="Scope ở frontend không phải kiểm tra quyền">
-  Backend phải kiểm tra user, tenant, cart và quyền truy cập trên từng request. Query key có tenant ID hay data port chỉ đọc giúp tránh nhầm dữ liệu và giảm coupling, nhưng không phải security boundary cho JavaScript chạy cùng trang.
-</Callout>
+    const started = generation;
+    const request = Promise.resolve().then(() => api.getSummary())
+      .then((summary) => {
+        if (started === generation) cached = Object.freeze({ ...summary });
+        return Object.freeze({ ...summary });
+      })
+      .finally(() => {
+        if (pending === request) pending = undefined;
+      });
+    pending = request;
+    return request;
+  }
 
-## Phân biệt các lớp cache
-
-“Đã invalidate cache” là một câu chưa đủ rõ. Request từ query layer có thể tiếp tục nhận response cũ từ HTTP cache hoặc CDN.
-
-| Lớp | Giữ gì | Ai quản lý | Cách làm mới điển hình |
-| --- | --- | --- | --- |
-| Query cache trong memory | Dữ liệu đã parse, loading/error và metadata | Domain data layer hoặc query client owner | Invalidate, refetch, set hoặc remove query |
-| HTTP cache của browser | HTTP response theo cache headers | Browser theo policy backend | `Cache-Control`, conditional request với ETag |
-| CDN hoặc reverse proxy | Response hoặc asset tại edge | Backend và platform | TTL, revalidation, purge theo cache key |
-| Service worker hoặc persistent cache | Response hay dữ liệu sống qua reload | PWA/platform owner | Version, TTL, eviction và cleanup theo scope |
-| Backend cache | Kết quả tính toán hoặc dữ liệu trung gian | Backend domain | Invalidation hoặc TTL của backend |
-
-`queryClient.invalidateQueries` chỉ tác động tới query cache tương ứng. Nó không purge CDN. Tương tự, `fetch` với `cache: 'no-store'` không tự xóa dữ liệu trong TanStack Query.
-
-Cart cá nhân cần chính sách HTTP cache phù hợp với dữ liệu riêng tư. `Cache-Control: private` cấm shared cache lưu response nhưng vẫn có thể cho browser lưu; `no-store` yêu cầu không lưu response đó trong HTTP cache. Cả hai không tự điều khiển object mà ứng dụng giữ trong query cache, nên bạn vẫn cần cleanup session ở frontend.
-
-Asset của remote lại là bài toán khác: JavaScript có hash thường được cache dài, còn manifest trỏ tới phiên bản remote cần policy riêng. Đừng dùng quy tắc cache asset để suy ra độ mới của giá hoặc tồn kho. Lỗi tải bundle cũ được bàn riêng ở [Stale cache](/docs/troubleshooting/stale-cache).
-
-## Chọn phạm vi query cache
-
-Không phải mọi request trùng đều đáng đổi kiến trúc. Trước tiên hãy xác định dữ liệu nào thật sự dùng chung, tần suất đọc và mức consistency cần đạt.
-
-| Mô hình | Nên chọn khi | Chi phí chính |
-| --- | --- | --- |
-| Cache riêng theo domain | Các domain độc lập, ít đọc cùng dữ liệu | Có thể tải trùng một số dữ liệu và cần tín hiệu revalidate |
-| Query client dùng chung | Consumer cùng runtime tương thích, cần cùng query nhiều lần | Coupling với thư viện, key schema, options và lifecycle client |
-| Data port do domain sở hữu | Consumer khác framework hoặc chỉ cần projection nhỏ | Cần contract snapshot, subscribe, lỗi và cleanup |
-
-### Cache riêng theo domain
-
-Catalog giữ cache sản phẩm; cart giữ cache giỏ. Mỗi bên tự chọn freshness và triển khai độc lập. Đây là lựa chọn mặc định của mình vì phạm vi trách nhiệm rõ và một lần sửa query của catalog không làm cart đổi theo.
-
-Nếu header cần cart summary, hãy cho nó đọc từ cart owner qua read port, hoặc thống nhất một summary query do cart cung cấp. Đừng tạo thêm một cart implementation trong shell chỉ vì badge render ở shell.
-
-Cache riêng vẫn có thể cùng đọc một resource khi hai domain cần projection khác nhau. Chấp nhận một ít duplication đôi khi hợp lý hơn việc buộc mọi remote dùng chung model và release cùng nhau. Hãy đo request thực tế trước khi thêm một global cache.
-
-### Query client dùng chung
-
-Một instance `QueryClient` có thể phục vụ nhiều consumer React. Tuy nhiên, share package `@tanstack/react-query` qua Module Federation không tự tạo một cache chung: hai lệnh `new QueryClient()` vẫn tạo hai cache riêng.
-
-Nếu dùng `QueryClientProvider`, consumer phải ở dưới provider tương ứng trong cùng cây React và dùng context tương thích. Hai remote mount bằng hai `createRoot` không tự nhận context của nhau. Bạn có thể inject cùng client một cách tường minh cho từng root, nhưng vẫn phải thống nhất compatibility của React và TanStack Query.
-
-Khi chọn mô hình này, contract dùng chung bao gồm cả query key, response schema, freshness, retry và quyền ghi cache. Mình để domain xuất query options chuẩn; consumer không được dùng cùng key rồi tự đổi `queryFn` thành một endpoint trả schema khác.
-
-<Callout type="warn" title="Một client chung không có nghĩa là mọi remote được xóa mọi query">
-  Không để một remote gọi `clear()` khi nó unmount. Thao tác đó có thể xóa cache của domain khác. Composition layer quản lý vòng đời client; domain chỉ thao tác trên namespace mình sở hữu, trừ quy trình reset toàn session do nền tảng điều phối.
-</Callout>
-
-### Data port cho consumer khác runtime
-
-Với React shell và Vue cart, hoặc consumer chỉ cần số lượng để vẽ badge, một read port thường ít coupling hơn việc lộ `QueryClient`:
-
-```ts
-export type CartSummarySnapshot =
-  | Readonly<{ status: 'loading'; itemCount: null }>
-  | Readonly<{ status: 'ready'; itemCount: number; refreshing: boolean }>
-  | Readonly<{ status: 'error'; itemCount: null }>;
-
-export interface CartSummaryReader {
-  getSnapshot(): CartSummarySnapshot;
-  subscribe(listener: () => void): () => void;
+  return {
+    getSummary,
+    invalidate,
+    async addItem() {
+      await api.addItem();
+      invalidate();
+    },
+  };
 }
 ```
 
-Cart owner query backend, cập nhật snapshot rồi báo subscriber. Header chỉ đọc summary. Implementation có thể dùng TanStack Query ở bên trong mà consumer không biết; nếu dùng adapter React, snapshot phải ổn định reference khi dữ liệu không đổi.
+Đọc `getSummary()` từ trên xuống:
 
-```d2 title="Data port cho consumer khác runtime"
-direction: right
-catalog: Catalog UI
-layer: Cart data layer
-api: Cart API
-cache: Query cache
-ui: Header / Cart UI
-catalog -> layer: addItem
-layer -> api: Query / mutation
-layer -> cache
-cache -> ui: Snapshot + subscribe
+1. Có `cached` thì dùng lại, không gọi API.
+2. Chưa có dữ liệu nhưng có `pending` thì chờ cùng lần tải đang chạy.
+3. Chưa có cả hai thì bắt đầu một lần đọc API, giữ Promise trong `pending`.
+4. Khi xong, lưu kết quả và dọn `pending`. Nếu lỗi, không giữ lỗi như dữ liệu thành công; lần gọi sau có thể tải lại.
+
+`invalidate()` nghĩa là **đánh dấu dữ liệu hiện có không còn dùng lại được**. Nó tăng `generation`, một số thứ tự cục bộ, để response của lần tải trước invalidation không được ghi lại vào cache mới. Nó không hủy request ở backend.
+
+`addItem()` chờ API thay đổi dữ liệu rồi invalidate. Nó chưa cập nhật UI nào; bên nối cần gọi refresh hoặc data owner cần công bố subscription. Như vậy ta thấy rõ thay đổi backend và làm mới UI là hai bước riêng.
+
+## Hai UI nhận cùng data API từ shell
+
+### Code một UI đọc dữ liệu
+
+Cùng một hàm mount dùng cho hai vùng Header và Cart trong bài tập. Trong ứng dụng thật, hai remote có UI khác nhau nhưng cùng cách gọi data API:
+
+```js title="basic/summary.js" sourceFile="basic/summary.js" sourceRegion="main"
+export function mount({ container, data, name }) {
+  const label = document.createElement('p');
+  container.append(label);
+  let active = true;
+  let requestId = 0;
+
+  async function refresh() {
+    const current = ++requestId;
+    label.textContent = `${name}: đang tải`;
+    try {
+      const summary = await data.getSummary();
+      if (active && current === requestId) {
+        label.textContent = `${name}: ${summary.itemCount} món`;
+      }
+    } catch {
+      if (active && current === requestId) label.textContent = `${name}: lỗi tải`;
+    }
+  }
+
+  void refresh();
+  return {
+    refresh,
+    unmount() { active = false; label.remove(); },
+  };
+}
 ```
 
-Với iframe hoặc document khác, function port không truyền trực tiếp qua boundary được. Dùng message protocol có validation, scope và request ID; mỗi runtime vẫn có cache riêng. Contract cần có snapshot ban đầu hoặc khả năng resync, không chỉ event “cart đã đổi”.
+`requestId` giúp UI không áp dụng kết quả của lần refresh cũ khi lần mới đã bắt đầu. `active` chặn cập nhật sau unmount. Generation trong data module bảo vệ **cache**; request ID/active ở đây bảo vệ **instance UI**. Hai lớp giải quyết hai vị trí ghi khác nhau.
 
-## Thiết kế query key
+### API giả và code shell
 
-Query key là địa chỉ của một kết quả trong cache, không chỉ là tên endpoint. Nếu hai request có thể trả dữ liệu khác nhau nhưng dùng cùng key, bạn đã cho hai kết quả khác nhau cùng một địa chỉ.
+API giả sau chỉ mô phỏng kết quả, không dùng làm implementation backend:
 
-### Namespace và schema của kết quả
+<details>
+<summary>basic/fake-api.js để tự chạy bài tập</summary>
 
-Mình đặt namespace domain ở đầu, sau đó là version của cache contract, scope và loại projection:
-
-```ts
-['cart', 'v1', scope, 'summary']
-['cart', 'v1', scope, 'detail']
-['catalog', 'v1', catalogScope, 'products', filters]
+```js title="basic/fake-api.js" sourceFile="basic/fake-api.js" sourceRegion="main"
+export function createFakeApi(onRead) {
+  let itemCount = 2;
+  return {
+    async getSummary() {
+      onRead();
+      return { itemCount };
+    },
+    async addItem() {
+      itemCount += 1;
+    },
+  };
+}
 ```
 
-`v1` ở đây là version của key/result contract trong frontend, không mặc nhiên là version của REST API. Nó hữu ích khi nhiều build remote cùng chạy và format cache cần thay đổi; nhưng thêm version cũng tách cache, nên không giải quyết được compatibility giữa các consumer một cách tự động.
+</details>
 
-Không dùng chung key cho summary và detail, hoặc cho `useQuery` và `useInfiniteQuery`: các kết quả có shape khác nhau. TanStack Query không tự normalize mọi entity; query danh sách và query chi tiết có thể chứa hai bản sao của cùng sản phẩm.
+Shell tạo một data API và đưa cùng object đó vào hai UI:
 
-### Scope và tham số làm thay đổi dữ liệu
+```js title="basic/shell.js" sourceFile="basic/shell.js" sourceRegion="main"
+import { createFakeApi } from './fake-api.js';
+import { createCartData } from './cart-data.js';
+import { mount } from './summary.js';
 
-Scope phải thể hiện phạm vi dữ liệu: user hoặc guest identity, tenant, cart và generation của session nếu cần cách ly các lần đăng nhập. Thêm locale, currency, filter, sort và pagination vào key của những query mà chúng làm thay đổi response.
+let reads = 0;
+const api = createFakeApi(() => {
+  document.querySelector('#reads').textContent = `Số lần đọc API giả: ${++reads}`;
+});
+const data = createCartData(api);
+const header = mount({ container: document.querySelector('#header'), data, name: 'Header' });
+const cart = mount({ container: document.querySelector('#cart'), data, name: 'Cart' });
 
-Ví dụ, danh sách giá theo VND không được đọc cache danh sách giá theo USD. Nhưng summary chỉ chứa quantity có thể không cần currency nếu backend xác nhận quantity không phụ thuộc currency. Đừng thêm mọi giá trị platform vào mọi key; thêm những biến thật sự ảnh hưởng kết quả hoặc cần cách ly lifecycle.
+const add = document.querySelector('#add');
+const notice = document.querySelector('#notice');
+add.addEventListener('click', async () => {
+  add.disabled = true;
+  try {
+    await data.addItem();
+    notice.textContent = 'Đã thêm; đang làm mới hai UI';
+    await Promise.all([header.refresh(), cart.refresh()]);
+  } catch {
+    notice.textContent = 'Chưa xác nhận kết quả thêm hàng; không tự gửi lại';
+  } finally {
+    add.disabled = false;
+  }
+});
+```
 
-Với TanStack Query, key là array serializable. Thứ tự phần tử trong array có ý nghĩa; thứ tự thuộc tính trong object không làm key khác nhau theo cơ chế hash mặc định. Chuẩn hóa filter trước khi tạo key để `page: 1` và `page` bị bỏ trống không vô tình tạo hai cache cho cùng ý nghĩa.
+Lần đầu, Header và Cart gọi `getSummary` gần nhau nên chờ cùng lần tải. Khi bấm thêm hàng, API giả tăng số lượng, module xóa cache rồi hai UI gọi refresh. Lần tải mới cũng chỉ chạy một lần.
 
-<Callout type="warn" title="Không dùng access token làm query key">
-  Key có thể xuất hiện trong DevTools, log hoặc dehydrated state. Dùng một identity/scope tag không phải credential, không đưa access token, cookie hay dữ liệu nhạy cảm vào key. Đổi session vẫn phải được xử lý bằng lifecycle reset, không chỉ bằng việc đổi string trong key.
-</Callout>
+Nếu thay `createFakeApi` bằng HTTP adapter, adapter phải kiểm tra status, parse/validate JSON và truyền credential đúng cơ chế ứng dụng. `fetch` không tự reject chỉ vì HTTP 404/500. Không đưa access token vào URL hay query key.
 
-## Freshness và vòng đời cache
+## Chạy và quan sát cache
 
-Hai câu hỏi “dữ liệu có đủ mới không?” và “giữ dữ liệu chưa dùng bao lâu?” cần hai policy khác nhau.
+<details>
+<summary>HTML để chạy ví dụ cache</summary>
 
-| Khái niệm trong TanStack Query v5 | Ý nghĩa | Không có nghĩa là |
+```html title="basic/index.html" sourceFile="basic/index.html" sourceRegion="main"
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hai UI dùng chung cache</title>
+</head>
+<body>
+  <div id="header"></div>
+  <div id="cart"></div>
+  <p id="reads"></p>
+  <p id="notice"></p>
+  <button id="add">Thêm một món</button>
+  <script type="module" src="./shell.js"></script>
+</body>
+</html>
+```
+
+</details>
+
+Lưu các file `basic/` theo đúng tên trong bài. Từ thư mục chứa `basic/`, chạy:
+
+```bash
+python3 -m http.server 8080 --directory basic
+```
+
+Mở `http://localhost:8080`. Ban đầu hai UI hiện **2 món** và bộ đếm API giả là **1**. Bấm **Thêm một món**: cả hai hiện **3 món**, bộ đếm thành **2**, không phải 3 hoặc 4. Đó là chia sẻ cache/lần tải trong cùng instance data, không phải tính năng tự động giữa mọi remote.
+
+Các module đặt cạnh nhau để tập trung vào luồng giao tiếp. Import tương đối không minh họa tải remote, Module Federation hay pipeline deploy độc lập. Khi tách bundle, loader phải cung cấp đúng API đã thống nhất; thứ tự truyền và gọi hàm vẫn như trong ví dụ.
+
+
+<SourceRef project="giao-tiep-va-trang-thai-data-fetching" variant="button">Đọc basic/shell.js rồi mở cart-data.js</SourceRef>
+
+Mẫu giữ cache tới khi invalidate, chưa có thời hạn freshness, cancellation, background refresh, subscription hay scope user. Khi logout phải bỏ instance/callback cũ và không dùng cache này cho tài khoản mới. Với nhiều mutation cùng chạy, cần thêm quy tắc xử lý thứ tự hoặc version backend; đừng xem đây là cache production hoàn chỉnh.
+
+## Khi nào dùng cache riêng và khi nào dùng chung
+
+| Cách | Được gì? | Cần thống nhất gì? |
 | --- | --- | --- |
-| `staleTime` | Thời gian query được coi là fresh | Cứ hết thời gian là lập tức gửi request |
-| `gcTime` | Thời gian giữ query inactive trước khi garbage collect | TTL nghiệp vụ hay thời điểm dữ liệu mất hiệu lực |
-| Invalidation | Đánh dấu query cần làm mới; có thể kích hoạt refetch | Xóa cache hoặc purge HTTP/CDN cache |
-| `refetchInterval` | Polling theo interval cấu hình | Chỉ chạy khi `staleTime` hết |
-| Removal | Loại query khỏi cache | Hủy mutation đã chạy trên backend |
+| Mỗi domain giữ cache riêng | Ít phụ thuộc thư viện và model của app khác | Cách báo thay đổi và lúc refetch |
+| Nhiều UI dùng một data API | Giấu implementation, phù hợp khác framework | API đọc/ghi, snapshot/lỗi, lifecycle instance |
+| Dùng cùng QueryClient | Tận dụng query sharing của thư viện | Cùng instance, key, response shape, options và runtime tương thích |
 
-Trong browser, default của TanStack Query v5 là `staleTime: 0`, query inactive thường được giữ 5 phút. Stale query có thể refetch khi observer mới mount, window focus hoặc network reconnect. Vì thế, bật DevTools rồi chuyển focus cũng có thể tạo request; không phải lúc nào đó cũng là lỗi deduplication.
+Mình mặc định giữ cache sản phẩm trong Catalog, cache giỏ trong Cart. Chỉ chia sẻ phần cần phối hợp. Hai app cùng `new QueryClient()` vẫn có hai cache; share dependency không tự share state. Hai React root cũng không tự nhận Context của nhau, cần cấp client rõ ràng nếu chọn mô hình đó.
 
-Mình đặt freshness theo loại dữ liệu, không theo một TTL chung cho cả ứng dụng. Ví dụ minh họa: mô tả sản phẩm có thể chấp nhận cache vài phút, còn cart cần invalidation ngay sau mutation. Các con số phải được chọn từ yêu cầu nghiệp vụ và telemetry, không phải vì thư viện có default đó.
-
-`staleTime: Infinity` vẫn cho phép invalidation thủ công. `staleTime: 'static'` trong các bản v5 hỗ trợ option này chặn cả refetch do invalidation; đừng dùng nó cho cart hoặc dữ liệu quyền có thể thay đổi trong session. Kiểm tra API của phiên bản bạn pin, và tránh đặt policy khác nhau tùy hứng cho cùng query ở nhiều remote.
-
-## Request deduplication hoạt động ở đâu
-
-Ở bản cùng QueryClient, hai observer Header/Cart chỉ khởi động một query function. Đổi sang hai client riêng sẽ thấy hai lần gọi. Bấm “Trả response đang chờ”, thêm hàng và invalidate, rồi thử ẩn Header trong khi Cart còn đọc query.
+Thử khác biệt bằng app dùng TanStack Query Core thật:
 
 <ExampleRef example="query-cache" version="shared">Example: cache scope và request sharing</ExampleRef>
 
-Muốn thử race, khởi động một GET bằng invalidate, bấm “Mutation khi GET đang chờ”, rồi trả response cũ. Demo cancel attempt cũ trước khi commit revision mới nên cache không lùi lại. Dùng TanStack Query Core thật, nhưng API là Promise memory do nút điều khiển; bộ đếm không phải số HTTP request. Chưa minh họa auth scope, optimistic rollback hoặc mọi policy của React Query.
+Ở bản **Cùng QueryClient**, hai observer — hai nơi đang theo dõi query — chờ một lần tải dữ liệu. Đổi sang **Hai QueryClient riêng**, chúng có hai lần đọc. Bấm **Trả response đang chờ** để hoàn tất. API là Promise trong memory có nút điều khiển, không phải request HTTP. Demo còn có thao tác mutation khi GET đang chờ để quan sát cách chặn response cũ.
 
-TanStack Query có thể chia sẻ request đang chạy cho cùng query key trong cùng client. Đó là deduplication theo query, không phải một cơ chế gom tất cả HTTP request cùng URL trên toàn browser.
+## Làm mới dữ liệu sau thay đổi
 
-| Trường hợp | Có dùng chung request ở query layer không? |
+Nếu các UI dùng chung cache, owner invalidate đúng dữ liệu của domain sau mutation. Với cache riêng, app sửa dữ liệu phát event như “giỏ đã đổi”; mỗi app nhận tự làm mới cache của mình. Không gửi tên query key hay lệnh `invalidateQueries` nội bộ của một app sang app khác.
+
+Nếu mutation đã thành công nhưng GET refresh bị lỗi, UI cần báo dữ liệu chưa cập nhật được, **không tự gửi lại mutation**. Timeout khi gửi mutation còn là kết quả chưa biết; retry phải theo contract chống trùng backend, không chỉ theo nút disabled.
+
+| Tình huống | Hành vi cần có |
 | --- | --- |
-| Header và cart quan sát cùng key, cùng client trong lúc query đang fetch | Có thể dùng chung in-flight query |
-| Cùng URL nhưng key khác nhau | Không; query layer coi là hai query |
-| Cùng key nhưng hai client khác nhau | Không; mỗi client có cache và request riêng |
-| Query đã xong, dữ liệu stale, observer mới mount | Có thể có refetch mới theo policy |
-| Hai tab hoặc hai iframe độc lập | Không tự dùng chung cache memory |
-| Hai mutation thêm hàng giống nhau | Không được tự coi là một thao tác |
+| App mount sau event | Đọc snapshot/tải dữ liệu, không chỉ chờ event mới |
+| Remote unmount nhưng header còn dùng cache | Chỉ gỡ observer remote, không clear toàn bộ client |
+| User/tenant đổi | Khóa scope cũ, hủy/bỏ kết quả cũ và xóa cache riêng tư |
+| Response GET cũ về sau mutation | Không ghi đè snapshot mới theo policy generation/revision/cancellation |
+| Lỗi mạng/5xx | Retry hữu hạn cho query theo policy; không retry mọi mutation một cách mù quáng |
 
-Đừng deduplicate mutation chỉ bằng URL và body: người dùng bấm thêm một sản phẩm hai lần có thể thật sự muốn quantity tăng hai lần. Nếu một thao tác bị gửi lại vì timeout hoặc retry, backend cần idempotency key để phân biệt gửi lại với một ý định mới.
+## Mẫu TanStack Query để tra cứu
 
-Nếu viết một lớp in-flight deduplication ngoài query library, bạn còn phải xử lý ownership của cancellation: một consumer unmount không được tự abort request mà consumer khác vẫn cần. Vì vậy, mình ưu tiên cơ chế observer của thư viện hoặc data owner thay vì một `Map<URL, Promise>` toàn cục.
+Đây là **bộ mẫu nâng cao độc lập với cache JavaScript ở trên**, không phải code cần copy thêm vào nó. Các import ứng dụng/endpoint là giả định. Đọc theo thứ tự: `data-contract.ts` định nghĩa key/scope và parser → `summary-query.ts` gọi GET → `cart-runtime.tsx` cấp client cho UI → `use-add-item.ts` gửi thay đổi và invalidate.
 
-## Ví dụ query giỏ hàng bằng TanStack Query
+**Query key** là địa chỉ dữ liệu trong cache. Summary, detail hoặc dữ liệu của user khác không được vô tình chung địa chỉ. Scope gồm user/guest, tenant, cart và generation của phiên; không chứa credential. Tên `v1` trong key là version cache contract, không tự là version REST API.
 
-Ví dụ dưới đây chọn mô hình cùng client cho summary. Nó cố ý không triển khai cả UI cart, auth hay remote loader; phần cần chú ý là cart team sở hữu key, parsing và query options, còn shell chỉ inject instance.
-
-### Key factory và response contract
+<details>
+<summary>cart/data-contract.ts</summary>
 
 ```ts title="cart/data-contract.ts" sourceFile="cart/data-contract.ts" sourceRegion="main"
 export type CartScope = Readonly<{
@@ -286,11 +326,12 @@ export function parseSummary(
 }
 ```
 
+</details>
+
 <SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="cart/data-contract.ts" region="main">Đối chiếu cart/data-contract.ts</SourceRef>
 
-Ví dụ giả định backend trả revision tăng đơn điệu cho từng cart. Nếu backend dùng ETag hoặc opaque version, hãy dùng contract thật của nó; không so sánh string version tùy ý như số. `sessionEpoch` chỉ cách ly lifecycle ở browser, không phải server revision.
-
-### Query options do cart domain cung cấp
+<details>
+<summary>cart/summary-query.ts</summary>
 
 ```ts title="cart/summary-query.ts" sourceFile="cart/summary-query.ts" sourceRegion="main"
 import { queryOptions } from '@tanstack/react-query';
@@ -329,15 +370,12 @@ export function cartSummaryOptions(scope: CartScope) {
 }
 ```
 
+</details>
+
 <SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="cart/summary-query.ts" region="main">Đối chiếu cart/summary-query.ts</SourceRef>
 
-`fetch` không tự reject khi server trả 404 hoặc 500, nên phải kiểm tra `response.ok`. TypeScript type assertion cũng không validate JSON; parser bảo vệ boundary trước khi đưa dữ liệu vào cache.
-
-Các thời gian trong ví dụ là policy minh họa, không phải khuyến nghị cố định cho mọi cart. Retry ở đây chỉ áp dụng cho một số lỗi gateway/service tạm thời; lỗi mạng, timeout, 429 và quy trình refresh session cần policy transport riêng trong implementation thực tế.
-
-Endpoint giả định cùng origin và dùng cookie session. Backend vẫn phải enforce quyền truy cập tenant/cart. Với cross-origin API hoặc bearer auth, dùng transport đã được platform thống nhất; không để từng remote tự tạo cơ chế refresh token cạnh tranh nhau.
-
-### Inject cùng instance cho các consumer
+<details>
+<summary>shell/cart-runtime.tsx</summary>
 
 ```tsx title="shell/cart-runtime.tsx" sourceFile="shell/cart-runtime.tsx" sourceRegion="main"
 import { QueryClient, useQuery } from '@tanstack/react-query';
@@ -384,36 +422,12 @@ export function CartBadge({
 }
 ```
 
+</details>
+
 <SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="shell/cart-runtime.tsx" region="main">Đối chiếu shell/cart-runtime.tsx</SourceRef>
 
-Tham số thứ hai của `useQuery` là client được inject tường minh. Cart UI cũng dùng chính `runtime.queryClient` và `cartSummaryOptions(scope)` nếu muốn quan sát summary đó. Mô hình này không phụ thuộc việc các root nhận cùng provider context, nhưng vẫn phụ thuộc runtime thư viện tương thích.
-
-Khi không dùng provider, owner gọi `mount()`/`unmount()` để client đăng ký và gỡ focus/online subscriptions. Nếu dùng `QueryClientProvider`, provider quản lý phần lifecycle này. `dispose()` chỉ dành cho composition layer khi kết thúc toàn runtime tương ứng, không phải cleanup khi một remote unmount.
-
-Đừng tạo client trong mỗi component hoặc mỗi lần render: bạn sẽ mất cache và tạo request mới. Factory trên dành cho browser runtime; với SSR, tạo instance theo request như phần bên dưới.
-
-Badge không hiển thị `0` khi chưa tải được. Khi có dữ liệu cũ nhưng refetch lỗi, nó giữ số cũ kèm trạng thái cảnh báo. Nếu logout, phải unmount hoặc reset consumer cũ ngay; không dùng dữ liệu user cũ làm placeholder cho user mới.
-
-## Mutation và invalidation
-
-### Invalidate theo dữ liệu bị ảnh hưởng
-
-Mutation thành công nghĩa là backend đã chấp nhận thay đổi theo contract của endpoint. Nó không tự cập nhật mọi query liên quan trong frontend.
-
-Hãy ghi lại dependency trước khi code:
-
-| Mutation | Query cần xem lại | Không nên mặc định invalidate |
-| --- | --- | --- |
-| Thêm hoặc đổi quantity trong cart | Cart detail, summary và quote liên quan | Toàn bộ catalog |
-| Áp dụng coupon | Cart totals, quote; summary nếu contract chứa total | Mọi query của shell |
-| Đổi giá sản phẩm | Product detail và list có giá bị ảnh hưởng | Session hoặc theme |
-| Đổi tenant | Tất cả dữ liệu bị scope bởi tenant cũ | Dữ liệu public không phụ thuộc tenant, nếu policy cho phép giữ |
-
-Với TanStack Query, invalidation thông thường đánh dấu query stale và refetch các query active phù hợp; query inactive thường được refetch khi dùng lại theo policy. Disabled query không tự refetch như query active thông thường, còn `staleTime: 'static'` là ngoại lệ cần tránh cho dữ liệu mutable.
-
-Invalidate theo prefix domain/scope phù hợp khi summary và detail cùng bị ảnh hưởng. Dùng key cụ thể với `exact: true` khi chỉ muốn làm mới một projection. Đừng invalidation toàn ứng dụng sau mọi mutation: bạn sẽ biến một thao tác nhỏ thành một đợt request đồng loạt.
-
-### Ví dụ thêm sản phẩm và revalidate giỏ
+<details>
+<summary>cart/use-add-item.ts</summary>
 
 ```tsx title="cart/use-add-item.ts" sourceFile="cart/use-add-item.ts" sourceRegion="main"
 import { useMutation, type QueryClient } from '@tanstack/react-query';
@@ -464,184 +478,39 @@ export function useAddItem(
 }
 ```
 
+</details>
+
 <SourceRef project="giao-tiep-va-trang-thai-data-fetching" file="cart/use-add-item.ts" region="main">Đối chiếu cart/use-add-item.ts</SourceRef>
 
-Caller tạo idempotency key một lần cho một ý định thêm hàng và giữ nguyên khi gửi lại ý định đó, ví dụ sau lỗi transport không rõ kết quả. Chỉ một thao tác mới mới có key mới. Header `Idempotency-Key` trong ví dụ là contract giả định: backend phải thật sự lưu và xử lý key, bao gồm trường hợp cùng key nhưng body khác.
+`staleTime` là thời gian coi dữ liệu đủ mới, không phải timer tự gửi request khi hết hạn. `gcTime` giữ query inactive trước khi dọn. Invalidation thường đánh dấu stale rồi refetch query active theo options; disabled query và các options đặc biệt cần kiểm tra theo phiên bản đang pin. Các thời gian/retry trong mẫu là policy minh họa.
 
-`isCurrentScope` do session owner cung cấp và phải so sánh cả epoch cùng các định danh scope liên quan. Nó chặn callback của scope cũ làm thay đổi UI hiện tại; không thể ngăn backend hoàn tất một mutation đã nhận. Mutation production còn cần CSRF protection nếu dùng cookie, mapping lỗi nghiệp vụ và một cơ chế thông báo kết quả không bị mất khi màn hình unmount.
+Tham số client thứ hai của `useQuery` cấp cùng client rõ ràng cho các UI. Runtime gọi `mount/unmount` cho client nếu không dùng Provider; chỉ owner được `dispose`, không để remote gọi `clear()` mỗi lần rời route.
 
-Trả Promise invalidation từ `onSuccess` giữ mutation pending trong lúc revalidation hoàn tất. Tuy vậy, **thêm hàng thành công và refresh UI thất bại là hai kết quả khác nhau**. Theo options mặc định, lỗi refetch không nhất thiết làm Promise invalidation reject; hãy quan sát query error và cho phép refresh lại, không tự gửi lại mutation chỉ vì badge chưa cập nhật.
+## Cache nào đang làm dữ liệu cũ
 
-### Khi nào cập nhật cache trực tiếp
-
-Nếu mutation trả về toàn bộ summary đã được backend xác nhận, cart owner có thể dùng `setQueryData` để badge đổi ngay rồi invalidate các projection còn lại. Chỉ ghi vào đúng summary key và validate response trước khi ghi.
-
-Một summary không đủ để thay thế cart detail. Ngược lại, nếu response trả cart đầy đủ, domain có thể dẫn xuất summary theo quy tắc đã công bố. Consumer không được tự suy ra `itemCount + quantity` rồi coi đó là kết quả chuẩn.
-
-Trước khi ghi response mutation vào cache, cần xử lý query GET cũ đang chạy để nó không ghi đè kết quả mới: cancel query liên quan bằng signal, và áp dụng revision guard hoặc điều phối concurrency thích hợp. Với nhiều mutation song song, `setQueryData` đơn giản theo thứ tự response về là chưa đủ.
-
-Mình mặc định chọn targeted invalidation khi response mutation không đủ dữ liệu hoặc việc duy trì nhiều projection quá phức tạp. Chọn cập nhật trực tiếp khi backend trả representation chuẩn và team kiểm soát được concurrency; không coi đây là tối ưu miễn phí.
-
-### Thông báo thay đổi giữa cache riêng
-
-Khi cart và một consumer có cache riêng, query client A không thể invalidate query client B. Domain owner cần công bố một tín hiệu nghiệp vụ như `cart.changed` sau khi backend xác nhận.
-
-Consumer nhận tín hiệu, validate scope và tự mapping sang query mình sở hữu. Event có thể chứa cart ID, tenant ID và revision; không chứa query key hay lệnh gọi `invalidateQueries` của provider. Nhờ vậy, cart có thể đổi key nội bộ mà consumer không phải release theo.
-
-Event là gợi ý dữ liệu có thể cũ, không phải toàn bộ cơ chế consistency. Consumer mount sau event, tab bị suspend hoặc kết nối bị đứt vẫn cần đọc snapshot/refetch khi quay lại. Subscriber phải cleanup, bỏ qua event ngoài scope và xử lý event trùng an toàn. Xem [Events và message bus](/docs/giao-tiep-va-trang-thai/events).
-
-## Lifecycle cancellation và đổi session
-
-### Unmount consumer khác với hủy domain cache
-
-Rời màn hình cart không có nghĩa là giỏ hàng hết giá trị. Header còn quan sát summary thì query vẫn active; cache của domain không được hủy chỉ vì một màn hình unmount.
-
-TanStack Query cung cấp `AbortSignal` cho query function. Trong ví dụ GET, signal được truyền vào `fetch`, nên thư viện có thể abort transport khi cancel query. Nếu không consume signal, request chưa hoàn tất có thể tiếp tục và điền cache dù consumer đã unmount.
-
-Cancellation ở browser không chứng minh server chưa xử lý request. Điều này đặc biệt quan trọng với mutation: abort hoặc đóng tab sau khi gửi POST không phải rollback. Muốn biết thao tác đã commit chưa, cần idempotency và khả năng đọc lại trạng thái từ backend.
-
-### Logout đổi user và đổi tenant
-
-Hình dung GET cart của user A đang pending, rồi user B đăng nhập. Chỉ gọi `removeQueries` nhưng vẫn giữ observer và callback của A có thể tạo khoảng trống cho dữ liệu cũ quay lại hoặc UI vẫn hiển thị snapshot cũ.
-
-Session owner nên điều phối theo thứ tự:
-
-1. Chuyển scope hiện tại sang trạng thái không còn sẵn sàng, tăng epoch và chặn command mới của scope cũ.
-2. Reset hoặc unmount consumer cũ; không render placeholder chứa dữ liệu riêng tư của A.
-3. Cancel query trong scope cũ, bỏ subscription và timer gắn với scope đó.
-4. Remove cache riêng tư cũ, gồm cả cache persist hoặc dữ liệu hydrate còn được giữ nếu có.
-5. Khi session mới sẵn sàng, tạo scope mới và khởi động các query của B.
-6. Callback/query commit tùy biến phải kiểm tra generation; không publish event hoặc snapshot của A vào scope B.
-
-Scoped keys cách ly kết quả giữa hai identity, nhưng không tự xóa dữ liệu nhạy cảm khỏi memory hay storage. Cancellation giúp giảm công việc thừa, còn kiểm tra scope bảo vệ đường commit ngoài query layer. Bạn cần cả hai khi có controller hoặc data port riêng.
-
-Với nhiều tab, một tab logout phải có cơ chế báo tab khác reset session phù hợp. `BroadcastChannel` không tự biến các cache thành một cache chung; hãy broadcast lifecycle hoặc tín hiệu resync, không gửi credential trong message.
-
-### Response về sai thứ tự và optimistic update
-
-Ngay trong cùng scope, response cũng có thể về ngược thứ tự. Ví dụ minh họa: GET đọc revision 10, mutation tạo revision 11, rồi GET cũ mới hoàn tất. Nếu nhận response nào cũng ghi, UI sẽ quay về revision 10.
-
-Có vài cách xử lý, nhưng phải chọn theo contract backend:
-
-- Cancel GET cũ trước khi ghi mutation response, rồi refetch trạng thái hiện tại.
-- Serialize thao tác trên cùng cart khi nghiệp vụ và UX cho phép.
-- Kiểm tra revision trước khi commit snapshot nếu backend cung cấp thứ tự đáng tin cậy.
-- Dùng optimistic concurrency với expected version; khi conflict, đọc lại và xử lý theo nghiệp vụ.
-
-Optimistic update thêm một lớp dự đoán trước xác nhận server. Owner phải cancel query liên quan, lưu dữ liệu cần rollback, áp dụng dự đoán rồi reconcile sau mutation. Khi có nhiều mutation chồng nhau, rollback cả snapshot cũ có thể xóa thay đổi mới; cần operation tracking hoặc serialization, không chỉ một biến `previousCart`.
-
-Mình tránh optimistic total cho tiền thanh toán, khuyến mãi hoặc tồn kho nếu backend có nhiều quy tắc mà frontend không tái hiện đáng tin cậy. Có thể hiển thị trạng thái “đang thêm” trong catalog và chờ summary chuẩn. Backend luôn kiểm tra lại giá và quyền trước khi commit nghiệp vụ.
-
-## SSR hydration và prefetch
-
-SSR tạo thêm một runtime ở server. Đừng giữ cache cart cá nhân trong một `QueryClient` mutable cấp process: request của nhiều người dùng có thể dùng chung instance đó.
-
-Một luồng an toàn cần:
-
-1. Tạo client theo request server, dựng scope từ session đã xác thực và prefetch dữ liệu cần render.
-2. Dehydrate chỉ các query phù hợp để gửi tới browser; không đưa credential hoặc dữ liệu vượt quyền vào payload.
-3. Dùng cơ chế serialization/hydration của framework để nhúng payload an toàn, không nối JSON tùy ý vào script HTML.
-4. Browser hydrate vào client đã chọn, dùng key/scope tương thích với server và freshness phù hợp.
-5. Nếu session đã đổi trong lúc bootstrap, bỏ payload cũ trước khi render consumer mới.
-
-Một epoch cục bộ được tạo độc lập ở server và browser có thể làm key không khớp. Nếu dùng `sessionEpoch` như ví dụ, cần bootstrap giá trị tương thích cho lần hydrate đầu hoặc thiết kế một scope tag không phải credential do session contract cung cấp.
-
-`staleTime: 0` có thể khiến query refetch ngay sau hydration, nên “server đã fetch rồi browser lại fetch” không nhất thiết là duplicate bug. Chọn freshness theo độ mới chấp nhận được; đừng đặt Infinity cho mọi dữ liệu chỉ để che request này.
-
-Prefetch giúp tránh waterfall `tải remote → mount component → bắt đầu GET`. Shell có thể gọi capability prefetch do domain công bố khi route sắp được dùng, nhưng không nên tự sao chép endpoint và key của domain. Giới hạn prefetch theo nhu cầu và budget; tải mọi remote cùng mọi query ngay lúc boot thường chỉ chuyển chi phí sang thời điểm khác.
-
-Cuối cùng, HTML hoặc dehydrated payload chứa cart cá nhân không được đưa vào shared CDN cache mà thiếu policy cách ly đúng. Cách ly query client theo request không sửa được cấu hình cache HTML sai.
-
-## Retry lỗi và trải nghiệm người dùng
-
-Một query thất bại có thể được retry, nhưng nhiều remote retry đồng thời sẽ khuếch đại tải lúc backend đang lỗi. Mình thống nhất retry ở một lớp chịu trách nhiệm, đặt budget hữu hạn và tránh để transport retry ba lần rồi query layer tiếp tục retry ba lần nữa.
-
-| Loại lỗi | Hướng xử lý |
+| Lớp | Khi làm mới cache frontend có tự xóa lớp này không? |
 | --- | --- |
-| 401 hoặc session hết hạn | Auth owner điều phối refresh/login; không để mỗi query tự refresh cạnh tranh |
-| 403 | Hiển thị không có quyền; retry không tạo thêm quyền |
-| 404 cho resource cụ thể | Trạng thái không tìm thấy, trừ contract có eventual visibility rõ |
-| 409 hoặc conflict version | Đọc lại và yêu cầu giải quyết conflict theo nghiệp vụ |
-| 429 | Tôn trọng `Retry-After` nếu có, backoff và giới hạn retry |
-| Lỗi mạng, timeout, một số 5xx | Retry hữu hạn với backoff/jitter theo policy |
-| JSON sai schema | Báo lỗi contract và telemetry; không retry liên tục |
+| Query cache trong một client | Chỉ các query/client được tác động |
+| HTTP cache browser | Không; phụ thuộc Cache-Control/validation |
+| CDN/shared proxy | Không; policy phía server/edge |
+| Storage/service worker | Không; cần lifecycle/version/scope riêng |
 
-UI cần tách initial loading khỏi background refresh. Khi đã có dữ liệu đúng scope, bạn có thể giữ nó trong lúc refresh và cảnh báo nếu refresh lỗi. Khi scope đổi, ưu tiên xóa dữ liệu riêng tư cũ hơn là giữ giao diện “mượt”.
+`no-store` của HTTP không tự xóa object trong QueryClient; `invalidateQueries` cũng không purge CDN. Nếu refetch vẫn trả dữ liệu cũ, kiểm tra headers, server revision và khả năng backend đọc từ replica cập nhật trễ, không chỉ nhìn số lần render.
 
-Với mutation timeout, người dùng chưa biết backend đã commit hay chưa. Không hiển thị chắc chắn “chưa thêm hàng” rồi gửi một ý định mới ngay. Dùng lại idempotency key của ý định cũ hoặc query/reconcile trước khi hướng dẫn thử lại.
+Với SSR, tạo cache dữ liệu user theo request, không giữ mutable singleton dùng chung mọi user. Payload hydrate phải đúng scope và không chứa token. Cache riêng tư/HTML không được đẩy vào shared CDN theo policy public.
 
-Error boundary khi tải remote và lỗi query cũng khác nhau. Remote tải được nhưng API cart lỗi thì vẫn nên giữ navigation, header và các domain còn hoạt động. Xem thêm [Resilience](/docs/production/resilience).
+## Kiểm tra trước khi ghép thêm remote
 
-## Failure modes và cách debug
-
-Khi điều tra, ghi lại domain owner, client instance, key đã sanitize, scope epoch, trạng thái fresh/stale, nguyên nhân refetch và request correlation ID. Không log token hoặc toàn bộ cart cá nhân chỉ để tìm request trùng.
-
-| Triệu chứng | Nguyên nhân cần kiểm tra | Bước debug đầu tiên |
-| --- | --- | --- |
-| Hai GET giống URL cùng lúc | Hai client, key khác hoặc gọi trực tiếp ngoài query layer | So sánh identity client và key của từng consumer |
-| GET lặp lại khi đổi tab | Query stale và focus refetch | Kiểm tra `staleTime`, focus/reconnect policy |
-| Thêm hàng xong badge cũ | Invalidate sai key/scope, cache khác hoặc refetch thất bại | Theo dấu mutation → owner → invalidation → summary query |
-| Invalidate rồi vẫn nhận cart cũ | HTTP/CDN cache hoặc backend projection chưa cập nhật | Kiểm tra response headers, ETag, revision và consistency contract |
-| Badge hiện dữ liệu user trước | Key thiếu scope hoặc UI giữ placeholder cũ | Kiểm tra reset session, observer và callback pending |
-| Request summary trả dữ liệu detail | Key collision hoặc consumer dùng query function khác | Kiểm tra namespace/projection/schema của cùng key |
-| Rời một remote làm remote khác mất dữ liệu | Remote gọi `clear()` hoặc hủy client dùng chung | Tìm lifecycle cleanup của client owner |
-| UI nhảy lùi sau mutation | Response cũ ghi đè hoặc rollback thiếu concurrency control | Ghi timeline revision và thời điểm commit |
-| Thêm hàng bị nhân đôi sau retry | Backend chưa hỗ trợ idempotency hoặc key bị tạo lại | Đối chiếu intent, idempotency key và server result |
-
-Nếu mutation ghi primary nhưng GET đọc replica/projection cập nhật trễ, refetch ngay có thể vẫn trả revision cũ. Đó là contract consistency của backend, không chỉ là lỗi cache. Cần representation mới từ mutation, read-your-writes hoặc cơ chế chờ revision theo thiết kế backend; đừng khắc phục bằng polling vô hạn.
-
-## Ma trận kiểm thử
-
-Kiểm thử bằng fixture và request count có kiểm soát, không suy ra từ việc “giao diện trông đúng”. Những test về freshness cần fake clock hoặc cấu hình ổn định để không phụ thuộc timing ngẫu nhiên.
-
-| Kịch bản | Điều cần chứng minh |
-| --- | --- |
-| Header và cart mount đồng thời | Trong cấu hình cùng client/key, chỉ một in-flight query cho summary |
-| Consumer mới mount khi summary fresh | Đọc cache theo policy, không tạo GET ngoài dự kiến |
-| Consumer mount khi query stale | Refetch đúng policy; không coi mọi request mới là lỗi |
-| Summary và detail cùng hoạt động | Không dùng chung key hoặc làm hỏng shape của nhau |
-| Thêm hàng thành công | Query đúng scope bị invalidate; domain không liên quan không bị refetch |
-| Mutation thành công nhưng GET sau đó lỗi | UI phân biệt thay đổi đã commit với refresh thất bại |
-| Unmount một consumer trong lúc query pending | Consumer khác vẫn hoạt động; không hủy toàn bộ domain cache |
-| Logout trong lúc GET/mutation pending | Không render hoặc publish dữ liệu scope cũ vào session mới |
-| Đổi tenant, locale hoặc currency | Query phụ thuộc tham số được tách key đúng |
-| Hai response về ngược thứ tự | Snapshot không lùi revision theo contract đã chọn |
-| Retry mutation sau timeout | Cùng ý định dùng cùng idempotency key; không tạo thao tác kép |
-| Event trùng hoặc consumer bỏ lỡ event | Revalidate an toàn và có đường resync khi mount/reconnect |
-| Reload với cache persist | Validate version/TTL/scope; không khôi phục dữ liệu user khác |
-| Hai request SSR của hai user | Cache và dehydrated payload được cách ly |
-| Provider/consumer ở build khác nhau | Key/result contract còn tương thích hoặc fallback rõ |
-
-## Checklist trước khi chia sẻ cache
-
-- [ ] Mỗi miền dữ liệu có owner cho query, command, parsing và invalidation.
-- [ ] Đã chọn cache riêng, client chung hoặc data port vì nhu cầu cụ thể.
-- [ ] Namespace và projection trong key không collision; scope đủ để cách ly dữ liệu.
-- [ ] Consumer cùng key dùng contract/options thống nhất, không tự thay schema.
-- [ ] Freshness, retention và retry có policy theo dữ liệu, không chỉ theo default.
-- [ ] Mutation xác định rõ query bị ảnh hưởng và semantics của idempotency.
-- [ ] Có cleanup session, cancellation và guard cho kết quả bất đồng bộ cũ.
-- [ ] SSR/persist/HTTP cache không làm lộ dữ liệu qua user hoặc tenant.
-- [ ] Có test cho request trùng, invalidation, scope change và response đảo thứ tự.
-- [ ] Telemetry đủ phân biệt cache miss, stale refetch, duplicate request và lỗi consistency backend.
-
-Bước thực hành: chọn một dữ liệu đang xuất hiện ở hai remote, chẳng hạn cart summary. Liệt kê tất cả nơi đọc/ghi, client instance, key và event làm nó hết hiệu lực. Nếu chưa xác định được một owner cho đường cập nhật, hãy sửa boundary đó trước khi thêm global cache.
+- Hai UI cùng instance/key có chia sẻ lần tải khi đang pending không?
+- Query lỗi rồi gọi lại có hoạt động, hay giữ mãi Promise đã reject?
+- Mutation xong chỉ làm mới domain liên quan, không refetch toàn app?
+- GET cũ, callback sau unmount và cache user cũ có bị chặn đúng chỗ không?
+- Đổi client riêng/chung có thay đổi request count đúng kỳ vọng không?
 
 ## Đọc tiếp
 
 <Cards>
-  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Tách nguồn chuẩn, quyền ghi và lifecycle của domain state." />
-  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Version và kiểm tra compatibility của data port giữa các remote." />
-  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="Phối hợp session và logout qua các data layer." />
-  <Card title="Performance" href="/docs/production/performance" description="Đo waterfall, request budget và chi phí prefetch khi ghép remote." />
+  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="Phát hiện phiên đổi và không để cache/response cũ lọt sang user mới." />
+  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Ai được sửa và ai chỉ đọc dữ liệu dùng chung." />
+  <Card title="Events và message bus" href="/docs/giao-tiep-va-trang-thai/events" description="Thông báo dữ liệu cũ giữa những app có cache riêng." />
 </Cards>
-
-## Tài liệu tham khảo
-
-- [TanStack Query v5 — Query Keys](https://tanstack.com/query/v5/docs/framework/react/guides/query-keys): key serializable, hashing và biến phụ thuộc query.
-- [TanStack Query v5 — Important Defaults](https://tanstack.com/query/v5/docs/framework/react/guides/important-defaults): freshness, garbage collection và refetch triggers.
-- [TanStack Query v5 — Query Invalidation](https://tanstack.com/query/v5/docs/framework/react/guides/query-invalidation): matching theo prefix và targeted refetch.
-- [TanStack Query v5 — Query Cancellation](https://tanstack.com/query/v5/docs/framework/react/guides/query-cancellation): signal, cancellation và hành vi khi consumer unmount.
-- [TanStack Query v5 — Server Rendering and Hydration](https://tanstack.com/query/v5/docs/framework/react/guides/ssr): cache theo request, dehydration và freshness sau SSR.
-- [MDN — HTTP caching](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching): browser/shared cache, validation và response headers.
-- [MDN — Using the Fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch): HTTP error handling và cancellation với AbortSignal.

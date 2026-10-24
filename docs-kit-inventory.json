@@ -6,7 +6,7 @@
     {
       "path": "README.md",
       "counts": {
-        "bash": 4,
+        "bash": 5,
         "mdx": 2,
         "json": 1
       }
@@ -127,7 +127,9 @@
       "path": "content/docs/giao-tiep-va-trang-thai/authentication.mdx",
       "counts": {
         "d2": 2,
-        "http": 1,
+        "js": 4,
+        "html": 1,
+        "bash": 1,
         "ts": 3
       }
     },
@@ -145,8 +147,11 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/data-fetching.mdx",
       "counts": {
-        "ts": 4,
         "d2": 1,
+        "js": 4,
+        "html": 1,
+        "bash": 1,
+        "ts": 2,
         "tsx": 2
       }
     },
@@ -154,7 +159,9 @@
       "path": "content/docs/giao-tiep-va-trang-thai/events.mdx",
       "counts": {
         "d2": 1,
-        "json": 1,
+        "js": 4,
+        "html": 1,
+        "bash": 1,
         "ts": 6,
         "tsx": 1
       }
@@ -170,7 +177,10 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/routing.mdx",
       "counts": {
-        "d2": 11,
+        "d2": 3,
+        "js": 3,
+        "html": 1,
+        "bash": 1,
         "tsx": 2,
         "ts": 1
       }
@@ -178,9 +188,10 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/state-ownership.mdx",
       "counts": {
+        "js": 3,
         "d2": 1,
-        "ts": 2,
-        "tsx": 1
+        "html": 1,
+        "bash": 1
       }
     },
     {
@@ -739,7 +750,7 @@
       }
     }
   ],
-  "fences": 760,
+  "fences": 774,
   "reviewed": [
     "content/docs/cac-cach-tich-hop/import-maps.mdx|import-map-shop/",
     "content/docs/kien-truc/runtime-composition.mdx|Catalog release catalog-r17",
@@ -748,20 +759,20 @@
     "content/docs/troubleshooting/remote-khong-tai.mdx|GET http://localhost:3001/remoteEntry.js          → 200 JavaScript"
   ],
   "totals": {
-    "bash": 132,
+    "bash": 138,
     "mdx": 2,
-    "json": 51,
-    "d2": 143,
-    "js": 158,
+    "json": 50,
+    "d2": 135,
+    "js": 176,
     "terminal-session": 1,
     "jsx": 22,
     "text": 30,
     "powershell": 1,
-    "http": 16,
-    "ts": 119,
-    "html": 22,
+    "http": 15,
+    "ts": 115,
+    "html": 27,
     "css": 14,
-    "tsx": 35,
+    "tsx": 34,
     "yaml": 5,
     "code-walkthrough": 1,
     "span-waterfall": 1,

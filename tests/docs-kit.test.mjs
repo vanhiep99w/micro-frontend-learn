@@ -7,7 +7,9 @@ import { auditDocsKit, legacyCandidate } from '../scripts/docs-kit-audit.mjs';
 test('all documentation fences are inventoried; no unconverted diagram; five descriptors validate', async () => {
   const result = await auditDocsKit();
   assert.equal(result.rows.filter(({ path }) => path.endsWith('.mdx')).length, 81);
-  assert.equal(result.totals.d2, 143);
+  // Routing now keeps three focused figures (ownership, stale router, history)
+  // rather than repeating the same app-selection topology in eleven figures.
+  assert.equal(result.totals.d2, 135);
   for (const lang of ['code-walkthrough', 'code-diff', 'terminal-session', 'protocol-exchange', 'span-waterfall']) {
     assert(result.totals[lang] > 0, `Missing authored example: ${lang}`);
   }

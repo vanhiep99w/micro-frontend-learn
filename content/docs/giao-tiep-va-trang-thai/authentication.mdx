@@ -1,100 +1,251 @@
 ---
 title: "Authentication và session"
-description: "Thiết kế auth owner, session contract và luồng login, refresh, logout cho micro-frontend; tách UI permissions khỏi backend authorization."
+description: "Shell và remote đọc cùng trạng thái phiên qua API, xử lý app mở sau, logout và response cũ; không phát token để đồng bộ UI."
 ---
 
-Giả sử bạn login ở header, mở cart thì cart lại yêu cầu login. Sau khi logout, badge đã biến mất nhưng request cart cũ vừa trả về lại đưa tên và giỏ hàng của người dùng trước lên màn hình. Cả hai lỗi đều có thể xuất hiện khi mỗi remote giữ một bản session và tự quyết định vòng đời của nó.
+Bạn đăng nhập ở header nhưng remote Account vẫn hiện “Chưa đăng nhập”. Có thể hai app đang giữ hai biến `isLoggedIn` khác nhau. Phát một event login giúp UI đang mở biết thay đổi, nhưng **remote tải sau vẫn cần đọc được phiên hiện tại**.
 
-Trong micro-frontend, vấn đề không chỉ là “lưu token ở đâu”. Bạn cần một nơi điều phối session, một contract để các remote đọc trạng thái hiện tại, và một cơ chế ngăn công việc của session cũ cập nhật UI mới. **Frontend phối hợp trải nghiệm; backend mới quyết định request có được phép thực hiện hay không.**
+Bài này áp dụng [snapshot và subscription](/docs/giao-tiep-va-trang-thai/state-ownership) cho session. Cách kết nối là **shell truyền một API phiên qua `mount`**, remote đọc và theo dõi nó. Xác thực người dùng thật vẫn thuộc hệ thống auth/backend; micro-frontend cần phối hợp UI và vòng đời dữ liệu quanh kết quả đó.
 
-<Callout type="info" title="Phạm vi và giả định">
-  Bài dùng shop giả định gồm shell, catalog và cart. Endpoint, kiểu TypeScript và tên contract bên dưới là ví dụ thiết kế, không phải API sẵn có trong repository. Mặc định các remote chạy trong document của shell; iframe, nhiều tab và SSR có phần lưu ý riêng. Ví dụ không thay thế một SDK OIDC hoặc implementation session đã được review bảo mật.
+<Callout type="warn" title="Ví dụ UI không phải implementation đăng nhập">
+  Bài tập JavaScript dùng API giả để thấy luồng truyền dữ liệu và cleanup. Nút chọn user giả không tạo session hợp lệ, không cấp quyền API và tuyệt đối không dùng làm auth production. Phần phía sau giải thích chỗ cần backend/SDK thật.
 </Callout>
 
 ## Mục lục
 
-- [Phân biệt identity session và permissions](#phân-biệt-identity-session-và-permissions)
-- [Ai sở hữu authentication](#ai-sở-hữu-authentication)
-- [Chọn mô hình session](#chọn-mô-hình-session)
-  - [BFF và cookie session](#bff-và-cookie-session)
-  - [Browser gọi API bằng access token](#browser-gọi-api-bằng-access-token)
-  - [Remote asset origin không phải auth origin](#remote-asset-origin-không-phải-auth-origin)
-- [Bootstrap session và trạng thái UI](#bootstrap-session-và-trạng-thái-ui)
-- [Luồng login và quay lại điểm đến](#luồng-login-và-quay-lại-điểm-đến)
-  - [Một nơi xử lý callback](#một-nơi-xử-lý-callback)
-  - [Return URL là input không tin cậy](#return-url-là-input-không-tin-cậy)
-- [Session contract không chứa credential](#session-contract-không-chứa-credential)
-  - [Snapshot subscription và commands](#snapshot-subscription-và-commands)
-  - [Consumer dựng UI từ trạng thái hiện tại](#consumer-dựng-ui-từ-trạng-thái-hiện-tại)
-- [Refresh và xử lý lỗi API](#refresh-và-xử-lý-lỗi-api)
-  - [Phân biệt hết phiên thiếu quyền và lỗi mạng](#phân-biệt-hết-phiên-thiếu-quyền-và-lỗi-mạng)
-  - [Single flight và retry có giới hạn](#single-flight-và-retry-có-giới-hạn)
-- [Logout là một chuyển đổi phạm vi dữ liệu](#logout-là-một-chuyển-đổi-phạm-vi-dữ-liệu)
-  - [Quy trình logout](#quy-trình-logout)
-  - [Chặn response của session cũ](#chặn-response-của-session-cũ)
-  - [Cache và dữ liệu persist](#cache-và-dữ-liệu-persist)
-- [UI permissions không thay backend authorization](#ui-permissions-không-thay-backend-authorization)
-- [Cookie CSRF và giới hạn của cùng document](#cookie-csrf-và-giới-hạn-của-cùng-document)
+- [Chia sẻ trạng thái phiên chứ không phát token](#chia-sẻ-trạng-thái-phiên-chứ-không-phát-token)
+- [Code owner công bố phiên hiện tại](#code-owner-công-bố-phiên-hiện-tại)
+- [Remote nhận session và shell nối thế nào](#remote-nhận-session-và-shell-nối-thế-nào)
+  - [Phía Account đọc snapshot rồi theo dõi](#phía-account-đọc-snapshot-rồi-theo-dõi)
+  - [Phía shell tạo owner và truyền cùng instance](#phía-shell-tạo-owner-và-truyền-cùng-instance)
+- [Nối API thật vào đâu](#nối-api-thật-vào-đâu)
+- [Login và logout cần phối hợp những bước nào](#login-và-logout-cần-phối-hợp-những-bước-nào)
+  - [Login không phải chỉ đặt một boolean](#login-không-phải-chỉ-đặt-một-boolean)
+  - [Logout phải khóa dữ liệu cũ ngay](#logout-phải-khóa-dữ-liệu-cũ-ngay)
+- [Response cũ không được quay lại phiên mới](#response-cũ-không-được-quay-lại-phiên-mới)
 - [Nhiều tab iframe và standalone](#nhiều-tab-iframe-và-standalone)
-- [SSR và hydration](#ssr-và-hydration)
-- [Failure modes và cách debug](#failure-modes-và-cách-debug)
-- [Ma trận kiểm thử](#ma-trận-kiểm-thử)
-- [Checklist trước khi deploy](#checklist-trước-khi-deploy)
+- [Những kiểm tra không được bỏ qua](#những-kiểm-tra-không-được-bỏ-qua)
 - [Đọc tiếp](#đọc-tiếp)
-- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Phân biệt identity session và permissions
+## Chia sẻ trạng thái phiên chứ không phát token
 
-Một user có thể đã login nhưng không được xem đơn hàng đang mở. Ngược lại, catalog có thể phục vụ người chưa login. Nếu gom cả hai tình huống thành `isLoggedIn`, bạn sẽ dễ đưa người thiếu quyền trở lại login dù việc login thêm lần nữa không giải quyết được gì.
+| Remote cần biết | Không nên cấp tràn lan |
+| --- | --- |
+| Đang kiểm tra, chưa login, đã login hay chưa xác nhận được | Cookie/session ID, access/refresh token |
+| Tên hiển thị và quyền UI tối thiểu cần dùng | Toàn bộ hồ sơ hoặc claims không liên quan |
+| Cách yêu cầu login/logout hoặc revalidate | Store nội bộ và logic refresh của từng app |
 
-| Khái niệm | Câu hỏi cần trả lời | Nơi xác nhận cuối cùng |
-| --- | --- | --- |
-| Authentication | Người dùng này là ai? | Identity provider hoặc hệ thống xác thực của backend |
-| Session | Request hiện tại còn gắn với một phiên hợp lệ không? | Backend session hoặc cơ chế kiểm tra credential của API |
-| Authorization | Người này được làm hành động này trên tài nguyên này không? | Backend xử lý request nghiệp vụ |
-| UI permissions | Nên hiện nút, menu hoặc màn hình nào? | Frontend đọc projection quyền do backend cung cấp |
+**Authentication** xác nhận người dùng; **authorization** kiểm tra họ được làm gì. Session snapshot — bản trạng thái phiên để UI đọc — chỉ giúp chọn nội dung hiển thị. Nút đã hiện hoặc biến `authenticated` không thay thế kiểm tra quyền ở backend.
 
-Với OIDC, ID token cung cấp thông tin xác thực cho client; access token dùng để truy cập resource server theo contract của API. Đừng gửi ID token như access token chỉ vì cả hai có thể có dạng JWT. OAuth 2.0 tự nó là giao thức ủy quyền; OIDC bổ sung lớp identity để phục vụ login.
+Shell tạo một auth owner — module điều phối phiên — rồi truyền cùng API cho các remote. Không để mỗi app tự tạo auth store và tự refresh credential cạnh tranh nhau.
 
-Session frontend là một **projection**, tức bản mô tả đủ cho UI: đang kiểm tra phiên, chưa login, đã login hay chưa xác nhận được. Nó không phải credential và không chứng minh một request sẽ được chấp nhận. Session có thể bị revoke hoặc quyền có thể đổi ngay sau khi UI đọc snapshot.
-
-## Ai sở hữu authentication
-
-Mình chọn một auth module do platform team sở hữu, được shell khởi tạo cho runtime hiện tại. Module này không cần chứa màn hình login; nó chứa logic bootstrap, đọc session, điều phối login/logout và publish snapshot. UI login có thể là một remote riêng hoặc một trang của identity provider.
-
-| Thành phần | Trách nhiệm | Không nên làm |
-| --- | --- | --- |
-| Identity provider | Xác thực identity, MFA, phát hành token theo cấu hình | Quyết định toàn bộ nghiệp vụ cart chỉ từ việc user đã login |
-| BFF hoặc backend auth | Tạo, kiểm tra, hết hạn và revoke session của app | Tin `userId` hoặc roles do browser tự gửi lên |
-| Auth module | Điều phối session trong runtime, quản lý lifecycle và credential nếu mô hình cần | Cho mọi remote tự refresh hoặc sửa snapshot |
-| Shell | Inject contract, điều phối route guard và trải nghiệm cấp app | Tự triển khai thêm một bản auth state song song |
-| Catalog và cart | Đọc snapshot, yêu cầu login khi cần, dọn state theo scope | Tự parse cookie/token để dựng một session riêng |
-| Backend domain | Enforce authorization, ownership tài nguyên và tenant | Coi nút đã bị ẩn ở UI là đủ bảo vệ endpoint |
-
-Ranh giới ở frontend có thể hình dung như sau:
-
-```d2 title="Ai sở hữu authentication"
-direction: right
-shell: Shell UI
-cart: Cart UI
-auth: Auth module
-backend: Backend auth
-shell -> auth: "Đọc snapshot / gửi command"
-cart -> auth: "Đọc snapshot / gửi command"
-auth -> backend: Session API
+```d2 interactive=false title="Một API phiên cho nhiều UI"
+direction: down
+owner: "Session owner"
+shell: "Header shell"
+remote: "Account remote"
+owner -> shell: "Snapshot và thông báo"
+owner -> remote: "Snapshot và thông báo"
 ```
 
-Đây là ownership, không phải sandbox. JavaScript chạy cùng document có thể gọi API và tác động DOM của nhau. Inject một reader thay vì cả store giảm coupling, nhưng không làm code remote không đáng tin trở nên an toàn.
+## Code owner công bố phiên hiện tại
 
-Một package auth dùng chung cũng chưa bảo đảm một instance dùng chung. Nếu shell và cart đều gọi `createAuth()` khi import package, chúng vẫn có hai owner. Shell cần tạo instance rồi truyền đúng object contract vào mount context; cấu hình shared dependency không thay thế bước wiring này.
+Mẫu dưới nhận `api.getSession()` và `api.logout()`. Với ứng dụng thật, đó là adapter của backend/SDK; ở bài tập, ta thay bằng fixture để không lẫn việc dựng protocol login với việc nối app.
 
-## Chọn mô hình session
+```js title="basic/session.js" sourceFile="basic/session.js" sourceRegion="main"
+export function createSession(api) {
+  let epoch = 0;
+  let snapshot = Object.freeze({ status: 'checking', epoch });
+  const listeners = new Set();
 
-Không có yêu cầu rằng micro-frontend phải chia token cho mọi remote. Quyết định quan trọng là credential nằm ở browser hay backend, và browser gửi request nghiệp vụ qua đâu.
+  function publish(next) {
+    snapshot = Object.freeze(next);
+    for (const notify of [...listeners]) notify();
+  }
 
-### BFF và cookie session
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(notify) {
+      listeners.add(notify);
+      return () => listeners.delete(notify);
+    },
+    async revalidate() {
+      const started = ++epoch;
+      publish({ status: 'checking', epoch });
+      try {
+        const result = await api.getSession();
+        if (started !== epoch) return;
+        publish(result.user
+          ? { status: 'authenticated', epoch, user: Object.freeze({ ...result.user }) }
+          : { status: 'anonymous', epoch });
+      } catch {
+        if (started === epoch) publish({ status: 'unavailable', epoch });
+      }
+    },
+    async logout() {
+      const started = ++epoch;
+      publish({ status: 'signing-out', epoch });
+      try {
+        await api.logout();
+        if (started === epoch) publish({ status: 'anonymous', epoch });
+      } catch (error) {
+        if (started === epoch) publish({ status: 'unavailable', epoch });
+        throw error;
+      }
+    },
+  };
+}
+```
 
-Với shop chạy dưới một origin ứng dụng và bạn kiểm soát backend, mình mặc định chọn BFF, tức Backend for Frontend. Browser giữ cookie session; BFF giữ OAuth access/refresh token phía server nếu cần gọi API downstream.
+Đọc theo thứ tự của một lần `revalidate()`:
+
+1. Tăng `epoch`, số thứ tự cục bộ để đánh dấu lần kiểm tra/phạm vi đang active.
+2. Công bố `checking`: UI chờ, chưa kết luận người dùng là khách.
+3. Hỏi API về phiên. Có user thì công bố `authenticated`; không có user thì `anonymous`.
+4. Nếu mạng/API lỗi, công bố `unavailable`, **không coi lỗi là chắc chắn đã logout**.
+5. Kết quả của epoch cũ không được ghi nữa, ví dụ logout đã bắt đầu trong lúc kiểm tra còn chờ.
+
+Mẫu tăng epoch mỗi lần kiểm tra theo hướng bảo thủ và ẩn UI riêng tư trong lúc đó. SDK thực tế có thể phân biệt refresh cùng phiên với đổi user/tenant, nhưng phải công bố rõ khi nào scope cũ không còn hợp lệ. Các listener demo đồng bộ, không throw; owner production cần chính sách xử lý lỗi subscriber.
+
+## Remote nhận session và shell nối thế nào
+
+### Phía Account đọc snapshot rồi theo dõi
+
+```js title="basic/account.js" sourceFile="basic/account.js" sourceRegion="main"
+export function mount({ container, session }) {
+  const label = document.createElement('p');
+  container.append(label);
+
+  function render() {
+    const current = session.getSnapshot();
+    switch (current.status) {
+      case 'authenticated':
+        label.textContent = `Account: ${current.user.displayName}`;
+        break;
+      case 'anonymous':
+        label.textContent = 'Account: chưa đăng nhập';
+        break;
+      case 'checking':
+        label.textContent = 'Account: đang kiểm tra phiên';
+        break;
+      case 'signing-out':
+        label.textContent = 'Account: đang đăng xuất';
+        break;
+      default:
+        label.textContent = 'Account: chưa xác nhận được phiên';
+    }
+  }
+
+  const unsubscribe = session.subscribe(render);
+  render();
+  return {
+    unmount() { unsubscribe(); label.remove(); },
+  };
+}
+```
+
+Account không đọc token hay đoán login từ localStorage. Nó subscribe rồi render snapshot hiện tại, nên mở sau khi login vẫn thấy đúng user. Unmount chỉ hủy listener của Account, không logout người dùng.
+
+### Phía shell tạo owner và truyền cùng instance
+
+Trước hết đây là API **giả**, chỉ phục vụ thao tác local:
+
+<details>
+<summary>basic/fake-session-api.js</summary>
+
+```js title="basic/fake-session-api.js" sourceFile="basic/fake-session-api.js" sourceRegion="main"
+// Chỉ là fixture học giao tiếp UI, không xác thực người dùng.
+export function createFakeSessionApi() {
+  let user = null;
+  return {
+    chooseUser(displayName) { user = { displayName }; },
+    async getSession() { return { user }; },
+    async logout() { user = null; },
+  };
+}
+```
+
+</details>
+
+```js title="basic/shell.js" sourceFile="basic/shell.js" sourceRegion="main"
+import { createFakeSessionApi } from './fake-session-api.js';
+import { createSession } from './session.js';
+import { mount } from './account.js';
+
+const api = createFakeSessionApi();
+const session = createSession(api);
+const header = document.querySelector('#header');
+function render() {
+  const current = session.getSnapshot();
+  header.textContent = current.status === 'authenticated'
+    ? `Header: ${current.user.displayName}` : `Header: ${current.status}`;
+}
+session.subscribe(render);
+render();
+void session.revalidate();
+
+let account;
+document.querySelector('#open').addEventListener('click', () => {
+  account ??= mount({ container: document.querySelector('#account'), session });
+});
+document.querySelector('#close').addEventListener('click', () => {
+  account?.unmount();
+  account = undefined;
+});
+document.querySelector('#user-a').addEventListener('click', () => {
+  api.chooseUser('User A giả lập');
+  void session.revalidate();
+});
+document.querySelector('#logout').addEventListener('click', async () => {
+  try { await session.logout(); }
+  catch { document.querySelector('#notice').textContent = 'Chưa xác nhận logout; dữ liệu riêng tư vẫn khóa'; }
+});
+```
+
+Shell giữ session lâu hơn UI Account. Nó không mount lại remote mỗi khi phiên đổi: subscription làm UI đang mở đọc snapshot mới.
+
+<details>
+<summary>HTML để chạy bài tập session UI</summary>
+
+```html title="basic/index.html" sourceFile="basic/index.html" sourceRegion="main"
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session UI giữa shell và remote</title>
+</head>
+<body>
+  <p id="header"></p>
+  <div id="account"></div>
+  <p id="notice"></p>
+  <button id="user-a">Mô phỏng user A</button>
+  <button id="logout">Logout giả lập</button>
+  <button id="open">Mở Account</button>
+  <button id="close">Đóng Account</button>
+  <script type="module" src="./shell.js"></script>
+</body>
+</html>
+```
+
+</details>
+
+Lưu các file `basic/` theo đúng tên trong bài. Từ thư mục chứa `basic/`, chạy:
+
+```bash
+python3 -m http.server 8080 --directory basic
+```
+
+Mở `http://localhost:8080`. Bấm **Mô phỏng user A** rồi **Mở Account**: remote đọc được user dù chưa nghe sự kiện nào trước đó. Đóng Account rồi bấm **Logout giả lập**, mở lại: Account hiện chưa đăng nhập. Không có login thật hay dữ liệu được giữ qua reload trong bài tập.
+
+Các module đặt cạnh nhau để tập trung vào luồng giao tiếp. Import tương đối không minh họa tải remote, Module Federation hay pipeline deploy độc lập. Khi tách bundle, loader phải cung cấp đúng API đã thống nhất; thứ tự truyền và gọi hàm vẫn như trong ví dụ.
+
+
+<SourceRef project="giao-tiep-va-trang-thai-authentication" variant="button">Đọc basic/shell.js và session.js</SourceRef>
+
+## Nối API thật vào đâu
+
+Với ứng dụng có backend cùng origin, một lựa chọn là **BFF — Backend for Frontend** giữ session/token phía server. Browser gửi cookie; frontend gọi endpoint như `/auth/session` để lấy projection tối thiểu. Tên endpoint là ví dụ, không phải tính năng sẵn có của site docs.
 
 ```d2 title="BFF và cookie session"
 direction: right
@@ -107,104 +258,42 @@ bff -> api: Access token
 bff -> idp: Token exchange / refresh
 ```
 
-Browser không đọc được cookie `HttpOnly`, nhưng có thể gọi `/auth/session` để lấy user và UI permissions tối thiểu. Cart gửi request tới endpoint của BFF; nó không cần biết token endpoint, token format hay refresh token.
+Cookie `HttpOnly` không đọc được từ JavaScript, nên remote không cần lấy nó để render. Backend phải cấu hình cookie phù hợp với HTTPS, scope và luồng redirect; endpoint session không được cache công khai. Mutation như logout cần bảo vệ CSRF thực sự ở backend. `HttpOnly` hay `SameSite` riêng lẻ không giải quyết toàn bộ CSRF/XSS.
 
-Ví dụ cookie do backend set qua HTTPS:
+Nếu browser phải gọi API trực tiếp bằng bearer token, dùng SDK được duy trì với Authorization Code + PKCE theo cấu hình provider. Không đưa client secret vào bundle và không để từng remote tự xử lý cùng callback/refresh. Auth owner hoặc transport giữ credential, chỉ gửi tới API đúng audience/destination; không mặc định lưu token vào localStorage để tiện chia sẻ.
 
-```http
-Set-Cookie: __Host-shop-session=<opaque-session-id>; Path=/; Secure; HttpOnly; SameSite=Lax
-Cache-Control: no-store
-```
+Hai mô hình khác nhau ở chỗ giữ credential, **không bắt remote phải biết token để cùng hiển thị trạng thái phiên**. Public API vẫn có thể là snapshot/subscription và commands.
 
-`__Host-` yêu cầu `Secure`, `Path=/` và không có `Domain` trên browser hỗ trợ prefix này. Opaque session ID là giá trị khó đoán do backend tạo, không phải user ID. Backend cần rotate session ID sau login hoặc thay đổi mức đặc quyền để chống session fixation, đồng thời enforce idle timeout và absolute timeout phía server.
+## Login và logout cần phối hợp những bước nào
 
-`SameSite=Lax` ở đây là lựa chọn minh họa cho app có top-level redirect qua identity provider, không phải cấu hình dùng được cho mọi callback. Với callback dạng cross-site POST như `form_post`, transaction cookie và chính sách SameSite cần được kiểm tra riêng theo SDK/provider. Không đổi toàn bộ session cookie sang `None` chỉ để chữa một callback mà chưa xác định cookie nào thật sự cần gửi.
+### Login không phải chỉ đặt một boolean
 
-BFF giảm việc phơi bày OAuth token cho JavaScript, nhưng thêm một backend cần vận hành: session storage, CSRF protection, token lifecycle và routing tới API phải được thiết kế rõ. Nó cũng không loại bỏ XSS; code độc hại vẫn có thể gửi request bằng cookie hiện tại.
+1. Remote yêu cầu auth owner bắt đầu login, kèm điểm đến nội bộ hợp lệ.
+2. SDK/backend thực hiện redirect/callback và kiểm tra transaction theo protocol.
+3. Owner đọc kết quả phiên đã xác nhận rồi công bố snapshot.
+4. Shell mở lại điểm đến nếu user được phép; remote tải dữ liệu theo scope mới.
 
-### Browser gọi API bằng access token
+Callback thuộc một owner, không phải mỗi remote xử lý một lần. `returnTo` phải được parse và allowlist ở backend/adapter; `startsWith('/')` chưa đủ vì `//host-khac` có thể đi ra ngoài. Không đưa credential vào URL/event. Mạng lỗi khác với phiên không còn hợp lệ, và `403` thiếu quyền không được biến thành vòng lặp login.
 
-Nếu sản phẩm chỉ có frontend static và API bắt buộc nhận bearer token trực tiếp, browser có thể là OAuth public client. Dùng Authorization Code với PKCE qua SDK được duy trì; không đặt client secret trong bundle và không chọn implicit flow cho thiết kế mới.
+### Logout phải khóa dữ liệu cũ ngay
 
-Khi đó auth module hoặc SDK chuyên trách giữ credential và điều phối refresh. Mình ưu tiên access token trong memory, tránh persist access/refresh token vào `localStorage` như lựa chọn mặc định vì JavaScript cùng origin đọc được chúng và dữ liệu sống qua reload. Memory giảm thời gian tồn tại, **không** ngăn code độc hại trong runtime đọc hoặc sử dụng token.
+Ở mẫu nhỏ, `signing-out` ẩn user trước khi chờ API. Trong app thật cần thêm:
 
-Nếu authorization server cấp refresh token cho public client, RFC 9700 yêu cầu sender-constrained refresh token hoặc refresh token rotation để phát hiện replay. Không tự làm rotation ở frontend; frontend tuân theo giao thức, còn authorization server phát hành, kiểm tra reuse và revoke theo chính sách của nó.
+- Chặn command riêng tư mới và vô hiệu hóa scope cũ.
+- Các domain hủy/bỏ request cũ, dọn cache và draft riêng tư.
+- Backend/SDK kết thúc session/revoke theo mô hình thật; cookie `HttpOnly` do backend expire.
+- Chỉ báo logout thành công khi có xác nhận. Nếu lỗi mạng, UI vẫn khóa dữ liệu cũ và cho retry.
 
-| Tiêu chí | BFF và cookie | Bearer token trong browser |
-| --- | --- | --- |
-| OAuth token ở đâu? | Backend | Auth runtime trong browser |
-| Remote cần đọc token? | Không | Không bắt buộc; có thể dùng transport adapter |
-| Rủi ro cần chú ý | CSRF, session backend, XSS thực hiện request | Token bị lộ qua XSS, refresh concurrency, CORS |
-| Phù hợp mặc định | Web app có backend cùng origin kiểm soát được | Static app không có BFF và API hỗ trợ public client |
+Xóa state frontend không chứng minh session server đã kết thúc. Logout app cũng không tự logout mọi thiết bị hoặc session SSO ở provider. Không bắt đầu login mới đua với logout chưa xong: epoch chỉ chặn ghi frontend, không chặn `Set-Cookie` từ response network cũ.
 
-Với bearer model, inject transport theo API/domain như `CartApi`, thay vì một `getAccessToken()` mở cho mọi remote. Transport chỉ gắn token vào destination đã được allowlist và đúng audience; không nhận URL tùy ý rồi thêm `Authorization` vào mọi request. Nếu API có audience khác nhau, lấy token phù hợp cho từng resource server, không dùng một token toàn quyền để đơn giản hóa wiring.
+## Response cũ không được quay lại phiên mới
 
-### Remote asset origin không phải auth origin
+Giả sử Cart bắt đầu tải dữ liệu của A, rồi A logout và B login. Response A về sau không được ghi vào UI B. Domain phải ghi nhận epoch lúc bắt đầu và **kiểm tra lại ngay trước khi commit**, cùng user/cart/tenant scope khi có.
 
-Catalog bundle có thể tải từ `https://catalog-cdn.example`, nhưng khi chạy trong document `https://shop.example`, code vẫn chạy trong context của shop. URL của JavaScript asset không tự tạo cookie jar hoặc security boundary cho catalog.
+`AbortController` giảm công việc thừa, không thay kiểm tra scope. Abort mutation cũng không thu hồi thay đổi đã tới backend. Với API thật, epoch là số cục bộ chứ không phải bằng chứng quyền; backend kiểm tra session và resource độc lập.
 
-Đừng mở `Domain=example.com` để “mọi remote dùng chung cookie” chỉ vì asset nằm trên nhiều subdomain. Nếu chúng cùng document, chúng đã gọi được BFF của shell. Cookie domain rộng làm tăng phạm vi host nhận cookie và rủi ro từ subdomain không đáng tin.
-
-Cũng cần phân biệt **origin** với **site**. `https://shop.example.com` và `https://api.example.com` khác origin nhưng thường cùng site; CORS và SameSite giải quyết hai câu hỏi khác nhau. Với cross-origin credentialed fetch, browser cần `credentials: 'include'`, server cần origin cụ thể và `Access-Control-Allow-Credentials: true`; không dùng `Access-Control-Allow-Origin: *`. Các điều kiện đó vẫn không vượt qua được chính sách chặn third-party cookies.
-
-## Bootstrap session và trạng thái UI
-
-Reload trang làm mất state trong memory, không nhất thiết làm mất session backend. Shell nên khởi tạo auth module rồi đọc session hiện tại. Remote tải sau phải đọc được snapshot này, không cần chờ một event login phát lại.
-
-Một boolean ban đầu là `false` thường gây redirect nhầm: guard hiểu “chưa kiểm tra” thành “chưa login”. Contract nên biểu diễn ít nhất các trạng thái sau:
-
-| Trạng thái | Ý nghĩa | Hành vi UI mặc định |
-| --- | --- | --- |
-| `checking` | Chưa có kết luận cho session hiện tại | Chờ, không redirect login và chưa tải dữ liệu riêng tư |
-| `anonymous` | Backend đã xác nhận không có session hợp lệ | Cho xem public UI; route bảo vệ có thể yêu cầu login |
-| `authenticated` | Có snapshot user đã được xác nhận | Cho tải dữ liệu theo scope; vẫn xử lý API từ chối |
-| `signing-out` | Đã khóa scope cũ, đang kết thúc session | Dọn dữ liệu riêng tư, chặn request mới |
-| `unavailable` | Không xác nhận được vì lỗi mạng/server | Hiện retry hoặc lỗi kết nối, không kết luận user đã logout |
-
-Các tên này là contract minh họa, không phải yêu cầu dùng đúng một state machine cho mọi SDK. Nếu cho phép hiển thị snapshot cũ khi revalidate, cần thêm freshness rõ ràng và chính sách cho dữ liệu nhạy cảm; đừng gọi snapshot chưa xác nhận là session mới đã hợp lệ.
-
-Với ví dụ trong bài, auth module chỉ công bố `authenticated` sau khi kiểm tra thành công. Remote public như catalog có thể render ngay, trong khi vùng riêng tư của cart chờ kết luận. Không cần chặn cả trang catalog chỉ vì session API chậm.
-
-Session endpoint phải có chính sách response rõ: chẳng hạn `200` với projection tối thiểu, `401` nếu không có session, và lỗi mạng/`5xx` là chưa xác nhận được. Không biến mọi exception thành `anonymous`. Response chứa session/user riêng tư dùng `Cache-Control: no-store` và không được cache công khai ở CDN.
-
-## Luồng login và quay lại điểm đến
-
-Login không hoàn tất chỉ vì browser quay về callback URL. Bạn cần kiểm tra transaction, hoàn tất session của app và công bố trạng thái mới trước khi mở lại màn hình bảo vệ.
-
-### Một nơi xử lý callback
-
-Với BFF dùng OIDC, luồng ở mức thiết kế là:
-
-1. Cart yêu cầu login với destination nội bộ, ví dụ `/cart?step=delivery`.
-2. Auth owner phối hợp router để bắt đầu login qua backend. Backend lưu transaction gắn với browser và destination đã validate.
-3. Backend redirect sang identity provider với redirect URI đã đăng ký, PKCE và các tham số chống giả mạo/correlate transaction theo SDK.
-4. Identity provider xác thực rồi redirect về callback duy nhất do auth backend xử lý.
-5. Backend kiểm tra transaction, `state`, PKCE và các điều kiện OIDC như issuer, audience, signature, expiry, nonce khi áp dụng. Backend đổi code lấy token và tạo session của app.
-6. Browser trở lại app; auth module đọc session mới. Chỉ sau khi nhận `authenticated`, shell mở destination còn hợp lệ.
-
-`state`, PKCE và OIDC nonce có vai trò liên quan nhưng không nên bị gom thành một “chuỗi ngẫu nhiên” tự viết. Dùng SDK/protocol implementation để tạo, lưu, validate và tiêu thụ transaction một lần. Với browser public client, bước đổi code do SDK browser thực hiện; không vì thế mà mỗi remote xử lý cùng callback.
-
-Callback route nên thuộc auth owner, nằm ngoài guard bắt buộc đã login, và tránh tải remote/analytics không cần thiết trước khi xử lý callback. Không đưa access token hoặc refresh token vào URL. Authorization code cũng là dữ liệu nhạy cảm: xử lý sớm, tránh log và dọn query callback khỏi URL sau khi hoàn tất theo SDK/router.
-
-Nếu người dùng hủy login hoặc callback lỗi, hiển thị trạng thái có thể thử lại. Không tự mở lại login liên tục. Nếu login xong nhưng API domain báo thiếu quyền, chuyển tới forbidden, không gửi người dùng qua identity provider thêm vòng nữa.
-
-### Return URL là input không tin cậy
-
-`returnTo` có thể bị sửa qua query hoặc message. Đừng redirect trực tiếp tới giá trị đó và đừng chỉ kiểm tra `startsWith('/')`: `//evil.example` có thể được parse thành URL của host khác.
-
-Mặc định mình dùng destination có cấu trúc từ [routing contract](/docs/giao-tiep-va-trang-thai/routing), để shell xây URL từ danh sách route được hỗ trợ. Nếu phải nhận URL string, cần parse bằng trusted origin, kiểm tra cùng origin, basename của app và route allowlist; từ chối URL có credentials hoặc scheme ngoài chính sách. Backend phải validate lại trước khi redirect, không tin kết quả validation từ browser.
-
-Giữ query và fragment cần cho trải nghiệm, nhưng không giữ password, token hoặc dữ liệu cá nhân trong return URL. Với BFF, có thể lưu destination trong login transaction và chỉ dùng `state` opaque để tham chiếu; không cần đưa toàn bộ destination vào tham số gửi sang provider.
-
-Sau login, shell thường replace entry login thay vì push thêm một entry login còn dùng được. Đồng thời đánh giá lại quyền cho destination: user vừa login có thể không được vào màn hình ban đầu. Hành vi history chi tiết nằm ở bài routing, không nên để mỗi remote tự redirect bằng một quy tắc khác.
-
-## Session contract không chứa credential
-
-Một remote thường cần biết “đã login chưa”, “scope dữ liệu nào đang active” và “yêu cầu login bằng cách nào”. Nó không cần biết session ID, raw JWT hoặc cấu trúc nội bộ của auth store.
-
-### Snapshot subscription và commands
-
-Contract dưới đây dùng `epoch` là số phiên bản **cục bộ của runtime**, không phải session ID, credential hay revision của identity provider:
+<details>
+<summary>Đối chiếu type session đầy đủ</summary>
 
 ```ts
 export type SessionUser = Readonly<{
@@ -243,21 +332,12 @@ export interface AuthCommands {
 export interface AuthPort extends SessionReader, AuthCommands {}
 ```
 
-Các semantics cần đi cùng type:
+</details>
 
-- `getSnapshot()` trả cùng reference khi chưa đổi; snapshot và object/array lồng bên trong là immutable theo contract. `Readonly` chỉ bảo vệ ở mức TypeScript, owner vẫn phải giữ immutability lúc runtime.
-- `subscribe()` thông báo snapshot đã đổi và trả hàm cleanup. Consumer đọc lại snapshot, không dựng state bằng cách đếm event login/logout.
-- `epoch` tăng khi scope cũ bị vô hiệu hóa: bắt đầu logout, session hết hiệu lực, đổi identity/tenant hoặc bắt đầu một phiên khác. Logout rồi login lại cùng user cũng phải có epoch mới.
-- Revalidation xác nhận cùng scope hoặc refresh credential cho cùng session không nhất thiết tăng epoch. Nếu không chứng minh được sự liên tục của scope, owner vô hiệu hóa scope cũ theo hướng bảo thủ.
-- `startLogin()` yêu cầu auth owner bắt đầu luồng; nó không báo rằng login đã thành công. Full-page redirect có thể kết thúc runtime hiện tại. Owner deduplicate yêu cầu login đồng thời trong cùng runtime.
-- `revalidate()` cập nhật snapshot và resolve khi kiểm tra xong, kể cả kết quả `anonymous`; lỗi transport reject và publish `unavailable` theo chính sách. Consumer không suy ra `authenticated` chỉ từ việc Promise resolve.
-- `logout()` khóa scope cũ ngay, rồi resolve khi backend xác nhận session của app đã kết thúc. Nếu không xác nhận được, Promise reject và snapshot vẫn không cho phép tải dữ liệu riêng tư.
+Mẫu type này mở rộng bài tập bằng user/tenant/UI permissions, destination có cấu trúc và các commands. `Readonly` không tự khóa dữ liệu lúc chạy. Snapshot cần bất biến, giữ reference nếu không đổi và không chứa credential.
 
-`uiPermissions` là projection để render, không phải giấy phép truy cập API. Mình chỉ đưa các field UI thật sự cần vào snapshot; email, toàn bộ claims hay hồ sơ khách hàng không nên phát cho mọi remote nếu không có nhu cầu cụ thể.
-
-### Consumer dựng UI từ trạng thái hiện tại
-
-Adapter độc lập framework dưới đây cho remote biết khi nào nên chờ, yêu cầu login hoặc tải dữ liệu. `show` do remote cung cấp; không có dependency vào auth SDK hay store của shell.
+<details>
+<summary>Adapter TypeScript dựng UI từ snapshot</summary>
 
 ```ts
 type PrivateView = 'loading' | 'login' | 'content' | 'retry' | 'locked';
@@ -294,74 +374,10 @@ export function connectPrivateView(
 }
 ```
 
-Subscribe trước rồi đọc snapshot ban đầu giúp remote mount muộn vẫn thấy state hiện tại mà không cần replay một event login. Khi unmount, gọi hàm cleanup. Với React có thể dùng `useSyncExternalStore` với snapshot ổn định và server snapshot phù hợp; không cần thêm một `isLoggedIn` riêng trong local store.
+</details>
 
-Đây là adapter hiển thị, không phải route guard hoàn chỉnh. `content` chỉ có nghĩa là được bắt đầu trải nghiệm đã login; API vẫn có thể trả `403`, tài nguyên không tồn tại hoặc session vừa hết hạn. Việc mount/unmount vùng riêng tư và dọn cache khi epoch đổi thuộc lifecycle của remote.
-
-## Refresh và xử lý lỗi API
-
-Nếu cart, header và account cùng gặp lỗi xác thực, để cả ba tự refresh sẽ tạo nhiều request cạnh tranh. Đặc biệt với refresh token rotation, một request dùng token cũ đến muộn có thể bị xem là reuse. Vì thế, refresh phải có owner ở đúng nơi giữ credential.
-
-### Phân biệt hết phiên thiếu quyền và lỗi mạng
-
-| Kết quả | Cách hiểu trong contract API thông thường | Hành động mặc định |
-| --- | --- | --- |
-| `401` do credential hết hạn hoặc không hợp lệ | Request chưa được xác thực hợp lệ | Auth owner xác định có thể renew hay phải revalidate/kết thúc session |
-| `403` do thiếu quyền | Không được thực hiện hành động | Hiện forbidden hoặc lỗi nghiệp vụ phù hợp; không tự refresh |
-| Network error hoặc `5xx` | Chưa biết request/session có hợp lệ không | Báo lỗi kết nối, retry có giới hạn theo loại request |
-| Refresh bị từ chối do token/session không còn hợp lệ | Không thể tiếp tục session hiện tại | Vô hiệu hóa scope và công bố cần login lại |
-
-Bảng giả định backend dùng semantics này; nếu API có error code như `TOKEN_EXPIRED`, `TENANT_ACCESS_DENIED` hoặc `STEP_UP_REQUIRED`, công bố chúng trong contract. Một `401` ở một service không luôn có nghĩa session của toàn app đã mất: token có thể sai audience hoặc service bị cấu hình sai. Nếu mọi lần `401` đều dẫn tới logout toàn app, lỗi integration sẽ trông như lỗi người dùng.
-
-Với BFF, BFF có thể renew access token downstream mà browser không biết. Browser revalidate session của app khi cần, không tự gọi OAuth token endpoint. Nếu BFF đã kết luận session không hợp lệ, gọi lại một `/auth/refresh` từ từng remote không làm session sống lại.
-
-### Single flight và retry có giới hạn
-
-Trong bearer model, transport/auth owner nên áp dụng single flight: các request cùng cần renew credential chờ **một Promise refresh chung cho cùng scope**. Không dùng một Promise global xuyên user ở SSR.
-
-Một thuật toán ở mức thiết kế:
-
-1. Request ghi nhận scope epoch và credential version đang dùng. Transport chọn token đúng resource/audience.
-2. Nếu API trả lỗi có thể renew, kiểm tra scope còn active. Nếu credential version đã đổi, không refresh lại bằng credential cũ.
-3. Nếu chưa có refresh cho scope này, tạo một refresh Promise; các request khác cùng scope chờ Promise đó.
-4. Trước khi commit credential mới hoặc retry, kiểm tra epoch vẫn khớp. Logout hoặc đổi user phải vô hiệu hóa cả kết quả refresh đang chạy.
-5. Chỉ retry request đủ điều kiện và giới hạn, ví dụ tối đa một lần sau renew. Nếu vẫn bị từ chối, trả lỗi rõ ràng và revalidate theo contract, không chạy vòng lặp refresh.
-
-Credential version và scope epoch không phải cùng một thứ. Refresh có thể đổi access token nhưng vẫn giữ cùng user/session; logout thì đổi scope, khiến mọi request cũ không còn được commit dù chúng có token mới.
-
-<Callout type="warn" title="Không replay mọi mutation">
-  Request `POST /checkout` có thể đã tạo đơn hàng dù browser chỉ thấy timeout. Chỉ tự retry mutation khi backend cung cấp semantics an toàn, chẳng hạn idempotency key gắn với cùng thao tác và cùng scope. Cancellation hoặc refresh thành công không chứng minh request trước chưa chạy. Với đọc dữ liệu, vẫn cần kiểm tra scope trước khi commit response.
-</Callout>
-
-Single flight ở một tab không giải quyết refresh từ tab khác hoặc thiết bị khác. BFF có thể điều phối renewal ở backend theo session/grant; public-client SDK cần chiến lược cross-tab và xử lý rotation/reuse theo provider. Không coi một biến `isRefreshing` trong shell là giải pháp concurrency cho cả hệ thống.
-
-## Logout là một chuyển đổi phạm vi dữ liệu
-
-Xóa access token hoặc đổi `isLoggedIn = false` chỉ là một phần của logout. Bạn còn có cart cache, draft địa chỉ, request đang chạy, dữ liệu trong DOM và các tab khác. Những thứ đó phải ngừng thuộc về phiên cũ.
-
-### Quy trình logout
-
-Với mô hình BFF trong bài, mình dùng quy trình sau:
-
-1. Auth owner tăng epoch và publish `signing-out` ngay khi nhận command. Khóa request riêng tư mới, hủy refresh/request đang chạy khi có thể và thông báo các domain dọn state cũ.
-2. Cart/account dọn dữ liệu riêng tư và draft theo chính sách; shell không tiếp tục render nội dung của user cũ. Catalog public có thể giữ cache sản phẩm không cá nhân hóa.
-3. Gửi logout tới backend bằng request thay đổi trạng thái được bảo vệ CSRF. Backend invalidate session và expire cookie đúng name/path/domain ban đầu; không dùng GET để logout.
-4. Khi backend xác nhận, owner publish `anonymous`, shell chọn route an toàn và thông báo tab khác revalidate.
-5. Nếu logout không được xác nhận, publish `unavailable` với `logout-unconfirmed`. UI vẫn khóa dữ liệu riêng tư và cung cấp retry, không thông báo “đã đăng xuất thành công”.
-
-`HttpOnly` cookie phải được backend expire; JavaScript không xóa được nó qua `document.cookie`. Nếu mất mạng, server session có thể còn hợp lệ. Đừng tự revalidate rồi phục hồi `authenticated` ngay sau lỗi logout mà bỏ qua ý định đăng xuất của người dùng; cần hoàn tất retry hoặc một hành động khôi phục được giải thích rõ.
-
-Cũng cần chặn luồng login mới đua với logout chưa hoàn tất: response logout cũ có thể expire cookie của lần login mới. Backend và SDK cần lifecycle/transaction phù hợp; một epoch ở UI chỉ chặn commit state frontend, không chặn mọi side effect `Set-Cookie` từ response network cũ.
-
-Logout khỏi app và logout khỏi identity provider là hai việc khác nhau. Session app đã bị revoke nhưng SSO session ở provider vẫn còn thì lần login sau có thể không yêu cầu password. Logout toàn provider hoặc toàn thiết bị phải là lựa chọn có contract và cấu hình riêng; đừng hứa “đã đăng xuất ở mọi nơi” khi chỉ xóa session hiện tại.
-
-Trong bearer model, revoke refresh token/grant theo khả năng provider và xóa credential runtime. Access token tự chứa có thể còn được resource server chấp nhận tới expiry nếu không có cơ chế revocation bổ sung. Nêu rõ cửa sổ hiệu lực và cơ chế enforce phía backend, không coi việc xóa token ở browser là revoke token đã bị sao chép.
-
-### Chặn response của session cũ
-
-Hình dung user A đang tải cart, logout, rồi user B login trước khi response cart của A về. Query key có `userId` giúp tách cache nhưng chưa đủ nếu callback vẫn ghi vào store hiện tại. Cần kiểm tra epoch **tại thời điểm commit**, sau cả bước parse response.
-
-Ví dụ dưới đây chỉ minh họa một lần tải cart cho scope đã login. Transport `CartApi` đã được cấu hình cho endpoint tin cậy và tự xử lý credential; consumer không đọc token.
+<details>
+<summary>Helper TypeScript chặn response cart sau khi phiên đổi</summary>
 
 ```ts
 export type CartDto = Readonly<{
@@ -413,172 +429,42 @@ export function loadCartForCurrentSession(
 }
 ```
 
-`CartApi.getCart()` resolve sau khi response đã được parse và validate theo schema của API. Hàm unsubscribe cần idempotent để cleanup khi hoàn tất rồi unmount vẫn an toàn. Nếu scope đổi, caller dọn cart đang hiển thị và chỉ khởi động lần tải mới cho scope mới khi đã được xác nhận; helper này không tự quản lý cả store cart.
+</details>
 
-`AbortController` giúp giảm công việc thừa, nhưng kiểm tra epoch mới chặn response đến muộn. Abort không bảo đảm backend dừng mutation và không thu hồi response đã hoàn tất. Khi route đổi từ cart này sang cart khác trong cùng epoch, domain còn cần query key hoặc request generation riêng; session epoch không thay thế mọi cơ chế chống stale response.
-
-Epoch chỉ phản ánh những thay đổi runtime đã biết. Một tab khác đổi session cookie mà tab hiện tại chưa nhận tín hiệu vẫn là khoảng trễ đồng bộ. Nếu cần ràng buộc chặt hơn, thiết kế thêm scope/version identifier do backend xác nhận trong response và validation phù hợp; không dùng epoch client làm bằng chứng authorization.
-
-### Cache và dữ liệu persist
-
-Tách dữ liệu public khỏi dữ liệu theo user. Tên sản phẩm công khai có thể giữ qua logout; giỏ hàng, lịch sử đơn và giá cá nhân hóa thì không nên dùng lại cho user khác.
-
-| Dữ liệu | Scope cần xét | Khi logout hoặc đổi user |
-| --- | --- | --- |
-| Session projection | Runtime session epoch | Thay snapshot, không hydrate thành phiên hợp lệ từ storage |
-| Cart và đơn hàng | Subject, tenant, session epoch hoặc namespace tương đương | Cancel, invalidate/remove cache và chặn stale commit |
-| Draft địa chỉ/thanh toán | Subject, tenant, TTL và mức nhạy cảm | Xóa hoặc khóa theo chính sách đã công bố |
-| Catalog public | Product, locale, version dữ liệu | Có thể giữ nếu không chứa dữ liệu cá nhân hóa |
-| Catalog cá nhân hóa | Subject/tenant và các biến query liên quan | Không dùng chung cache với public catalog |
-
-Nếu persist draft, đừng lưu payment credential, access token hay cả auth store để “khôi phục phiên”. Persisted identity cũng không chứng minh session còn hợp lệ sau reload. Với service worker hoặc offline cache, kiểm tra riêng response authenticated có bị giữ lại và phục vụ cho phiên khác hay không.
-
-Auth owner công bố scope đổi; domain owner chịu trách nhiệm dọn query cache, optimistic state và draft của domain mình. Shell không cần biết mọi query key để logout, nhưng integration contract cần buộc remote thực hiện cleanup dù màn hình domain chưa mount hoặc đã unmount. Xem thêm [state ownership](/docs/giao-tiep-va-trang-thai/state-ownership).
-
-## UI permissions không thay backend authorization
-
-Giả sử snapshot có `cart.checkout`. Cart dùng giá trị đó để hiện nút thanh toán, nhưng backend vẫn cần kiểm tra request đang thuộc user nào, cart nào, tenant nào và nghiệp vụ còn hợp lệ không.
-
-| Kiểm tra | Frontend dùng để | Backend phải làm |
-| --- | --- | --- |
-| User đã login | Chọn loading/login/content | Validate session hoặc credential |
-| Có permission checkout | Hiện nút hoặc hướng dẫn xin quyền | Enforce policy cho hành động checkout |
-| Cart thuộc user hiện tại | Tránh trình bày dữ liệu sai scope | Kiểm tra ownership tài nguyên, chống truy cập cart của user khác |
-| Tenant đang chọn | Dựng navigation và query scope | Kiểm tra user thật sự được truy cập tenant, không tin tenant ID browser gửi |
-| Giá và tồn kho hợp lệ | Hiển thị dự kiến | Tính và validate lại lúc mutation |
-
-Route guard cũng chỉ là kiểm soát trải nghiệm. Người dùng có thể gọi API trực tiếp mà không qua route. Ngược lại, user có permission trong snapshot cũ vẫn có thể nhận `403` sau khi admin thu hồi quyền; UI cần xử lý kết quả đó và revalidate projection khi thích hợp.
-
-Đừng nhúng policy backend thành một bản kiểm tra chi tiết trong mỗi remote. Bạn sẽ có nhiều bản policy khác version và không biết bản nào đúng. Frontend dùng capability/projection ổn định cho UI; backend giữ quyết định theo tài nguyên và ngữ cảnh hiện tại. Feature flag bật checkout cũng không phải permission checkout.
-
-Với thao tác cần xác thực mạnh hơn, như đổi thông tin nhạy cảm, backend có thể yêu cầu step-up/MFA hoặc recent authentication. Auth owner điều phối challenge theo error contract; remote không tự gọi login thông thường rồi giả định yêu cầu đã được đáp ứng.
-
-## Cookie CSRF và giới hạn của cùng document
-
-Cookie session được browser gửi tự động, nên endpoint thay đổi trạng thái cần CSRF protection. `HttpOnly` ngăn đọc cookie bằng JavaScript, không ngăn browser gửi cookie và không phải biện pháp chống CSRF.
-
-Với BFF, dùng cơ chế được framework hỗ trợ như synchronizer token hoặc signed double-submit phù hợp, kết hợp kiểm tra Origin/Referer hoặc Fetch Metadata theo chính sách backend. Nếu dùng CSRF token header, chỉ gắn token vào endpoint tin cậy; backend phải validate, không chỉ kiểm tra có header. `SameSite` là một lớp phòng vệ, không thay toàn bộ CSRF protection.
-
-Login, logout và callback cũng có yêu cầu chống giả mạo transaction riêng. Không có mutation qua GET. Không thiết kế một proxy BFF nhận URL tùy ý rồi chuyển tiếp cookie/token sang destination đó; cần allowlist endpoint và giới hạn quyền downstream.
-
-<Callout type="warn" title="BFF không sandbox remote">
-  Remote bị compromise trong document của shell có thể gọi endpoint bằng session của browser, kể cả khi không đọc được cookie. Auth contract chỉ giới hạn API được công bố, không giới hạn quyền của JavaScript cùng realm. Cần kiểm soát nguồn remote, supply chain, CSP và XSS; với code không đáng tin, cân nhắc isolation bằng iframe khác origin và protocol có giới hạn.
-</Callout>
-
-Không ghi credential vào event bus, console, analytics, error report hay URL. Log cả header `Authorization` hoặc response session nguyên vẹn thường lộ nhiều dữ liệu hơn bạn cần để debug. Chỉ thu thập field đã cho phép và redact ở cả frontend lẫn backend.
+Các type/helper trên là mẫu thiết kế, không phải implementation backend hay SDK. `loadCartForCurrentSession` giả định adapter đã parse/validate response, cleanup gọi lại an toàn và caller xóa dữ liệu đang hiển thị khi scope đổi. Nó không tự quản lý toàn bộ store hoặc mọi lần đổi route.
 
 ## Nhiều tab iframe và standalone
 
-Những runtime này không chia sẻ một object auth store. “Một owner” nghĩa là có quy tắc điều phối nhất quán, không phải mọi browser tab có cùng một singleton JavaScript.
+Trong cùng trang, shell truyền object API. **Qua tab hoặc iframe, không còn cùng object memory**, dù UI cùng thuộc một sản phẩm.
 
-| Bối cảnh | Thiết kế nên bắt đầu từ | Bẫy cần tránh |
-| --- | --- | --- |
-| Nhiều tab cùng origin | Mỗi tab có auth owner; notification khiến tab khác khóa/revalidate snapshot | Broadcast raw token hoặc coi payload login của tab khác là xác nhận session |
-| Iframe khác origin | Child có session/credential flow riêng hoặc capability bridge hẹp đã review | Gửi token bằng `postMessage('*')` hoặc tin mọi message từ parent/child |
-| Remote chạy standalone | Inject adapter dev/test có cùng contract, hoặc dùng auth thật cho môi trường đó | Dùng một `isLoggedIn` mock độc lập với kiểu trạng thái integrated |
-
-Với nhiều tab, `BroadcastChannel` có thể phát tín hiệu “session có thể đã đổi”. Tab nhận không tự copy user/permissions từ message thành `authenticated`; nó revalidate từ nguồn chuẩn. Với tín hiệu logout, có thể vô hiệu hóa scope và khóa dữ liệu ngay, rồi xác nhận session. Notification không phải kênh tin cậy cho credential và không bảo đảm giao nhận khi tab bị đóng băng; revalidate khi tab trở lại foreground theo chính sách phù hợp.
-
-Với iframe khác origin, kiểm tra `event.origin`, `event.source` và schema/version của message, đồng thời dùng `targetOrigin` cụ thể. Nếu parent cung cấp capability cho child, giới hạn command, destination và dữ liệu trả về; parent phải kiểm tra quyền ở backend. Chỉ validate origin không làm mọi request từ code trên origin đó được phép.
-
-Iframe không thể mặc định đọc cookie của parent. Cookie `SameSite=None; Secure` cũng không bảo đảm third-party cookies được chấp nhận trên browser mục tiêu. Silent login trong iframe phụ thuộc chính sách browser/provider; cần fallback qua top-level redirect hoặc cơ chế embedding phù hợp. Partitioned cookies và Storage Access API có semantics riêng, không phải cách bật lại một session chung cho mọi site.
-
-SSO giữa hai ứng dụng không đồng nghĩa chia sẻ app session: hai app có thể cùng provider nhưng mỗi app có cookie session, audience và policy riêng. Standalone cart không nên dùng production refresh token copy từ shell để tiện debug. Dùng test identity và cấu hình redirect URI/CORS của môi trường dev; mock adapter chỉ dành cho local/test và không được bật nhầm trong production.
-
-## SSR và hydration
-
-Với SSR, session thuộc request đang xử lý. Không giữ user, cookie hoặc token trong mutable singleton cấp process: request của user B có thể đọc state của user A nếu chúng dùng chung object.
-
-Server đọc session từ request, dựng projection tối thiểu rồi render theo scope đó. Không serialize access token, refresh token hoặc session ID vào HTML. Nếu server component gọi API qua BFF, chỉ forward credential tới destination tin cậy, không chuyển toàn bộ cookie header sang mọi host.
-
-Browser bootstrap auth runtime từ server snapshot tương thích với HTML rồi revalidate theo chính sách. Server render `authenticated` nhưng client khởi đầu `anonymous` dễ gây hydration mismatch, nhấp nháy login và redirect nhầm. Ngược lại, snapshot hydrated không cho phép bỏ qua việc API kiểm tra session thực tế.
-
-Không cache HTML riêng tư ở shared CDN như HTML public. Với Next.js/server data cache, lựa chọn cache phải đúng semantics phiên bản framework đang dùng và tách theo scope hoặc không cache dữ liệu session. Cache key thiếu user/tenant có thể lộ dữ liệu dù auth handler hoàn toàn đúng. Chi tiết framework nằm ở [Next.js và SSR](/docs/ui-va-framework/nextjs-ssr).
-
-## Failure modes và cách debug
-
-Bắt đầu từ auth snapshot của owner, scope của request và kết quả backend, không bắt đầu bằng việc decode một JWT rồi suy ra toàn hệ thống đúng. JWT có claim chưa hết hạn không chứng minh token đúng issuer/audience hoặc session chưa bị revoke.
-
-| Triệu chứng | Nghi ngờ đầu tiên | Cách kiểm tra |
-| --- | --- | --- |
-| Header đã login nhưng cart chưa login | Hai auth instance hoặc remote giữ boolean riêng | Trace instance wiring và snapshot cart đọc khi mount |
-| Mở deep link thì redirect login trước khi bootstrap xong | `checking` bị xử lý như `anonymous` | Ghi timeline status và guard decision |
-| Login redirect lặp sau callback | Guard chặn callback, session chưa được set hoặc không gửi cookie | Kiểm tra route callback, cookie attributes và session API |
-| Login xong nhưng API luôn `401` | Sai audience/issuer, cookie/CORS hoặc transport config | Đối chiếu API error code và cấu hình credential, không dump token |
-| API `403` làm logout toàn app | Interceptor gom mọi lỗi thành auth failure | Trace mapping từ response tới auth command |
-| Nhiều refresh chạy cùng lúc | Refresh nằm trong từng remote hoặc single flight sai scope | Đếm refresh theo session/grant, tab và credential version |
-| Logout xong xuất hiện lại cart cũ | Response/refresh cũ commit muộn | Kiểm tra epoch lúc request bắt đầu và lúc commit |
-| User B thấy dữ liệu A | Cache key thiếu scope, persist cũ hoặc SSR singleton | Trace query namespace, cleanup và request-local state |
-| Tab khác vẫn thấy private UI sau logout | Chưa nhận tín hiệu hoặc chưa revalidate | Kiểm tra notification và foreground policy |
-| Iframe login được ở dev nhưng lỗi production | Third-party cookie hoặc provider policy khác | Kiểm thử bằng browser mục tiêu, không chỉ đổi CORS |
-| Logout báo thành công nhưng reload lại có session | Chỉ dọn frontend, revoke lỗi hoặc cookie expire sai scope | Kiểm tra acknowledgement backend và session API sau reload |
-
-Log request correlation ID, auth operation, status transition, epoch cục bộ và error category thường đủ để dựng timeline. Khi cần liên kết backend, dùng identifier đã được review và pseudonymize phù hợp; đừng log raw session ID, cookie, token, authorization code hoặc thông tin user đầy đủ. Phân biệt rõ “renew credential”, “revalidate session” và “logout” trong telemetry để tránh gom mọi vấn đề thành “login failed”.
-
-## Ma trận kiểm thử
-
-Unit test state machine và contract giúp bắt lỗi mapping; các tình huống cookie, redirect, nhiều tab và response đến muộn cần integration/E2E test. Dùng test identity riêng và cho phép điều khiển độ trễ response để tái hiện race.
-
-| Kịch bản | Kết quả cần kiểm tra |
+| Bối cảnh | Cách phối hợp |
 | --- | --- |
-| Reload route bảo vệ khi session còn hợp lệ | Chờ bootstrap, không redirect login sớm, dựng đúng user |
-| Session API trả network error hoặc `5xx` | Hiện retry, không kết luận anonymous |
-| Remote mount sau khi login hoàn tất | Đọc snapshot hiện tại, không phụ thuộc event cũ |
-| Hai remote cùng yêu cầu login | Một luồng login được điều phối, không ghi đè transaction tùy tiện |
-| User hủy login hoặc callback invalid | Báo lỗi/cancel rõ ràng, không redirect lặp |
-| Return URL ngoài origin hoặc ngoài route allowlist | Backend và frontend đều từ chối, dùng fallback an toàn |
-| Nhiều request gặp credential hết hạn | Một refresh cho scope trong runtime; retry có giới hạn |
-| Refresh thất bại do network và do token bị revoke | Hai kết quả được phân loại khác nhau, không refresh vô hạn |
-| API domain trả `403` | Hiện thiếu quyền, không tự logout/login lại |
-| Checkout timeout sau khi backend đã xử lý | Không tạo đơn trùng; retry theo contract idempotency |
-| Logout trong lúc cart và refresh còn pending | Dọn dữ liệu ngay, kết quả cũ không commit hoặc phục hồi credential |
-| Logout backend không phản hồi | UI khóa dữ liệu và báo chưa xác nhận logout; retry được |
-| Logout rồi login lại cùng user hoặc user B | Epoch mới; cache/response cũ không cập nhật scope mới |
-| Đổi tenant khi query đang chạy | Hủy hoặc bỏ qua kết quả tenant cũ; backend kiểm tra tenant mới |
-| Tab A logout, tab B quay lại foreground | B khóa/revalidate dữ liệu, không tin snapshot cũ vô hạn |
-| Mount/unmount remote nhiều lần | Không tăng listener hoặc cập nhật instance đã hủy |
-| Request mutation không có CSRF protection hợp lệ | Backend từ chối dù browser có cookie session |
-| Gọi trực tiếp API với cart của user khác | Backend từ chối dù UI đã ẩn nút/link |
-| Iframe dưới chính sách chặn third-party cookies | Có luồng fallback đã công bố; không phát token ra message tùy ý |
-| SSR đồng thời cho hai test user | HTML và dữ liệu không lẫn session; hydrate không nhấp nháy login |
-| Shell và remote khác version còn hỗ trợ | Snapshot/commands tương thích, status lạ được xử lý theo contract |
+| Nhiều tab cùng origin | `BroadcastChannel`/storage notification báo phiên có thể đổi; tab nhận revalidate từ nguồn chuẩn |
+| Iframe khác origin | Protocol message có kiểm tra origin/source/schema; luồng auth còn phụ thuộc chính sách cookie/provider |
+| Remote chạy độc lập khi phát triển | Adapter dev/test cùng contract hoặc auth thật của môi trường test, không copy credential production |
 
-Thêm test logout khi network chậm ngay trước login mới: kiểm tra cả snapshot lẫn cookie sau khi các response hoàn tất. Test epoch ở frontend không thể tự chứng minh backend session lifecycle đúng.
+Message logout có thể khiến tab khác khóa dữ liệu rồi kiểm tra lại. Không broadcast token, user/roles rồi coi payload là bằng chứng đã xác thực. Channel không bảo đảm tab bị suspend nhận đủ thông báo; revalidate khi foreground theo policy.
 
-## Checklist trước khi deploy
+URL CDN của remote không tạo auth origin riêng nếu code vẫn chạy trong document shell. Iframe thì khác: không mặc định đọc được cookie parent; CORS không vượt qua chính sách third-party cookies. Dùng `targetOrigin` cụ thể và kiểm tra `event.origin`, `event.source` trước khi decode. SSO giữa hai app cũng không có nghĩa hai app có cùng session.
 
-- [ ] Auth owner và lifecycle instance đã rõ; remote không tự tạo auth store khác trong integrated mode.
-- [ ] Phân biệt `checking`, `anonymous`, `authenticated`, lỗi xác nhận và logout đang chạy.
-- [ ] Public contract có snapshot hiện tại, subscription cleanup và command semantics, không chứa credential.
-- [ ] Login/callback dùng SDK phù hợp, validate transaction và return destination ở backend.
-- [ ] Credential chỉ đi tới endpoint/resource đã cho phép; refresh có owner và giới hạn retry.
-- [ ] Backend enforce session, authorization, resource ownership và tenant cho từng request.
-- [ ] Cookie có scope/attributes phù hợp; mutation dùng CSRF protection thực sự ở backend.
-- [ ] Logout revoke session phía server; lỗi logout không bị trình bày thành thành công.
-- [ ] Đổi session/tenant dọn private cache và chặn stale response, kể cả refresh đang chạy.
-- [ ] Cross-tab, iframe và standalone có contract riêng; không broadcast hoặc persist raw token để tiện đồng bộ.
-- [ ] SSR không dùng mutable user singleton; HTML/session response không bị cache công khai.
-- [ ] Telemetry đã redact credential và dữ liệu nhạy cảm; test bao phủ cả phiên còn sống lẫn lỗi mạng.
+## Những kiểm tra không được bỏ qua
 
-Trước khi nối thêm remote, hãy chạy một tình huống cụ thể: login bằng user A, giữ request cart pending, logout rồi login bằng user B, sau đó cho response của A hoàn tất. Nếu UI không lộ dữ liệu A và backend không chấp nhận request ngoài scope được phép, bạn đã kiểm tra được hai ranh giới khác nhau: lifecycle frontend và authorization backend.
+| Thử | Kết quả cần thấy |
+| --- | --- |
+| Mở remote sau khi login | Đọc được snapshot, không đợi event login kế tiếp |
+| Session API lỗi mạng/5xx | UI retry, không kết luận anonymous |
+| Logout khi GET cart còn chờ | Dữ liệu bị khóa, response cũ không xuất hiện lại |
+| Logout backend thất bại | Không báo thành công giả, dữ liệu riêng tư vẫn khóa |
+| API trả 403 | Hiển thị thiếu quyền, không refresh/login vô hạn |
+| Nhiều remote gặp credential hết hạn | Auth/transport điều phối renew, không mỗi app tự chạy một luồng |
+| SSR hai user cùng lúc | Không dùng mutable session singleton hay cache HTML riêng tư chung |
+
+Single flight là cho các request đủ điều kiện chờ một lần renew chung theo scope; nó không đồng nghĩa tự retry mọi POST. Tác vụ mutation có thể đã chạy khi timeout, cần contract chống trùng backend. Scope ở browser không thay authorization; remote cùng document cũng không phải vùng cách ly với code không đáng tin.
 
 ## Đọc tiếp
 
 <Cards>
-  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Phân quyền đọc/ghi state và dọn dữ liệu khi scope thay đổi." />
-  <Card title="Routing và navigation" href="/docs/giao-tiep-va-trang-thai/routing" description="Thiết kế route guard, return destination và history sau login." />
-  <Card title="Data fetching và cache" href="/docs/giao-tiep-va-trang-thai/data-fetching" description="Tách cache theo scope, xử lý invalidation và request lifecycle." />
-  <Card title="Security và trust boundaries" href="/docs/production/security" description="Đánh giá remote code, supply chain và giới hạn isolation cùng document." />
-  <Card title="Thực hành routing và auth" href="/docs/thuc-hanh/routing-auth" description="Áp dụng auth boundary vào shell, catalog và cart." />
+  <Card title="Thực hành routing và auth" href="/docs/thuc-hanh/routing-auth" description="Ghép điều hướng, session và các remote trong một luồng thực hành." />
+  <Card title="Data fetching và cache" href="/docs/giao-tiep-va-trang-thai/data-fetching" description="Dọn cache theo user/tenant và chặn kết quả request cũ." />
+  <Card title="Security và trust boundaries" href="/docs/production/security" description="Giới hạn của code cùng document và những lớp bảo vệ ngoài contract UI." />
 </Cards>
-
-## Tài liệu tham khảo
-
-- [RFC 9700 — Best Current Practice for OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700.html): PKCE, redirect validation, hạn chế token privileges và refresh token protection.
-- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html): ID token, Authorization Code Flow và validation identity response.
-- [OWASP — Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): cookie attributes, session fixation, timeout và server-side invalidation khi logout.
-- [OWASP — Cross-Site Request Forgery Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html): CSRF token, Origin/Fetch Metadata và giới hạn của SameSite.
-- [MDN — Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie): `HttpOnly`, `Secure`, `SameSite` và cookie prefix `__Host-`.
-- [MDN — CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS): credentialed requests và origin allowlist.
-- [MDN — Third-party cookies](https://developer.mozilla.org/en-US/docs/Web/Privacy/Guides/Third-party_cookies): cookie policy trong embedded context, partitioning và Storage Access API.
-- [MDN — Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage): kiểm tra sender và dùng target origin cụ thể khi giao tiếp iframe.

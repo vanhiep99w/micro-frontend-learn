@@ -1,121 +1,236 @@
 ---
 title: "Routing và navigation"
-description: "Bắt đầu từ những vấn đề khi nhiều frontend dùng chung URL, rồi chọn cách chia route, phối hợp điều hướng và hỗ trợ mở link trực tiếp."
+description: "Giao tiếp qua URL và navigation API: shell chọn app, remote chọn màn hình, code hai phía và cách Back/Forward cập nhật cùng nhau."
 ---
 
-Khi tách một frontend thành nhiều microfrontend, người dùng vẫn mở một website, nhìn một thanh địa chỉ và bấm cùng các nút Back/Forward. Nhưng phía sau, mỗi app có những màn hình riêng và có thể được phát triển, deploy độc lập. Vậy ai quyết định URL hiện tại thuộc app nào? Nếu một app thêm trang mới, những app còn lại có phải sửa theo không?
+Catalog có nút mở sản phẩm, shell có nút mở giỏ hàng. Nếu hai app tự ghi thanh địa chỉ mà không phối hợp, URL có thể đã là `/cart` nhưng màn hình vẫn đang ở Catalog.
 
-Bài này đi từ **vấn đề cần giải quyết**, sau đó mới đến giải pháp và code. Bạn chưa cần biết `BrowserRouter`, memory router hay browser history để đọc phần đầu.
+Bài này đi theo nhánh **URL và API điều hướng** trong [bản đồ giao tiếp](/docs/giao-tiep-va-trang-thai#các-cách-giao-tiếp-và-bài-đọc-tiếp). Shell giữ một đường điều phối URL; remote nhận location hiện tại và gửi yêu cầu navigation qua API đã được truyền khi mount.
 
-<Callout type="info" title="Hai tên gọi dùng trong bài">
-  <strong>Shell</strong> là app bao ngoài, giữ khung giao diện và ghép các microfrontend vào trang. <strong>Remote</strong> là microfrontend được ghép vào đó. Ví dụ xuyên suốt là một shop có Catalog để xem sản phẩm và Cart để xem giỏ hàng. Đây là ứng dụng giả định, không phải tính năng có sẵn trong repository tài liệu.
+<Callout type="info" title="Chọn đúng mô hình trước khi copy code">
+  Ví dụ JavaScript đầu dành cho app mount riêng hoặc khác framework, chưa dùng thư viện router. Nếu các remote render như component trong cùng cây React, một React Router chung thường đơn giản hơn; mẫu đó ở phần sau. Không cần tạo bridge riêng chỉ vì có nhiều remote.
 </Callout>
-
-<SourceRef project="giao-tiep-va-trang-thai-routing" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
 
 ## Mục lục
 
-- [Các vấn đề cần giải quyết](#các-vấn-đề-cần-giải-quyết)
-  - [Ai chọn app và ai chọn màn hình](#ai-chọn-app-và-ai-chọn-màn-hình)
-  - [App thêm trang có phải sửa shell](#app-thêm-trang-có-phải-sửa-shell)
-  - [Nhiều app cùng điều hướng thì ai đổi URL](#nhiều-app-cùng-điều-hướng-thì-ai-đổi-url)
-  - [Vì sao URL đổi nhưng router chưa cập nhật](#vì-sao-url-đổi-nhưng-router-chưa-cập-nhật)
-  - [Một trang cần nhiều microfrontend](#một-trang-cần-nhiều-microfrontend)
-  - [Mở link trực tiếp khác gì click trong app](#mở-link-trực-tiếp-khác-gì-click-trong-app)
-- [Các giải pháp](#các-giải-pháp)
-  - [Chia route cấp app và route bên trong app](#chia-route-cấp-app-và-route-bên-trong-app)
-  - [Dùng router chung khi các app cùng cây React](#dùng-router-chung-khi-các-app-cùng-cây-react)
-  - [Phối hợp router riêng khi các app chạy độc lập](#phối-hợp-router-riêng-khi-các-app-chạy-độc-lập)
-  - [Ghép nhiều microfrontend theo layout](#ghép-nhiều-microfrontend-theo-layout)
-  - [Cho server và frontend cùng hiểu URL](#cho-server-và-frontend-cùng-hiểu-url)
-- [Nên chọn cách nào trước](#nên-chọn-cách-nào-trước)
-- [Ví dụ React tối thiểu](#ví-dụ-react-tối-thiểu)
-  - [Shell chỉ khai báo điểm gắn của Catalog](#shell-chỉ-khai-báo-điểm-gắn-của-catalog)
-  - [Catalog khai báo các màn hình của mình](#catalog-khai-báo-các-màn-hình-của-mình)
-  - [Theo dõi một lần điều hướng](#theo-dõi-một-lần-điều-hướng)
+- [Shell chọn app còn remote chọn màn hình](#shell-chọn-app-còn-remote-chọn-màn-hình)
+- [Shell tạo navigation API](#shell-tạo-navigation-api)
+- [Remote dùng API để mở trang và nhận location](#remote-dùng-api-để-mở-trang-và-nhận-location)
+- [Shell gắn và tháo app theo URL](#shell-gắn-và-tháo-app-theo-url)
+- [Chạy luồng sản phẩm rồi Back và Forward](#chạy-luồng-sản-phẩm-rồi-back-và-forward)
+- [Vì sao URL đổi mà router chưa cập nhật](#vì-sao-url-đổi-mà-router-chưa-cập-nhật)
+- [Khi các app cùng cây React thì dùng router chung](#khi-các-app-cùng-cây-react-thì-dùng-router-chung)
+  - [Shell giao nhánh route cho Catalog](#shell-giao-nhánh-route-cho-catalog)
+  - [Catalog khai báo route con chứ không tạo BrowserRouter mới](#catalog-khai-báo-route-con-chứ-không-tạo-browserrouter-mới)
 - [Navigation contract cho remote cô lập](#navigation-contract-cho-remote-cô-lập)
-- [Các lưu ý sau khi routing cơ bản đã chạy](#các-lưu-ý-sau-khi-routing-cơ-bản-đã-chạy)
-  - [Browser history và Back Forward](#browser-history-và-back-forward)
-  - [Basename không phải địa chỉ tải asset](#basename-không-phải-địa-chỉ-tải-asset)
-  - [Bộ lọc trong URL và dữ liệu đang nhập](#bộ-lọc-trong-url-và-dữ-liệu-đang-nhập)
-  - [Điều hướng khi cần đăng nhập](#điều-hướng-khi-cần-đăng-nhập)
-  - [Remote tải chậm hoặc tải lỗi](#remote-tải-chậm-hoặc-tải-lỗi)
-- [Tự kiểm tra thiết kế](#tự-kiểm-tra-thiết-kế)
+- [Push replace URL filter và server routing](#push-replace-url-filter-và-server-routing)
+  - [Back và Forward đi theo history thật](#back-và-forward-đi-theo-history-thật)
+  - [Filter cần chia sẻ thì đưa vào URL](#filter-cần-chia-sẻ-thì-đưa-vào-url)
+  - [Refresh URL sâu còn cần server](#refresh-url-sâu-còn-cần-server)
+- [Kiểm tra lúc ghép các app](#kiểm-tra-lúc-ghép-các-app)
 - [Đọc tiếp](#đọc-tiếp)
-- [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
-## Các vấn đề cần giải quyết
+## Shell chọn app còn remote chọn màn hình
 
-Trước khi tách app, bạn có thể khai báo tất cả màn hình ở một nơi:
+| URL | Shell quyết định | Remote quyết định |
+| --- | --- | --- |
+| `/catalog` | Gắn Catalog | Màn hình danh sách |
+| `/catalog/products/42` | Vẫn Catalog | Chi tiết sản phẩm 42 |
+| `/catalog/search` | Vẫn Catalog | Màn hình tìm kiếm |
+| `/cart` | Gắn Cart | Nội dung giỏ hàng |
 
-```d2 title="URL và màn hình trước khi tách app"
-direction: right
-catalog: /catalog
-product: /catalog/products/42
-cart: /cart
-list: Danh sách sản phẩm
-detail: Chi tiết sản phẩm 42
-basket: Giỏ hàng
-catalog -> list: Hiển thị
-product -> detail: Hiển thị
-cart -> basket: Hiển thị
+Shell nhận cả nhánh `/catalog` và `/catalog/*`, không liệt kê mọi trang con. Catalog thêm trang dưới prefix được giao thì không bắt shell deploy theo. Đổi prefix công khai lại là thay đổi contract cần phối hợp và giữ link cũ.
+
+**Route** là quy tắc URL → nội dung. **Navigation** là hành động chuyển URL. Remote cần cả hai: biết URL để chọn màn hình, có cách yêu cầu chuyển tới URL mới.
+
+```d2 interactive=false title="Hai cấp trách nhiệm không nhất thiết là hai router"
+direction: down
+url: "/catalog/products/42"
+shell: "Shell chọn Catalog"
+remote: "Catalog chọn sản phẩm 42"
+url -> shell -> remote
 ```
 
-Một **route** là quy tắc nối đường dẫn với nội dung cần hiển thị. **Routing** là việc tìm và hiển thị nội dung theo URL hiện tại. **Navigation** là hành động chuyển sang một URL khác, chẳng hạn click vào sản phẩm để mở trang chi tiết.
+Một URL có thể ghép nhiều remote theo layout. Widget gợi ý chỉ cần nhận product ID, không bắt buộc có router. Đừng biến “mỗi micro-frontend” thành “mỗi micro-frontend phải tự điều khiển browser history”.
 
-Khi tách Catalog và Cart thành hai app, các URL trên không nhất thiết phải đổi. Điều thay đổi là trách nhiệm xử lý chúng được chia cho nhiều app. Từ đó xuất hiện những vấn đề dưới đây.
+## Shell tạo navigation API
 
-### Ai chọn app và ai chọn màn hình
+Mẫu nhỏ dùng History API của browser, chỉ cho phép `/catalog...` hoặc `/cart` trong cùng origin:
 
-Bạn mở `/catalog/products/42`. Shell có thể tải Catalog, nhưng riêng việc tải Catalog chưa nói được cần hiển thị danh sách hay chi tiết sản phẩm.
+```js title="basic/navigation.js" sourceFile="basic/navigation.js" sourceRegion="main"
+export function createNavigation() {
+  const listeners = new Set();
+  const read = () => Object.freeze({
+    pathname: location.pathname,
+    search: location.search,
+    hash: location.hash,
+  });
+  let snapshot = read();
 
-Có hai quyết định khác nhau:
+  function notify() {
+    snapshot = read();
+    for (const listener of [...listeners]) listener();
+  }
+  window.addEventListener('popstate', notify);
 
-1. URL này cần app **Catalog**, không phải Cart.
-2. Bên trong Catalog, URL này cần trang **chi tiết sản phẩm 42**, không phải danh sách.
-
-Nếu không phân chia hai việc đó, shell dễ phải biết mọi màn hình của mọi app. Ngược lại, nếu chỉ tải remote rồi bỏ mặc URL, remote có thể luôn mở trang mặc định dù người dùng đã truy cập một link chi tiết.
-
-### App thêm trang có phải sửa shell
-
-Giả sử shell đang liệt kê từng đường dẫn:
-
-```d2 title="Shell liệt kê từng route cụ thể"
-direction: right
-list: /catalog
-product: /catalog/products/:id
-basket: /cart
-catalog: Catalog
-cart: Cart
-list -> catalog: Shell chọn app
-product -> catalog: Shell chọn app
-basket -> cart: Shell chọn app
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    navigate(path, { replace = false } = {}) {
+      const url = new URL(path, location.origin);
+      if (url.origin !== location.origin || url.username || url.password
+        || !/^\/(catalog(?:\/.*)?|cart)$/.test(url.pathname)) {
+        throw new Error('Đích đến không được hỗ trợ');
+      }
+      const next = url.pathname + url.search + url.hash;
+      if (replace) history.replaceState(null, '', next);
+      else history.pushState(null, '', next);
+      notify();
+    },
+    dispose() {
+      window.removeEventListener('popstate', notify);
+      listeners.clear();
+    },
+  };
+}
 ```
 
-Catalog thêm trang `/catalog/search`. Nếu shell chỉ nhận những đường dẫn đã liệt kê, Catalog đã có trang mới nhưng shell vẫn chưa biết cần tải nó.
+Có ba đường quan trọng:
 
-Lúc này, thêm một màn hình trong Catalog lại đòi hỏi sửa và deploy cả shell. Hai app có repository riêng nhưng vẫn phụ thuộc vào nhau trong một thay đổi nội bộ.
+- `navigate` thay URL qua `pushState`/`replaceState` rồi **tự gọi `notify`**.
+- Browser Back/Forward phát `popstate`, `notify` đọc lại URL.
+- `getSnapshot/subscribe` cho mọi UI cùng biết location hiện tại.
 
-**Vấn đề cần giải quyết:** shell phải nhận ra những URL thuộc Catalog mà không cần biết Catalog có bao nhiêu màn hình.
+`pushState` và `replaceState` không tự phát `popstate`. Đây là lý do chỉ đổi URL ở remote chưa bảo đảm router/UI của shell biết thay đổi. Mẫu không liên tục polling thanh địa chỉ; nó phát notification đúng nơi URL đổi.
 
-### Nhiều app cùng điều hướng thì ai đổi URL
+## Remote dùng API để mở trang và nhận location
 
-Menu của shell có nút “Giỏ hàng”. Trang sản phẩm trong Catalog cũng có nút “Xem giỏ hàng”. Cả hai đều có thể đưa người dùng đến `/cart`.
+```js title="basic/catalog.js" sourceFile="basic/catalog.js" sourceRegion="main"
+export function mount({ container, navigation }) {
+  const section = document.createElement('section');
+  const title = document.createElement('h2');
+  const product = document.createElement('button');
+  product.textContent = 'Xem sản phẩm 42';
+  section.append(title, product);
+  container.append(section);
+  let active = true;
 
-Nếu mỗi bên tự đổi URL theo cách riêng mà không thông báo cho phần còn lại, bạn có thể gặp tình trạng thanh địa chỉ đã là `/cart`, nhưng vùng nội dung vẫn hiển thị sản phẩm. Hoặc bấm Back thì URL quay lại sản phẩm, còn màn hình vẫn đứng ở giỏ hàng.
+  function render() {
+    if (!active) return;
+    const { pathname, search } = navigation.getSnapshot();
+    const page = pathname.slice('/catalog'.length) || '/';
+    title.textContent = `Catalog: ${page}${search}`;
+  }
+  function openProduct() {
+    navigation.navigate('/catalog/products/42');
+  }
 
-Vấn đề không nằm ở số lượng nút hay số lượng app. **Các bên phải thống nhất cách thay đổi URL và cách cập nhật màn hình khi URL thay đổi.**
+  const unsubscribe = navigation.subscribe(render);
+  render();
+  product.addEventListener('click', openProduct);
+  return {
+    unmount() {
+      active = false;
+      unsubscribe();
+      product.removeEventListener('click', openProduct);
+      section.remove();
+    },
+  };
+}
+```
 
-### Vì sao URL đổi nhưng router chưa cập nhật
+Khi người dùng bấm nút, Catalog gọi `navigation.navigate(...)`. Khi snapshot đổi, `render` chỉ chọn nội dung từ URL. **Không gọi lại `navigate` từ `render`**, nếu không Back có thể vừa quay về rồi lại bị push tới trang vừa rời.
 
-Bạn có thể thắc mắc: “URL đã đổi rồi thì router phải tự biết chứ?”. Với các `BrowserRouter` độc lập chưa có cơ chế đồng bộ, điều đó không tự động xảy ra. Cần phân biệt hai thứ:
+`slice('/catalog'.length)` ở đây chỉ minh họa phần đường dẫn Catalog được giao. App thật dùng router/matcher để chọn màn hình, validate/encode tham số, hiển thị not found nếu route hoặc resource không tồn tại.
 
-- **URL và browser history thật:** do trình duyệt quản lý; khi `pushState` thành công, thanh địa chỉ và history entry hiện tại được cập nhật cùng nhau.
-- **Location trong router:** thông tin thư viện router đang giữ để chọn và render màn hình. Nó cần nhận được thông báo thay đổi thì mới cập nhật.
+## Shell gắn và tháo app theo URL
 
-Hai router dùng browser history trong cùng document không tạo ra hai lịch sử browser riêng. Chúng dùng chung lịch sử thật, nhưng có thể giữ location và subscription riêng.
+```js title="basic/shell.js" sourceFile="basic/shell.js" sourceRegion="main"
+import { createNavigation } from './navigation.js';
+import { mount } from './catalog.js';
 
-Giả sử shell và Catalog có hai router độc lập, đều đang nhận location `/catalog`. Catalog dùng router của nó để chuyển tới `/cart`. Nếu chưa có cơ chế thông báo cho shell, bạn có thể thấy:
+const navigation = createNavigation();
+const outlet = document.querySelector('#outlet');
+let catalog;
+
+function render() {
+  const { pathname } = navigation.getSnapshot();
+  if (pathname === '/catalog' || pathname.startsWith('/catalog/')) {
+    if (!catalog) {
+      outlet.replaceChildren();
+      catalog = mount({ container: outlet, navigation });
+    }
+  } else {
+    catalog?.unmount();
+    catalog = undefined;
+    outlet.textContent = pathname === '/cart' ? 'Cart UI' : 'Trang chủ';
+  }
+}
+navigation.subscribe(render);
+render();
+document.querySelector('#catalog').addEventListener('click', () => {
+  navigation.navigate('/catalog');
+});
+document.querySelector('#cart').addEventListener('click', () => {
+  navigation.navigate('/cart');
+});
+```
+
+Lần mở `/catalog`, shell gắn Catalog. Khi chuyển sang sản phẩm, shell giữ instance Catalog vì prefix vẫn thuộc nó; listener Catalog cập nhật màn hình bên trong. Khi đi `/cart`, shell tháo Catalog và hiện Cart giả lập.
+
+Shell không import từng màn hình của Catalog. Phần tải remote được bỏ qua ở bài tập, giống ví dụ mount trong bài [contracts](/docs/giao-tiep-va-trang-thai/contracts).
+
+## Chạy luồng sản phẩm rồi Back và Forward
+
+<details>
+<summary>HTML để chạy ví dụ navigation</summary>
+
+```html title="basic/index.html" sourceFile="basic/index.html" sourceRegion="main"
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Navigation giữa shell và remote</title>
+</head>
+<body>
+  <button id="catalog">Mở Catalog</button>
+  <button id="cart">Mở Cart</button>
+  <main id="outlet"></main>
+  <script type="module" src="./shell.js"></script>
+</body>
+</html>
+```
+
+</details>
+
+Lưu các file `basic/` theo đúng tên trong bài. Từ thư mục chứa `basic/`, chạy:
+
+```bash
+python3 -m http.server 8080 --directory basic
+```
+
+Mở `http://localhost:8080`. Bấm **Mở Catalog** → **Xem sản phẩm 42** → **Mở Cart**, rồi dùng Back/Forward của browser. URL và nội dung phải cùng thay đổi. Ví dụ chỉ dùng button để ngắn gọn; production dùng link có `href` thật, xử lý click thường qua router/API và giữ mở tab mới, bàn phím, focus, title/scroll đúng hành vi.
+
+Các module đặt cạnh nhau để tập trung vào luồng giao tiếp. Import tương đối không minh họa tải remote, Module Federation hay pipeline deploy độc lập. Khi tách bundle, loader phải cung cấp đúng API đã thống nhất; thứ tự truyền và gọi hàm vẫn như trong ví dụ.
+
+
+Server HTTP đơn giản trên không có SPA fallback. **Không dùng kết quả click để kết luận refresh URL sâu đã hoạt động**; phần server routing được giải thích bên dưới.
+
+<SourceRef project="giao-tiep-va-trang-thai-routing" variant="button">Đọc basic/shell.js rồi mở navigation.js và catalog.js</SourceRef>
+
+Có thể thử lab đã được đăng ký trên trang docs:
+
+<ExampleRef example="routing" version="coordinated">Example: shell điều phối navigation</ExampleRef>
+
+Mở sản phẩm, sang giỏ, Back/Forward rồi so với bản **Remote tự đổi URL**: URL đổi nhưng outlet cũ vì shell chưa được thông báo. Lab dùng query `route` trong iframe để chạy trên static hosting, không dùng React/Vue Router và không kiểm chứng rewrite URL sâu ở server. URL demo cũng độc lập với URL docs.
+
+## Vì sao URL đổi mà router chưa cập nhật
+
+Hai `BrowserRouter` độc lập trong cùng document cùng nhìn một browser history thật, nhưng có location/subscription riêng. Catalog tự `pushState` không báo cho router shell qua `popstate`.
 
 ```d2 title="Sau khi Catalog điều hướng: browser đã đổi, shell chưa nhận thông báo"
 direction: down
@@ -133,224 +248,15 @@ navigation -> catalog: Router Catalog cập nhật
 browser -> shell: "Không tự phát popstate\nShell chưa được thông báo" {style.stroke-dash: 4}
 ```
 
-URL và browser history đã khớp. Thứ chưa khớp là **location trong router shell**, nên shell có thể vẫn hiển thị Catalog thay vì Cart.
+Browser URL không sai; **state location trong router shell chưa cập nhật**. Nếu đọc trực tiếp `window.location.pathname`, shell vẫn thấy URL mới, nhưng router cần notification để render lại. Back/Forward có phát `popstate`; điều đó không làm các lệnh push riêng lẻ tự được đồng bộ.
 
-Nếu shell đọc trực tiếp `window.location.pathname` lúc này, nó vẫn nhận `/cart`, giống Catalog. Nhưng `useLocation()` trong router shell có thể vẫn trả pathname `/catalog`. Đọc biến của browser không giống việc router nhận thông báo rồi cập nhật state và render lại.
+Chọn một router chung hoặc một cơ chế bridge có hai chiều: remote yêu cầu đi, shell công bố location. Không mặc định chạy hai browser router rồi hy vọng chúng tự nối.
 
-`BrowserRouter` thông thường không liên tục kiểm tra thanh địa chỉ. Nó cập nhật qua các tín hiệu mà nó theo dõi:
+## Khi các app cùng cây React thì dùng router chung
 
-| Hành động | Router của shell có nhận được thay đổi không? |
-| --- | --- |
-| Navigation thành công qua `navigate()` hoặc `Link` của router shell | Có; cơ chế navigation của chính router cập nhật location |
-| Người dùng Back/Forward giữa các history entry trong cùng document | Có; browser phát `popstate`, router lắng nghe để cập nhật |
-| Router độc lập của Catalog đổi URL bằng `pushState()` | Không tự động; `pushState` không phát `popstate` để báo cho router shell |
-| Có bridge thông báo và áp dụng location mới vào router shell | Có; do cơ chế đồng bộ đã được thiết kế |
+Nếu shell render `CatalogRoutes` như component dưới router của mình, không cần navigation adapter JavaScript ở trên. `Link`/`useNavigate` của remote đi qua cùng router context.
 
-`replaceState()` cũng không tự phát `popstate`. Đây là lý do đổi URL từ bên ngoài router không bảo đảm router biết thay đổi đó, dù URL browser đã đúng. Bạn có thể xem hành vi event này trong [tài liệu History API của MDN](https://developer.mozilla.org/en-US/docs/Web/API/History_API/Working_with_the_History_API).
-
-<Callout type="info" title="BrowserRouter vẫn hỗ trợ Back và Forward">
-  Không phải router chỉ cập nhật khi chính nó navigate: Back/Forward cũng cung cấp tín hiệu để cập nhật. Điểm cần nhớ là <strong>router phải nhận được thông báo</strong>; chỉ thay đổi URL từ một router độc lập khác chưa đủ.
-</Callout>
-
-Vì vậy, hai hướng giải quyết là [dùng router chung](#dùng-router-chung-khi-các-app-cùng-cây-react), để các component cùng đi qua một cơ chế navigation, hoặc [phối hợp router riêng](#phối-hợp-router-riêng-khi-các-app-chạy-độc-lập) bằng thông báo location. Dùng hai router độc lập không nhất thiết gây lỗi, nhưng phải có cơ chế phối hợp đó.
-
-### Một trang cần nhiều microfrontend
-
-Trang sản phẩm có thể gồm phần chi tiết do Catalog cung cấp và khối gợi ý do Recommendations cung cấp. Khi đó, URL `/catalog/products/42` cần hiển thị cả hai microfrontend cùng lúc.
-
-Vì vậy, quy tắc “một URL chỉ được hiển thị một MFE” là quá hạn chế. Shell còn cần biết app nào xuất hiện ở vùng nào trên trang.
-
-Tuy nhiên, khối gợi ý không nhất thiết có trang riêng. Nó có thể chỉ nhận product ID và hiển thị nội dung. Đừng mặc định rằng cứ là microfrontend thì phải có router.
-
-### Mở link trực tiếp khác gì click trong app
-
-Bạn vào trang chủ, click tới sản phẩm và thấy mọi thứ chạy đúng. Nhưng khi gửi `/catalog/products/42` cho người khác, họ mở link và nhận 404.
-
-Hai thao tác này đi qua hai đường khác nhau:
-
-- **Click trong một SPA đang chạy:** frontend đã được tải, router có thể chuyển màn hình mà không tải lại toàn bộ document.
-- **Mở link trực tiếp hoặc refresh:** browser gửi request đến server cho chính đường dẫn đó, trước khi frontend có cơ hội chạy.
-
-Vì thế, khai báo route ở frontend chưa đủ. Server cũng phải phục vụ được URL mà người dùng mở.
-
-## Các giải pháp
-
-Demo cho phép mở sản phẩm, xem chi tiết, thêm hàng rồi chuyển giỏ; thử Back/Forward, lọc “áo” và reload. Ở bản **Remote tự đổi URL**, bấm “Xem chi tiết”: URL đổi nhưng outlet vẫn cũ vì shell không được thông báo.
-
-<ExampleRef example="routing" version="coordinated">Example: shell điều phối navigation</ExampleRef>
-
-Lab dùng navigation port JavaScript và query `route` bên trong iframe để deep link hoạt động trên static Pages. Nó không dùng React/Vue Router, không mô phỏng HTTP rewrite cho `/catalog/products/...`; URL iframe cũng độc lập với URL trang docs. Chuyển route giữ cart memory, còn reload tạo session demo mới.
-
-Những vấn đề trên không phải các loại routing để chọn một và bỏ những loại còn lại. Một ứng dụng thường cần giải quyết nhiều vấn đề cùng lúc. Mình bắt đầu bằng cách chia route, rồi chọn cơ chế phối hợp router theo cách các app được tích hợp.
-
-### Chia route cấp app và route bên trong app
-
-Giải pháp cho hai vấn đề đầu là để shell nhận **nhóm đường dẫn**, còn remote nhận **màn hình cụ thể**:
-
-```d2 title="Shell chọn app theo prefix; Catalog chọn màn hình"
-direction: down
-shell: Shell {
-  catalog_paths: /catalog và /catalog/*
-  cart_paths: /cart và /cart/*
-}
-catalog: Catalog {
-  list_path: /catalog
-  product_path: /catalog/products/:id
-  search_path: /catalog/search
-  list: Danh sách sản phẩm
-  product: Chi tiết sản phẩm
-  search: Tìm kiếm
-  list_path -> list: Hiển thị
-  product_path -> product: Hiển thị
-  search_path -> search: Hiển thị
-}
-cart: Cart
-shell.catalog_paths -> catalog: Chọn app
-shell.cart_paths -> cart: Chọn app
-```
-
-Trong bản đồ trên, `*` biểu diễn phần đường dẫn phía sau prefix. Với React Router, điểm gắn `/catalog/*` cũng nhận URL `/catalog`; không cần khai báo thêm một route trùng cho nó.
-
-Bây giờ Catalog thêm `/catalog/favorites`, shell vẫn nhận ra URL thuộc nhóm `/catalog`. Chỉ Catalog cần thêm màn hình; shell không cần thêm từng route con.
-
-Một lần mở URL diễn ra như sau:
-
-```d2 title="Chia route cấp app và route bên trong app"
-direction: right
-n0: "/catalog/products/42"
-n1: "Shell chọn Catalog theo /catalog"
-n2: "Catalog chọn products/:id"
-n3: "Trang chi tiết nhận id = 42"
-n0 -> n1 -> n2 -> n3
-```
-
-**Đây là hai cấp trách nhiệm, không có nghĩa phải tạo hai router độc lập.** Cách thực hiện phụ thuộc vào mô hình tích hợp ở hai phần tiếp theo.
-
-Có một giới hạn cần nhớ: thêm trang dưới prefix đã giao khác với đổi prefix. Nếu Catalog đổi từ `/catalog` sang `/products`, shell cần cập nhật ranh giới đó. Link cũ đã được bookmark hoặc gửi qua email cũng cần redirect hay chính sách migration; URL đã công bố là một contract với người dùng.
-
-Shell xử lý URL không thuộc app nào, chẳng hạn `/unknown`. Catalog xử lý URL thuộc vùng của mình nhưng không có màn hình, chẳng hạn `/catalog/unknown`. Còn `/catalog/products/42` có route hợp lệ nhưng sản phẩm 42 không tồn tại là lỗi dữ liệu trên trang chi tiết, không phải lỗi chọn app.
-
-### Dùng router chung khi các app cùng cây React
-
-Nếu shell render các remote như component trong cùng một cây React, lựa chọn đơn giản là **một router chung**:
-
-```d2 title="Dùng router chung khi các app cùng cây React"
-direction: down
-router: Router shell
-catalog: "Component route Catalog"
-cart: "Component route Cart"
-router -> catalog: "/catalog/*"
-router -> cart: "/cart/*"
-```
-
-Shell tạo router. Catalog và Cart cung cấp những nhánh route của mình, đồng thời dùng `Link` hoặc `useNavigate` từ router chung để điều hướng.
-
-Nhờ vậy, click ở menu shell hay click trong Catalog đều đi qua cùng cơ chế. Khi người dùng bấm Back, router chung nhận URL mới và chọn lại nội dung tương ứng.
-
-Catalog vẫn sở hữu danh sách màn hình của nó. **Dùng chung router không có nghĩa shell phải chứa toàn bộ route con của Catalog.** Phần code bên dưới minh họa chính cách này.
-
-<Callout type="warn" title="Không lồng thêm BrowserRouter">
-  Khi remote đã render dưới router của shell và dùng cùng router context, không bọc remote bằng một <code>BrowserRouter</code> khác. Cũng không tự gọi <code>history.pushState</code> từ remote để bỏ qua router chung. Các app cần thống nhất dependency và router API mà chúng dùng.
-</Callout>
-
-### Phối hợp router riêng khi các app chạy độc lập
-
-Nếu shell dùng React còn Catalog dùng Vue, chúng không thể dùng chung React Router. Ngay cả khi cùng React, remote gọi `createRoot` riêng cũng không tự nhận router context từ shell.
-
-Trong trường hợp đó, mỗi app có thể có router riêng để chọn màn hình, nhưng cần một cơ chế phối hợp. Mình mặc định để shell điều phối URL công khai của trang:
-
-1. Người dùng bấm “Xem giỏ hàng” trong Catalog.
-2. Catalog gửi yêu cầu đến shell: “Đi tới Cart”.
-3. Shell thực hiện navigation đến `/cart`.
-4. Shell cập nhật app và màn hình cần hiển thị theo URL mới.
-
-Chiều ngược lại cũng cần có: khi người dùng bấm Back, shell nhận URL mới rồi thông báo cho remote đang hiển thị. Nếu đó là một màn hình khác trong Catalog, Catalog phải chọn lại đúng màn hình.
-
-```d2 title="Phối hợp router riêng khi các app chạy độc lập"
-direction: right
-remote: Remote
-shell: Shell
-remote -> shell: "Yêu cầu chuyển trang"
-shell -> remote: "URL hiện tại sau khi đổi"
-```
-
-Remote có thể dùng memory router, tức router giữ đường đi trong bộ nhớ thay vì tự đổi thanh địa chỉ. Nhưng dùng memory router thôi chưa đủ: nó vẫn cần nhận URL ban đầu và các thay đổi từ shell để deep link và Back/Forward hoạt động.
-
-Mô hình này giúp các app độc lập về framework hoặc cách mount, nhưng cần viết adapter và kiểm thử đồng bộ. Nếu các app đã dùng được router chung, mình không thêm bridge chỉ để mỗi app có một router riêng. Contract mẫu nằm ở phần [Navigation contract cho remote cô lập](#navigation-contract-cho-remote-cô-lập).
-
-Nếu mỗi frontend là một website/document độc lập, bạn cũng có thể dùng link thật như `<a href="/cart">Giỏ hàng</a>` và để browser tải trang tiếp theo. Cách này không cần bridge SPA, nhưng local state của trang cũ có thể mất khi rời trang. Với iframe, cần thiết kế quan hệ giữa URL trang cha và trang con; xem [Tích hợp bằng iframe](/docs/cac-cach-tich-hop/iframe).
-
-### Ghép nhiều microfrontend theo layout
-
-Để một URL hiển thị nhiều MFE, shell chọn **cấu trúc trang**, không chỉ chọn một app duy nhất:
-
-```d2 title="Ghép nhiều microfrontend theo layout"
-direction: down
-shell: "Shell: /catalog/products/42"
-header: Header
-catalog: "Vùng chính: Catalog\nChi tiết sản phẩm 42"
-recommend: "Vùng gợi ý: Recommendations\nGợi ý cho sản phẩm 42"
-shell -> header
-shell -> catalog
-shell -> recommend
-```
-
-Catalog dùng URL để chọn trang sản phẩm. Recommendations chỉ cần nhận `productId = "42"` để hiển thị gợi ý, nên không nhất thiết cần router riêng.
-
-Nếu người dùng click một sản phẩm trong khối gợi ý, Recommendations yêu cầu navigation tới URL sản phẩm đó qua cơ chế đã thống nhất: router chung hoặc API điều hướng của shell. Nó không cần import toàn bộ cấu hình route bên trong Catalog.
-
-Một widget có các tab “Liên quan” và “Đã xem” có thể giữ tab ở local state. Chỉ đưa tab vào URL khi cần chia sẻ link hoặc hỗ trợ Back/Forward qua từng tab. Nếu nhiều vùng cùng đưa state vào URL, hãy thống nhất path hoặc query nào thuộc mỗi vùng, tránh một vùng cập nhật làm mất state của vùng khác.
-
-### Cho server và frontend cùng hiểu URL
-
-Với một static SPA, giải pháp cho mở link trực tiếp là để server trả document của shell cho những đường dẫn màn hình thuộc ứng dụng. Sau đó shell và remote dựng nội dung theo URL ban đầu:
-
-```d2 title="Cho server và frontend cùng hiểu URL"
-direction: down
-n0: "Browser mở /catalog/products/42"
-n1: "Server trả HTML shell, giữ URL"
-n2: "Shell nhận /catalog → tải\nCatalog"
-n3: "Catalog nhận products/42 → hiển\nthị"
-n0 -> n1 -> n2 -> n3
-```
-
-Đây thường là **rewrite nội bộ**, không phải redirect người dùng về `/`. Nếu redirect về trang chủ, bạn có thể làm mất điểm đến mà người dùng muốn mở.
-
-Nhưng không rewrite mọi request thành HTML:
-
-| Request | Server cần xử lý thế nào |
-| --- | --- |
-| Document `/catalog/products/42` | Trả shell HTML để frontend dựng màn hình |
-| JavaScript/CSS có thật | Trả đúng file và MIME type |
-| JavaScript/CSS không tồn tại | Trả lỗi asset, không trả shell HTML |
-| API request | Chuyển tới backend theo rule API |
-
-Nếu một chunk JavaScript bị thiếu mà server trả HTML với status 200, browser vẫn không chạy được chunk đó. Đây là lỗi phục vụ asset, không phải lỗi route màn hình.
-
-<Callout type="info" title="Không áp dụng SPA fallback cho mọi framework">
-  Phần này nói về static SPA, không phải cấu hình cho site Next.js đang chứa tài liệu. Với Next.js hoặc SSR, server có routing pipeline riêng và cần render đúng route trước hydration. Xem <a href="/docs/ui-va-framework/nextjs-ssr">Next.js và SSR</a>.
-</Callout>
-
-## Nên chọn cách nào trước
-
-Sau khi hiểu các vấn đề, bạn có thể chọn theo cách các app được tích hợp:
-
-| Tình huống | Điểm bắt đầu mình chọn |
-| --- | --- |
-| Các remote React render dưới router của shell | Router chung; shell nhận prefix, remote khai báo route con |
-| Remote khác framework hoặc mount trong root riêng | Shell điều phối URL; remote nhận location và gửi yêu cầu navigation |
-| Các frontend là những document độc lập | Link thông thường; chấp nhận full-page navigation |
-| Một màn hình ghép nhiều MFE | Shell ghép layout; chỉ app cần route mới có routing |
-
-Dòng cuối không phải một lựa chọn thay thế cho các dòng trên. Một màn hình ghép nhiều MFE vẫn có thể dùng router chung hoặc cơ chế phối hợp router riêng.
-
-Module Federation giúp tải và chia sẻ module; nó không tự quyết định cách routing. Cùng dùng React cũng chưa đủ để chọn router chung: điều quan trọng là remote có render trong cùng cây React và nhận cùng router context hay không.
-
-## Ví dụ React tối thiểu
-
-Ví dụ này minh họa mô hình router chung. Shell và Catalog render trong cùng cây React; code dùng API declarative của React Router. Các tên import như `catalog/routes` và `cart/Page` là module giả định; phần cấu hình tải remote, loading và error boundary được bỏ qua để tập trung vào routing.
-
-### Shell chỉ khai báo điểm gắn của Catalog
+### Shell giao nhánh route cho Catalog
 
 ```tsx title="shell/App.tsx" sourceFile="shell/App.tsx" sourceRegion="main"
 import { BrowserRouter, Link, Route, Routes } from 'react-router';
@@ -377,11 +283,9 @@ export function App() {
 }
 ```
 
-<SourceRef project="giao-tiep-va-trang-thai-routing" file="shell/App.tsx" region="main">Đối chiếu shell/App.tsx</SourceRef>
+`/catalog/*` nhận cả nhóm URL. `BrowserRouter` chỉ được tạo ở shell. Các module remote `catalog/routes`, `cart/Page` là tên giả định cần loader/remote config, không phải dependency của site docs.
 
-Điểm cần nhìn là `/catalog/*`. Shell không khai báo `/catalog/products/:id` hay `/catalog/search`; nó giao cả nhánh đó cho `CatalogRoutes`. Cart trong ví dụ chỉ có một trang, nên shell gắn trực tiếp `/cart`. Khi Cart cần nhiều màn hình, nó có thể cung cấp `CartRoutes` dưới `/cart/*` theo cùng cách.
-
-### Catalog khai báo các màn hình của mình
+### Catalog khai báo route con chứ không tạo BrowserRouter mới
 
 ```tsx title="catalog/routes.tsx" sourceFile="catalog/routes.tsx" sourceRegion="main"
 import { Link, Route, Routes, useParams } from 'react-router';
@@ -412,42 +316,16 @@ export function CatalogRoutes() {
 }
 ```
 
-<SourceRef project="giao-tiep-va-trang-thai-routing" file="catalog/routes.tsx" region="main">Đối chiếu catalog/routes.tsx</SourceRef>
+`Routes` chọn các màn hình, không tạo browser history mới. `index` nhận `/catalog`, `products/:productId` nhận phần sau prefix. Khi chuyển sản phẩm → Cart → Back, router chung chọn app và route con tương ứng.
 
-Catalog chỉ khai báo phần phía sau điểm gắn `/catalog`:
-
-- `index` là màn hình mặc định tại `/catalog`.
-- `products/:productId` nhận `/catalog/products/42`, với `productId` bằng `"42"`.
-- `search` nhận `/catalog/search`.
-- `*` nhận các đường dẫn còn lại trong nhánh Catalog.
-
-`Routes` là nơi khai báo và chọn các màn hình, **không phải một `BrowserRouter` mới**. Toàn bộ ví dụ vẫn dùng router được tạo ở shell.
-
-Link tới sản phẩm dùng prefix `/catalog` đã thống nhất. Nếu điểm gắn có thể thay đổi, truyền mount path hoặc dùng route builder thay vì hard-code prefix trong remote. Khi chạy Catalog standalone để phát triển, dev harness có thể tạo router bên ngoài và gắn `CatalogRoutes` tại `/catalog/*`; component export vẫn không tự bọc router.
-
-### Theo dõi một lần điều hướng
-
-Giả sử bạn đang ở `/catalog`:
-
-1. Shell chọn `CatalogRoutes`; Catalog chọn `ProductList` qua route `index`.
-2. Bạn click “Xem sản phẩm 42”. `Link` yêu cầu router chung chuyển tới `/catalog/products/42`.
-3. Shell vẫn chọn Catalog vì URL vẫn thuộc `/catalog/*`; Catalog chuyển sang `ProductDetail`.
-4. Bạn click “Giỏ hàng” ở menu. Router chuyển tới `/cart`, shell thay vùng nội dung bằng `CartPage`.
-5. Bạn bấm Back. Router nhận lại `/catalog/products/42`, shell chọn Catalog và Catalog chọn lại sản phẩm 42.
-
-Shell không cần nhận một event riêng kiểu “Catalog vừa mở sản phẩm”. URL và router chung đã cung cấp thông tin để chọn nội dung.
-
-<Callout type="info" title="Giới hạn của ví dụ">
-  Mẫu này dùng descendant <code>Routes</code>, chưa có layout con hay data loaders/actions. Khi cần layout con, dùng <code>Outlet</code> để đặt vùng render của màn hình con. Khi dùng data router, ghép route objects theo API của data router thay vì giả định mẫu này tự cung cấp loader/action cho mọi route.
-</Callout>
+Hai `createRoot` riêng không tự nhận cùng React Context dù cùng cài router. Nếu cần root riêng hoặc framework khác, dùng navigation API/adapter. Với data router, ghép route objects/loaders theo API phù hợp, không coi descendant `Routes` ở mẫu này là cấu hình đầy đủ mọi loader/action.
 
 ## Navigation contract cho remote cô lập
 
-Phần này dành cho trường hợp **không dùng được router chung**. Nếu bạn đang học mô hình React ở trên, có thể bỏ qua phần này ở lần đọc đầu.
+Contract TypeScript dưới mô tả bản mở rộng: remote đọc location, dựng link thật và yêu cầu chuyển tới destination có cấu trúc. Nó là API mẫu, **chưa có implementation**; khác với basic/navigation.js đã viết ở trên.
 
-Một remote chạy độc lập cần trả lời ba câu hỏi: “URL hiện tại là gì?”, “làm sao biết URL vừa đổi?” và “làm sao yêu cầu chuyển trang?”. Thay vì đưa cả router instance của shell cho remote, shell có thể cung cấp một API nhỏ, gọi là **navigation port**.
-
-Ví dụ contract dưới đây giữ các public destination của shop. Catalog yêu cầu tới destination `cart`, không cần biết Cart dùng thư viện router nào.
+<details>
+<summary>Xem contracts/navigation.ts</summary>
 
 ```ts title="contracts/navigation.ts" sourceFile="contracts/navigation.ts" sourceRegion="main"
 export type LocationSnapshot = Readonly<{
@@ -473,47 +351,19 @@ export interface NavigationPort {
 }
 ```
 
-<SourceRef project="giao-tiep-va-trang-thai-routing" file="contracts/navigation.ts" region="main">Đối chiếu contracts/navigation.ts</SourceRef>
+</details>
 
-| Thành phần | Remote dùng để làm gì |
-| --- | --- |
-| `getSnapshot()` | Đọc URL hiện tại, kể cả ngay khi vừa mount |
-| `subscribe()` | Nhận thông báo URL đổi do click, Back hoặc Forward; trả hàm unsubscribe |
-| `href()` | Dựng link thật để mở tab mới hoặc copy, không tự điều hướng |
-| `navigate()` | Yêu cầu shell chuyển tới một destination |
-| `revision` | Phân biệt các lần shell công bố location, kể cả quay lại URL cũ |
+<SourceRef project="giao-tiep-va-trang-thai-routing" file="contracts/navigation.ts" region="main">Đối chiếu navigation port đầy đủ</SourceRef>
 
-Trong contract này, `pathname` nằm trong không gian route của app, chưa có application basename. `search` gồm dấu `?` khi có query; `hash` gồm dấu `#` khi có fragment. Shell adapter chuyển URL browser thành snapshot theo quy ước đó. `href` trả đường dẫn có application basename; nó và `navigate` dùng cùng route builder, validate tham số và encode product ID như một path segment.
+`href` dựng link, không chuyển trang. `navigate` mặc định push; `committed` chỉ nghĩa là location đã được chấp nhận, không chứng minh remote/dữ liệu tải xong. Guard từ chối hoặc yêu cầu bị thay thế có thể trả `cancelled`; destination sai hoặc adapter lỗi thì reject.
 
-Snapshot là bất biến, giữ cùng reference khi chưa đổi nếu dùng với `useSyncExternalStore`. `subscribe` không replay; consumer đăng ký rồi đọc snapshot hiện tại và unsubscribe khi unmount. `navigate` mặc định dùng push. Kết quả `committed` nghĩa shell đã chấp nhận và công bố location, không có nghĩa remote hay dữ liệu đã tải xong. `cancelled` dùng khi guard từ chối hoặc yêu cầu mới thay thế yêu cầu cũ trước commit; destination không hợp lệ hay lỗi adapter khiến promise reject.
+Snapshot bất biến và reference ổn định khi chưa đổi. `search/hash` gồm dấu `?/#` khi có; mẫu quy ước pathname chưa có application basename. Adapter phải chuyển đổi nhất quán, tránh thêm prefix hai lần.
 
-Điểm dễ sai nhất là đồng bộ thành vòng lặp. Khi shell gửi URL mới do Back, remote cần cập nhật màn hình nhưng **không gửi lại yêu cầu chuyển tới chính URL đó**. Nếu gửi lại bằng push, Back vừa quay về thì app lại tạo một bước history mới.
+Remote dùng memory router vẫn phải nhận snapshot ban đầu và mọi lần URL đổi. `initialEntries` chỉ khởi tạo memory history, không phải cơ chế đồng bộ liên tục. Khi áp dụng location từ shell, cập nhật router bên trong theo adapter phù hợp mà không gửi ngược thêm một yêu cầu push. Iframe cần message protocol và origin/source validation, không truyền port chứa function trực tiếp.
 
-```d2 title="Navigation contract cho remote cô lập"
-direction: right
-n0: "Người dùng click trong remote"
-n1: "Remote gọi navigate"
-n2: "Shell đổi URL và công bố\nsnapshot"
-n3: "Remote áp dụng snapshot\nKhông gọi lại navigate"
-n0 -> n1 -> n2 -> n3
-```
+## Push replace URL filter và server routing
 
-Nếu remote dùng memory router, adapter cần cập nhật router khi snapshot thay đổi, thường bằng replace cho location từ shell. `initialEntries` của `MemoryRouter` chỉ khởi tạo history; đổi prop này không phải cách đồng bộ location liên tục. Back cấp ứng dụng đi qua shell, không qua memory history riêng của remote. Với wizard không cần bookmark hay Back qua từng bước, local state hoặc memory routing nội bộ có thể là đủ.
-
-Đây là contract mẫu, chưa phải implementation của adapter hay protocol cho iframe. Không truyền function trực tiếp qua cross-origin iframe; trường hợp đó cần message protocol và kiểm tra `origin`, `source`, payload.
-
-## Các lưu ý sau khi routing cơ bản đã chạy
-
-Đến đây bạn đã có cách chọn app, chọn màn hình và phối hợp navigation. Những phần còn lại giúp hành vi đúng trong các tình huống thực tế; chúng không phải điều kiện để hiểu mô hình ban đầu.
-
-### Browser history và Back Forward
-
-Browser history là chuỗi điểm đến mà browser dùng để xử lý Back/Forward. Hai thao tác hay gặp là:
-
-- **Push:** thêm một điểm đến mới, để Back có thể quay lại điểm trước.
-- **Replace:** thay điểm đến hiện tại, không thêm một bước mới.
-
-Ví dụ, mở sản phẩm rồi mở giỏ hàng thường dùng push:
+### Back và Forward đi theo history thật
 
 ```d2 title="Push tạo entry; Back quay về entry trước"
 direction: right
@@ -526,86 +376,39 @@ cart -> product: Back lần 1
 product -> catalog: Back lần 2
 ```
 
-Chuẩn hóa URL hoặc thay route cũ bằng route mới thường dùng replace, để Back không quay lại một điểm chỉ làm nhiệm vụ redirect. Khi browser đã chuyển entry do Back/Forward, app chỉ cập nhật UI; không push lại URL đó.
+Push thêm entry để Back quay lại. Replace thay entry hiện tại, phù hợp chuẩn hóa URL hoặc bỏ màn hình callback đã xử lý. Khi nhận Back/Forward, chỉ áp dụng location, không push lại.
 
-Mình để router thực hiện các thao tác này. Nếu tự viết history adapter, cần nhớ `pushState` và `replaceState` không tự phát `popstate`: adapter phải thông báo location sau push/replace, đồng thời nhận `popstate` khi browser Back/Forward. Đừng trộn router navigation với lệnh ghi history trực tiếp từ remote.
+“Về danh sách” cũng không nhất thiết là Back: người dùng mở link sản phẩm từ email có thể chưa từng qua danh sách. Không giữ dữ liệu cần dựng màn hình chỉ trong `history.state`, vì mở link ở tab mới không có object entry cũ.
 
-Nút “Về danh sách” là chuyển tới `/catalog`, không nhất thiết là Back. Người dùng mở sản phẩm từ email có thể không có trang danh sách trong history. Dữ liệu cần để mở lại màn hình cũng không nên chỉ nằm trong `history.state`, vì link mở ở tab mới không mang state object của entry cũ.
+### Filter cần chia sẻ thì đưa vào URL
 
-### Basename không phải địa chỉ tải asset
+`/catalog?sort=price-asc&page=2` có thể dựng lại sau reload hoặc gửi link. Catalog đọc/validate query theo contract; input đang gõ chưa submit vẫn có thể là local state. Tránh push từng ký tự; replace phù hợp cho cập nhật draft liên tục nếu cần URL.
 
-Ba giá trị sau giải quyết ba việc khác nhau:
+Khi sửa query của mình, giữ query khác theo quy ước, không tự ghi đè mọi tham số. Không lưu token, mật khẩu hay dữ liệu riêng tư vào URL. Application basename như `/shop`, điểm gắn remote `/catalog` và URL CDN tải asset là ba thứ khác nhau.
 
-| Giá trị | Ví dụ | Ý nghĩa |
-| --- | --- | --- |
-| Application basename | `/shop` | Toàn bộ app chạy dưới prefix này |
-| Điểm gắn remote | `/catalog` | Shell giao nhánh này cho Catalog |
-| Asset base URL | `https://cdn.example/catalog/v123/` | Nơi tải JavaScript, CSS và asset |
+### Refresh URL sâu còn cần server
 
-Nếu shell dùng `basename="/shop"`, route vẫn là `/catalog/*`, còn URL browser là `/shop/catalog/products/42`. Đặt basename không cấu hình nơi tải JavaScript; đổi CDN cũng không đổi URL màn hình.
+Click trong SPA có frontend xử lý. Refresh `/catalog/products/42` gửi request document tới server trước khi JavaScript chạy. Với static SPA, server cần trả HTML shell cho route màn hình phù hợp và giữ URL, không redirect mất điểm đến.
 
-Với remote có router riêng, thống nhất location nhận được có chứa điểm gắn hay không. Nếu cả shell adapter và remote đều thêm `/catalog`, bạn có thể tạo nhầm `/catalog/catalog/products/42`.
+Không rewrite chunk/API lỗi thành shell HTML. Asset JavaScript thiếu phải trả lỗi asset, không trả HTML 200. Với Next.js/SSR dùng pipeline routing của framework, không sao chép SPA fallback máy móc.
 
-### Bộ lọc trong URL và dữ liệu đang nhập
+## Kiểm tra lúc ghép các app
 
-Một URL như `/catalog?sort=price-asc&page=2` có thể dựng lại bộ lọc khi refresh, Back hoặc mở ở tab mới. Vì vậy, Catalog nên đọc filter đã áp dụng từ URL thay vì chỉ giữ ở store.
-
-Ngược lại, nội dung đang gõ nhưng chưa submit có thể là local state. Không nhất thiết phải thêm một history entry cho từng ký tự. Khi người dùng áp dụng một tìm kiếm mới, push thường giúp Back khôi phục tìm kiếm trước; nếu đưa draft lên URL liên tục, replace tránh tạo quá nhiều bước history.
-
-Catalog định nghĩa và validate `sort`, `page`; khi cập nhật `sort`, chỉ sửa những query thuộc trách nhiệm của nó và giữ các tham số khác theo contract. Khi chuyển sang Cart, không sao chép toàn bộ query Catalog một cách máy móc. Không đưa token, mật khẩu hay dữ liệu nhạy cảm vào URL vì chúng có thể xuất hiện trong history, log và link được chia sẻ.
-
-### Điều hướng khi cần đăng nhập
-
-Nếu người chưa login mở một URL được bảo vệ, giữ lại điểm đến hợp lệ để quay về sau login. Đừng luôn đưa họ về `/`, làm mất màn hình họ muốn mở.
-
-Điểm đến sau login là input không tin cậy. Parse và kiểm tra cùng origin, route được phép; chỉ kiểm tra `startsWith('/')` không đủ vì `//evil.example` có thể dẫn tới host khác. Sau login, thường replace entry login để Back không quay lại màn hình login vừa hoàn tất.
-
-Chờ kết quả kiểm tra session trước khi redirect; trạng thái “đang kiểm tra” không có nghĩa “chưa đăng nhập”. Người đã login nhưng thiếu quyền cần màn hình forbidden, không phải vòng lặp login. Route guard chỉ bảo vệ trải nghiệm UI; backend vẫn phải authorize API. Xem [Authentication và session](/docs/giao-tiep-va-trang-thai/authentication).
-
-Với form chưa lưu, dùng navigation blocker phù hợp với router và kiểm thử riêng link, Back, reload. Blocker trong app không tự ngăn được mọi cách rời trang; nếu draft quan trọng, cần chính sách lưu draft.
-
-### Remote tải chậm hoặc tải lỗi
-
-Giả sử shell bắt đầu tải Catalog, nhưng người dùng đã chuyển sang Cart trước khi Catalog tải xong. Kết quả tải Catalog đến muộn không được mount đè lên Cart.
-
-Shell cần đánh dấu navigation hiện tại và kiểm tra nó sau các bước bất đồng bộ. Với dữ liệu sản phẩm cũng vậy: response của sản phẩm A đến sau khi đã chọn B không được thay nội dung của B. Hủy request khi có thể, nhưng vẫn phải bỏ qua kết quả đã lỗi thời.
-
-Nếu remote tải lỗi, giữ URL, hiển thị lỗi và cho retry thay vì giả vờ URL không tồn tại rồi redirect về trang chủ. Khi unmount, dọn subscription/listener; instance mới phải đọc location hiện tại, không dùng bản chụp lúc bắt đầu tải remote.
-
-Cuối cùng, kiểm tra navigation bằng bàn phím: link cần `href` thật để mở tab mới và copy; chuyển trang cần cập nhật title, focus và scroll phù hợp. Back/Forward thường cần khôi phục scroll thay vì luôn đưa người dùng lên đầu trang.
-
-## Tự kiểm tra thiết kế
-
-Hãy bắt đầu bằng những thao tác sau trên môi trường deploy thật, không chỉ dev server:
-
-| Thao tác | Kết quả cần thấy |
+| Thử | Điều cần thấy |
 | --- | --- |
-| Mở `/catalog/products/42` trong tab mới | Shell chọn Catalog, Catalog mở sản phẩm 42 |
-| Refresh URL sản phẩm | Không bị server 404, không mất điểm đến |
-| Catalog thêm một màn hình dưới `/catalog` | Không phải thêm route con đó vào shell |
-| Sản phẩm → Cart → Back → Forward | URL và màn hình luôn khớp nhau |
-| Mở `/catalog/unknown` | Catalog hiển thị not found của mình |
-| Mở `/unknown` | Shell hiển thị not found cấp ứng dụng |
-| Catalog tải chậm, người dùng chuyển Cart | Kết quả tải cũ không thay màn hình Cart |
-| Request một chunk không tồn tại | Server trả lỗi asset, không trả shell HTML |
+| Catalog thêm trang dưới prefix được giao | Không cần shell liệt kê route con mới |
+| Sản phẩm → Cart → Back → Forward | URL và UI khớp, không tạo vòng push |
+| Refresh/link sâu trên hosting thật | Server và frontend cùng hiểu URL |
+| Remote tải chậm rồi người dùng sang app khác | Kết quả cũ không mount đè app mới |
+| Vùng cần login | Chờ bootstrap session; không coi đang kiểm tra là anonymous |
+| App không có route | Chỉ nhận props/callback, không bắt buộc tạo router |
 
-Nếu click hoạt động nhưng refresh lỗi, kiểm tra server routing trước. Nếu URL đổi nhưng UI không đổi, kiểm tra cơ chế navigation và cập nhật location. Nếu mỗi lần Back lại bị đẩy tới trang vừa rời, kiểm tra remote có gửi lại navigation khi áp dụng location từ shell hay không.
-
-Với ứng dụng của bạn, hãy vẽ hai bản đồ nhỏ: **shell nhận những nhóm URL nào**, và **mỗi remote nhận những màn hình nào**. Sau đó chọn một URL sâu và đi qua chuỗi mở tab mới → Cart → Back → refresh. Cách này giúp kiểm tra ranh giới routing trước khi thêm các remote khác.
+Route guard chỉ điều khiển trải nghiệm, backend vẫn kiểm tra quyền. `returnTo` sau login phải được parse/allowlist, không tin chuỗi chỉ vì bắt đầu bằng `/`. Dọn subscription khi remote unmount và kiểm tra navigation generation sau các bước tải bất đồng bộ.
 
 ## Đọc tiếp
 
 <Cards>
-  <Card title="State ownership" href="/docs/giao-tiep-va-trang-thai/state-ownership" description="Phân biệt URL state đã áp dụng với local state và dữ liệu đang nhập." />
-  <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Thiết kế API giữa shell và remote mà không lộ toàn bộ implementation." />
-  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="Giữ điểm đến sau login và phối hợp route guard với session." />
-  <Card title="Thực hành routing và auth" href="/docs/thuc-hanh/routing-auth" description="Áp dụng routing, navigation port và auth trong shop giả định." />
+  <Card title="Data fetching và cache" href="/docs/giao-tiep-va-trang-thai/data-fetching" description="URL chọn màn hình xong, các app tải và làm mới dữ liệu ra sao." />
+  <Card title="Authentication và session" href="/docs/giao-tiep-va-trang-thai/authentication" description="Chờ session, giữ điểm đến và dọn state khi logout." />
+  <Card title="Thực hành routing và auth" href="/docs/thuc-hanh/routing-auth" description="Ghép điều hướng và phiên đăng nhập trong shop." />
 </Cards>
-
-## Tài liệu tham khảo
-
-- [React Router — Routing](https://reactrouter.com/start/declarative/routing): khai báo route, nested routes, splat và Link.
-- [React Router — BrowserRouter](https://reactrouter.com/api/declarative-routers/BrowserRouter): router dùng browser history và basename.
-- [React Router — MemoryRouter](https://reactrouter.com/api/declarative-routers/MemoryRouter): router giữ history trong memory và ý nghĩa của initial entries.
-- [MDN — Working with the History API](https://developer.mozilla.org/en-US/docs/Web/API/History_API/Working_with_the_History_API): push, replace và khôi phục nội dung khi Back/Forward.
-- [single-spa — Layout Definition](https://single-spa.js.org/docs/layout-definition/): ghép route, DOM layout và nhiều application trên cùng trang.

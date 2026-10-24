@@ -39,7 +39,7 @@
     "id": "giao-tiep-va-trang-thai-routing",
     "title": "Routing và navigation",
     "doc": "giao-tiep-va-trang-thai/routing.mdx",
-    "defaultFile": "shell/App.tsx"
+    "defaultFile": "basic/shell.js"
   },
   {
     "id": "ui-va-framework-react",
@@ -123,7 +123,7 @@
     "id": "giao-tiep-va-trang-thai-events",
     "title": "Events và message bus",
     "doc": "giao-tiep-va-trang-thai/events.mdx",
-    "defaultFile": "platform/cart-event-bus.ts"
+    "defaultFile": "basic/shell.js"
   },
   {
     "id": "cac-cach-tich-hop-web-components",
@@ -170,7 +170,7 @@
     "id": "giao-tiep-va-trang-thai-data-fetching",
     "title": "Data fetching và cache",
     "doc": "giao-tiep-va-trang-thai/data-fetching.mdx",
-    "defaultFile": "shell/cart-runtime.tsx"
+    "defaultFile": "basic/shell.js"
   },
   {
     "id": "kiem-thu-va-tooling-local-development",
@@ -206,5 +206,17 @@
     "title": "Resilience khi remote lỗi",
     "doc": "production/resilience.mdx",
     "defaultFile": "src/resilience/CatalogSlot.tsx"
+  },
+  {
+    "id": "giao-tiep-va-trang-thai-state-ownership",
+    "title": "State ownership",
+    "doc": "giao-tiep-va-trang-thai/state-ownership.mdx",
+    "defaultFile": "basic/shell.js"
+  },
+  {
+    "id": "giao-tiep-va-trang-thai-authentication",
+    "title": "Authentication và session",
+    "doc": "giao-tiep-va-trang-thai/authentication.mdx",
+    "defaultFile": "basic/shell.js"
   }
 ]
