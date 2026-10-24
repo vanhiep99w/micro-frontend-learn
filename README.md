@@ -4,7 +4,7 @@ Site tài liệu tiếng Việt dùng Next.js App Router, Fumadocs MDX/UI và Ta
 
 Có **81 trang MDX** tiếng Việt trong 12 nhóm, từ nền tảng đến production và troubleshooting.
 Đây là repository tài liệu, không phải workspace chạy ứng dụng shop trong các bài lab.
-Sơ đồ D2, 5 learning components, Source Explorer và Example Explorer dùng `@vanhiep99w/docs-kit@0.11.0` từ npm registry.
+Sơ đồ D2, 5 learning components, Source Explorer và Example Explorer dùng `@vanhiep99w/docs-kit@0.12.0` từ npm registry.
 
 ## Chạy trên máy có mạng
 
@@ -321,7 +321,7 @@ Chưa kiểm tra trực quan layout trong bước scaffold.
 
 ## Example dialog từ example-learn
 
-Trang `/docs/giao-tiep-va-trang-thai` dùng **Example Explorer** của docs-kit 0.11.0. Bỏ khung LiveDemo inline: các link `ExampleRef` và nút nổi **Example** mở app trong modal, không thu hẹp layout/TOC của bài như Source Explorer.
+Trang `/docs/giao-tiep-va-trang-thai` dùng **Example Explorer** của docs-kit 0.12.0. Bỏ khung LiveDemo inline: các link `ExampleRef` và nút nổi **Example** mở app trong modal, không thu hẹp layout/TOC của bài như Source Explorer.
 
 - Registry host: `lib/examples.ts`. Có shop React/Vue và EventTarget JavaScript thuần.
 - Provider: `app/example-provider.tsx`, truyền usePathname làm navigationKey, được đặt trong root layout.
