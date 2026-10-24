@@ -26,7 +26,6 @@ description: "Hiểu cách chia trách nhiệm và trao đổi dữ liệu giữ
   - [Thử thêm khi đã hiểu luồng chính](#thử-thêm-khi-đã-hiểu-luồng-chính)
 - [Nên nối các phần với nhau bằng cách nào](#nên-nối-các-phần-với-nhau-bằng-cách-nào)
   - [Bắt đầu bằng lời gọi nhỏ thay vì một global store](#bắt-đầu-bằng-lời-gọi-nhỏ-thay-vì-một-global-store)
-  - [Thống nhất ý nghĩa trước khi chọn công cụ](#thống-nhất-ý-nghĩa-trước-khi-chọn-công-cụ)
 - [URL cache và session đặt ở đâu](#url-cache-và-session-đặt-ở-đâu)
 - [Thử thiết kế khi mọi thứ không đi đúng thứ tự](#thử-thiết-kế-khi-mọi-thứ-không-đi-đúng-thứ-tự)
 - [Lộ trình đọc và bài tập](#lộ-trình-đọc-và-bài-tập)
@@ -236,14 +235,6 @@ Mình chọn cách nhỏ này làm mặc định. Chỉ thêm event bus khi th�
 Dùng shared store vẫn hợp lý khi các component cùng một team sở hữu và cùng vòng release. Điều cần tránh là cho mọi domain phụ thuộc trực tiếp vào cấu trúc store của nhau.
 
 Hai remote cùng cài Redux hay TanStack Query cũng không tự dùng chung dữ liệu. Nếu mỗi bên tạo store hoặc query client riêng, chúng vẫn là hai instance riêng. Module Federation giúp tải/chia sẻ module; nó không tự chọn owner hoặc tạo cơ chế đồng bộ state cho bạn.
-
-### Thống nhất ý nghĩa trước khi chọn công cụ
-
-Hai bên cùng đọc được `{ itemCount: 3 }` nhưng vẫn có thể hiểu khác nhau. Cart hiểu là tổng quantity, còn header hiểu là số dòng sản phẩm. Giỏ có hai chiếc áo và một chiếc cốc thì hai cách đếm lần lượt cho ra 3 và 2.
-
-Thỏa thuận về dữ liệu và cách dùng nó gọi là **contract**. Trong ví dụ này, contract phải nói `itemCount` đếm gì, đọc lúc nào và dữ liệu lỗi thì làm gì. Function, event bus hay store chỉ là cách truyền dữ liệu theo thỏa thuận đó.
-
-Vì vậy, bước tiếp theo nên là viết một contract nhỏ cho `addItem` và số lượng giỏ, chưa phải chọn thêm một thư viện giao tiếp.
 
 ## URL cache và session đặt ở đâu
 
