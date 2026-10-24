@@ -20,6 +20,10 @@ description: "Hiểu cách chia trách nhiệm và trao đổi dữ liệu giữ
 - [Đi hết một lần bấm thêm vào giỏ](#đi-hết-một-lần-bấm-thêm-vào-giỏ)
 - [Vì sao chỉ nghe event vẫn chưa đủ](#vì-sao-chỉ-nghe-event-vẫn-chưa-đủ)
 - [Thử trực tiếp React và Vue](#thử-trực-tiếp-react-và-vue)
+  - [Thêm một chiếc cốc và nhìn hai nơi cùng đổi](#thêm-một-chiếc-cốc-và-nhìn-hai-nơi-cùng-đổi)
+  - [Ẩn giỏ rồi mở lại thì dữ liệu có mất không](#ẩn-giỏ-rồi-mở-lại-thì-dữ-liệu-có-mất-không)
+  - [So sánh với bản chỉ nghe event](#so-sánh-với-bản-chỉ-nghe-event)
+  - [Thử thêm khi đã hiểu luồng chính](#thử-thêm-khi-đã-hiểu-luồng-chính)
 - [Nên nối các phần với nhau bằng cách nào](#nên-nối-các-phần-với-nhau-bằng-cách-nào)
   - [Bắt đầu bằng lời gọi nhỏ thay vì một global store](#bắt-đầu-bằng-lời-gọi-nhỏ-thay-vì-một-global-store)
   - [Thống nhất ý nghĩa trước khi chọn công cụ](#thống-nhất-ý-nghĩa-trước-khi-chọn-công-cụ)
@@ -150,29 +154,66 @@ Implementation còn phải tránh bỏ lỡ thay đổi giữa lúc đọc và l
 
 ## Thử trực tiếp React và Vue
 
-Bạn có thể kiểm tra các ý trên bằng một Catalog viết bằng React, một Cart viết bằng Vue và header do shell JavaScript render. Chúng dùng cùng cart owner qua command, snapshot và subscription; Catalog không import store của Vue, còn Cart không cần biết component React nào đã gửi yêu cầu.
+Khi bấm thêm hàng ở phần React, làm sao giỏ hàng Vue và con số trên header cùng cập nhật? Demo dưới đây cho bạn thử việc đó trên một shop nhỏ.
+
+Shop có ba phần: danh sách sản phẩm viết bằng React, giỏ hàng viết bằng Vue và header là thanh phía trên có số lượng giỏ hàng. Cả ba dùng chung **cart service** — module quản lý dữ liệu giỏ đã nói ở trên. Trong demo, module này có tên là **cart owner**. React gửi yêu cầu thêm hàng tới nó, còn Vue và header đọc kết quả từ nó.
 
 <ExampleRef example="mfe-cart" version="snapshot">Example: shop React + Vue</ExampleRef>
 
-Demo trông như một shop nhỏ: có ảnh sản phẩm, giá minh họa, nút tăng/giảm số lượng và giỏ có tạm tính. Trên mobile, chọn **Giỏ hàng** ở header để cuộn tới giỏ. Mở mục **Xem luồng giao tiếp** bên dưới shop khi muốn xem log hoặc thử các nút ẩn/mount và mô phỏng lỗi.
+### Thêm một chiếc cốc và nhìn hai nơi cùng đổi
 
-Ban đầu giỏ có hai chiếc áo. Giữ số lượng ở thẻ cốc bằng 1 rồi thử theo thứ tự:
+1. Mở **Example: shop React + Vue**. Ban đầu giỏ có **2 chiếc áo**.
+2. Ở sản phẩm cốc, giữ số lượng là **1** rồi bấm **Thêm vào giỏ**.
+3. Chờ thao tác hoàn tất. Con số trên header và tổng số lượng trong giỏ Vue đều chuyển từ **2** thành **3**.
 
-| Thao tác | Kết quả cần quan sát |
+Giỏ lúc này có 2 áo và 1 cốc: tổng cộng **3 món**, nhưng chỉ có **2 dòng sản phẩm**. Con số trên header đếm tổng số lượng, không đếm số dòng. Trên điện thoại, bấm **Giỏ hàng** ở header để cuộn tới phần giỏ.
+
+Để xem code đã làm những bước nào, mở **Xem luồng giao tiếp** bên dưới shop. Mục **Nhật ký thực thi** ghi lại các bước đó, với dòng mới nhất ở trên cùng:
+
+| Nhãn trong nhật ký | Nghĩa là gì? |
 | --- | --- |
-| Bấm **Thêm vào giỏ** ở thẻ cốc | Log đi qua COMMAND, COMMIT rồi EVENT. Header và Cart Vue cùng hiện 3 sản phẩm, nhưng giỏ chỉ có hai dòng hàng. |
-| Bấm **Ẩn Header** và **Ẩn Cart Vue**, rồi thêm cốc | Listener về 0 nhưng command vẫn thành công vì cart owner chưa bị tháo. |
-| Bấm **Mount Header** và **Mount Cart Vue** | Cả hai đọc snapshot mới và hiện 4, không chờ một event tiếp theo. |
-| Ẩn/mount Cart Vue vài lần | Listener quay lại đúng 2: một cho header, một cho Cart Vue. Không tích lũy listener cũ. |
-| Bấm **Phát lại event cuối** hoặc **Gửi event sai schema** | Event lặp bị bỏ qua theo revision; event sai bị từ chối trước dispatch. Quantity không bị cộng thêm. |
-| Bấm **Từ chối lần thêm tiếp theo**, rồi **Thêm vào giỏ** ở thẻ áo | API giả lập từ chối; không COMMIT snapshot mới và không phát event cập nhật giỏ. |
+| `COMMAND` | React gửi yêu cầu thêm một chiếc cốc. |
+| `COMMIT` | Cart owner lưu dữ liệu giỏ mới sau khi API giả lập chấp nhận. |
+| `EVENT` | Cart owner thông báo rằng giỏ vừa thay đổi. |
+| `QUERY` | Header hoặc giỏ Vue đọc dữ liệu hiện tại để hiển thị lại. Đây không phải request HTTP. |
 
-Bạn cũng có thể tăng/giảm số lượng hoặc **Xóa** một dòng trong giỏ Vue. Thao tác đó gọi command `setQuantity` qua cart owner; badge header, tổng quantity và tạm tính cùng cập nhật sau xác nhận giả lập. Đây là thao tác bổ sung để quan sát cùng một owner, không phải cho component Vue sửa thẳng store. Giá chỉ là fixture hiển thị; lab không xác nhận giá qua backend và không có checkout.
+React không sửa trực tiếp giỏ Vue hay con số trên header. Nó chỉ yêu cầu cart owner thêm hàng; hai nơi kia đọc lại dữ liệu sau khi có thông báo.
 
-Log QUERY thể hiện việc consumer đọc snapshot; đó không phải request HTTP. **Xóa log** chỉ xóa lịch sử quan sát, không reset cart. Muốn bắt đầu lại từ hai chiếc áo, chọn nút **Tải lại example** trong toolbar dialog.
+### Ẩn giỏ rồi mở lại thì dữ liệu có mất không
 
-<Callout type="info" title="Giới hạn của lab">
-  API chỉ là mô phỏng bất đồng bộ trong memory với thời gian chờ 350 ms; không gọi backend, không lưu giỏ qua reload. React và Vue được build cùng một demo, chưa minh họa tải remote bằng Module Federation hoặc deploy độc lập. Event schema được rút gọn cho thực hành. Iframe chỉ tách app demo khỏi trang docs; các phần bên trong vẫn giao tiếp trong cùng document.
+Tiếp tục từ giỏ đang có **3 món**, vẫn giữ số lượng cốc cần thêm là **1**:
+
+1. Trong **Xem luồng giao tiếp**, bấm **Ẩn Header** và **Ẩn Cart Vue**. Các nút sẽ đổi tên thành **Mount Header** và **Mount Cart Vue**; ở đây, *mount* nghĩa là gắn phần hiển thị trở lại.
+2. Quay lên danh sách sản phẩm React, thêm **1 chiếc cốc** nữa và chờ thao tác hoàn tất.
+3. Bấm **Mount Header** và **Mount Cart Vue**. Cả hai hiện **4 món** ngay, dù bạn chưa bấm thêm hàng lần nào sau khi mở lại.
+
+Vì sao chúng biết số 4? Ẩn phần hiển thị không xóa cart owner, nên dữ liệu giỏ vẫn còn. Khi được gắn lại, header và Vue đọc **snapshot**, tức dữ liệu giỏ hiện tại. Sau đó, chúng tiếp tục nghe thông báo để cập nhật khi giỏ thay đổi; việc đăng ký nghe này gọi là **subscription**.
+
+### So sánh với bản chỉ nghe event
+
+Trong cửa sổ demo, đổi **Phiên bản** sang **Event-only (bản lỗi)**. Giỏ sẽ trở về ban đầu, có 2 chiếc áo, nhưng header và Vue hiện dấu **—**. Dấu này nghĩa là chúng chưa đọc dữ liệu giỏ, không phải giỏ rỗng.
+
+1. Thêm **1 chiếc cốc**. Cả hai nhận được thông báo mới và hiện **3**.
+2. Bấm **Ẩn Header** và **Ẩn Cart Vue**, rồi thêm **1 chiếc cốc** nữa. Chờ thao tác hoàn tất trước khi mở lại hai phần này.
+3. Bấm **Mount Header** và **Mount Cart Vue**. Cả hai lại hiện **—**, dù giỏ thực tế đã có **4 món**.
+4. Thêm **1 chiếc cốc** nữa. Lần này có thông báo mới nên cả hai mới hiện **5**.
+
+Bản lỗi chỉ nghe thông báo trong lúc đang hiển thị, không đọc dữ liệu sẵn có khi được gắn lại. **Nghe thay đổi không thay thế được việc đọc trạng thái hiện tại.** Đổi về **Snapshot + subscription** và làm lại để thấy bước đọc snapshot giải quyết vấn đề này.
+
+### Thử thêm khi đã hiểu luồng chính
+
+Các thao tác dưới đây không cần làm nối tiếp nhau. Nếu muốn bắt đầu lại từ 2 chiếc áo, bấm **Tải lại example** ở thanh công cụ của cửa sổ demo. Nút **Xóa log** chỉ xóa nhật ký, không xóa giỏ.
+
+| Muốn kiểm tra điều gì? | Thử như thế nào? |
+| --- | --- |
+| Sửa giỏ ở Vue có cập nhật header không? | Trong bản **Snapshot + subscription**, tăng/giảm số lượng hoặc **Xóa** một dòng hàng. Header phải đổi theo. Vue cũng gửi yêu cầu qua cart owner, không tự sửa một bản giỏ riêng. |
+| Ẩn rồi hiện nhiều lần có đăng ký nghe thừa không? | Ẩn/mount Cart Vue vài lần, giữ header đang hiện. Số **listener đang hoạt động** phải trở về **2**: một bên nghe là header, một bên là giỏ Vue. |
+| Nhận lại thông báo cũ có thêm hàng lần nữa không? | Sau khi thêm hàng thành công, bấm **Phát lại event cuối**. Số lượng không đổi; nhật ký báo bỏ qua event cũ. Thông báo không phải yêu cầu thêm hàng. |
+| Thông báo sai dữ liệu có được chấp nhận không? | Bấm **Gửi event sai schema**. Demo gửi thử số lượng dạng chữ thay vì số; thông báo bị từ chối và giỏ không đổi. |
+| Thêm hàng thất bại thì sao? | Bấm **Từ chối lần thêm tiếp theo**, rồi thêm một sản phẩm. Bạn sẽ thấy thông báo lỗi; số lượng giỏ giữ nguyên vì cart owner chưa chấp nhận thay đổi. |
+
+<Callout type="info" title="Demo này mô phỏng đến đâu?">
+  Demo không gọi backend. API giả lập chờ 350 ms rồi trả kết quả; dữ liệu chỉ nằm trong bộ nhớ và mất khi tải lại. Giá chỉ để minh họa, không có thanh toán thật. React và Vue được build chung trong một app, chưa minh họa Module Federation hay deploy độc lập. Khung nhúng chỉ tách demo khỏi trang docs; React, Vue và header bên trong vẫn chạy cùng một trang.
 </Callout>
 
 ## Nên nối các phần với nhau bằng cách nào
