@@ -33,7 +33,7 @@
     "id": "giao-tiep-va-trang-thai-contracts",
     "title": "Hợp đồng giao tiếp",
     "doc": "giao-tiep-va-trang-thai/contracts.mdx",
-    "defaultFile": "contracts/catalog-mount.ts"
+    "defaultFile": "basic/shell.js"
   },
   {
     "id": "giao-tiep-va-trang-thai-routing",

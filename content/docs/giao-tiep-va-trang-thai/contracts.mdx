@@ -1,22 +1,27 @@
 ---
 title: "Hợp đồng giao tiếp"
-description: "Định nghĩa API giữa shell và remote: cách mount, truyền cấu hình, gọi chức năng, cleanup và thay đổi phiên bản mà không làm hỏng app đang dùng."
+description: "Đi sâu vào cách truyền trực tiếp qua mount: shell cấp props và API cho remote, remote dùng API sau khi mount; quy tắc cleanup và tương thích phiên bản."
 ---
 
-Team Catalog làm một app sản phẩm bằng React. Team Shell làm app chủ — **shell** — để ghép các phần thành một trang. Catalog được tải vào shell nên ở đây gọi là **remote**. Team Shell cần dùng Catalog mà không phải biết bên trong nó có component nào hay dùng store gì. Hai team cần thống nhất **cách sử dụng app từ bên ngoài**.
+**Bài này đi sâu vào cách giao tiếp trực tiếp bằng props, callback và API được truyền qua hàm `mount`.** Đây là một lựa chọn trong [các cách giao tiếp giữa micro-frontend](/docs/giao-tiep-va-trang-thai#các-cách-giao-tiếp-và-bài-đọc-tiếp), không phải mọi giao tiếp đều bắt buộc qua `mount`.
 
-Thỏa thuận đó gọi là **contract — hợp đồng giao tiếp**. Trong micro-frontend, nó giúp một team thay đổi code bên trong mà không buộc các team khác sửa theo. Bài này bắt đầu ở ranh giới shell/remote, rồi mới xét API và event giữa các app.
+Ví dụ dùng Catalog, app sản phẩm do một team phát triển, và **shell**, app chủ ghép các phần thành trang. Catalog được tải vào shell nên ở đây gọi là **remote**. Shell truyền cấu hình và API cho Catalog, nhưng không cần biết component hay store bên trong Catalog.
 
-<Callout type="info" title="Phạm vi ví dụ">
-  Ví dụ dùng TypeScript và các remote chạy cùng trang JavaScript. Các snippet là mẫu thiết kế, không phải một remote đã cấu hình sẵn để chạy độc lập. Với iframe, dùng contract message thay vì truyền DOM element hoặc function như các ví dụ dưới.
+Hai team phải thống nhất cách gọi hàm và hành vi của API. Thỏa thuận đó gọi là **contract — hợp đồng giao tiếp**. Contract cũng có thể áp dụng cho event, message hoặc URL; bài này lấy mount API làm ví dụ chính. Phần event bên dưới chỉ giới thiệu thỏa thuận của thông báo, còn cách xây bus nằm ở bài [Events và message bus](/docs/giao-tiep-va-trang-thai/events).
+
+<Callout type="info" title="Mount để cấp kết nối, gọi API để tương tác về sau">
+  Có hai thời điểm: shell gọi `mount(context)` khi gắn remote và trao props/API; sau đó remote giữ API đã nhận để gọi mỗi khi người dùng thao tác. Không gọi lại `mount` mỗi lần cần trao đổi dữ liệu. Ví dụ bắt đầu bằng ba file HTML/JavaScript nhỏ, sau đó mới đối chiếu type TypeScript. Cả hai chạy trong cùng trang JavaScript; phần tải và phát hành remote độc lập không nằm trong ví dụ. Với iframe, xem contract message trong bài [iframe isolation](/docs/cac-cach-tich-hop/iframe).
 </Callout>
 
 ## Mục lục
 
 - [Contract nằm ở ranh giới giữa các app](#contract-nằm-ở-ranh-giới-giữa-các-app)
 - [Shell cần biết gì để gắn một remote](#shell-cần-biết-gì-để-gắn-một-remote)
-  - [API mount nhận gì và trả gì](#api-mount-nhận-gì-và-trả-gì)
-  - [Đọc một lần gọi từ shell](#đọc-một-lần-gọi-từ-shell)
+  - [Bắt đầu từ code shell gọi mount](#bắt-đầu-từ-code-shell-gọi-mount)
+  - [Code remote nhận và dùng tham số](#code-remote-nhận-và-dùng-tham-số)
+  - [Shell cập nhật và tháo remote](#shell-cập-nhật-và-tháo-remote)
+  - [Chạy ví dụ và quan sát kết quả](#chạy-ví-dụ-và-quan-sát-kết-quả)
+  - [Đối chiếu với bản TypeScript đầy đủ](#đối-chiếu-với-bản-typescript-đầy-đủ)
   - [Update và unmount phải có quy tắc rõ](#update-và-unmount-phải-có-quy-tắc-rõ)
 - [Remote gọi chức năng của app khác qua đâu](#remote-gọi-chức-năng-của-app-khác-qua-đâu)
   - [Thiết kế command và kết quả](#thiết-kế-command-và-kết-quả)
@@ -54,9 +59,155 @@ Trong quan hệ này, Catalog là **provider** — bên cung cấp API mount; sh
 
 ## Shell cần biết gì để gắn một remote
 
-### API mount nhận gì và trả gì
+### Bắt đầu từ code shell gọi mount
 
-Mẫu dưới đây dùng một API không phụ thuộc React hay Vue. Shell đưa vào vùng DOM; remote tự dùng framework của nó để render bên trong vùng đó. Đây là một cách tích hợp, không phải mọi micro-frontend đều bắt buộc có hàm `mount`: nếu remote export một React component, props và callback của component đó cũng là contract.
+Để nhìn rõ hai bên gọi nhau thế nào, mình dùng JavaScript thuần trước, chưa thêm type, version hay API backend. **Shell có một vùng trống; Catalog chỉ tạo một nút trong vùng đó.** Bấm nút của Catalog sẽ gọi hàm do shell truyền vào.
+
+Trong ví dụ này, shell đã có module Catalog qua `import` tương đối. Cách tải file remote qua Module Federation không nằm trong snippet; nó không thay đổi điều cần hiểu về tham số `mount`.
+
+```js title="basic/shell.js — shell truyền cấu hình và callback" sourceFile="basic/shell.js" sourceRegion="mount"
+import { mount } from './catalog.js';
+
+const message = document.querySelector('#message');
+
+const catalog = mount({
+  container: document.querySelector('#catalog'),
+  props: { theme: 'light' },
+  onAddItem(productId) {
+    message.textContent = `Shell nhận yêu cầu thêm: ${productId}`;
+  },
+});
+```
+
+Ở lời gọi này, shell truyền đúng ba thứ:
+
+| Tham số | Bên nào tạo? | Dùng để làm gì? |
+| --- | --- | --- |
+| `container` | Shell | Giao cho Catalog một vùng DOM để render |
+| `props.theme` | Shell | Cho Catalog biết cần hiển thị sáng hay tối |
+| `onAddItem` | Shell | Một function để Catalog gọi khi muốn báo yêu cầu thêm sản phẩm |
+
+`onAddItem` ở đây chưa thêm vào giỏ thật; nó chỉ đổi dòng thông báo để bạn thấy lời gọi đã đi từ remote về shell. Shell không tìm nút bên trong Catalog để gắn handler.
+
+### Code remote nhận và dùng tham số
+
+Đây là file của **team Catalog**. `mount` là hàm bình thường do remote export. Nó tạo UI và trả hai hàm cho shell điều khiển sau đó:
+
+```js title="basic/catalog.js — remote triển khai mount" sourceFile="basic/catalog.js" sourceRegion="main"
+export function mount({ container, props, onAddItem }) {
+  const button = document.createElement('button');
+  button.textContent = 'Thêm cốc';
+  let active = true;
+
+  function updateProps(nextProps) {
+    if (!active) throw new Error('Catalog đã unmount');
+    const dark = nextProps.theme === 'dark';
+    button.style.backgroundColor = dark ? '#222' : '#fff';
+    button.style.color = dark ? '#fff' : '#222';
+  }
+
+  function handleClick() {
+    onAddItem('mug');
+  }
+
+  updateProps(props);
+  button.addEventListener('click', handleClick);
+  container.append(button);
+
+  return {
+    updateProps,
+    unmount() {
+      if (!active) return;
+      active = false;
+      button.removeEventListener('click', handleClick);
+      button.remove();
+    },
+  };
+}
+```
+
+Đọc theo thứ tự thực thi:
+
+1. Shell gọi `mount`; Catalog nhận vùng DOM, theme và callback.
+2. Catalog tạo nút, áp dụng theme rồi gắn nút vào vùng được giao.
+3. `mount` trả object có `updateProps` và `unmount`. Biến `catalog` ở file shell giữ object này; nó thường gọi là **handle**.
+4. **Đến khi người dùng bấm nút**, `handleClick` mới gọi `onAddItem('mug')`. Đó chính là function đã được shell truyền vào lúc mount.
+
+Hai chiều giao tiếp nằm ở đây: shell gọi các hàm trên `catalog`; remote gọi callback `onAddItem`. Không có lần gọi `mount` mới cho mỗi lượt bấm nút.
+
+### Shell cập nhật và tháo remote
+
+Thêm đoạn sau **vào cuối cùng file `basic/shell.js`**. Nó dùng handle vừa nhận, không truy cập DOM bên trong Catalog:
+
+```js title="basic/shell.js — thêm sau lời gọi mount" sourceFile="basic/shell.js" sourceRegion="controls"
+const darkButton = document.querySelector('#dark');
+const removeButton = document.querySelector('#remove');
+
+darkButton.addEventListener('click', () => {
+  catalog.updateProps({ theme: 'dark' });
+});
+
+removeButton.addEventListener('click', () => {
+  catalog.unmount();
+  darkButton.disabled = true;
+});
+```
+
+- Bấm **Đổi sang nền tối**: shell gọi `updateProps`; Catalog tự đổi màu nút của nó.
+- Bấm **Tháo Catalog**: shell gọi `unmount`; Catalog tự gỡ listener và xóa nút đã tạo.
+- Nút đổi theme bị vô hiệu hóa sau khi tháo, vì shell không được cập nhật instance đã kết thúc.
+
+Đó là lý do remote phải trả API điều khiển: shell không cần biết Catalog render bằng DOM thuần, React hay Vue. Nếu đổi framework, team Catalog thay phần bên trong `mount`, vẫn giữ cách gọi đã thống nhất.
+
+### Chạy ví dụ và quan sát kết quả
+
+Lưu hai file JavaScript theo đường dẫn bên trên. Tạo thêm file HTML của shell:
+
+```html title="basic/index.html" sourceFile="basic/index.html" sourceRegion="main"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Shell và Catalog qua mount</title>
+  </head>
+  <body>
+    <div id="catalog"></div>
+    <p id="message">Chưa có yêu cầu.</p>
+    <button id="dark">Đổi sang nền tối</button>
+    <button id="remove">Tháo Catalog</button>
+    <script type="module" src="./shell.js"></script>
+  </body>
+</html>
+```
+
+Từ thư mục chứa `basic/`, phục vụ file bằng HTTP thay vì mở bằng `file://`:
+
+```bash
+python3 -m http.server 8080 --directory basic
+```
+
+Mở `http://localhost:8080`, bấm **Thêm cốc** và nhìn dòng thông báo đổi thành “Shell nhận yêu cầu thêm: mug”. Thử đổi theme rồi tháo Catalog. Dòng thông báo và hai nút do shell quản lý vẫn còn; Catalog chỉ dọn vùng của nó.
+
+Ba file này cố ý đặt cạnh nhau để chạy thử lời gọi hàm, **chưa minh họa hai pipeline build/deploy độc lập**. Mẫu chỉ có theme và một callback đồng bộ, không gọi backend, không có cơ chế kiểm tra phiên bản và không phải toàn bộ contract production ở phần sau.
+
+<SourceRef project="giao-tiep-va-trang-thai-contracts" file="basic/shell.js" region="mount">Đọc code shell trước, rồi mở basic/catalog.js để xem bên nhận</SourceRef>
+
+### Đối chiếu với bản TypeScript đầy đủ
+
+Khi hiểu ví dụ nhỏ, bạn có thể chuyển sang cấu trúc dùng trong phần còn lại của bài. Cách hoạt động vẫn như nhau, chỉ đặt tên và nhóm API rõ hơn:
+
+| Ví dụ nhỏ | Bản contract đầy đủ |
+| --- | --- |
+| `props: { theme }` | `CatalogPropsV1` mô tả theme, ngôn ngữ và tiền tệ hiển thị |
+| Callback `onAddItem` | Nhóm chức năng `capabilities.cart.addItem` có input và kết quả rõ ràng |
+| Object `catalog` trả về | `CatalogHandleV1` mô tả `updateProps` và `unmount` |
+| Tham số của `mount` | `CatalogMountContextV1` nhóm container, props, API và ID phiên bản contract |
+
+`capabilities` chỉ là tên nhóm chức năng được cấp cho remote; không phải tính năng đặc biệt của browser. `V1` là tên phiên bản contract, không phải phiên bản React hay số lần deploy. `Readonly` yêu cầu TypeScript không cho gán lại field qua type đó; nó không tự khóa object lúc chạy.
+
+<details>
+<summary>Xem type đầy đủ của mount API</summary>
 
 ```ts title="contracts/catalog-mount.ts" sourceFile="contracts/catalog-mount.ts" sourceRegion="main"
 import type { CartCommandsV1 } from './cart-commands';
@@ -86,17 +237,10 @@ export interface CatalogRemoteV1 {
 }
 ```
 
-Đọc theo ba nhóm, không cần nhớ mọi tên type:
+</details>
 
-1. **`props` là dữ liệu hiển thị:** locale, currency và theme. Đây không phải store dùng chung.
-2. **`capabilities.cart` là chức năng được cấp:** Catalog được gọi API giỏ hàng qua object này. Shell không đưa toàn bộ state của mình cho remote.
-3. **`CatalogHandleV1` là cách điều khiển app sau khi gắn:** shell có thể cập nhật props hoặc tháo app.
-
-`CartCommandsV1` mô tả hàm thêm hàng, được giải thích ở phần tiếp theo. Hậu tố `V1` là tên phiên bản của API mẫu, không phải phiên bản React hay số lần deploy của Catalog.
-
-### Đọc một lần gọi từ shell
-
-Giả sử loader đã lấy được module Catalog đúng API. Hàm dưới chỉ thực hiện phần **nối remote với trang**, không thực hiện việc tải module:
+<details>
+<summary>Xem code TypeScript phía shell gọi mount</summary>
 
 ```ts title="shell/catalog-slot.ts" sourceFile="shell/catalog-slot.ts" sourceRegion="main"
 import type { CartCommandsV1 } from '../contracts/cart-commands';
@@ -123,11 +267,11 @@ export function attachCatalog(
 }
 ```
 
-`container` là vùng trang shell dành cho Catalog. `cart` là API giỏ hàng đã được khởi tạo, có thể dùng ngay cả khi màn hình giỏ hàng chưa mở. Object trả về là handle của đúng instance Catalog vừa gắn.
+</details>
 
-Shell gọi `handle.updateProps(...)` khi cấu hình đổi, và `handle.unmount()` khi rời vùng trang đó. Shell không cần tìm nút bấm, gọi hook hoặc sửa store bên trong Catalog.
+Bản TypeScript trên giả sử loader đã tải module đúng API, shell đã tạo API giỏ hàng và chọn container. Nó mô tả phần nối, không phải implementation của remote. Phần JavaScript nhỏ ở trên mới cho thấy trực tiếp cách remote nhận tham số và trả handle.
 
-Sơ đồ dưới phân biệt **bên nối app** với **bên cung cấp chức năng**. Các mũi tên không phải request HTTP:
+Sơ đồ giữ lại hai thời điểm: shell gắn Catalog với một API đã có; Catalog dùng API đó về sau. Các mũi tên không phải request HTTP:
 
 ```d2 interactive=false title="Shell truyền API công khai vào remote"
 direction: down
@@ -137,8 +281,6 @@ cart: "API giỏ hàng"
 shell -> catalog: "Mount với context"
 catalog -> cart: "Gọi addItem"
 ```
-
-Cách nối này có một giới hạn rõ: shell biết các API cần thiết để ghép trang, nhưng không phải nơi chứa mọi nghiệp vụ của các remote.
 
 ### Update và unmount phải có quy tắc rõ
 
@@ -171,6 +313,8 @@ const result = await context.capabilities.cart.addItem(
 ```
 
 Lợi ích đối với micro-frontend là **Catalog biết cách yêu cầu, không biết cách Cart triển khai**. Team Cart có thể đổi thư viện cache hoặc store mà giữ nguyên cách gọi này.
+
+Đây là lời gọi diễn ra **sau khi mount**, chẳng hạn trong handler của nút “Thêm vào giỏ”. `context.capabilities.cart` là API đã được shell trao lúc gắn Catalog; thao tác này không mount lại Catalog.
 
 Object đầu nói cần làm gì: thêm một sản phẩm vào giỏ nào, số lượng bao nhiêu. Object thứ hai chứa ID của thao tác để theo dõi và xử lý việc gửi lại nếu cần. Khi người dùng thực hiện một thao tác mới, ứng dụng phải tạo ID mới; chuỗi cố định trên chỉ để minh họa.
 

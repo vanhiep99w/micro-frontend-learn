@@ -134,6 +134,9 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/contracts.mdx",
       "counts": {
+        "js": 3,
+        "html": 1,
+        "bash": 1,
         "ts": 7,
         "d2": 1,
         "json": 2
@@ -736,7 +739,7 @@
       }
     }
   ],
-  "fences": 755,
+  "fences": 760,
   "reviewed": [
     "content/docs/cac-cach-tich-hop/import-maps.mdx|import-map-shop/",
     "content/docs/kien-truc/runtime-composition.mdx|Catalog release catalog-r17",
@@ -745,18 +748,18 @@
     "content/docs/troubleshooting/remote-khong-tai.mdx|GET http://localhost:3001/remoteEntry.js          → 200 JavaScript"
   ],
   "totals": {
-    "bash": 131,
+    "bash": 132,
     "mdx": 2,
     "json": 51,
     "d2": 143,
-    "js": 155,
+    "js": 158,
     "terminal-session": 1,
     "jsx": 22,
     "text": 30,
     "powershell": 1,
     "http": 16,
     "ts": 119,
-    "html": 21,
+    "html": 22,
     "css": 14,
     "tsx": 35,
     "yaml": 5,

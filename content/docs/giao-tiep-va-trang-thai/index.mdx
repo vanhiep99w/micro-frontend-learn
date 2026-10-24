@@ -1,11 +1,13 @@
 ---
 title: "Giao tiếp và trạng thái"
-description: "Shell và các app micro-frontend truyền dữ liệu cho nhau thế nào, state nên nằm ở đâu và khi nào dùng props, API hay event."
+description: "Các cách giao tiếp giữa micro-frontend: props và API, event, URL/storage, state dùng chung, message và backend; chọn cách phù hợp và bài đọc tiếp."
 ---
 
 Trong một app React thông thường, bạn có thể truyền props hoặc dùng Context để hai component cùng đọc dữ liệu. Nhưng nếu trang được ghép từ **hai app do hai team phát triển và phát hành riêng**, chúng nên kết nối với nhau bằng cách nào?
 
-Đó là câu hỏi của nhóm bài này. Mục tiêu không phải làm mọi app dùng chung một store, mà là giúp chúng phối hợp **mà không phải biết code nội bộ của nhau**.
+Các app có thể truyền trực tiếp dữ liệu/hàm, phát event, dùng URL hoặc storage, dùng một module/state chung, gửi message hoặc phối hợp qua backend. **Không có quy định chỉ được dùng một trong các cách này**; một ứng dụng thường kết hợp vài cách cho các nhu cầu khác nhau.
+
+Trang này là bản đồ các lựa chọn đó. Các bài sau đi sâu vào từng cách và cách quản lý dữ liệu, để các app phối hợp **mà không phải biết code nội bộ của nhau**.
 
 <Callout type="info" title="Phạm vi bài">
   Ví dụ chính là các micro-frontend chạy trong cùng trang JavaScript. Shell là app chủ ghép trang; remote là app được shell tải và gắn vào trang. Phần dùng iframe có cách giao tiếp khác, được phân biệt bên dưới. Code minh họa cách nối app, không phải một project có thể chạy riêng bằng cách copy các snippet.
@@ -13,17 +15,36 @@ Trong một app React thông thường, bạn có thể truyền props hoặc d�
 
 ## Mục lục
 
+- [Các cách giao tiếp và bài đọc tiếp](#các-cách-giao-tiếp-và-bài-đọc-tiếp)
 - [Vì sao giao tiếp giữa micro-frontend khác giữa component](#vì-sao-giao-tiếp-giữa-micro-frontend-khác-giữa-component)
 - [Shell nối các app với nhau thế nào](#shell-nối-các-app-với-nhau-thế-nào)
 - [Chọn cách giao tiếp theo nhu cầu](#chọn-cách-giao-tiếp-theo-nhu-cầu)
   - [Props cho cấu hình và callback cho yêu cầu](#props-cho-cấu-hình-và-callback-cho-yêu-cầu)
   - [Event cho thông báo đến nhiều app](#event-cho-thông-báo-đến-nhiều-app)
-  - [Iframe cần postMessage thay vì truyền hàm](#iframe-cần-postmessage-thay-vì-truyền-hàm)
+  - [URL và storage cho trạng thái của browser](#url-và-storage-cho-trạng-thái-của-browser)
+  - [Module hoặc store dùng chung](#module-hoặc-store-dùng-chung)
+  - [Phối hợp qua backend](#phối-hợp-qua-backend)
+  - [Iframe và nhiều tab dùng message](#iframe-và-nhiều-tab-dùng-message)
 - [State nào thuộc app nào](#state-nào-thuộc-app-nào)
 - [App mở sau lấy dữ liệu hiện tại ở đâu](#app-mở-sau-lấy-dữ-liệu-hiện-tại-ở-đâu)
 - [Thử quan sát bằng demo React và Vue](#thử-quan-sát-bằng-demo-react-và-vue)
 - [Những cách nối làm mất tính độc lập](#những-cách-nối-làm-mất-tính-độc-lập)
 - [Đọc tiếp theo vấn đề bạn đang gặp](#đọc-tiếp-theo-vấn-đề-bạn-đang-gặp)
+
+## Các cách giao tiếp và bài đọc tiếp
+
+| Cách | Ví dụ dễ hình dung | Bài đi sâu |
+| --- | --- | --- |
+| **Truyền trực tiếp dữ liệu và hàm** | Shell truyền `theme` và hàm `addItem` vào `mount(context)`; remote gọi hàm đã nhận khi người dùng bấm nút | [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts): ví dụ chính là API được truyền qua `mount` |
+| **Event trong trang** | Cart phát thông báo “giỏ đã đổi”; header và các app quan tâm đăng ký nghe | [Events và message bus](/docs/giao-tiep-va-trang-thai/events) |
+| **URL và browser storage** | URL giữ bộ lọc để mở lại được; `localStorage` giữ lựa chọn giao diện qua reload | [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) cho URL; [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) cho việc giữ dữ liệu |
+| **Module hoặc store dùng chung** | Hai app đọc cùng một instance quản lý state và đăng ký nghe thay đổi | [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership); [Data fetching và cache](/docs/giao-tiep-va-trang-thai/data-fetching) cho query cache chung |
+| **Message giữa các môi trường JavaScript** | Shell gửi message vào iframe bằng `postMessage`; các tab cùng origin thông báo nhau bằng `BroadcastChannel` | [iframe isolation](/docs/cac-cach-tich-hop/iframe); [Authentication và session](/docs/giao-tiep-va-trang-thai/authentication#nhiều-tab-iframe-và-standalone) có phần phối hợp nhiều tab |
+| **Qua backend chung** | App A cập nhật dữ liệu lên server; app B tải lại để biết kết quả mới | [Data fetching và cache](/docs/giao-tiep-va-trang-thai/data-fetching) |
+
+Các hàng không loại trừ nhau. Ví dụ shell truyền một API qua `mount`; API đó gọi backend khi remote yêu cầu, rồi phát event để các app khác đọc lại dữ liệu. Cũng có thể truyền một store hoặc event bus qua tham số `mount`.
+
+Vì vậy, cần phân biệt **cách cấp kết nối ban đầu** với **cách trao đổi sau đó**. `mount` có thể là nơi trao API cho remote; nó không nhất thiết được gọi lại mỗi khi có dữ liệu cần trao đổi.
 
 ## Vì sao giao tiếp giữa micro-frontend khác giữa component
 
@@ -84,7 +105,9 @@ const catalogHandle = catalogRemote.mount({
 catalogHandle.unmount();
 ```
 
-Đọc snippet theo hai hướng: shell **đưa vào** nơi render, cấu hình và API; remote **trả về** cách điều khiển instance vừa gắn. `capabilities.cart` chỉ là nhóm chức năng được truyền vào, không phải toàn bộ state của shell. Bài [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) giải thích chi tiết cấu trúc này.
+Đọc snippet theo hai hướng: shell **đưa vào** nơi render, cấu hình và API; remote **trả về** cách điều khiển instance vừa gắn. `capabilities.cart` chỉ là nhóm chức năng được truyền vào, không phải toàn bộ state của shell.
+
+Đây là ví dụ của **cách truyền trực tiếp qua API mount**, không phải cách duy nhất để các micro-frontend giao tiếp. Remote giữ `cartApi` đã nhận và gọi các hàm của nó về sau; không cần gọi lại `mount` mỗi lần thêm hàng. Bài [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) tiếp nối chính ví dụ này.
 
 Module Federation có thể đảm nhiệm việc tải module remote. Nó không tự tạo API giỏ hàng, chọn nơi giữ state hay kết nối các store thay bạn.
 
@@ -95,6 +118,8 @@ Module Federation có thể đảm nhiệm việc tải module remote. Nó khôn
 Nếu shell cần đưa theme hoặc ngôn ngữ vào một remote, truyền bằng props/cấu hình là đủ. Khi shell đổi theme, nó gọi API cập nhật mà remote đã công bố. Remote tự quyết định cách cập nhật React, Vue hoặc framework bên trong.
 
 Nếu remote cần nhờ phần khác làm việc và **cần biết kết quả**, truyền một callback hoặc một API nhỏ. Ví dụ Catalog nhận hàm `addItem` từ API giỏ hàng. Nó gọi hàm rồi chờ kết quả để hiện thành công hoặc lỗi, thay vì tìm component Cart để gọi trực tiếp.
+
+API hoặc callback có thể được cấp qua tham số `mount`, hoặc qua props nếu remote export một component. `mount` chỉ là điểm trao cấu hình và kết nối lúc gắn app; sau đó remote gọi các hàm đã nhận khi cần.
 
 Đây là lựa chọn mặc định dễ theo dõi nhất cho một quan hệ yêu cầu–kết quả. Không cần đưa mọi thao tác lên event bus chỉ vì hệ thống có nhiều app.
 
@@ -110,19 +135,33 @@ Với một bus dùng chung trong trang, shell có thể tạo **một instance*
 
 Ví dụ nhỏ này cho thấy một bus trong bộ nhớ không tự lưu thông báo cũ. Phát event trước khi đăng ký nghe rồi đăng ký sau: bạn không nhận lại event đã qua. Khi không dùng listener nữa, cần hủy đăng ký để nó không tiếp tục chạy.
 
-### Iframe cần postMessage thay vì truyền hàm
+### URL và storage cho trạng thái của browser
 
-Một app trong iframe có môi trường JavaScript riêng. Cách truyền `cartApi` như snippet ở trên không phải cách áp dụng cho iframe. Với iframe cần một thỏa thuận message qua `postMessage`, gồm loại yêu cầu, dữ liệu và cách trả kết quả.
+Nếu Catalog ghi bộ lọc vào URL, chẳng hạn `/catalog?category=books`, khi mở link đó app có thể dựng lại cùng bộ lọc. URL phù hợp cho điều hướng, chia sẻ link và Back/Forward. Các app cần thống nhất phần URL mình phụ trách và cách yêu cầu shell điều hướng; không nên để nhiều router tự ghi URL chính không qua phối hợp.
+
+`localStorage` hoặc `sessionStorage` có thể giữ dữ liệu để app khác đọc, trong phạm vi browser cho phép. Tuy nhiên, **lưu dữ liệu không đồng nghĩa với báo cho UI cập nhật**. Ví dụ app A ghi theme vào `localStorage`, app B trong cùng trang không tự render lại chỉ vì giá trị đã đổi; cần thêm callback, subscription hoặc event.
+
+Event `storage` không phát lại ở document vừa ghi. Với `localStorage`, nó có thể báo cho document khác cùng origin, như tab khác; `sessionStorage` còn bị giới hạn theo tab. Vì vậy, storage phù hợp để lưu lựa chọn hoặc dữ liệu cần giữ lại, không nên mặc định dùng nó thay một bus giao tiếp giữa các remote trong cùng trang.
+
+### Module hoặc store dùng chung
+
+Shell có thể tạo một module quản lý state rồi đưa **cùng instance** cho nhiều remote. Các app gọi API của module đó để đọc, yêu cầu thay đổi và đăng ký nghe. Đây cũng là một cách phối hợp, không bắt buộc phải phát event qua một bus riêng.
+
+Điều kiện là các app thật sự dùng chung instance và thống nhất API. Cùng cài Redux, Pinia hay cùng import một tên package chưa bảo đảm điều đó. Bài [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) giải thích ai được sửa dữ liệu và khi nào instance này nên bị hủy.
+
+### Phối hợp qua backend
+
+Hai app không nhất thiết phải gọi nhau trong browser. App A có thể cập nhật dữ liệu qua API server; app B tải lại dữ liệu khi cần và nhận được thay đổi đó. Đây là phối hợp gián tiếp qua backend, không phải chia sẻ store frontend.
+
+App B không tự biết dữ liệu đã đổi ngay sau khi A cập nhật. Bạn phải chọn lúc tải lại, tải định kỳ, hoặc nhận tín hiệu từ server qua WebSocket/SSE. Bài [Data fetching và cache](/docs/giao-tiep-va-trang-thai/data-fetching) đi sâu vào việc tải lại và cập nhật cache; nhóm bài này chưa có hướng dẫn riêng về WebSocket/SSE.
+
+### Iframe và nhiều tab dùng message
+
+Một app trong iframe có môi trường JavaScript riêng. Với kiểu tích hợp này, thường dùng `postMessage` để gửi yêu cầu và trả kết quả thay vì truyền trực tiếp object chứa function như ví dụ `mount` phía trên.
 
 Bên nhận phải kiểm tra `origin` và `source`; bên gửi phải chỉ định `targetOrigin` phù hợp. Xem [iframe isolation](/docs/cac-cach-tich-hop/iframe) khi chọn kiểu tích hợp này.
 
-| Nhu cầu giữa các app | Cách bắt đầu |
-| --- | --- |
-| Shell cấp theme/ngôn ngữ | Props hoặc cấu hình lúc mount/update |
-| Một app nhờ app khác làm việc và chờ kết quả | Callback hoặc API công khai nhỏ |
-| Một thay đổi có nhiều app quan tâm | Event có tên và dữ liệu rõ ràng |
-| Chuyển trang, chia sẻ bộ lọc, hỗ trợ Back/Forward | URL và API điều hướng do shell điều phối |
-| Giao tiếp với app trong iframe | Message qua `postMessage` |
+Với nhiều tab cùng origin, có thể dùng `BroadcastChannel` để trao thông báo, chẳng hạn báo phiên đăng nhập đã thay đổi. `SharedWorker` cũng có thể làm nơi trung gian cho các môi trường đủ điều kiện kết nối tới cùng worker, nhưng cần thiết kế thêm phần quản lý kết nối và hỗ trợ browser. Đây là các lựa chọn bổ sung, không có nghĩa mọi micro-frontend đều cần chúng.
 
 ## State nào thuộc app nào
 
@@ -203,14 +242,9 @@ Trong bản này, làm lại các bước trên. Sau khi gắn lại, Cart hiệ
 
 ## Đọc tiếp theo vấn đề bạn đang gặp
 
-| Bạn cần giải quyết | Bài tiếp theo |
-| --- | --- |
-| Shell gọi remote bằng hàm nào, truyền gì, đổi API ra sao? | [Hợp đồng giao tiếp](/docs/giao-tiep-va-trang-thai/contracts) |
-| Nhiều app cần nhận thông báo mà không gọi trực tiếp nhau? | [Events và message bus](/docs/giao-tiep-va-trang-thai/events) |
-| Dữ liệu nằm ở đâu và giữ lại khi app unmount thế nào? | [State ownership](/docs/giao-tiep-va-trang-thai/state-ownership) |
-| Các app có router riêng, ai được sửa URL chính? | [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) |
-| Các app cùng tải dữ liệu, có nên chia sẻ cache không? | [Data fetching và cache](/docs/giao-tiep-va-trang-thai/data-fetching) |
-| Login/logout phải tác động tới các app ra sao? | [Authentication và session](/docs/giao-tiep-va-trang-thai/authentication) |
+Nếu đọc theo thứ tự sidebar, bắt đầu với **Hợp đồng giao tiếp**: bài đó lấy cách truyền trực tiếp qua `mount` làm ví dụ chính. Tiếp theo, **Events và message bus** giải thích cách thông báo giữa các app. **State ownership** giải quyết chỗ giữ dữ liệu, dù bạn chọn API, store hay event.
+
+Các bài **Routing**, **Data fetching** và **Authentication** áp dụng những cơ chế đó cho URL, dữ liệu backend và phiên đăng nhập. Chúng không phải ba cách giao tiếp mới bắt buộc phải dùng; hãy chọn bài theo nhu cầu trong bảng đầu trang.
 
 <Cards>
   <Card title="Hợp đồng giao tiếp" href="/docs/giao-tiep-va-trang-thai/contracts" description="Định nghĩa ranh giới shell/remote và giữ API dùng được qua các lần phát hành." />
