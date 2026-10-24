@@ -39,19 +39,46 @@ description: "Thiết kế một API nhỏ giữa catalog và cart: dữ liệu 
 
 ## Vấn đề bắt đầu từ một con số
 
-Mở shop, giữ quantity cốc bằng 1 rồi thêm vào giỏ đang có 2 áo. Giỏ có hai dòng hàng nhưng badge hiện 3: đó là tổng quantity, không phải số dòng. Tiếp theo, bật lỗi API trong mục “Xem luồng giao tiếp” và thêm hàng để kiểm tra command bị từ chối không đổi snapshot.
+Giả sử shop của bạn có hai phần do hai team làm:
 
-<ExampleRef example="mfe-cart" version="snapshot">Example: itemCount và kết quả command</ExampleRef>
+- **Cart** quản lý giỏ hàng và cung cấp số lượng sản phẩm trong giỏ.
+- **Header** là thanh phía trên trang, lấy số lượng đó để hiện cạnh biểu tượng giỏ hàng.
 
-Demo chỉ có success/rejected qua API memory. Nó chưa mô phỏng outcome **unknown**, idempotency hoặc compatibility giữa release; không dùng kết quả chạy này để kết luận các contract đó đã được kiểm chứng.
+Giỏ đang có những món này:
 
-Giỏ hàng có hai chiếc áo và một chiếc cốc. Header nên hiện số **3** hay **2**?
+| Sản phẩm | Số lượng |
+| --- | --- |
+| Áo | 2 chiếc |
+| Cốc | 1 chiếc |
 
-Cả hai đều có thể hợp lý: 3 là tổng số đơn vị sản phẩm, còn 2 là số dòng trong giỏ. Nhưng nếu cart trả `itemCount: 2` theo cách đếm dòng, còn shell hiểu đó là tổng quantity, badge sẽ sai mà không có lỗi TypeScript nào.
+Vậy cạnh biểu tượng giỏ hàng nên hiện **2** hay **3**?
 
-Một lỗi khác xuất hiện khi cart deploy trước: cart bắt đầu yêu cầu field mới, nhưng catalog đang mở trong browser vẫn gửi input cũ. Hai bên không nâng cấp cùng lúc, nên không thể dựa vào việc source mới nhất của chúng đang khớp nhau.
+- Hiện **2** nếu đếm số dòng: một dòng áo, một dòng cốc.
+- Hiện **3** nếu cộng số lượng: hai chiếc áo cộng một chiếc cốc.
 
-Bài này đi từ lời gọi thêm hàng nhỏ nhất đến cách giữ nó dùng được qua nhiều phiên bản. Mình dùng **tổng quantity** cho `itemCount`: hai chiếc áo cộng một chiếc cốc luôn cho ra 3.
+Không có cách đếm nào luôn đúng cho mọi shop. Vấn đề là **cart và header phải thống nhất cùng một cách đếm**.
+
+Giả sử team cart chọn đếm số dòng và gửi `{ itemCount: 2 }`. Team header lại tưởng `itemCount` là tổng số lượng, nên hiển thị thành “Giỏ có 2 món”. Người dùng nhìn vào giỏ thấy 2 áo và 1 cốc, nhưng con số phía trên lại là 2.
+
+Code vẫn chạy: `itemCount` vẫn là một con số hợp lệ. TypeScript kiểm tra được kiểu `number`, nhưng không biết team cart đang đếm số dòng còn team header đang cộng số lượng. Lỗi nằm ở **ý nghĩa hai bên hiểu khác nhau**, không phải ở kiểu dữ liệu.
+
+Để tránh lỗi này, trong bài mình chọn quy tắc:
+
+> `itemCount` là tổng số lượng sản phẩm trong giỏ, không phải số dòng. Giỏ có 2 áo và 1 cốc thì `itemCount` phải bằng 3.
+
+Quy tắc đó là một phần của **contract**, tức thỏa thuận giữa bên cung cấp dữ liệu và bên dùng dữ liệu. Contract không chỉ ghi tên field và kiểu dữ liệu, mà còn phải nói rõ field đó có nghĩa gì.
+
+Bạn có thể thử ngay quy tắc này:
+
+<ExampleRef example="mfe-cart" version="snapshot">Example: đếm số lượng trong giỏ</ExampleRef>
+
+1. Mở demo. Ban đầu giỏ có **2 chiếc áo**, con số trên header là **2**.
+2. Ở sản phẩm cốc, giữ số lượng là **1** rồi bấm **Thêm vào giỏ**.
+3. Chờ thao tác hoàn tất. Header hiện **3**, còn trong giỏ có **2 dòng**: áo và cốc.
+
+Demo dùng API giả lập, không gọi backend. Ở đây bạn chỉ cần quan sát cách đếm; các phần sau sẽ giải thích thêm kết quả thêm hàng và cách xử lý lỗi.
+
+Còn một vấn đề nữa: nếu team cart sửa cách gọi hàm thêm hàng, catalog — phần danh sách sản phẩm có nút “Thêm vào giỏ” — có phải sửa theo ngay không? Người dùng có thể vẫn mở tab chứa catalog phiên bản cũ khi cart đã cập nhật. Vì vậy, bài này cũng giải thích cách thay đổi API mà vẫn giữ cho bên đang dùng nó hoạt động.
 
 ## Contract là thỏa thuận để hai phần dùng được nhau
 
