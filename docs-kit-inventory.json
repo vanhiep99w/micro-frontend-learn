@@ -134,9 +134,9 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/contracts.mdx",
       "counts": {
-        "ts": 6,
-        "json": 4,
-        "d2": 1
+        "ts": 7,
+        "d2": 1,
+        "json": 2
       }
     },
     {
@@ -159,8 +159,9 @@
     {
       "path": "content/docs/giao-tiep-va-trang-thai/index.mdx",
       "counts": {
+        "d2": 1,
         "ts": 1,
-        "d2": 1
+        "js": 1
       }
     },
     {
@@ -746,15 +747,15 @@
   "totals": {
     "bash": 131,
     "mdx": 2,
-    "json": 53,
+    "json": 51,
     "d2": 143,
-    "js": 154,
+    "js": 155,
     "terminal-session": 1,
     "jsx": 22,
     "text": 30,
     "powershell": 1,
     "http": 16,
-    "ts": 118,
+    "ts": 119,
     "html": 21,
     "css": 14,
     "tsx": 35,
