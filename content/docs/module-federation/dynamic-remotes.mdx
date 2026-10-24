@@ -131,27 +131,7 @@ Bạn có thể có cả hai lớp: manifest của ứng dụng chọn release, 
 
 ## Luồng resolve và quyền sở hữu
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Luồng resolve và quyền sở hữu" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Tiếp tục tại Manifest snapshot."
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Tiếp tục tại Entry URL đã validate."
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Script container."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại Webpack init."
-#       - edge: "(n4 -> n5)[0]"
-#         description: "Tiếp tục tại get."
-#       - edge: "(n5 -> n6)[0]"
-#         description: "Tiếp tục tại factory."
-# @endflow
+```d2 title="Luồng resolve và quyền sở hữu"
 direction: down
 n0: "Shell import"
 n1: "Manifest snapshot"

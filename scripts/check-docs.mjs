@@ -38,15 +38,12 @@ for (const path of files.filter((file) => file.endsWith('.mdx'))) {
     assert(new RegExp('^' + field + ':\\s*\\S', 'm').test(frontmatter[1]),
       `Missing ${field}: ${path}`);
   }
-  // D2 flow uses leading '# @flow' comment-YAML; those are code, not article H1s.
-  // Match the opening delimiter so inner triple backticks in a longer fence stay code.
-  const prose = content.replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[ \t]*$/gm, '');
-  assert(prose.includes('## Mục lục'), `Missing manual TOC: ${path}`);
-  assert(!/^# /m.test(prose), `Duplicate H1: ${path}`);
+  assert(content.includes('## Mục lục'), `Missing manual TOC: ${path}`);
+  assert(!/^# /m.test(content), `Duplicate H1: ${path}`);
 
   const seen = new Map();
   const ids = new Set();
-  for (const match of prose.matchAll(/^#{2,6}\s+(.+)$/gm)) {
+  for (const match of content.matchAll(/^#{2,6}\s+(.+)$/gm)) {
     const base = slugify(match[1]);
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);

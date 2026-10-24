@@ -60,24 +60,7 @@ Cùng document nên đọc một snapshot cấu hình trước khi resolve các 
 
 Với request thật sự đi ra network, đường tải đơn giản là:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Các lớp cache trên đường tải remote" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: hit
-#     label: "Browser cache hit"
-#     steps:
-#       - edge: "(browser -> hit)[0]"
-#         description: "Browser HTTP cache → Cache hit: có thể không gửi request network: Hit"
-#   - id: miss
-#     label: "Browser và CDN miss"
-#     steps:
-#       - edge: "(browser -> cdn)[0]"
-#         description: "Tiếp tục tại CDN edge."
-#       - edge: "(cdn -> origin)[0]"
-#         description: "Tiếp tục tại Origin."
-# @endflow
+```d2 title="Các lớp cache trên đường tải remote"
 direction: right
 browser: Browser HTTP cache
 cdn: CDN edge
@@ -86,8 +69,6 @@ hit: "Cache hit: có thể không gửi\nrequest network"
 browser -> cdn -> origin
 browser -> hit: Hit
 ```
-
-Browser cache hit có thể không tạo request mạng. Kịch bản miss giả định cả browser cache lẫn CDN đều miss; sơ đồ chỉ theo dõi đường tải, chưa vẽ response.
 
 Nhưng không phải lần mở route nào cũng tạo request. Loader có thể trả module đã evaluate; service worker có thể trả response từ Cache Storage trước khi browser cần truy cập origin.
 

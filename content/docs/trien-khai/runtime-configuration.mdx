@@ -168,23 +168,7 @@ Khi cần breaking schema, deploy reader hỗ trợ trước, xác nhận cả s
 
 Luồng khởi động mong muốn là:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Đọc và kiểm tra cấu hình trước khi bootstrap" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Tiếp tục tại Fetch JSON."
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Tiếp tục tại Validate + pin snapshot."
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Start shell."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại Resolve remote khi cần."
-# @endflow
+```d2 title="Đọc và kiểm tra cấu hình trước khi bootstrap"
 direction: right
 n0: "Bootstrap"
 n1: "Fetch JSON"
