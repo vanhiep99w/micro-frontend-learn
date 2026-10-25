@@ -5,7 +5,7 @@ import { examples } from '../lib/examples.ts';
 import { validateExamples, resolveExample } from '@vanhiep99w/docs-kit/example-explorer';
 
 const covered = [
- 'bat-dau/bai-toan-shop.mdx', 'kien-truc/chia-domain.mdx',
+ 'bat-dau/bai-toan-shop.mdx', 'kien-truc/chia-domain.mdx', 'kien-truc/application-shell.mdx',
  'giao-tiep-va-trang-thai/contracts.mdx', 'giao-tiep-va-trang-thai/events.mdx',
  'giao-tiep-va-trang-thai/state-ownership.mdx', 'giao-tiep-va-trang-thai/index.mdx',
  'ui-va-framework/css-isolation.mdx', 'giao-tiep-va-trang-thai/routing.mdx',
@@ -14,7 +14,7 @@ const covered = [
  'ui-va-framework/design-system.mdx',
 ].sort();
 
-test('all 13 selected lessons reference valid runnable examples and all 9 definitions are used',async()=>{
+test('all selected lessons reference valid runnable examples and every definition is used',async()=>{
  validateExamples(examples);
  const pages = await loadExamplePages();
  assert.deepEqual(pages.map(page=>page.path).sort(),covered);
@@ -22,10 +22,11 @@ test('all 13 selected lessons reference valid runnable examples and all 9 defini
  for(const page of pages) for(const request of page.references){
   const {example,version} = resolveExample(examples,request);
   used.add(example.id);
-  assert.equal(new URL(version.src).origin,'https://example-learn.pages.dev');
+  if (example.id === 'application-shell') assert.equal(version.src, '/examples/application-shell/shell/');
+  else assert.equal(new URL(version.src).origin,'https://example-learn.pages.dev');
  }
- assert.equal(used.size,9);
- assert.equal(examples.length,9);
+ assert.equal(used.size,10);
+ assert.equal(examples.length,10);
 });
 test('reference checker parses actual JSX, ignores code samples and rejects dynamic registry IDs',()=>{
  const fence=String.fromCharCode(96).repeat(3);

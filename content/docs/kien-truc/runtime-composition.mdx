@@ -206,11 +206,18 @@ Nếu muốn refresh config giữa phiên, hãy coi đó là một tính năng c
 
 ### Ví dụ loader cho native ESM
 
-Ví dụ dưới đây chỉ minh họa ranh giới **descriptor đã validate → URL policy → import → public contract**. Nó dùng `RemoteModule` với `contractVersion: 1` và `mount` được định nghĩa ở [Application shell](/docs/kien-truc/application-shell#contract-mẫu-cho-root-độc-lập).
+Ví dụ dưới đây chỉ minh họa ranh giới **descriptor đã validate → URL policy → import → public contract**. Nó giữ cách gọi `mount(container, theme)` của ví dụ [Application shell](/docs/kien-truc/application-shell#thiết-kế-contract-tích-hợp-nhỏ), rồi yêu cầu remote export thêm `contractVersion: 1` để loader kiểm tra. Các type cần cho loader được khai báo ngay trong snippet.
 
 ```ts title="platform/load-esm-remote.ts"
-// File contract thuộc ứng dụng giả định, không phải repository docs.
-import type { RemoteModule } from '../contracts/remote';
+type Theme = 'light' | 'dark';
+
+type RemoteModule = {
+  readonly contractVersion: 1;
+  mount(container: HTMLElement, theme: Theme): {
+    update(theme: Theme): void;
+    unmount(): void;
+  };
+};
 
 type EsmDescriptor = Readonly<{
   format: 'esm';

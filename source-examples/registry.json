@@ -15,7 +15,7 @@
     "id": "kien-truc-application-shell",
     "title": "Application shell",
     "doc": "kien-truc/application-shell.mdx",
-    "defaultFile": "shell/outlet-controller.ts"
+    "defaultFile": "shell/main.js"
   },
   {
     "id": "module-federation-dynamic-remotes",

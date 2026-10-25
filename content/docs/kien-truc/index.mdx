@@ -34,15 +34,33 @@ Nhóm **Kiến trúc và ranh giới** giúp bạn trả lời ba câu hỏi tr�
 
 ## Bắt đầu từ thay đổi cần độc lập
 
-“Frontend lớn” chưa nói được bạn nên tách ở đâu. Nếu vấn đề là component khó đọc, hãy refactor module. Nếu bundle lớn, hãy đo dependency và code splitting. Nếu catalog thường xuyên phải chờ những thay đổi không liên quan của cart để phát hành, lúc đó ranh giới release mới là ứng viên cần xem xét.
+Giả sử bạn làm một website bán hàng có ba phần:
 
-Trước khi vẽ sơ đồ, chọn một thay đổi đại diện và viết kết quả mong muốn. Với shop, giả thuyết có thể là:
+- **Catalog:** trang tìm kiếm và danh sách sản phẩm.
+- **Cart:** giỏ hàng.
+- **Shell:** khung ứng dụng chứa menu và hiển thị phần tương ứng với URL.
 
-> Catalog thêm bộ lọc thương hiệu, giữ nguyên public contract. Team catalog có thể kiểm thử, phát hành và khôi phục bản đó mà không buộc shell hoặc cart build và deploy lại.
+Team catalog muốn thêm bộ lọc thương hiệu vào danh sách sản phẩm. Thay đổi này không sửa giỏ hàng hay menu. Nhưng hiện tại, cả website được build và deploy trong một bản chung. Team cart đang sửa giỏ hàng và chưa kiểm thử xong, nên team catalog cũng phải chờ mới đưa bộ lọc lên cho người dùng.
 
-Đây là mục tiêu có thể thử được. “Dùng ba remote” thì không: số remote không cho biết người dùng nhận thay đổi qua đường nào, team phải chờ ai hay khi lỗi sẽ khôi phục ra sao.
+**Điều cần độc lập ở đây là việc phát hành bộ lọc, không phải việc tạo thêm repository.** Mục tiêu là: team catalog làm xong thì có thể đưa phiên bản catalog mới lên, còn shell và cart tiếp tục chạy phiên bản hiện tại.
 
-Nếu toàn bộ sản phẩm do một team vận hành và release chung chưa gây cản trở, mình giữ một ứng dụng với module nghiệp vụ rõ ràng. Bạn vẫn có thể thiết kế ownership, public API và rule import mà chưa cần thêm loader, manifest hay pipeline riêng. Micro-frontend là một lựa chọn để giải quyết nhu cầu tự chủ, không phải phần thưởng cho codebase đủ lớn.
+Bạn có thể hình dung kết quả mong muốn như sau:
+
+| Việc cần làm | Khi cả website phát hành chung | Khi catalog có thể phát hành riêng |
+| --- | --- | --- |
+| Đưa bộ lọc mới tới người dùng | Build và deploy lại ứng dụng chung chứa cả catalog, cart và shell | Build và deploy catalog mới, không build hay deploy lại shell và cart |
+| Chọn thời điểm phát hành | Trong tình huống trên, phải chờ cart kiểm thử xong | Không phải chờ thay đổi không liên quan của cart |
+| Xử lý khi bộ lọc mới bị lỗi | Nếu quay về bản ứng dụng trước, cả catalog, cart và shell cùng quay về bản đó | Có đường quay về bản catalog trước mà không đổi phiên bản shell và cart |
+
+Vậy catalog có thể sửa bất cứ thứ gì mà không cần báo ai không? Không. Việc phát hành riêng chỉ áp dụng khi thay đổi vẫn giữ cách giao tiếp đã thống nhất giữa các phần. Cách giao tiếp đó gọi là **public contract**. Ví dụ, shell vẫn mở catalog qua route `/catalog/*`; khi người dùng bấm “Thêm vào giỏ”, catalog vẫn gửi mã sản phẩm theo định dạng mà cart đang nhận. Thêm bộ lọc không đổi những điểm này thì shell và cart không cần sửa theo. Nếu catalog đổi định dạng mã sản phẩm mà cart cần, hai team vẫn phải phối hợp.
+
+Trước khi chọn công cụ, hãy viết một mục tiêu cụ thể:
+
+> Người dùng dùng được bộ lọc thương hiệu mới sau khi team catalog phát hành. Shell và cart không cần build hay deploy lại. Nếu bộ lọc lỗi, team catalog có cách đưa người dùng về bản catalog trước.
+
+Sau đó thử làm đúng thay đổi này để xem thiết kế có đạt mục tiêu không. Chỉ tạo ba repository hoặc ba bundle JavaScript chưa đủ: nếu mỗi lần catalog đổi, bạn vẫn phải sửa và deploy shell thì catalog chưa phát hành độc lập được. Cách đưa phiên bản mới tới người dùng và quay về bản cũ sẽ được giải thích ở các phần sau.
+
+Không phải vấn đề nào cũng cần micro-frontend. Component khó đọc thì trước hết chia lại module; JavaScript tải quá nặng thì đo và thử code splitting — chỉ tải phần code khi cần. Nếu một team phụ trách toàn bộ website và phát hành chung chưa gây cản trở, mình vẫn giữ một ứng dụng với các module rõ ràng. Chỉ cân nhắc tách deploy khi bạn chỉ ra được một nhu cầu cụ thể như “catalog cần phát hành bộ lọc mà không chờ cart”.
 
 ## Bốn ranh giới cần phân biệt
 

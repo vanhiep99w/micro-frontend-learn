@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHighlighter } from 'shiki';
 import { loadSourceExamples, projectRoot } from './source-examples.mjs';
@@ -52,6 +52,17 @@ export async function buildSourceExamples({ root = projectRoot, prune = true, lo
       id, title: project.snapshotTitles.get(id), asset: assetNames.get(`${project.id}/${id}`),
     })),
   }));
+  // This trusted, dependency-free preview is generated from the same MDX
+  // snapshot as Source Explorer. Dev's existing source watcher rebuilds both.
+  const shellPreview = snapshots.get('kien-truc-application-shell/document');
+  if (shellPreview) {
+    for (const file of shellPreview.files) {
+      const path = join(root, 'public/examples/application-shell', file.path);
+      await mkdir(dirname(path), { recursive: true });
+      await atomicWrite(path, file.code + '\n');
+    }
+  }
+
   const manifestJSON = JSON.stringify(manifest) + '\n';
   const revision = hash(manifestJSON);
   const output = join(root, 'public/source-examples');

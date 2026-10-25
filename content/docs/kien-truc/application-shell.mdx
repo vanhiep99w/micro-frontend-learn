@@ -8,15 +8,15 @@ Giả sử shop của bạn có catalog và cart do hai team phát triển. Cata
 Application shell giúp ghép các phần thành một trải nghiệm chung: giữ khung trang, chọn domain theo URL, cung cấp ngữ cảnh tích hợp và xử lý lúc một phần chưa sẵn sàng. **Shell điều phối ứng dụng, không sở hữu nghiệp vụ của mọi domain.** Ranh giới này quyết định việc thêm một tính năng có thật sự chỉ cần release một team hay không.
 
 <Callout type="info" title="Phạm vi bài viết">
-  Bài dùng shop giả định gồm shell, catalog và cart. Code minh họa contract và lifecycle cho client-side composition với các root độc lập; đây không phải implementation có sẵn trong repository docs. Shell là vai trò kiến trúc, không bắt buộc dùng React, Module Federation hay single-spa.
+  Bài dùng shop giả định gồm shell, catalog và cart. Ví dụ contract có đủ ba file HTML/JavaScript, với preview chạy cùng code để bạn thử ngay hoặc tạo file chạy riêng. Shell là vai trò kiến trúc, không bắt buộc dùng React, Module Federation hay single-spa.
 </Callout>
 
-<SourceRef project="kien-truc-application-shell" variant="button">Mở Source Explorer: đối chiếu các file trong bài</SourceRef>
+<SourceRef project="kien-truc-application-shell" variant="button">Xem đủ code shell và remote</SourceRef>
 
 ## Mục lục
 
 - [Shell giải quyết bài toán gì](#shell-giải-quyết-bài-toán-gì)
-  - [Shell khác host và app shell của PWA](#shell-khác-host-và-app-shell-của-pwa)
+  - [Shell khác host thế nào](#shell-khác-host-thế-nào)
   - [Khi nào không cần một shell runtime riêng](#khi-nào-không-cần-một-shell-runtime-riêng)
 - [Ranh giới trách nhiệm](#ranh-giới-trách-nhiệm)
   - [Những việc shell nên sở hữu](#những-việc-shell-nên-sở-hữu)
@@ -31,8 +31,9 @@ Application shell giúp ghép các phần thành một trải nghiệm chung: gi
   - [Mount và update](#mount-và-update)
   - [Unmount và cleanup](#unmount-và-cleanup)
 - [Thiết kế contract tích hợp nhỏ](#thiết-kế-contract-tích-hợp-nhỏ)
-  - [Contract mẫu cho root độc lập](#contract-mẫu-cho-root-độc-lập)
-  - [Adapter React phía remote](#adapter-react-phía-remote)
+  - [Code của shell](#code-của-shell)
+  - [Code của remote](#code-của-remote)
+  - [Chạy và theo dõi ví dụ](#chạy-và-theo-dõi-ví-dụ)
   - [Tránh biến shell SDK thành framework thứ hai](#tránh-biến-shell-sdk-thành-framework-thứ-hai)
 - [Ngăn remote cũ mount sau navigation mới](#ngăn-remote-cũ-mount-sau-navigation-mới)
 - [Failure boundary và trải nghiệm phục hồi](#failure-boundary-và-trải-nghiệm-phục-hồi)
@@ -56,11 +57,13 @@ Shell giữ các quyết định cấp ứng dụng để remote tập trung và
 
 Một ranh giới tốt có phép thử khá thực tế: catalog đổi cách sắp xếp sản phẩm nhưng giữ public contract thì shell không cần biết. Catalog đổi điểm gắn hoặc API tích hợp thì cần phối hợp với shell, vì đó là thay đổi ở ranh giới.
 
-### Shell khác host và app shell của PWA
+### Shell khác host thế nào
 
-`Host` và `remote` mô tả quan hệ tiêu thụ module trong cơ chế như Module Federation. `Shell` mô tả trách nhiệm trong sản phẩm. Shell thường là host, nhưng catalog cũng có thể làm host khi tiêu thụ một module khác; điều đó không biến catalog thành shell của toàn shop.
+Trong Module Federation, **host** là ứng dụng dùng module do ứng dụng khác cung cấp; bên cung cấp được gọi là **remote**. Còn **shell** là phần giữ khung trang và điều phối các frontend trong sản phẩm.
 
-Trong tài liệu PWA, *app shell* còn chỉ khung UI có thể cache để tải nhanh. Cache header và navigation bằng service worker không tự tạo ra domain ownership, lifecycle hay independent deployment. Xem [Thuật ngữ cốt lõi](/docs/nen-tang/thuat-ngu) nếu bạn đang gặp các cách gọi này xen kẽ nhau.
+Ví dụ, shell tải catalog để hiển thị danh sách sản phẩm: lúc này shell cũng là host. Nếu catalog tải thêm module đánh giá từ một ứng dụng khác, catalog cũng làm host trong quan hệ đó. Nhưng catalog không trở thành shell của cả shop, vì nó không quản lý menu và việc chuyển giữa catalog với cart.
+
+Nói ngắn gọn: gọi một phần là **host** để nói nó dùng module của ai; gọi là **shell** để nói nó chịu trách nhiệm điều phối ứng dụng.
 
 ### Khi nào không cần một shell runtime riêng
 
@@ -132,18 +135,33 @@ shell: Shell {
 
 ### Ghép theo route hay theo slot
 
-Mình bắt đầu bằng composition theo route nếu domain có thể giữ một hành trình đủ lớn. Nó tạo boundary dễ hiểu: catalog hoạt động dưới `/catalog`, cart dưới `/cart`, và một lỗi tải cart không nhất thiết làm mất navigation hay catalog.
+Giả sử shell đã hiển thị header và menu của shop. Phần còn lại của trang sẽ do frontend nào hiển thị? Có hai cách bố trí thường gặp: chọn frontend theo URL, hoặc dành những vùng trên trang cho các frontend khác nhau.
 
-Slot phù hợp khi một trang thật sự cần phần do domain khác sở hữu, chẳng hạn cart badge trên header. Khi thêm slot, hãy công bố container, dữ liệu đầu vào, loading, fallback, sizing và lifecycle cho slot đó. “Render component này ở đâu cũng được” thường không đủ để hai team giữ UX tương thích.
+**Ghép theo route: URL quyết định frontend nào hiển thị ở vùng nội dung chính.** Ví dụ:
 
-| Cách ghép | Điểm mạnh | Chi phí cần chấp nhận |
+- Mở `/catalog/products`: shell hiển thị catalog trong vùng nội dung chính.
+- Chuyển sang `/cart`: shell gỡ giao diện catalog khỏi vùng đó và hiển thị cart thay vào.
+- Header và menu do shell giữ vẫn ở đó; không cần tải lại toàn bộ trang trong ví dụ này.
+
+Catalog tự sắp xếp bộ lọc, danh sách và chi tiết sản phẩm bên trong phần của mình. Shell chỉ cần biết các URL bắt đầu bằng `/catalog/` thuộc catalog, không cần biết từng bộ lọc hoạt động ra sao. Ký hiệu `/catalog/*` trong bài có nghĩa là nhóm URL đó.
+
+**Ghép theo slot: shell chừa một vùng cụ thể trên trang để một frontend đưa giao diện vào.** Slot chỉ là tên gọi cho vùng dành sẵn đó, không phải một công nghệ riêng. Ví dụ, khi người dùng vẫn đang xem danh sách sản phẩm, header có một vùng nhỏ để hiển thị mini-cart — bản giỏ hàng thu gọn có thể mở ra xem hoặc xóa món hàng. Team cart cung cấp giao diện mini-cart cho vùng này, còn catalog tiếp tục hiển thị ở nội dung chính.
+
+Như vậy, catalog và mini-cart có thể xuất hiện **cùng lúc trên một trang**. Shell quyết định mini-cart nằm ở đâu; team cart quyết định nội dung và cách xử lý thao tác bên trong nó.
+
+| Trong ví dụ shop | Ghép theo route | Ghép theo slot |
 | --- | --- | --- |
-| Một domain cho một nhánh route | Ít điểm tích hợp, ownership rõ | Hành trình qua domain cần navigation contract |
-| Nhiều domain trong các slot cùng trang | Tái sử dụng phần nghiệp vụ có owner | Nhiều lifecycle, loading và failure boundary đồng thời |
-| Component cùng cây framework | Context và state flow quen thuộc | Compatibility của framework và provider chặt hơn |
-| Root hoặc document riêng | Boundary render rõ hơn | Cần bridge cho context và interaction chung |
+| Frontend được đặt ở đâu? | Vùng nội dung chính, tùy URL hiện tại | Một vùng dành sẵn, chẳng hạn góc phải header |
+| Khi nào cart xuất hiện? | Khi người dùng mở `/cart` | Mini-cart có thể xuất hiện cả khi đang ở `/catalog/products` |
+| Shell cần điều phối gì? | Chuyển giữa giao diện catalog và cart khi URL đổi | Giữ catalog và mini-cart cùng hoạt động; xử lý tải và lỗi riêng cho từng vùng |
 
-Đừng chia mỗi button thành một remote chỉ để tăng số team có thể deploy. Khi một màn hình phải đồng bộ nhiều remote nhỏ mới có ý nghĩa, shell dễ biến thành nơi chứa toàn bộ workflow nghiệp vụ.
+Hai cách này có thể dùng chung: trang giỏ hàng đầy đủ được ghép theo route `/cart`, còn mini-cart được ghép vào slot trên header. Chúng là hai giao diện khác nhau do cùng team cart phụ trách.
+
+Khi thêm slot mini-cart, hai team cần thống nhất cụ thể: vùng đó rộng bao nhiêu, cart nhận dữ liệu gì và lúc chưa tải xong thì hiển thị gì. Nếu mini-cart tải lỗi, shell cần có phương án như hiện link “Mở giỏ hàng”, thay vì để lỗi đó làm mất cả header. Khi gỡ mini-cart khỏi trang, cart cũng phải dọn các listener và subscription mà nó đã tạo.
+
+Mình ưu tiên bắt đầu theo route vì ít vùng phải phối hợp cùng lúc hơn. Chỉ thêm slot khi thực sự cần một phần nghiệp vụ xuất hiện bên cạnh phần khác. Nếu header chỉ cần con số “3 món”, shell có thể tự hiển thị con số từ API công khai của cart; không nhất thiết tải cả một frontend riêng chỉ cho badge đó.
+
+Route và slot mới trả lời câu hỏi **“giao diện xuất hiện ở đâu?”**. Dùng chung cây React hay tạo root riêng là quyết định khác, được giải thích ngay dưới đây.
 
 ### Ai sở hữu DOM và framework context
 
@@ -231,119 +249,139 @@ Unmount cũng không xóa module khỏi cache của browser. Quay lại catalog 
 
 ## Thiết kế contract tích hợp nhỏ
 
-Contract nên nói remote được nhận gì, được thay đổi gì và trả lại quyền điều khiển bằng cách nào. Đừng chỉ ghi “shell gọi mount” rồi để hai team tự hiểu phần còn lại.
+Shell có một vùng trống để đặt catalog vào. Catalog cần cung cấp cách hiển thị vào vùng đó, đổi theme và gỡ giao diện khi không dùng nữa. **Contract ở đây chỉ là cách hai bên gọi nhau**, không cần bắt đầu bằng một loạt interface hay SDK.
 
-### Contract mẫu cho root độc lập
+Mình dùng JavaScript thuần để ví dụ chỉ còn **ba file, có đủ cả shell lẫn remote**. Không có `App`, router hay hàm nào bị bỏ ngỏ. Chưa thêm React, Module Federation, gọi API hoặc xử lý hủy request; các phần đó không cần thiết để hiểu cách shell và remote phối hợp.
 
-Ví dụ này chọn **mount đồng bộ trả handle ngay**, còn tải dữ liệu nằm trong remote. Cách này giúp shell luôn có handle để cleanup mà không phải chờ một request nghiệp vụ hoàn tất. Nó không phù hợp nguyên trạng với mọi runtime; adapter có lifecycle async cần contract khác.
+| File | Bên sở hữu | Công việc |
+| --- | --- | --- |
+| `shell/index.html` | Shell | Header, nút điều khiển và vùng trống chứa catalog |
+| `shell/main.js` | Shell | Gọi remote để hiển thị, cập nhật và gỡ catalog |
+| `catalog/entry.js` | Remote catalog | Tạo giao diện sản phẩm và cung cấp các hàm cho shell gọi |
 
-```ts title="contracts/remote.ts" sourceFile="contracts/remote.ts" sourceRegion="main"
-// NavigationPort được mô tả ở bài Routing và navigation.
-import type { NavigationPort } from './navigation';
+### Code của shell
 
-export type ViewContext = Readonly<{
-  locale: string;
-  theme: 'light' | 'dark';
-}>;
+**`shell/index.html`** chứa khung trang. Hai nút thuộc shell; remote chỉ được giao vùng `#catalog-slot` bên dưới chúng.
 
-export type MountOptions = Readonly<{
-  container: HTMLElement;
-  context: ViewContext;
-  navigation: NavigationPort;
-  signal: AbortSignal;
-}>;
+```html title="shell/index.html" sourceFile="shell/index.html" sourceRegion="main"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ví dụ shell và remote</title>
+  </head>
+  <body>
+    <header><h1>Shop của mình</h1></header>
+    <button id="dark-theme">Đổi catalog sang dark theme</button>
+    <button id="close-catalog">Đóng catalog</button>
+    <div id="catalog-slot"></div>
 
-export interface MountedRemote {
-  update(context: ViewContext): void;
-  unmount(): void;
-}
-
-export interface RemoteModule {
-  readonly contractVersion: 1;
-  mount(options: MountOptions): MountedRemote;
-}
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
 ```
 
-<SourceRef project="kien-truc-application-shell" file="contracts/remote.ts" region="main">Đối chiếu contracts/remote.ts</SourceRef>
+**`shell/main.js`** nhập hàm `mount` do remote cung cấp. Khi trang mở, shell gọi hàm này để đưa catalog vào vùng trống. Khi bấm nút, shell gọi các hàm mà remote trả lại.
 
-Contract dùng `NavigationPort` đã mô tả trong [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing); các file import trong ví dụ thuộc ứng dụng giả định. Locale và theme là snapshot bất biến. Location không nằm trong `ViewContext` vì navigation port đã có snapshot và subscription của nó.
+```js title="shell/main.js" sourceFile="shell/main.js" sourceRegion="main"
+import { mount } from '../catalog/entry.js';
 
-Semantics cần ghi kèm type:
+const container = document.querySelector('#catalog-slot');
+const darkButton = document.querySelector('#dark-theme');
+const closeButton = document.querySelector('#close-catalog');
 
-- Một lần `mount` tạo một instance, chỉ quản lý subtree và tài nguyên thuộc instance đó.
-- `mount` trả handle đồng bộ; không đồng nghĩa UI đã commit hay dữ liệu đã sẵn sàng.
-- `update` thay view context; remote dùng navigation subscription cho thay đổi location.
-- `signal` có hiệu lực suốt instance, không chỉ trong lúc load. Abort yêu cầu dừng hoạt động, nhưng shell vẫn gọi `unmount` để hoàn tất cleanup theo contract.
-- `unmount` idempotent. Sau unmount, `update` không làm gì và callback async không được cập nhật UI cũ.
-- Nếu `mount` throw trước khi trả handle, remote rollback tài nguyên đã tạo.
-- Contract này không truyền credential, mutable business store hoặc quyền sửa DOM ngoài container.
+// 1. Nhờ remote hiển thị vào vùng của catalog, ban đầu dùng light theme.
+const catalog = mount(container, 'light');
 
-`contractVersion` hỗ trợ kiểm tra compatibility sau khi module đã load. Nó không chứng minh code an toàn: dynamic import có thể đã thực thi top-level code trước khi shell đọc field này. Kiểm soát nguồn artifact phải diễn ra ở loader và quy trình phát hành.
+// 2. Chỉ chạy khi người dùng bấm nút đổi theme.
+darkButton.onclick = () => {
+  catalog.update('dark');
+};
 
-### Adapter React phía remote
+// 3. Nhờ remote tự gỡ giao diện của nó.
+closeButton.onclick = () => {
+  catalog.unmount();
+  darkButton.disabled = true;
+  closeButton.disabled = true;
+};
+```
 
-Một adapter cho contract trên có thể giữ mỗi React root trong closure của lần mount. Không dùng `let root` toàn module, vì hai instance catalog ở hai slot sẽ ghi đè nhau.
+<SourceRef project="kien-truc-application-shell" file="shell/main.js" region="main">Xem code shell gọi remote</SourceRef>
 
-```tsx title="catalog/entry.tsx" sourceFile="catalog/entry.tsx" sourceRegion="main"
-import { createRoot } from 'react-dom/client';
-import type {
-  MountOptions,
-  MountedRemote,
-  ViewContext,
-} from '../contracts/remote';
-import { App } from './App';
+Biến `catalog` **không chứa danh sách sản phẩm**. Nó chứa object có hai hàm `update` và `unmount` mà remote trả về. Shell không cần biết catalog tạo những thẻ HTML nào bên trong.
 
-export const contractVersion = 1 as const;
+### Code của remote
 
-export function mount(options: MountOptions): MountedRemote {
-  const { container, navigation, signal } = options;
-  signal.throwIfAborted();
+**`catalog/entry.js`** là toàn bộ remote trong ví dụ. Hàm `mount` tạo một vùng giao diện riêng bên trong `container` được shell giao, rồi trả hai hàm điều khiển vùng đó.
 
-  const root = createRoot(container);
-  let active = true;
+```js title="catalog/entry.js" sourceFile="catalog/entry.js" sourceRegion="main"
+export function mount(container, initialTheme) {
+  // Tạo giao diện của catalog.
+  const panel = document.createElement('section');
+  const heading = document.createElement('h2');
+  const product = document.createElement('p');
+  heading.textContent = 'Danh sách sản phẩm';
+  product.textContent = 'Áo thun — 200.000đ';
+  panel.append(heading, product);
+  container.append(panel);
+
+  let isClosed = false;
+
+  function update(theme) {
+    if (isClosed) return;
+    panel.style.backgroundColor = theme === 'dark' ? '#111827' : '#ffffff';
+    panel.style.color = theme === 'dark' ? '#ffffff' : '#111827';
+  }
 
   function unmount() {
-    if (!active) return;
-    active = false;
-    signal.removeEventListener('abort', unmount);
-    root.unmount();
+    if (isClosed) return;
+    isClosed = true;
+    panel.remove(); // Chỉ gỡ catalog, không đụng vào header hay nút của shell.
   }
 
-  function update(context: ViewContext) {
-    if (!active) return;
-    root.render(
-      <App
-        context={context}
-        navigation={navigation}
-        signal={signal}
-      />,
-    );
-  }
+  update(initialTheme);
 
-  try {
-    signal.addEventListener('abort', unmount, { once: true });
-    update(options.context);
-    return { update, unmount };
-  } catch (error) {
-    unmount();
-    throw error;
-  }
+  // Trả hai HÀM để shell gọi về sau, không gọi chúng ở dòng này.
+  return { update, unmount };
 }
 ```
 
-<SourceRef project="kien-truc-application-shell" file="catalog/entry.tsx" region="main">Đối chiếu catalog/entry.tsx</SourceRef>
+<SourceRef project="kien-truc-application-shell" file="catalog/entry.js" region="main">Xem code remote xử lý lời gọi từ shell</SourceRef>
 
-`App` là component của catalog, không được triển khai trong snippet. Nó chịu trách nhiệm dùng location snapshot, cleanup effect, xử lý data request và có error boundary thích hợp trong root của mình. Adapter không tự cleanup một timer được tạo ngoài React nếu remote không đăng ký cleanup cho timer đó.
+Đến đây đã có đủ hai phía. Shell gọi `mount(container, 'light')`; remote tạo giao diện và trả `{ update, unmount }`. Shell giữ object đó trong biến `catalog`, nên `catalog.update('dark')` gọi đúng hàm `update` bên trong lần `mount` vừa rồi.
 
-`root.render()` có thể trả trước khi render/effect hoàn tất. Vì thế, `try/catch` trên xử lý lỗi đồng bộ của bước setup, **không bắt mọi lỗi render về sau**. Nếu shell cần biết lúc remote lỗi hoặc nội dung đã usable, bổ sung callback hay telemetry contract có semantics rõ ràng, gắn với instance hiện tại.
+Cờ `isClosed` chỉ để ghi nhớ catalog đã bị gỡ chưa. Nếu đã gỡ, gọi lại `update` hay `unmount` sẽ không làm gì. Khi muốn mở catalog lần nữa, shell cần gọi `mount` để tạo lần hiển thị mới.
 
-Sau `root.unmount()`, không render lại trên root cũ. Một lần mount mới phải tạo root mới. Với nội dung SSR đã có trong container, adapter cần hydration phù hợp chứ không gọi `createRoot` để thay HTML.
+### Chạy và theo dõi ví dụ
+
+Bạn có thể mở preview ngay dưới đây: thử đổi theme rồi đóng catalog, và quan sát header của shell vẫn còn. Preview chạy **đúng ba file code ở trên**, không gọi backend. Bấm tải lại trong cửa sổ preview để mở lại catalog từ đầu.
+
+<ExampleRef example="application-shell">Preview: thử shell và remote</ExampleRef>
+
+Nếu muốn chạy trên máy, tạo ba file theo đúng đường dẫn trong bảng. Mở terminal ở thư mục **chứa cả hai thư mục `shell/` và `catalog/`**, rồi chạy:
+
+```bash
+python3 -m http.server 8080
+```
+
+Mở `http://localhost:8080/shell/`. Không cần npm hay bước build. Dùng HTTP server thay vì mở trực tiếp file HTML bằng `file://`, vì browser cần tải JavaScript module.
+
+| Thao tác | Shell gọi | Remote xử lý | Kết quả trên trang |
+| --- | --- | --- | --- |
+| Mở trang | `mount(container, 'light')` | Tạo giao diện và áp light theme | Catalog xuất hiện dưới hai nút |
+| Bấm đổi theme | `catalog.update('dark')` | Đổi màu vùng `panel` | Chỉ catalog chuyển sang nền tối |
+| Bấm đóng catalog | `catalog.unmount()` | Gỡ `panel` khỏi trang | Catalog biến mất, header và hai nút của shell vẫn còn |
+
+**Đó là contract tích hợp của ví dụ:** `mount(container, theme)` trả object có `update(theme)` và `unmount()`. Không có phần triển khai nào phải đoán thêm.
+
+Ví dụ này mô phỏng vai trò shell/remote bằng module JavaScript cùng server, **chưa chứng minh deploy độc lập**. Mình cố ý chưa thêm cơ chế tải remote từ một bản phát hành riêng. Với React, phần tạo/gỡ DOM được thay bằng render/unmount của React; các tác vụ như fetch hay subscription còn cần cleanup tương ứng. Đọc [React trong micro-frontend](/docs/ui-va-framework/react) khi bạn cần bước đó.
 
 ### Tránh biến shell SDK thành framework thứ hai
 
-Một SDK gom navigation, auth, telemetry và theme có thể tiện, nhưng nó trở thành dependency mà mọi remote phải tương thích. Nếu SDK còn ép domain dùng cùng store, query library, form library và service layer, bạn đã dựng một framework nội bộ với chi phí migration riêng.
+Trong ví dụ, shell chỉ truyền vùng hiển thị và theme. Catalog tự quyết định cách tạo giao diện bên trong. Giữ API ở mức nhỏ như vậy giúp hai bên ít phải biết chi tiết của nhau.
 
-Mình giữ contract platform nhỏ, tách các capability độc lập và inject adapter khi cần. Domain vẫn chọn implementation bên trong boundary. Với các team đã chủ động chọn cùng framework và shared providers, dùng component contract có thể đơn giản hơn; không cần giả lập framework independence bằng hàng loạt port.
+Một SDK — bộ thư viện dùng chung — có thể cung cấp navigation, theme hay cách báo lỗi. Nhưng nếu SDK còn bắt mọi remote dùng chung store, thư viện form và cách gọi API, mỗi lần SDK đổi có thể kéo theo nhiều team phải sửa. Hãy chỉ đưa vào contract những việc thực sự cần phối hợp, không đưa toàn bộ cách viết ứng dụng vào đó.
 
 ## Ngăn remote cũ mount sau navigation mới
 
@@ -360,96 +398,16 @@ cart -> shell: "Load xong: mount Cart"
 catalog -> shell: "3. Load xong: bỏ kết quả cũ"
 ```
 
-Dùng generation cho outlet: chỉ yêu cầu mới nhất được commit. Abort giúp dừng công việc có hỗ trợ cancellation; generation giúp bỏ qua kết quả của công việc không hủy được, như nhiều trường hợp dynamic import.
+Ví dụ ba file ở trên nhập module trực tiếp và hiển thị ngay, nên chưa có bước chờ tải remote khi chuyển trang. Khi thêm tải module bất đồng bộ, shell cần xử lý tình huống trong sơ đồ:
 
-Ví dụ dưới đây chỉ quản lý **đổi remote trong một outlet**. Router adapter gọi `show` khi đổi domain hoặc cần remount có chủ đích; đổi subroute trong cùng domain đi qua navigation port. Container `outlet` phải là vùng dành riêng cho controller này, không phải node mà React shell đồng thời quản lý children.
+1. Đánh số mỗi lần chuyển trang: catalog là lần 1, cart là lần 2.
+2. Khi module tải xong, kiểm tra số của nó có còn là lần chuyển mới nhất không.
+3. Nếu catalog trả về cho lần 1 trong khi lần mới nhất đã là 2, bỏ kết quả đó, không hiển thị catalog đè lên cart.
+4. Nếu đã tạo giao diện cho một lần bị thay thế, gọi `unmount()` để dọn nó.
 
-```ts title="shell/outlet-controller.ts" sourceFile="shell/outlet-controller.ts" sourceRegion="main"
-import type { NavigationPort } from '../contracts/navigation';
-import type {
-  MountedRemote,
-  RemoteModule,
-  ViewContext,
-} from '../contracts/remote';
+Cách đánh số này thường gọi là *generation*. Nó giúp bỏ kết quả cũ ngay cả khi việc tải module không hủy được. `AbortController` có thể bổ sung tín hiệu dừng cho tác vụ có hỗ trợ, nhưng không tự hủy `import()` hay xóa code đã chạy.
 
-export function createOutletController(
-  outlet: HTMLElement,
-  navigation: NavigationPort,
-  getContext: () => ViewContext,
-  report: (error: unknown) => void,
-) {
-  let generation = 0;
-  let controller: AbortController | undefined;
-  let mounted: MountedRemote | undefined;
-
-  function clearCurrent() {
-    // detach ownership trước khi gọi cleanup của remote.
-    const previous = mounted;
-    mounted = undefined;
-    try {
-      controller?.abort();
-      previous?.unmount();
-    } finally {
-      outlet.replaceChildren();
-    }
-  }
-
-  async function show(load: () => Promise<RemoteModule>) {
-    const request = ++generation;
-    let pending: MountedRemote | undefined;
-
-    try {
-      clearCurrent();
-      const task = new AbortController();
-      controller = task;
-      outlet.textContent = 'Đang tải nội dung…';
-
-      const remote = await load();
-      if (request !== generation || task.signal.aborted) return;
-      if (remote.contractVersion !== 1) {
-        throw new Error('Unsupported remote contract');
-      }
-
-      const container = document.createElement('div');
-      outlet.replaceChildren(container);
-      pending = remote.mount({
-        container,
-        context: getContext(),
-        navigation,
-        signal: task.signal,
-      });
-
-      if (request !== generation || task.signal.aborted) {
-        pending.unmount();
-        return;
-      }
-      mounted = pending;
-    } catch (error) {
-      pending?.unmount();
-      report(error);
-      if (request !== generation) return;
-      outlet.textContent = 'Không tải được nội dung. Hãy thử lại.';
-    }
-  }
-
-  return {
-    show,
-    update: (context: ViewContext) => mounted?.update(context),
-    dispose() {
-      generation++;
-      clearCurrent();
-    },
-  };
-}
-```
-
-<SourceRef project="kien-truc-application-shell" file="shell/outlet-controller.ts" region="main">Đối chiếu shell/outlet-controller.ts</SourceRef>
-
-Đây là mẫu tối thiểu cho remote tuân thủ contract đồng bộ, cleanup không throw và không kích hoạt navigation reentrant trong mount/unmount. `load` là adapter của cơ chế tích hợp, không phải API federation có sẵn. Production cần validate shape module ở runtime, phân loại lỗi, timeout, UI retry, telemetry và xử lý cleanup lỗi có chủ đích.
-
-Điểm cần giữ lại khi dùng runtime có sẵn là **kiểm tra request hiện hành sau mỗi bước async trước khi commit**, lấy context mới nhất khi mount và cleanup instance bị thay thế. Đừng viết orchestrator riêng chỉ để sao chép lại lifecycle mà single-spa hoặc framework đã quản lý.
-
-Nếu `mount` là async, generation check sau `load` chưa đủ. Trong lúc chờ mount, remote có thể đã tạo listener hoặc DOM. Contract async phải quy định signal, rollback khi reject và cleanup handle khi resolve muộn; đồng thời bảo đảm instance cũ không ghi vào container của instance mới. Có thể serialize transition hoặc dùng container riêng theo instance, nhưng không để hai instance tranh cùng một outlet.
+Đây là vấn đề cần thêm khi mở rộng ví dụ, không phải lý do để nhét cả bộ điều phối vào contract ban đầu. Đọc [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) để đi tiếp từ việc ghép giao diện sang điều phối URL và chuyển trang.
 
 ## Failure boundary và trải nghiệm phục hồi
 

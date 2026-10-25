@@ -5,6 +5,16 @@ const source = 'https://github.com/vanhiep99w/example-learn/tree/main/examples/m
 
 export const examples = [
   {
+    id: 'application-shell',
+    title: 'Shell và remote: mount, update, unmount',
+    defaultVersion: 'document',
+    versions: [{
+      id: 'document',
+      title: 'Đúng code trong bài',
+      src: '/examples/application-shell/shell/',
+    }],
+  },
+  {
     id: 'mfe-cart',
     title: 'Shop React + Vue',
     defaultVersion: 'snapshot',
