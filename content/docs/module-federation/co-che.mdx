@@ -147,15 +147,33 @@ Tên file `remoteEntry.js` đến từ cấu hình `filename`; tên object `cata
 
 ### Ba tên cần phân biệt
 
-| Tên | Ví dụ | Dùng để làm gì |
+Trong cấu hình đầu bài, alias và container đều tên `catalog`, nên trông như chỉ có một tên. Để thấy vai trò khác nhau, **chỉ ở ví dụ này**, mình đổi alias phía host thành `products`; cấu hình remote vẫn giữ `name: 'catalog'` và expose `./ProductPage`.
+
+```js title="Host — đổi alias, không đổi remote"
+new ModuleFederationPlugin({
+  remotes: {
+    products: 'catalog@https://assets.example.com/catalog/r17/remoteEntry.js',
+  },
+});
+```
+
+Lúc này host viết:
+
+```js title="Import theo alias mới của host"
+const moduleExports = await import('products/ProductPage');
+```
+
+Đọc câu import đó thành: **“Dùng remote mà host gọi là `products`, lấy module công khai `./ProductPage` của nó.”**
+
+| Tên | Ai khai báo ở đâu? | Trong ví dụ này dùng để làm gì? |
 | --- | --- | --- |
-| Alias trong host | Key `catalog` của `remotes` | Prefix của `catalog/ProductPage` |
-| Tên container remote | `name: 'catalog'`, phần trước `@` | Tìm container sau khi script chạy |
-| Public module key | `./ProductPage` | Chọn exposed module trong container |
+| **Alias `products`** | Host đặt làm key trong `remotes` | Giúp webpack nhận ra prefix `products/` trong câu import thuộc remote nào |
+| **Container name `catalog`** | Remote đặt bằng `name`; host ghi đúng tên đó trước `@` | Giúp runtime tìm object `window.catalog` sau khi tải và chạy entry |
+| **Public module key `./ProductPage`** | Remote đặt làm key trong `exposes` | Giúp container biết module nào được yêu cầu qua `get('./ProductPage')` |
 
-Alias và container name đang giống nhau để dễ đọc, nhưng không bắt buộc. Nếu host dùng `products: 'catalog@https://…/remoteEntry.js'`, import sẽ là `products/ProductPage`, còn global container vẫn là `catalog`.
+Host tự chọn alias, nhưng phải khớp **container name** và **public module key** mà remote cung cấp. Vì vậy đổi alias thành `products` không làm object trở thành `window.products`. Và `ProductPage` trong import là tên public, không phải yêu cầu tải một file tên `ProductPage.jsx`.
 
-`output.uniqueName` lại có nhiệm vụ khác: phân biệt runtime/chunk loading của các build cùng xuất hiện trên trang. Đặt container name đúng chưa đủ nếu hai build vẫn dùng cùng runtime name và gây collision.
+`remoteEntry.js` chỉ là tên file entry tại URL sau `@`, không phải một trong ba tên trên. `output.uniqueName` cũng là cấu hình khác, dùng để tránh xung đột runtime/chunk loading giữa các build; nó không thay alias, container name hay public key.
 
 ### Container API
 
@@ -166,17 +184,26 @@ Container có hai hàm chính:
 | `container.init(shareScope)` | Bảng thông tin thư viện dùng chung, gọi là share scope | Kết nối cơ chế chia sẻ thư viện giữa host và remote |
 | `container.get('./ProductPage')` | Tên module mà remote đã công bố | Tải các chunk cần thiết và trả về factory để lấy module |
 
-`get` chưa trả thẳng component. Bạn nhận một hàm factory, gọi hàm đó mới có exports của module:
+**Vậy khi viết `import('catalog/ProductPage')`, ai gọi hai hàm này?** Code runtime do webpack sinh ra sẽ làm việc đó cho bạn. Quay lại cấu hình gốc ở đầu bài, với alias và container cùng tên `catalog`, code ứng dụng chỉ cần:
 
-```js title="Sau khi container đã được khởi tạo sharing"
-const factory = await container.get('./ProductPage');
-const moduleExports = factory();
+```js title="Code bạn viết trong shell"
+const moduleExports = await import('catalog/ProductPage');
 const ProductPage = moduleExports.default;
 ```
 
-Đoạn này giả sử module có default export là component. `factory` là hàm **do `get` trả về**, không phải method thứ ba của container. Gọi factory chỉ lấy exports; nó chưa render component hay gọi `mount`.
+**Lúc build shell**, webpack nhận ra `catalog` là alias trong `remotes`. Nó chuyển câu import thành code dùng federation runtime, thay vì coi đây là npm package hay đường dẫn tới file local. Browser không tự hiểu alias `catalog`, cũng không gửi request HTTP tới một URL tên `catalog/ProductPage`.
 
-`init` và `get` có thể được gọi với `await`, kể cả khi một nhánh hoàn tất đồng bộ. Factory trong mô hình này được gọi đồng bộ. Khi bạn viết `import('catalog/ProductPage')`, webpack xử lý các bước đó; không cần tự gọi lại trong component.
+**Lúc chạy**, lần đầu shell cần module này, runtime thực hiện các công việc sau:
+
+1. **Tìm container:** tra cấu hình của alias `catalog`, tải và chạy `remoteEntry.js` ở URL đã khai báo, rồi lấy object `window.catalog`.
+2. **Kết nối sharing:** chuẩn bị share scope của host và gọi `container.init(shareScope)` để hai build tham gia cơ chế chia sẻ thư viện.
+3. **Yêu cầu module:** gọi `container.get('./ProductPage')`. Container tải những chunk cần thiết rồi trả về một hàm factory, chưa phải component.
+4. **Lấy exports:** gọi `factory()`. Code module được thực thi nếu chưa được đánh giá; kết quả là object exports, ví dụ có thuộc tính `default` chứa component `ProductPage`.
+5. **Hoàn tất import:** Promise của `import(...)` resolve với object exports đó. Lúc này `await` mới trả kết quả để shell đọc `moduleExports.default`.
+
+Đây là luồng khái niệm, không phải bản chép nguyên code webpack sinh ra. Runtime có thể preload hoặc tái sử dụng container/module đã cache; mỗi lần import không nhất thiết tải lại entry, gọi init lại hay chạy lại code module. Nếu một bước tải hoặc thực thi thất bại, Promise của import có thể reject.
+
+Điểm cần nhớ: **`await import(...)` trả về exports của module, không trả container hay factory, và chưa render UI**. `factory` là hàm do `get` trả về, không phải method thứ ba của container. Bạn cũng không cần tự gọi thêm `init` và `get` sau câu import; phần kế tiếp sẽ đi sâu vào từng mốc runtime này.
 
 ## Theo dõi một federated import
 
