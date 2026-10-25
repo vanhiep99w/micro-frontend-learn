@@ -307,7 +307,9 @@
       "path": "content/docs/kien-truc/runtime-composition.mdx",
       "counts": {
         "d2": 1,
-        "text": 1,
+        "text": 2,
+        "js": 1,
+        "html": 2,
         "json": 1,
         "ts": 1
       }
@@ -750,7 +752,7 @@
       }
     }
   ],
-  "fences": 774,
+  "fences": 778,
   "reviewed": [
     "content/docs/cac-cach-tich-hop/import-maps.mdx|import-map-shop/",
     "content/docs/kien-truc/runtime-composition.mdx|Catalog release catalog-r17",
@@ -763,14 +765,14 @@
     "mdx": 2,
     "json": 50,
     "d2": 135,
-    "js": 176,
+    "js": 177,
     "terminal-session": 1,
     "jsx": 22,
-    "text": 30,
+    "text": 31,
     "powershell": 1,
     "http": 15,
     "ts": 115,
-    "html": 27,
+    "html": 29,
     "css": 14,
     "tsx": 34,
     "yaml": 5,

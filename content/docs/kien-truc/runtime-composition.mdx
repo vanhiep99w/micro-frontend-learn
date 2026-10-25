@@ -22,6 +22,11 @@ Runtime composition đưa việc tải và ghép những phần frontend có art
   - [Từ route tới nội dung usable](#từ-route-tới-nội-dung-usable)
   - [Entry không phải toàn bộ artifact](#entry-không-phải-toàn-bộ-artifact)
 - [Chọn cơ chế tích hợp](#chọn-cơ-chế-tích-hợp)
+  - [Native ESM và import maps](#native-esm-và-import-maps)
+  - [Module Federation](#module-federation)
+  - [single-spa kết hợp loader](#single-spa-kết-hợp-loader)
+  - [Web Components](#web-components)
+  - [Iframe](#iframe)
   - [Loader khác orchestrator](#loader-khác-orchestrator)
   - [Ưu tiên boundary theo route](#ưu-tiên-boundary-theo-route)
 - [Chọn artifact bằng runtime config](#chọn-artifact-bằng-runtime-config)
@@ -122,20 +127,74 @@ Với iframe, shell chọn URL và điều phối document riêng thay vì lấy
 
 ### Entry không phải toàn bộ artifact
 
-Entry là điểm bắt đầu để loader tìm code. Trong webpack Module Federation, `remoteEntry.js` thường cung cấp container, rồi container tải module được expose cùng các chunk liên quan. Với ESM, entry có thể import các module khác. CSS, font và asset cũng có thể được tải sau đó.
+Shell biết URL của `entry.js`. Vậy có phải tải xong file đó là đã có toàn bộ catalog? **Không nhất thiết: entry là cửa vào, còn artifact của bản release là cả bộ file cần để chạy remote đó.**
+
+Có ba từ cần phân biệt:
+
+| Khái niệm | Nghĩa trong ví dụ catalog |
+| --- | --- |
+| Entry | File đầu tiên mà loader tìm đến để bắt đầu lấy code catalog |
+| Chunk | Phần JavaScript được bundler tách thành file riêng; có thể tải ngay hoặc chỉ khi cần |
+| Artifact của bản release | Toàn bộ đầu ra build cần để chạy bản catalog đó: entry, chunks, CSS, font, hình ảnh và các asset liên quan |
+
+Giả sử build `catalog-r17` tạo ra bộ file sau. Tên file và cách chia chunk chỉ để minh họa; mỗi toolchain có thể tạo đầu ra khác nhau.
 
 ```text
 Catalog release catalog-r17
 ├── entry.js
 ├── chunks/product-page.a1b2.js
+├── chunks/filter.b2c3.js
 ├── chunks/vendor.c3d4.js
 ├── styles/catalog.e5f6.css
-└── assets/...
+└── assets/product-icon.svg
 ```
 
-Nếu entry trả `200` nhưng chunk bị `404`, remote vẫn không dùng được. Vì vậy deployment và rollback phải quản lý **toàn bộ artifact graph**, không chỉ file entry. Cấu hình base URL hoặc `publicPath` sai cũng có thể làm entry tải từ CDN nhưng chunk lại bị tìm ở origin của shell.
+Một lần mở trang sản phẩm rồi bật bộ lọc có thể diễn ra như sau:
+
+1. Shell yêu cầu loader tải `https://assets.example.com/catalog/catalog-r17/entry.js`.
+2. Từ entry và các tham chiếu trong module/runtime, loader tìm và tải code trang sản phẩm cùng dependency cần thiết.
+3. CSS và hình ảnh được tải theo cách bản build đã cấu hình, chẳng hạn qua stylesheet link hoặc URL trong CSS.
+4. Khi người dùng mở bộ lọc, code catalog mới yêu cầu tải thêm `chunks/filter.b2c3.js` nếu phần đó được lazy-load.
+
+**Shell không cần tự liệt kê mọi chunk.** Quan hệ giữa các file đã được thể hiện qua import, tham chiếu asset hoặc dữ liệu mà bundler/runtime tạo ra. Tập hợp file cùng quan hệ phụ thuộc đó được gọi là **artifact graph**. Không phải mọi file trong graph đều được tải ngay lần đầu.
+
+Cách đi từ entry tới code thật còn tùy cơ chế:
+
+- Với native ESM, entry có thể `import` module khác; browser tiếp tục resolve và tải module graph. Dynamic `import()` có thể yêu cầu thêm module khi người dùng thao tác.
+- Với webpack Module Federation, `remoteEntry.js` thường cung cấp **container** — đối tượng cho runtime truy cập các module được công khai qua `exposes`. Lấy một module từ container có thể cần tải thêm các chunk chứa implementation của module đó. Đừng hiểu `remoteEntry.js` là file đã chứa sẵn toàn bộ UI.
+
+**Tình huống 1 — upload thiếu file.** Bạn chỉ upload entry, hoặc cập nhật config trước khi upload đủ chunks. Trong Network có thể thấy:
+
+| Request | Kết quả minh họa | Điều đã biết |
+| --- | --- | --- |
+| `/catalog/catalog-r17/entry.js` | `200 OK` | Entry đã được phục vụ, chưa chứng minh remote dùng được |
+| `/catalog/catalog-r17/chunks/product-page.a1b2.js` | `404 Not Found` | Thiếu code cần cho trang sản phẩm; quá trình load có thể thất bại |
+
+Vì vậy, kiểm tra entry trả `200` chưa đủ. Cần kiểm tra cả các màn hình tải chunk muộn, không chỉ trang đầu tiên.
+
+**Tình huống 2 — chunk bị tìm sai nơi.** Entry được tải từ CDN, nhưng cấu hình URL tải chunk lại trỏ về origin của shell:
+
+```text
+Entry đúng: https://assets.example.com/catalog/catalog-r17/entry.js
+Chunk sai:  https://shop.example.com/chunks/product-page.a1b2.js
+Chunk đúng: https://assets.example.com/catalog/catalog-r17/chunks/product-page.a1b2.js
+```
+
+Trong webpack, `publicPath` liên quan tới URL gốc mà runtime dùng để tải các file đầu ra như chunk. Với native ESM, relative import được resolve theo URL của module đang import, không theo URL trang shell. Kiểm tra cách toolchain sinh và resolve URL, thay vì mặc định rằng entry ở CDN thì mọi asset khác chắc chắn cũng được tải đúng từ CDN.
+
+**Tình huống 3 — xóa bản cũ quá sớm.** Người dùng đang mở tab chạy `catalog-r17`. Bạn deploy `catalog-r18` rồi xóa bộ file r17. Tab cũ vẫn hiển thị bình thường cho đến khi người dùng mở bộ lọc: browser lúc đó mới yêu cầu `filter.b2c3.js` của r17 và nhận `404`.
+
+Đổi config sang r18 không tự thay code trong tab đã chạy r17. Cũng vì vậy, rollback về r17 chỉ có ích nếu các file của r17 vẫn còn phục vụ được. Policy giữ artifact cũ được giải thích tiếp ở [Tách cache cấu hình khỏi cache artifact](#tách-cache-cấu-hình-khỏi-cache-artifact).
+
+<Callout type="info" title="Entry là cửa vào, artifact là cả bộ file phía sau">
+  Upload đủ bộ file trước khi chuyển config sang bản mới. Giữ bộ file cũ theo thời gian hỗ trợ tab và rollback. Đơn vị cần quản lý khi deploy là cả artifact graph của một version, không chỉ file entry.
+</Callout>
 
 ## Chọn cơ chế tích hợp
+
+Bạn đã quyết định tải catalog từ một bản build riêng khi ứng dụng chạy. Câu hỏi tiếp theo là: **shell sẽ lấy gì từ catalog và đưa nó lên màn hình bằng cách nào?**
+
+Giả sử shell giữ logo, navigation và một outlet cho nội dung. Catalog có thể cung cấp một module có hàm `mount`, một component để shell render, một custom element hoặc cả một trang để nhúng bằng iframe. Đó là những **boundary tích hợp** khác nhau: nơi hai bên gặp nhau và thống nhất cách sử dụng nhau.
 
 Runtime composition là lựa chọn kiến trúc; Module Federation chỉ là một cơ chế thực hiện. Chọn công cụ sau khi xác định public boundary, framework compatibility và mức isolation cần thiết.
 
@@ -147,11 +206,87 @@ Runtime composition là lựa chọn kiến trúc; Module Federation chỉ là m
 | Web Components | Custom element với properties, events và lifecycle | Cách load/register, style boundary, version và cleanup; không tự có sandbox |
 | Iframe | Document riêng với message protocol | Origin/sandbox policy, handshake, height, focus và navigation |
 
+**Các dòng trong bảng không phải năm công cụ làm cùng một việc.** Có cơ chế tập trung vào lấy module, có cơ chế tập trung vào lifecycle, có cơ chế xác định cách UI được nhúng. Bạn có thể kết hợp chúng, chẳng hạn dùng Module Federation để lấy module và single-spa để điều phối ứng dụng.
+
+### Native ESM và import maps
+
+Với native ESM, catalog có thể cung cấp module JavaScript với named exports như `mount`. Shell dùng cơ chế module của browser để tải rồi gọi public API đó:
+
+```js title="Minh họa ESM trong browser — chưa có validation hoặc quản lý navigation"
+const catalog = await import(
+  'https://assets.example.com/catalog/catalog-r17/entry.js'
+);
+
+// Giả sử module export mount(container, theme), trả handle có unmount().
+const instance = catalog.mount(outlet, 'light');
+
+// Khi orchestrator quyết định rời catalog:
+instance.unmount();
+```
+
+`outlet` là DOM element mà shell dành cho catalog. Ví dụ giả định artifact là ESM chạy được trong browser và các điều kiện tải module đã được cấu hình đúng. Đây không phải đoạn code có thể dán nguyên vào mọi bundler; xem [Ví dụ loader cho native ESM](#ví-dụ-loader-cho-native-esm) để có validation và các giới hạn tích hợp.
+
+Import map giúp ánh xạ một tên như `shop-catalog` tới URL module. Nhờ đó code tiêu thụ có thể import bằng tên đã ánh xạ thay vì viết URL ở từng chỗ. **Import map không tự render catalog, không theo dõi route và không gọi `unmount`.** Đó vẫn là trách nhiệm của lớp điều phối.
+
+Cách này phù hợp khi bạn muốn boundary module nhỏ và artifact có module graph mà browser resolve được. Nó không tự cung cấp cơ chế thương lượng version dependency chia sẻ như federation runtime.
+
+### Module Federation
+
+Với Module Federation, catalog công khai module qua `exposes`, chẳng hạn `./CatalogPage`. Host dùng federation runtime để lấy module đó từ remote container. Module nhận được có thể là component hoặc một API lifecycle; Module Federation không bắt buộc bạn phải dùng một kiểu UI contract duy nhất.
+
+Điểm khác với ví dụ ESM là **giao thức lấy module**. Với webpack script container, runtime thường phải tải entry, khởi tạo chia sẻ dependency, rồi gọi container để lấy module factory — hàm tạo hoặc truy cập exports của module. Một tên file kết thúc bằng `.js` không nói cho bạn biết nó dùng giao thức nào.
+
+Federation còn có cơ chế chia sẻ dependency giữa các build, ví dụ React. Nhưng khai báo shared dependency không tự chứng minh các version tương thích. Bạn vẫn cần policy rõ và kiểm thử tổ hợp host/remote.
+
+Mình cân nhắc cơ chế này khi cần lấy module giữa các build và có nhu cầu cụ thể về dependency sharing. Nó không tự quản lý route, cleanup tài nguyên hoặc fallback của sản phẩm.
+
+### single-spa kết hợp loader
+
+single-spa tập trung vào việc điều phối ứng dụng theo lifecycle. Ví dụ bạn đăng ký catalog active khi URL thuộc `/catalog/*`, với các lifecycle `bootstrap`, `mount` và `unmount`.
+
+Khi người dùng vào catalog, single-spa có thể gọi hàm tải ứng dụng mà bạn cung cấp, rồi điều phối lifecycle phù hợp. Khi rời catalog, nó gọi unmount. **Code ứng dụng được lấy từ đâu và theo format nào vẫn phải do loader/cấu hình tích hợp giải quyết.**
+
+Vì vậy, single-spa có thể dùng cùng Module Federation: loader lấy module qua federation, còn single-spa quản lý lúc ứng dụng active và lifecycle. Module trả về phải đáp ứng lifecycle contract của single-spa, trực tiếp hoặc thông qua adapter. Không phải cứ tải được một React component là đã có một application single-spa hợp lệ.
+
+### Web Components
+
+Với Web Components, shell có thể sử dụng catalog qua một custom element sau khi module định nghĩa element đã được tải và đăng ký:
+
+```html
+<shop-catalog></shop-catalog>
+```
+
+Hai bên có thể trao đổi qua properties và DOM events. Lifecycle của element cung cấp các điểm để setup và cleanup khi element được gắn vào hoặc gỡ khỏi document; remote vẫn phải tự triển khai cleanup đúng.
+
+Cách này hữu ích khi bạn muốn public boundary là một HTML element thay vì component API riêng của framework. Tuy nhiên, vẫn phải chọn loader để tải code đăng ký element. Custom element cũng không tự cách ly CSS; Shadow DOM có thể hỗ trợ style encapsulation nếu được sử dụng. **Cả custom element lẫn Shadow DOM đều không phải security sandbox cho JavaScript.**
+
+### Iframe
+
+Với iframe, shell không lấy component hay hàm `mount` để render chung. Nó nhúng một document khác:
+
+```html
+<iframe
+  src="https://catalog.example.com/products"
+  title="Danh mục sản phẩm"
+></iframe>
+```
+
+Catalog có document và môi trường JavaScript riêng. Hai bên thường trao đổi qua `postMessage`, chẳng hạn catalog báo đã sẵn sàng, yêu cầu đổi route hoặc cập nhật chiều cao. Khi nhận message, cần kiểm tra origin, nguồn gửi và cấu trúc dữ liệu theo protocol đã thống nhất.
+
+Iframe tạo boundary document rõ hơn, nhưng tích hợp trải nghiệm cũng khác: bạn phải xử lý sizing, focus, navigation và loading state. Nếu cần cách ly code không tin cậy, phải thiết kế thêm origin và sandbox policy phù hợp; chỉ viết một thẻ iframe không có nghĩa đã có cấu hình bảo mật đúng.
+
 ### Loader khác orchestrator
 
-Loader trả lời “làm sao lấy code cần dùng?”. Orchestrator trả lời “phần nào đang active, lúc nào mount, lúc nào unmount, ai được commit vào slot này?”. Hai trách nhiệm có thể nằm trong một thư viện, nhưng không nên nhầm chúng là một.
+Sau khi nhìn qua các cơ chế, hãy tách hai câu hỏi:
 
-Import maps ánh xạ module specifier tới URL; chúng không quản lý UI lifecycle. single-spa điều phối lifecycle ứng dụng; nó không bắt buộc bạn phải dùng Module Federation để tải code. Web Components cung cấp lifecycle của element; bạn vẫn cần đưa module định nghĩa element tới browser.
+| Câu hỏi | Trách nhiệm | Ví dụ |
+| --- | --- | --- |
+| Làm sao lấy được code catalog? | Loader | Resolve URL, tải ESM module hoặc lấy exposed module qua federation container |
+| Khi nào hiển thị và khi nào dọn catalog? | Orchestrator — lớp điều phối | Chọn remote theo route, mount vào outlet, unmount khi rời route |
+
+Một lần chuyển từ catalog sang cart có thể cần orchestrator quyết định dọn instance catalog, yêu cầu loader lấy module cart, rồi mount cart vào outlet. Loader có thể lấy module thành công nhưng orchestrator không nên mount nếu người dùng đã chuyển sang route khác trong lúc chờ.
+
+Hai trách nhiệm có thể nằm trong một thư viện, nhưng không nên nhầm chúng là một. Import maps ánh xạ module specifier tới URL; chúng không quản lý UI lifecycle. single-spa điều phối lifecycle ứng dụng; nó không bắt buộc bạn phải dùng Module Federation để tải code. Web Components cung cấp lifecycle của element; bạn vẫn cần đưa module định nghĩa element tới browser.
 
 Với webpack Module Federation, dynamic container thường đi qua khởi tạo share scope, `container.init(...)`, rồi `container.get(...)` để lấy factory của module. **Đừng dùng `import(remoteEntryUrl)` rồi mặc định kết quả có export `mount`.** Container entry kiểu script và native ESM entry có protocol khác nhau; adapter phải khớp format artifact và runtime đang dùng.
 
@@ -159,11 +294,20 @@ Xem [Cơ chế Module Federation](/docs/module-federation/co-che) và [So sánh 
 
 ### Ưu tiên boundary theo route
 
-Mình bắt đầu với một remote cho một nhánh route nếu domain có hành trình đủ lớn. Catalog có thể giữ tìm kiếm, bộ lọc và chi tiết sản phẩm; shell chỉ cần biết prefix công khai, không phải mọi component bên trong.
+Mình bắt đầu với một remote cho một nhánh route nếu domain có hành trình đủ lớn:
 
-Slot nhỏ như cart badge có thể phù hợp, nhưng mỗi slot thêm một loading state, failure boundary và lifecycle. Khi một màn hình cần nhiều remote nhỏ cùng sẵn sàng mới có ý nghĩa, độc lập trên pipeline dễ biến thành phụ thuộc lúc chạy.
+| Route công khai | Owner | Chi tiết shell không cần lắp ghép |
+| --- | --- | --- |
+| `/catalog/*` | Catalog remote | Tìm kiếm, bộ lọc, danh sách và chi tiết sản phẩm |
+| `/cart/*` | Cart remote | Danh sách hàng trong giỏ, đổi số lượng và tính tổng theo dữ liệu domain |
+
+Catalog giữ cả hành trình của mình; shell chỉ cần biết route prefix và public contract. So với việc chia ô tìm kiếm, bộ lọc, danh sách và từng thẻ sản phẩm thành các remote riêng, cách này giảm số điểm phải phối hợp trên cùng màn hình.
+
+Slot nhỏ như cart badge có thể phù hợp, nhưng mỗi slot thêm một loading state, failure boundary và lifecycle. Khi một màn hình cần nhiều remote nhỏ cùng sẵn sàng mới có ý nghĩa, độc lập trên pipeline dễ biến thành phụ thuộc lúc chạy. **Đừng biến mọi component thành một đơn vị deploy chỉ vì loader cho phép làm vậy.**
 
 Cũng cần chọn giữa component trong cây framework chung và root độc lập. Component chung thuận tiện cho context nhưng tăng yêu cầu compatibility; root riêng tạo boundary render rõ hơn nhưng cần inject navigation, auth và theme qua contract. Đừng thêm một lớp root độc lập nếu nó không giải quyết yêu cầu cụ thể nào.
+
+Để chọn cơ chế, hãy viết trước một câu như “shell lấy module catalog có `mount/unmount` để hiển thị dưới `/catalog/*`” hoặc “shell nhúng document catalog và trao đổi bằng message”. Sau đó mới chọn loader và orchestrator đáp ứng boundary ấy. Cách chọn này rõ hơn việc bắt đầu bằng tên công cụ rồi mới tìm cách chia ứng dụng.
 
 ## Chọn artifact bằng runtime config
 
