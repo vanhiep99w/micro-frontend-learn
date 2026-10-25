@@ -3,7 +3,9 @@ title: "Dynamic remotes"
 description: "Chọn remote release qua runtime manifest, nối promise-based remote của webpack 5 và xử lý cache, timeout, fallback, canary, rollback an toàn."
 ---
 
-Giả sử shell đã build xong, nhưng bạn muốn chuyển catalog từ release `r17` sang `r18` mà không build lại shell. Nếu URL nằm cố định trong `remotes`, bạn phải thay cấu hình rồi tạo host artifact mới. Dynamic remotes chuyển quyết định chọn địa chỉ sang runtime: shell đọc một manifest, chọn release hợp lệ rồi mới tải container.
+Giả sử shell đã build với URL `/catalog/r17/remoteEntry.js`, nhưng bạn muốn nó dùng URL `/catalog/r18/remoteEntry.js` mà không build lại shell. Dynamic remotes chuyển quyết định chọn địa chỉ sang runtime: shell đọc cấu hình khi chạy, chọn release hợp lệ rồi mới tải container.
+
+Nhưng **dynamic remotes không phải điều kiện bắt buộc để catalog deploy riêng**. Bạn cũng có thể giữ URL `/catalog/remoteEntry.js` cố định rồi thay nội dung mỗi lần deploy. Bài này so sánh hai lựa chọn trước, sau đó mới triển khai cách dùng runtime manifest khi cần chọn release rõ ràng.
 
 Điểm khó không phải tạo một script tag. Bạn cần biết ai được quyền chọn URL, hai request đồng thời có tải entry hai lần không, và rollback có ảnh hưởng tới tab đã mở hay không. Bài này đi từ một runtime manifest nhỏ tới loader có ranh giới rõ ràng, rồi đưa ra chính sách vận hành cho các tình huống đó.
 
@@ -17,6 +19,8 @@ Giả sử shell đã build xong, nhưng bạn muốn chuyển catalog từ rele
 
 - [Dynamic ở đâu và không dynamic ở đâu](#dynamic-ở-đâu-và-không-dynamic-ở-đâu)
   - [URL tĩnh vẫn tải code ở runtime](#url-tĩnh-vẫn-tải-code-ở-runtime)
+  - [Giữ URL entry cố định và thay nội dung khi deploy](#giữ-url-entry-cố-định-và-thay-nội-dung-khi-deploy)
+  - [Lazy bootstrap và no-cache có đủ không](#lazy-bootstrap-và-no-cache-có-đủ-không)
   - [Khi nào nên dùng](#khi-nào-nên-dùng)
 - [Chọn một cơ chế tải remote](#chọn-một-cơ-chế-tải-remote)
 - [Thiết kế runtime manifest](#thiết-kế-runtime-manifest)
@@ -62,17 +66,80 @@ Có thể hình dung manifest như bảng chỉ dẫn tới một kho hàng: đ�
 
 Trong ví dụ promise-based bên dưới, alias `catalog` và request `catalog/ProductPage` vẫn nằm trong dependency graph của host. Chỉ release URL được chọn muộn. Bạn không thể thêm alias `checkout` vào manifest rồi mong webpack tự hiểu `import('checkout/Page')` trong một host chưa được build cho alias đó. Nếu cần một danh sách plugin thực sự mở ở runtime, hãy dùng loader theo container API hoặc runtime API phù hợp.
 
+### Giữ URL entry cố định và thay nội dung khi deploy
+
+“Không dùng version trong URL” là lựa chọn hợp lệ. Shell có thể luôn dùng cấu hình này:
+
+```js title="URL entry cố định, nội dung được cập nhật khi deploy"
+new ModuleFederationPlugin({
+  remotes: {
+    catalog: 'catalog_app@https://assets.example.com/catalog/remoteEntry.js',
+  },
+});
+```
+
+Khi catalog có bản mới, bạn thay nội dung ở **cùng URL**. Shell không cần build lại vì địa chỉ trong bundle không đổi. Không cần `remotes.json` hay dynamic loader chỉ để làm việc này; tên container và API remote vẫn phải tương thích với shell.
+
+Tuy nhiên, `remoteEntry.js` thường không chứa toàn bộ ứng dụng. Entry mới có thể trỏ tới `product.c3d4.js`, trong khi entry cũ trỏ tới `product.a1b2.js`. Hai chunk cần có URL khác nhau và tiếp tục cùng tồn tại trong thời gian hỗ trợ tab cũ. Không đặt thư mục `r17/r18` không có nghĩa code không còn các phiên bản; content hash vẫn phân biệt nội dung cũ và mới.
+
+Quy trình deploy khởi đầu cho cách này:
+
+1. Build catalog với chunk và assets có content hash; không ghi đè nội dung khác vào cùng URL hash.
+2. Upload các chunk, CSS và assets mới trước, kiểm tra chúng truy cập được qua CDN.
+3. Thay `remoteEntry.js` bằng một bản hoàn chỉnh sau khi các file mà nó cần đã sẵn sàng. Không xóa entry trước rồi mới upload để tránh khoảng trống `404`.
+4. Giữ các file hash cũ đủ lâu cho tab cũ và rollback. Đừng dùng bước deploy “dọn sạch thư mục rồi copy bản mới”.
+5. Lưu lại entry và bộ file liên quan của bản trước để có thể phục hồi khi cần. URL cố định vẫn rollback được, nhưng phải phục hồi đúng bộ file, không chỉ hy vọng entry cũ còn trong cache.
+
+Các CDN edge có thể cập nhật khác thời điểm. Client nhận entry cũ hoặc mới đều phải tìm được những file tương ứng; đây là lý do phải giữ chunk cũ, không chỉ upload chunk mới.
+
+### Lazy bootstrap và no-cache có đủ không
+
+Nếu entry nhỏ, dùng `Cache-Control: no-cache` cho entry là một lựa chọn hợp lý. `no-cache` **cho phép lưu response nhưng yêu cầu xác thực lại trước khi tái sử dụng qua HTTP cache**, không phải “mỗi lần đều tải toàn bộ file”. Với validator như `ETag`, server có thể trả `304 Not Modified` khi file chưa đổi. Lượt kiểm tra vẫn có độ trễ mạng; entry nhỏ giảm số byte khi tải, không loại bỏ độ trễ đó.
+
+Cần tách async bootstrap khỏi lazy-load màn hình; hai việc này không tự bảo đảm deploy an toàn:
+
+| Cơ chế | Giải quyết việc gì? | Không giải quyết việc gì? |
+| --- | --- | --- |
+| Async bootstrap, như `import('./bootstrap')` | Tạo ranh giới bất đồng bộ để runtime có thể chuẩn bị sharing trước khi code app dùng thư viện shared | Không bảo đảm entry và các chunk của release đều đã được publish |
+| Lazy-load màn hình bằng `import()` | Trì hoãn tải code cho tới khi cần | Không bảo đảm chunk cũ vẫn tồn tại khi tab cũ tải nó muộn |
+| `no-cache` cho entry | Kiểm tra tính mới khi HTTP cache phục vụ lại response | Không xóa module cache hay thay module đã chạy trong tab |
+
+Policy khởi đầu cho **URL entry có nội dung thay đổi** và các assets công khai của remote:
+
+| Tài nguyên | Response header đề xuất |
+| --- | --- |
+| `/catalog/remoteEntry.js` | `Cache-Control: no-cache` |
+| Chunk, CSS, assets có content hash và nội dung không đổi tại URL đó | `Cache-Control: public, max-age=31536000, immutable` |
+
+Đặt header ở nơi phục vụ file và kiểm tra policy thực tế của CDN cùng service worker nếu có. Header mới không tự thu hồi response cũ đã được cache với TTL dài; khi chuyển policy, có thể cần purge CDN và xử lý cửa sổ cache cũ.
+
+Ví dụ, tab A đã nạp catalog cũ rồi bạn deploy bản mới. Dù entry có `no-cache`, gọi lại cùng `import('catalog/ProductPage')` trong tab A có thể chỉ dùng module cache, không tạo request entry nào để revalidate. Tab A cũng có thể vẫn cần một chunk cũ chưa tải. Xem [Deploy remote mới không thay code của tab cũ](/docs/module-federation/co-che#deploy-remote-mới-không-thay-code-của-tab-cũ).
+
+Vì vậy, **entry nhỏ + lazy loading + `no-cache` giúp chi phí tải hợp lý, nhưng không thay thế quy trình publish, giữ file cũ và kiểm thử tương thích API**. Cùng URL vẫn có thể phục vụ remote mới không tương thích với shell cũ; lỗi này không được sửa bằng cache header.
+
 ### Khi nào nên dùng
 
-Mình chọn dynamic remotes khi cùng một host artifact cần chạy ở nhiều môi trường, hoặc khi cần promote, canary và rollback remote mà không tạo host build mới. Cái giá là thêm một điểm phụ thuộc vào lúc resolve, một schema cấu hình cần quản lý và một policy chọn release cần kiểm thử.
+Nếu chỉ cần mọi lượt tải mới hướng tới bản catalog hiện hành, mình bắt đầu bằng **URL entry cố định, entry revalidate và chunk có hash**. Cách này cho phép remote deploy riêng mà không thêm một tầng manifest/loader. Không cần dynamic remotes chỉ vì ứng dụng có nhiều remote hoặc muốn lazy-load UI.
 
-Nếu hệ thống chỉ có một remote, host và remote luôn phát hành cùng nhau, URL tĩnh theo release thường dễ vận hành hơn. Cũng không cần dynamic loader chỉ để lazy-load UI: một federated `import()` với URL tĩnh đã làm được việc đó.
+URL theo release và runtime config không chỉ giúp giữ bản cũ. Điểm chính là **chọn chính xác bản nào được tải, thay vì luôn đi theo nội dung hiện tại của một URL chung**:
+
+| Nhu cầu | URL entry cố định, thay nội dung | URL theo release và runtime config |
+| --- | --- | --- |
+| Mọi lượt tải mới dùng bản hiện hành | Đơn giản, thường đủ | Làm được nhưng thêm cơ chế cấu hình |
+| Giữ file cũ cho tab cũ | Giữ chunk có hash; không cần thư mục version | Giữ trọn bộ file của release cũ |
+| Rollback | Phục hồi entry cũ và bảo đảm file liên quan còn đủ | Chuyển cấu hình về release bất biến đã có |
+| Cho một nhóm người dùng thử bản mới, nhóm khác giữ bản cũ | Cần thêm cơ chế chọn nội dung/địa chỉ và phân tách cache phù hợp | Config có thể chọn URL release riêng cho từng nhóm |
+| Kiểm thử rồi promote đúng artifact đã duyệt | Cần lưu và theo dõi chính xác bộ file được publish tại URL chung | URL bất biến định danh trực tiếp release đã kiểm thử |
+
+Mình thêm dynamic remotes khi cần chọn release theo môi trường/nhóm người dùng hoặc muốn promote và rollback bằng cấu hình. Đổi lại, phải quản lý schema, điểm phụ thuộc lúc đọc config và policy chọn release. Cả hai cách đều không tự đổi code trong tab đã nạp module.
+
+**Chọn URL cố định vì nhu cầu đơn giản là hợp lý; chọn nó vì nghĩ lazy bootstrap và `no-cache` loại bỏ mọi rủi ro thì chưa đúng.** Phần còn lại của bài triển khai lựa chọn runtime manifest, không phải yêu cầu bắt buộc cho mọi dự án federation.
 
 ## Chọn một cơ chế tải remote
 
 | Cơ chế | Cách dùng | Mặc định chọn khi nào |
 | --- | --- | --- |
-| URL tĩnh trong `remotes` | Import qua alias đã khai báo | Release được chốt cùng host; ít policy runtime |
+| URL tĩnh trong `remotes` | Import qua alias đã khai báo; URL có thể trỏ tới release bất biến hoặc entry cập nhật tại chỗ | Không cần chọn địa chỉ remote ở runtime; cần phân biệt hai chính sách cache/deploy này |
 | Promise-based remote của webpack gốc | Promise resolve object có `get` và `init`; host vẫn dùng import tĩnh | Cần đổi location của các alias đã biết mà giữ webpack quản lý sharing và module resolution |
 | Container API thủ công | Tự load entry, init share scope, gọi `get` và factory | Cần học cơ chế hoặc một integration rất đặc thù; chấp nhận tự quản lý toàn bộ loader |
 | Enhanced runtime | Dùng `registerRemotes`, `loadRemote` hoặc instance từ `createInstance` | Dự án đã dùng hệ sinh thái enhanced hoặc cần registry runtime mở và runtime plugins |
@@ -89,7 +156,9 @@ Với `@module-federation/enhanced/runtime`, API cấp module hoạt động tr�
 
 ### Manifest của ứng dụng
 
-Shell đọc endpoint same-origin `/runtime/remotes.json`. Đây là schema do ứng dụng tự thiết kế; webpack không tự fetch hay hiểu nó.
+Shell đọc endpoint same-origin `/runtime/remotes.json`. Đây là schema do ứng dụng tự thiết kế; webpack không tự fetch hay hiểu nó. Trong ví dụ này, bạn viết loader đọc JSON và cung cấp container; webpack tiếp tục xử lý sharing và lấy module.
+
+Đây **không phải `webpack.config.js`**, cũng không phải JSON được import rồi đóng gói vào bundle. Nó là response server cung cấp khi shell đang chạy. Lần đầu thêm loader cần build/deploy shell; những lần sau có thể cập nhật JSON trên server để chọn URL release khác mà không build lại shell. Pipeline có thể sinh/publish JSON này; không bắt buộc lập trình viên chỉnh file bằng tay.
 
 ```json title="Response của /runtime/remotes.json" sourceFile="runtime/remotes.json" sourceRegion="main"
 {
@@ -501,6 +570,8 @@ Hai timeout trong ví dụ cũng chưa giới hạn toàn bộ `import()`: init,
 
 Đừng overwrite `/catalog/r18/remoteEntry.js` bằng một build khác. Nếu URL được coi là immutable, một lần build mới cần một release ID mới. Khi chunks có hash, cũng phải giữ lại các file hash cũ mà entry và tab đang mở còn tham chiếu.
 
+Quy tắc không overwrite ở đây áp dụng cho **URL release bất biến của ví dụ manifest**, không cấm cách cập nhật `/catalog/remoteEntry.js` đã trình bày ở đầu bài. Entry cập nhật tại chỗ cần revalidation; không dùng cache dài hạn `immutable` của bảng trên cho URL đó.
+
 ### Tab cũ không tự đổi release
 
 Tab đã chọn `r18` sẽ tiếp tục dùng container và module cache của `r18`, kể cả server đổi manifest sang `r17`. Refresh manifest, sửa global hay xóa script tag không thu hồi những reference đã được UI giữ, cũng không thay provider shared đã được consume.
@@ -588,6 +659,8 @@ Dùng profile mới hoặc tắt service worker/cache phù hợp khi kiểm tra 
 
 ## Checklist trước production
 
+Checklist này dành cho ví dụ dynamic remote với manifest và URL release bất biến trong bài. Với URL entry cập nhật tại chỗ, dùng chính sách cache/deploy tương ứng ở phần đầu thay vì thêm manifest chỉ để đáp ứng checklist.
+
 - [ ] Đã chọn một loader owner cho mỗi container; không trộn đường manual init và import do runtime quản lý.
 - [ ] Manifest có schema version, revision, release và compatibility policy rõ ràng.
 - [ ] URL/scope được validate trước khi script chạy; quyền publish manifest và artifact được giới hạn.
@@ -616,5 +689,6 @@ Trước khi mở canary, hãy chạy ca rollback với hai tab và ca entry th�
 - [webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): cấu hình `remotes`, `exposes`, `library` và container.
 - [Module Federation — Runtime API](https://module-federation.io/guide/runtime/runtime-api): `createInstance`, `registerRemotes`, `loadRemote` và cảnh báo `force` của enhanced runtime.
 - [Module Federation — manifest](https://module-federation.io/configure/manifest.html): artifact manifest sinh bởi integration enhanced, khác manifest ứng dụng trong bài.
+- [MDN — Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control): `no-cache`, revalidation, `immutable` và giới hạn khi thay chính sách cho response đã cache.
 - [MDN — Subresource Integrity](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity): integrity cho resource và yêu cầu CORS khi tải cross-origin.
 - [MDN — Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP): chính sách cho phép resource/script và giới hạn thực thi trong document.
