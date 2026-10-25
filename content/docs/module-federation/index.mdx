@@ -50,13 +50,57 @@ Module được expose cũng không bắt buộc là một màn hình. Nó có t
 
 ### Khác package và code splitting
 
-| Cách lấy code catalog | Code được chốt ở đâu | Khi catalog đổi nội bộ |
-| --- | --- | --- |
-| Import npm package | Trong dependency graph của bản build shell | Shell thường phải cập nhật dependency rồi build và release lại |
-| `import('./CatalogPage')` trong cùng app | Trong artifact graph của bản build chung | Có thể tải muộn, nhưng vẫn thuộc bản release của app |
-| Import federated module | Host build biết public request; code remote được lấy lúc chạy | Remote có thể release riêng nếu URL resolution, contract và dependencies vẫn tương thích |
+Giả sử catalog đang hiển thị danh sách sản phẩm, còn shell là khung ứng dụng chứa menu và vùng hiển thị catalog. Bây giờ bạn thêm bộ lọc giá vào catalog. **Muốn người dùng nhận được bộ lọc mới, bạn phải build và deploy lại phần nào?** Đây là câu hỏi giúp phân biệt ba cách dưới đây.
 
-Dynamic import trong một app giúp code splitting; nó không tự tạo đơn vị deploy độc lập. Ngược lại, một federated remote vẫn có thể dùng code splitting bên trong nó. “Tải muộn” và “build riêng” là hai thuộc tính khác nhau.
+**1. Đóng gói catalog thành npm package**
+
+Shell cài package `@shop/catalog` rồi dùng component của nó:
+
+```js title="Shell dùng catalog như một dependency"
+import ProductPage from '@shop/catalog';
+```
+
+Khi build shell, bundler lấy code từ bản package đã cài và đóng gói nó vào các file JavaScript đầu ra của shell. Giả sử lần build đó dùng catalog `1.0.0`. Sau này bạn publish package `1.1.0` có bộ lọc giá, các file shell đã deploy vẫn chứa code từ `1.0.0`; browser không tự lên npm để lấy bản mới.
+
+Muốn cập nhật, bạn cần cho shell dùng package mới, build lại shell rồi deploy kết quả. Package giúp **chia sẻ source qua một dependency có version**, chứ trong cách dùng thông thường này chưa giúp catalog cập nhật riêng trong ứng dụng đã deploy.
+
+**2. Để catalog trong cùng app, nhưng tải bằng dynamic import**
+
+Shell không tải code trang sản phẩm ngay từ đầu, mà chỉ yêu cầu khi người dùng mở trang:
+
+```js title="Shell tải muộn một module trong cùng app"
+const { default: ProductPage } = await import('./ProductPage');
+```
+
+Bundler có thể tách code trang sản phẩm thành một file JavaScript riêng, gọi là *chunk*. Browser tải chunk đó khi cần. Đây là **code splitting**: chia code để không phải tải tất cả ngay lúc mở app.
+
+Điểm dễ nhầm là: file được **tải sau**, nhưng nội dung của nó vẫn do **lần build chung của app** tạo ra. Nếu bạn thêm bộ lọc giá, bạn vẫn build và deploy bản app mới, gồm các chunk tương ứng. Chỉ vì có file riêng không có nghĩa catalog đã có quy trình release riêng.
+
+Ngay cả npm package ở cách 1 cũng có thể được tải bằng `import('@shop/catalog')` để code splitting. Khi đó code vẫn lấy từ package đã cài lúc build shell; đổi sang `import()` không làm shell tự nhận package vừa publish.
+
+**3. Build catalog riêng rồi để shell lấy module qua Module Federation**
+
+Catalog có lần build và bộ file deploy riêng. Sau khi cấu hình federation ở hai bên, shell có thể viết:
+
+```js title="Shell lấy module từ build riêng của catalog"
+const { default: ProductPage } = await import('catalog/ProductPage');
+```
+
+Ở đây `catalog` là alias remote trong cấu hình, không phải npm package shell phải cài. Khi build shell, plugin ghi lại cách tìm module công khai `ProductPage`; nó không đóng gói implementation của module đó vào shell. Khi ứng dụng chạy, federation runtime — phần code phụ trách kết nối các build — tải module từ bản catalog được chọn.
+
+Với bộ lọc giá mới, bạn có thể chỉ build và deploy catalog. Shell không cần build lại **nếu nó vẫn dùng được API của catalog và cơ chế chọn remote cho phép trỏ tới bản mới mà không sửa build shell**. Ví dụ, shell có thể đọc địa chỉ bản catalog từ runtime config, tức cấu hình được lấy khi ứng dụng chạy.
+
+Nếu URL bản catalog bị ghi cố định vào build shell, chẳng hạn `/catalog/r17/remoteEntry.js`, deploy thêm bản `r18` chưa làm shell tự chuyển sang đó. Xem [URL cố định vẫn là tải ở runtime](#url-cố-định-vẫn-là-tải-ở-runtime). Federation cho phép build riêng; việc shell nhận bản remote nào vẫn cần thiết kế.
+
+Đặt ba cách cạnh nhau với cùng thay đổi “thêm bộ lọc giá”:
+
+| Cách tích hợp | Code catalog mà browser nhận đến từ đâu? | Cần làm gì để đưa bộ lọc mới tới người dùng? |
+| --- | --- | --- |
+| npm package thông thường | Package đã được đóng gói trong lần build shell | Cập nhật package ở shell, build và deploy lại shell |
+| Code splitting trong cùng app | Chunk được tạo bởi lần build chung của app | Build và deploy bản app mới; chunk riêng chỉ giúp tải muộn |
+| Module Federation | Bản build catalog riêng mà runtime của shell tìm tới | Build và deploy catalog, cho shell chọn bản đó; không cần rebuild shell nếu cấu hình và API cho phép |
+
+Hãy tách hai câu hỏi: **“Code được tải khi nào?”** và **“Code này thuộc bản build của ai?”** Code splitting chủ yếu trả lời câu đầu; Module Federation cho phép lấy module thuộc một build khác. Một remote vẫn có thể code splitting bên trong nó, nên hai cơ chế này có thể dùng cùng nhau.
 
 ### Khi nào nên chọn và khi nào không
 
