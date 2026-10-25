@@ -268,8 +268,9 @@
       "path": "content/docs/kien-truc/application-shell.mdx",
       "counts": {
         "d2": 3,
-        "ts": 2,
-        "tsx": 1
+        "html": 2,
+        "js": 8,
+        "bash": 1
       }
     },
     {
@@ -328,14 +329,14 @@
       "path": "content/docs/module-federation/co-che.mdx",
       "counts": {
         "d2": 4,
-        "js": 7,
+        "js": 13,
         "text": 1
       }
     },
     {
       "path": "content/docs/module-federation/dynamic-remotes.mdx",
       "counts": {
-        "js": 8,
+        "js": 9,
         "json": 1,
         "d2": 1
       }
@@ -352,10 +353,7 @@
     },
     {
       "path": "content/docs/module-federation/index.mdx",
-      "counts": {
-        "d2": 1,
-        "js": 4
-      }
+      "counts": {}
     },
     {
       "path": "content/docs/module-federation/shared-dependencies.mdx",
@@ -752,7 +750,7 @@
       }
     }
   ],
-  "fences": 778,
+  "fences": 788,
   "reviewed": [
     "content/docs/cac-cach-tich-hop/import-maps.mdx|import-map-shop/",
     "content/docs/kien-truc/runtime-composition.mdx|Catalog release catalog-r17",
@@ -761,20 +759,20 @@
     "content/docs/troubleshooting/remote-khong-tai.mdx|GET http://localhost:3001/remoteEntry.js          → 200 JavaScript"
   ],
   "totals": {
-    "bash": 138,
+    "bash": 139,
     "mdx": 2,
     "json": 50,
-    "d2": 135,
-    "js": 177,
+    "d2": 134,
+    "js": 188,
     "terminal-session": 1,
     "jsx": 22,
     "text": 31,
     "powershell": 1,
     "http": 15,
-    "ts": 115,
-    "html": 29,
+    "ts": 113,
+    "html": 31,
     "css": 14,
-    "tsx": 34,
+    "tsx": 33,
     "yaml": 5,
     "code-walkthrough": 1,
     "span-waterfall": 1,

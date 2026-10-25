@@ -8,7 +8,7 @@ Giả sử shell vừa tải được `remoteEntry.js` của catalog với statu
 Bài này đi theo một request `import('catalog/ProductPage')` từ lúc webpack build shell đến lúc code catalog chạy trong browser. Khi hiểu từng mốc, bạn sẽ biết nên kiểm tra cấu hình, network, shared dependencies hay lifecycle UI, thay vì thử sửa mọi thứ cùng lúc.
 
 <Callout type="info" title="Phạm vi và điều kiện đọc">
-  Ví dụ dùng shop giả định gồm shell và catalog, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5 và remote dạng script container. Đây không phải cấu hình Module Federation cho Next.js của site docs này. Bạn nên biết JavaScript modules, Promise và code splitting; nếu chưa rõ host/remote, đọc [Module Federation](/docs/module-federation) trước.
+  Ví dụ dùng shop giả định gồm shell, catalog và cart, với `webpack.container.ModuleFederationPlugin` tích hợp trong webpack 5 và remote dạng script container. Đây không phải cấu hình Module Federation cho Next.js của site docs này. Bạn nên biết JavaScript modules, Promise và code splitting; nếu chưa rõ host/remote, đọc [Module Federation](/docs/module-federation) trước.
 </Callout>
 
 ## Mục lục
@@ -30,6 +30,7 @@ Bài này đi theo một request `import('catalog/ProductPage')` từ lúc webpa
   - [Catalog expose một lifecycle API](#catalog-expose-một-lifecycle-api)
   - [Shell tải rồi mount](#shell-tải-rồi-mount)
   - [Async boundary ở entry của host](#async-boundary-ở-entry-của-host)
+  - [Navigation race với Module Federation thật](#navigation-race-với-module-federation-thật)
 - [Share scope trao đổi điều gì](#share-scope-trao-đổi-điều-gì)
 - [Cache và vòng đời trong một document](#cache-và-vòng-đời-trong-một-document)
   - [HTTP cache khác module cache](#http-cache-khác-module-cache)
@@ -378,6 +379,92 @@ const cleanup = await openCatalog(root, (productId) => {
 Async bootstrap boundary đặc biệt hữu ích khi code khởi tạo app consume shared dependencies: runtime có cơ hội hoàn tất phần tải/khởi tạo cần thiết trước khi app dùng chúng. Nó không bắt buộc preload mọi remote.
 
 Nếu gặp “Shared module is not available for eager consumption”, mình kiểm tra entry và async boundary trước. Bật `eager: true` cho mọi thư viện có thể khiến provided/fallback modules được tải sớm và phình initial payload; đó là thay đổi loading policy, không phải cách sửa mọi lỗi thứ tự khởi tạo.
+
+### Navigation race với Module Federation thật
+
+Bạn đã thấy Federation không tự gọi `mount`. Vậy nếu người dùng mở catalog rồi chuyển sang cart trong lúc catalog còn đang tải thì sao? **Federation vẫn có thể trả catalog về sau cùng; shell phải quyết định kết quả đó còn được dùng không.**
+
+Hai bản dưới dùng `webpack.container.ModuleFederationPlugin` của **webpack 5.112.2**, không phải `import('../catalog/entry.js')` trong một app build chung. Mỗi bản có ba build: shell, catalog và cart. Để dễ chạy, các artifact được phục vụ dưới cùng một origin; điều đó không ghép code remote vào build shell và cũng chưa chứng minh có ba pipeline deploy production riêng.
+
+<ExampleRef example="federation-navigation-race" version="broken">Preview Module Federation — bản lỗi</ExampleRef>
+
+<SourceRef project="module-federation-co-che" snapshot="broken" variant="button">Source Module Federation — bản lỗi</SourceRef>
+
+<ExampleRef example="federation-navigation-race" version="fixed">Preview Module Federation — đã xử lý</ExampleRef>
+
+<SourceRef project="module-federation-co-che" snapshot="fixed" variant="button">Source Module Federation — đã xử lý</SourceRef>
+
+Bấm **“Chạy tình huống: Catalog → Cart”**. Loader cố ý chờ 1.500 ms trước khi import catalog và 100 ms trước khi import cart; shell chuyển sang cart sau 100 ms. Thời gian này là fixture tái hiện lỗi, không phải số đo network. Sau khi cả hai Promise hoàn tất:
+
+| Quan sát | Bản lỗi | Bản đã xử lý |
+| --- | --- | --- |
+| Route trong app | `#/cart` | `#/cart` |
+| Remote đang hiển thị | **Catalog**, sai với route | **Cart**, đúng với route |
+| Log cuối | `Đã mount catalog.` | `Bỏ kết quả cũ: catalog.` |
+
+Bạn có thể chạy lại cùng tình huống để thử khi module đã nằm trong cache. Độ trễ fixture vẫn được áp dụng mỗi lần gọi loader, nên lỗi không biến mất chỉ vì Federation đã cache module.
+
+**Điểm nào là Module Federation thật?** Trong `shell/webpack.config.cjs`, host khai báo hai container. Các đoạn dưới là phần cần chú ý; Source Explorer chứa cấu hình đầy đủ, entry, HTML và script build cho từng bản.
+
+```js title="shell/webpack.config.cjs — phần remotes"
+new ModuleFederationPlugin({
+  name: 'shell',
+  remotes: {
+    catalog: 'race_catalog@../catalog/remoteEntry.js',
+    cart: 'race_cart@../cart/remoteEntry.js',
+  },
+});
+```
+
+Container global có tên `race_catalog` và `race_cart`, khác với alias import `catalog`/`cart` và không trùng các DOM ID của nút. Catalog dùng plugin riêng để expose `./App` từ `catalog/src/entry.js`; cart làm tương tự với module của mình. Loader của shell dùng **public request**, không dùng đường dẫn source remote:
+
+```js title="shell/src/loader.js — hai nhánh import"
+if (name === 'catalog') {
+  await wait(1500);
+  return import('catalog/App');
+}
+if (name === 'cart') {
+  await wait(100);
+  return import('cart/App');
+}
+```
+
+Hai URL entry tương đối được resolve từ trang `shell/index.html`. Mỗi remote có `output.publicPath: 'auto'` để tìm chunks cạnh entry của nó. Trong DevTools, mở Network rồi chạy tình huống: bạn sẽ thấy **hai `remoteEntry.js` và các chunk riêng của catalog/cart**. Nếu chỉ có một bundle chứa hết implementation của cả ba bên, đó không phải điều demo này muốn chứng minh.
+
+**Bản sửa thay đổi gì?** Hai bản giữ nguyên cấu hình Federation, loader và remote. Điểm sửa ở `shell/src/navigator.js`: đánh số lúc bắt đầu navigation, rồi kiểm tra sau khi module trả về.
+
+```js title="shell/src/navigator.js — vị trí kiểm tra"
+const requestId = ++latestRequestId;
+// ... dọn remote trước, hiển thị loading ...
+const remote = await loadRemote(name);
+
+if (requestId !== latestRequestId) {
+  log(`Bỏ kết quả cũ: ${name}.`);
+  return;
+}
+// Chỉ lượt hiện hành được đi tiếp tới remote.mount(container).
+```
+
+`requestId` không hủy container hay rút code đã evaluate khỏi runtime. Nó ngăn shell dùng kết quả cũ để thay UI mới. Demo chọn `mount` đồng bộ, không tự gây navigation và không có fetch nghiệp vụ; với lifecycle async hoặc dữ liệu trả về muộn, bạn cần kiểm tra và cleanup ở những boundary tương ứng nữa.
+
+Mỗi lựa chọn trong Source Explorer là **một project đầy đủ riêng**, gồm `package.json`, `build.mjs`, cấu hình của ba build và source theo module:
+
+| Module | File cần đọc trước |
+| --- | --- |
+| Shell | `shell/src/navigator.js`, `shell/src/loader.js`, `shell/webpack.config.cjs` |
+| Catalog remote | `catalog/src/entry.js`, `catalog/webpack.config.cjs` |
+| Cart remote | `cart/src/entry.js`, `cart/webpack.config.cjs` |
+
+Không có file của bản còn lại trong cùng bộ source. Source runnable chuẩn nằm ở `example-learn/examples/micro-frontend/federation-race/v1/{broken,fixed}`; snapshot trong docs được xuất từ đúng các file đó, không bảo trì một implementation thứ hai.
+
+**Chạy local trong collection:** ở repo `example-learn/`, chạy `npm ci`, `npm run build`, rồi `npm run preview -- --port 4175`. Ở repo docs, chạy `npm run dev` và mở bài này tại cổng 3000. Preview của bản dev mặc định trỏ tới server demo 4175; không cần cài webpack vào site docs.
+
+**Chạy riêng một bản từ Source Explorer:** copy đủ file, chạy `npm install`, `npm run build`, rồi `python3 -m http.server 4180 --directory dist`. Mở `http://localhost:4180/shell/index.html`. Webpack tạo artifact riêng cho cả ba module; lệnh Python chỉ phục vụ chúng, không build hay giả lập Federation.
+
+<Callout type="info" title="Local preview khác bản online">
+  Demo mới phải được build/deploy ở example-learn trước khi URL preview online phục vụ nó. Chạy local không xác nhận deployment production. Khi cần dùng một origin demo khác, đặt `NEXT_PUBLIC_FEDERATION_DEMO_ORIGIN` trước khi chạy hoặc build docs.
+</Callout>
+
 
 ## Share scope trao đổi điều gì
 

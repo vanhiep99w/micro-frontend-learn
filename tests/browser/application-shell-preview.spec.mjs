@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 const article = '/docs/kien-truc/application-shell';
-const app = '/examples/application-shell/shell/';
+const app = '/examples/application-shell/shell/index.html';
 const label = 'Preview: thử shell và remote';
 
 test('shell preview is lazy and runs the real mount, update and unmount code', async ({ page }) => {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,18 +43,23 @@ export function collectFiles(tree, context, {
     const path = metadata(node.meta, 'sourceFile');
     const region = metadata(node.meta, 'sourceRegion');
     const selected = metadata(node.meta, 'sourceSnapshot');
+    // Share identical support files explicitly, without leaking them to the default.
+    const shared = metadata(node.meta, 'sourceSnapshots');
     if (!path) {
-      assert(!region && !selected, `${context}: sourceRegion/sourceSnapshot needs sourceFile`);
+      assert(!region && !selected && !shared, `${context}: sourceRegion/sourceSnapshot/sourceSnapshots needs sourceFile`);
       return;
     }
-    const snapshotID = selected ?? defaultSnapshot;
-    assert(snapshotIds.includes(snapshotID), `${context}: unknown sourceSnapshot ${snapshotID}`);
+    assert(!(selected && shared), `${context}: use sourceSnapshot OR sourceSnapshots, not both`);
+    const selectedIDs = shared ? shared.split(',').map(id => id.trim()) : [selected ?? defaultSnapshot];
+    assert(selectedIDs.every(Boolean), `${context}: empty sourceSnapshots ID`);
+    assert(new Set(selectedIDs).size === selectedIDs.length, `${context}: duplicate sourceSnapshots ID`);
+    for (const id of selectedIDs) assert(snapshotIds.includes(id), `${context}: unknown sourceSnapshot ${id}`);
     safePath(path);
     assert(region && /^[a-z][a-z0-9-]*$/.test(region), `${context}: missing/invalid sourceRegion for ${path}`);
     assert(node.value.length > 0, `${context}: empty source ${path}`);
     const language = node.lang || 'text';
     assert(!['d2', 'mermaid', 'bash', 'powershell', 'http'].includes(language), `${context}: not a source file: ${path}`);
-    if (snapshotID !== snapshot) return;
+    if (!selectedIDs.includes(snapshot)) return;
     const file = files.get(path) ?? { path, language, code: '', regions: {} };
     assert(file.language === language, `${context}: mixed languages in ${snapshot}/${path}`);
     assert(!Object.hasOwn(file.regions, region), `${context}: duplicate region ${snapshot}/${path}#${region}`);
@@ -109,8 +115,23 @@ async function mdxPaths(dir) {
   return paths.flat().sort();
 }
 
-/** Pure data assembly, also used by fixture tests. Trees are keyed by relative MDX path. */
-export function createSourceExamples(registry, trees) {
+function filesFromSourceAsset(asset, context) {
+  assert(asset?.schemaVersion === 1 && Array.isArray(asset.files) && asset.files.length, `${context}: invalid source asset`);
+  const hash = createHash('sha256').update(JSON.stringify(asset.files)).digest('hex');
+  assert(asset.sourceHash === hash, `${context}: source asset hash mismatch`);
+  const paths = new Set();
+  return asset.files.map(file => {
+    safePath(file.path);
+    assert(!paths.has(file.path), `${context}: duplicate source asset path ${file.path}`);
+    paths.add(file.path);
+    assert(['js', 'ts', 'tsx', 'jsx', 'html', 'css', 'json'].includes(file.language), `${context}: unsupported source asset language`);
+    assert(typeof file.code === 'string' && file.code.trim(), `${context}: empty source asset code`);
+    return { path: file.path, language: file.language, code: file.code, regions: { main: [1, file.code.trimEnd().split('\n').length] } };
+  });
+}
+
+/** Pure data assembly; optional reviewed JSON assets come from canonical runnable labs. */
+export function createSourceExamples(registry, trees, sourceAssets = new Map()) {
   assert(Array.isArray(registry) && registry.length > 0, 'Empty source registry');
   const projects = new Map();
   const snapshots = new Map();
@@ -142,7 +163,13 @@ export function createSourceExamples(registry, trees) {
     for (const definition of definitions) {
       assert(typeof definition.title === 'string' && definition.title.trim(), `${path}: missing snapshot title`);
       safePath(definition.defaultFile);
-      const files = collectFiles(tree, path, { snapshot: definition.id, defaultSnapshot, snapshotIds: ids });
+      let files = collectFiles(tree, path, { snapshot: definition.id, defaultSnapshot, snapshotIds: ids });
+      if (definition.sourceAsset !== undefined) {
+        safePath(definition.sourceAsset);
+        assert(files.length === 0, `${path}: do not mix sourceAsset and inline source files`);
+        assert(sourceAssets.has(definition.sourceAsset), `${path}: missing source asset ${definition.sourceAsset}`);
+        files = filesFromSourceAsset(sourceAssets.get(definition.sourceAsset), `${path}/${definition.id}`);
+      }
       assert(files.length > 0, `${path}: no sourceFile fences for snapshot ${definition.id}`);
       assert(files.some((file) => file.path === definition.defaultFile), `${path}: missing defaultFile ${definition.id}/${definition.defaultFile}`);
       const snapshot = { project: entry.id, snapshot: definition.id, defaultFile: definition.defaultFile, files };
@@ -155,7 +182,7 @@ export function createSourceExamples(registry, trees) {
   let references = 0;
   for (const [path, tree] of trees) {
     walk(tree, (node) => {
-      if (node.type === 'code' && /\bsource(?:File|Region|Snapshot)=/.test(node.meta ?? '')) {
+      if (node.type === 'code' && /\bsource(?:File|Region|Snapshots?)=/.test(node.meta ?? '')) {
         assert(registeredDocs.has(path), `${path}: source metadata needs a registry entry`);
       }
       if (node.name !== 'SourceRef') return;
@@ -174,5 +201,13 @@ export async function loadSourceExamples(root = projectRoot) {
     const name = path.slice(docsRoot.length + 1).replaceAll('\\', '/');
     trees.set(name, parser.parse({ value: await readFile(path, 'utf8'), path }));
   }
-  return createSourceExamples(registry, trees);
+  const sourceAssets = new Map();
+  for (const entry of registry) for (const snapshot of entry.snapshots ?? []) {
+    if (snapshot.sourceAsset === undefined) continue;
+    safePath(snapshot.sourceAsset);
+    if (!sourceAssets.has(snapshot.sourceAsset)) {
+      sourceAssets.set(snapshot.sourceAsset, JSON.parse(await readFile(join(root, 'source-examples', snapshot.sourceAsset), 'utf8')));
+    }
+  }
+  return createSourceExamples(registry, trees, sourceAssets);
 }

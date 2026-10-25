@@ -11,7 +11,7 @@ const covered = [
  'ui-va-framework/css-isolation.mdx', 'giao-tiep-va-trang-thai/routing.mdx',
  'production/resilience.mdx', 'giao-tiep-va-trang-thai/data-fetching.mdx',
  'cac-cach-tich-hop/web-components.mdx', 'cac-cach-tich-hop/iframe.mdx',
- 'ui-va-framework/design-system.mdx',
+ 'ui-va-framework/design-system.mdx', 'module-federation/co-che.mdx',
 ].sort();
 
 test('all selected lessons reference valid runnable examples and every definition is used',async()=>{
@@ -22,11 +22,12 @@ test('all selected lessons reference valid runnable examples and every definitio
  for(const page of pages) for(const request of page.references){
   const {example,version} = resolveExample(examples,request);
   used.add(example.id);
-  if (example.id === 'application-shell') assert.equal(version.src, '/examples/application-shell/shell/');
+  if (example.id === 'application-shell') assert.equal(version.src, '/examples/application-shell/shell/index.html');
+  else if (example.id === 'application-shell-race') assert.equal(version.src, `/examples/application-shell/race/${version.id}/shell/index.html`);
   else assert.equal(new URL(version.src).origin,'https://example-learn.pages.dev');
  }
- assert.equal(used.size,10);
- assert.equal(examples.length,10);
+ assert.equal(used.size,12);
+ assert.equal(examples.length,12);
 });
 test('reference checker parses actual JSX, ignores code samples and rejects dynamic registry IDs',()=>{
  const fence=String.fromCharCode(96).repeat(3);

@@ -15,7 +15,24 @@
     "id": "kien-truc-application-shell",
     "title": "Application shell",
     "doc": "kien-truc/application-shell.mdx",
-    "defaultFile": "shell/main.js"
+    "defaultSnapshot": "document",
+    "snapshots": [
+      {
+        "id": "document",
+        "title": "Cơ bản: mount, update, unmount",
+        "defaultFile": "shell/main.js"
+      },
+      {
+        "id": "race-broken",
+        "title": "Navigation race — bản lỗi",
+        "defaultFile": "shell/navigator.js"
+      },
+      {
+        "id": "race-fixed",
+        "title": "Navigation race — đã xử lý",
+        "defaultFile": "shell/navigator.js"
+      }
+    ]
   },
   {
     "id": "module-federation-dynamic-remotes",
@@ -218,5 +235,25 @@
     "title": "Authentication và session",
     "doc": "giao-tiep-va-trang-thai/authentication.mdx",
     "defaultFile": "basic/shell.js"
+  },
+  {
+    "id": "module-federation-co-che",
+    "title": "Module Federation: navigation race",
+    "doc": "module-federation/co-che.mdx",
+    "defaultSnapshot": "fixed",
+    "snapshots": [
+      {
+        "id": "broken",
+        "title": "Module Federation — bản lỗi",
+        "defaultFile": "shell/src/navigator.js",
+        "sourceAsset": "federation-race/broken.json"
+      },
+      {
+        "id": "fixed",
+        "title": "Module Federation — đã xử lý",
+        "defaultFile": "shell/src/navigator.js",
+        "sourceAsset": "federation-race/fixed.json"
+      }
+    ]
   }
 ]

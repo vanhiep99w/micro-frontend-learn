@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, rename, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -83,6 +84,39 @@ test('real watcher handles edits, atomic saves, registry updates and invalid inp
     await watcher.close(); watcher = undefined;
     await buildSourceExamples({ root, log: () => {} });
     await assert.rejects(access(join(output, initialManifest[0].snapshots[0].asset)));
+  } finally {
+    await watcher?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('watcher refreshes reviewed source JSON assets without requiring a registry or MDX edit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'micro-source-asset-watch-'));
+  let watcher;
+  const assetPath = join(root, 'source-examples/lab.json');
+  const asset = code => {
+    const files = [{ path: 'shell/main.js', language: 'js', code }];
+    return JSON.stringify({ schemaVersion: 1, files, sourceHash: createHash('sha256').update(JSON.stringify(files)).digest('hex') });
+  };
+  const currentCode = async () => {
+    const dir = join(root, 'public/source-examples');
+    const manifest = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8'));
+    return JSON.parse(await readFile(join(dir, manifest[0].snapshots[0].asset), 'utf8')).files[0].code;
+  };
+  try {
+    await mkdir(join(root, 'content/docs'), { recursive: true });
+    await mkdir(join(root, 'source-examples'), { recursive: true });
+    await writeFile(join(root, 'content/docs/lab.mdx'), '<SourceRef project="lab" />');
+    await writeFile(join(root, 'source-examples/registry.json'), JSON.stringify([{
+      id: 'lab', title: 'Lab', doc: 'lab.mdx', defaultSnapshot: 'fixed', snapshots: [
+        { id: 'fixed', title: 'Fixed', defaultFile: 'shell/main.js', sourceAsset: 'lab.json' },
+      ],
+    }]));
+    await writeFile(assetPath, asset('first();'));
+    watcher = await startSourceWatcher({ root, log: () => {} });
+    assert.equal(await currentCode(), 'first();');
+    await writeFile(assetPath, asset('updated();'));
+    await until(async () => await currentCode() === 'updated();');
   } finally {
     await watcher?.close();
     await rm(root, { recursive: true, force: true });

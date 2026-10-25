@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
@@ -108,4 +109,79 @@ test('all repository SourceRefs resolve to canonical MDX snippets and variants',
       for (const [start, end] of Object.values(file.regions)) assert(start >= 1 && end >= start && end <= lines);
     }
   }
+});
+
+test('explicit shared source files are copied only to named snapshots, while default files stay isolated', () => {
+  const { registry } = fixture();
+  const shared = fence('shared();').replace('sourceRegion="main"', 'sourceRegion="main" sourceSnapshots="basic,advanced"');
+  const defaultOnly = fence('basicOnly();').replace('src/example.ts', 'src/basic-only.ts');
+  const advancedOnly = fence('advancedOnly();', 'main', 'ts', 'advanced').replace('src/example.ts', 'src/advanced-only.ts');
+  const trees = new Map([['demo.mdx', parse([shared, defaultOnly, advancedOnly].join('\n\n'))]]);
+  const { projects } = createSourceExamples(registry, trees);
+  const basic = projects.get('demo').snapshots.get('basic');
+  const advanced = projects.get('demo').snapshots.get('advanced');
+  assert.deepEqual(basic.files.map(file => file.path).sort(), ['src/basic-only.ts', 'src/example.ts']);
+  assert.deepEqual(advanced.files.map(file => file.path).sort(), ['src/advanced-only.ts', 'src/example.ts']);
+  assert.equal(basic.files.find(file => file.path === 'src/example.ts').code, advanced.files.find(file => file.path === 'src/example.ts').code);
+});
+
+test('shared snapshot metadata rejects ambiguous, unknown, repeated, empty and orphan selections', () => {
+  const { registry } = fixture();
+  const shared = fence('shared();').replace('sourceRegion="main"', 'sourceRegion="main" sourceSnapshots="basic,advanced"');
+  for (const invalid of [
+    shared.replace('basic,advanced', 'basic,unknown'),
+    shared.replace('basic,advanced', 'basic,basic'),
+    shared.replace('basic,advanced', 'basic,'),
+    shared.replace('basic,advanced', 'basic,,advanced'),
+    shared.replace('sourceSnapshots=', 'sourceSnapshot="basic" sourceSnapshots='),
+    shared.replace('sourceFile="src/example.ts" ', ''),
+    shared.replace('sourceSnapshots="basic,advanced"', 'sourceSnapshots=basic,advanced'),
+    shared.replace('sourceSnapshots="basic,advanced"', 'sourceSnapshots=""'),
+  ]) {
+    assert.throws(() => createSourceExamples(registry, new Map([['demo.mdx', parse(invalid)]])));
+  }
+  const { trees } = fixture();
+  trees.set('unregistered.mdx', parse('```ts sourceSnapshots="basic,advanced"\nshared();\n```'));
+  assert.throws(() => createSourceExamples(registry, trees), /source metadata needs a registry entry/);
+});
+
+function sourceAsset(files) {
+  return { schemaVersion: 1, sourceHash: createHash('sha256').update(JSON.stringify(files)).digest('hex'), files };
+}
+
+test('reviewed source assets produce isolated complete snapshots with main regions', () => {
+  const registry = [{ id: 'lab', title: 'Lab', doc: 'lab.mdx', defaultSnapshot: 'fixed', snapshots: [
+    { id: 'broken', title: 'Broken', defaultFile: 'shell/main.js', sourceAsset: 'lab/broken.json' },
+    { id: 'fixed', title: 'Fixed', defaultFile: 'shell/main.js', sourceAsset: 'lab/fixed.json' },
+  ] }];
+  const trees = new Map([['lab.mdx', parse('<SourceRef project="lab" snapshot="broken" file="shell/main.js" region="main" />')]]);
+  const assets = new Map([
+    ['lab/broken.json', sourceAsset([{ path: 'shell/main.js', language: 'js', code: 'broken();\n' }])],
+    ['lab/fixed.json', sourceAsset([{ path: 'shell/main.js', language: 'js', code: 'guard();\nfixed();\n' }])],
+  ]);
+  const { projects } = createSourceExamples(registry, trees, assets);
+  assert.equal(projects.get('lab').snapshots.get('broken').files[0].code, 'broken();\n');
+  assert.deepEqual(projects.get('lab').snapshots.get('fixed').files[0].regions.main, [1, 2]);
+});
+
+test('source assets reject missing files, bad hashes, traversal, duplicates and mixed inline sources', () => {
+  const registry = [{ id: 'lab', title: 'Lab', doc: 'lab.mdx', defaultSnapshot: 'fixed', snapshots: [
+    { id: 'fixed', title: 'Fixed', defaultFile: 'shell/main.js', sourceAsset: 'lab/fixed.json' },
+  ] }];
+  const trees = new Map([['lab.mdx', parse('Source asset lesson.')]]);
+  const file = { path: 'shell/main.js', language: 'js', code: 'fixed();\n' };
+  assert.throws(() => createSourceExamples(registry, trees), /missing source asset/);
+  const invalid = [
+    { ...sourceAsset([file]), sourceHash: 'wrong' },
+    sourceAsset([{ ...file, path: '../private' }]),
+    sourceAsset([file, file]),
+    sourceAsset([{ ...file, language: 'mermaid' }]),
+    sourceAsset([{ ...file, code: '' }]),
+  ];
+  for (const asset of invalid) assert.throws(() => createSourceExamples(registry, trees, new Map([['lab/fixed.json', asset]])));
+  const assets = new Map([['lab/fixed.json', sourceAsset([file])]]);
+  const inline = new Map([['lab.mdx', parse(fence('inline();'))]]);
+  assert.throws(() => createSourceExamples(registry, inline, assets), /do not mix/);
+  registry[0].snapshots[0].sourceAsset = '../private.json';
+  assert.throws(() => createSourceExamples(registry, trees, assets), /Unsafe path/);
 });

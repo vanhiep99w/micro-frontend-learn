@@ -33,7 +33,8 @@ test('versions reference distinct real teaching behavior, not duplicate URLs or 
   const bus=resolveExample(examples,{example:'event-target'}).version;
   assert.equal(new URL(bus.src).pathname,'/browser/event-target/v1/');
   for(const definition of examples) for(const version of definition.versions) {
-    if (definition.id === 'application-shell') assert.equal(version.src, '/examples/application-shell/shell/');
+    if (definition.id === 'application-shell') assert.equal(version.src, '/examples/application-shell/shell/index.html');
+    else if (definition.id === 'application-shell-race') assert.equal(version.src, `/examples/application-shell/race/${version.id}/shell/index.html`);
     else assert.equal(new URL(version.src).origin,'https://example-learn.pages.dev');
   }
 });

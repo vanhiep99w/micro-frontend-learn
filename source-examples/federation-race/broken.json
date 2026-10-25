@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "repository": "vanhiep99w/example-learn",
+  "directory": "examples/micro-frontend/federation-race/v1/broken",
+  "sourceHash": "44332deb7fd904040fd5c1bffefac07f9ea67bc6b9e698df93f3eeb305b71058",
+  "files": [
+    {
+      "path": "package.json",
+      "language": "json",
+      "code": "{\n  \"name\": \"@example-learn/federation-race-broken\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"engines\": {\n    \"node\": \">=22.18\"\n  },\n  \"scripts\": {\n    \"build\": \"node build.mjs\"\n  },\n  \"devDependencies\": {\n    \"webpack\": \"5.112.2\"\n  }\n}\n"
+    },
+    {
+      "path": "build.mjs",
+      "language": "js",
+      "code": "import webpack from 'webpack';\nimport { createRequire } from 'node:module';\nimport { cp, mkdir } from 'node:fs/promises';\n\nconst require = createRequire(import.meta.url);\nconst configs = ['catalog', 'cart', 'shell'].map(name => require(`./${name}/webpack.config.cjs`));\nconst compiler = webpack(configs);\ntry {\n  const stats = await new Promise((resolve, reject) => {\n    compiler.run((error, result) => error ? reject(error) : resolve(result));\n  });\n  if (stats.hasErrors()) throw new Error(stats.toString({ all: false, errors: true }));\n} finally {\n  await new Promise((resolve, reject) => compiler.close(error => error ? reject(error) : resolve()));\n}\nawait mkdir(new URL('./dist/shell/', import.meta.url), { recursive: true });\nawait cp(new URL('./shell/index.html', import.meta.url), new URL('./dist/shell/index.html', import.meta.url));\nconsole.log('Built shell, catalog and cart as three webpack builds.');\n"
+    },
+    {
+      "path": "shell/webpack.config.cjs",
+      "language": "js",
+      "code": "const path = require('node:path');\nconst { ModuleFederationPlugin } = require('webpack').container;\n\nmodule.exports = {\n  mode: 'production',\n  devtool: false,\n  context: __dirname,\n  entry: './src/index.js',\n  output: {\n    path: path.resolve(__dirname, '../dist/shell'),\n    filename: 'app.js',\n    chunkFilename: '[name].[contenthash].js',\n    publicPath: 'auto',\n    uniqueName: 'mf_race_shell',\n    clean: true,\n  },\n  optimization: { minimize: false },\n  plugins: [new ModuleFederationPlugin({\n    name: 'shell',\n    remotes: {\n      catalog: 'race_catalog@../catalog/remoteEntry.js',\n      cart: 'race_cart@../cart/remoteEntry.js',\n    },\n  })],\n};\n"
+    },
+    {
+      "path": "shell/index.html",
+      "language": "html",
+      "code": "<!doctype html>\n<html lang=\"vi\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <title>Module Federation: navigation race</title>\n  </head>\n  <body>\n    <p>MODULE FEDERATION · WEBPACK 5</p>\n    <h1 id=\"variant\"></h1>\n    <p>Shell tải catalog/App và cart/App qua hai remoteEntry.js riêng.</p>\n    <p>Route trong app: <code id=\"route\">#/</code></p>\n    <button id=\"catalog\">Catalog — tải chậm</button>\n    <button id=\"cart\">Cart — tải nhanh</button>\n    <button id=\"run\">Chạy tình huống: Catalog → Cart</button>\n    <hr />\n    <main id=\"outlet\">Chưa chọn trang.</main>\n    <h2>Log của shell</h2>\n    <ol id=\"log\" aria-live=\"polite\"></ol>\n    <script src=\"./app.js\" defer></script>\n  </body>\n</html>\n"
+    },
+    {
+      "path": "shell/src/index.js",
+      "language": "js",
+      "code": "import('./main.js').catch(error => {\n  document.querySelector('#outlet').textContent = `Không khởi động được shell: ${error.message}`;\n});\n"
+    },
+    {
+      "path": "shell/src/main.js",
+      "language": "js",
+      "code": "import { createNavigator, variantTitle } from './navigator.js';\nimport { loadRemote, wait } from './loader.js';\n\nconst container = document.querySelector('#outlet');\nconst route = document.querySelector('#route');\nconst logList = document.querySelector('#log');\nconst catalogButton = document.querySelector('#catalog');\nconst cartButton = document.querySelector('#cart');\nconst runButton = document.querySelector('#run');\n\nfunction log(message) {\n  const item = document.createElement('li');\n  item.textContent = message;\n  logList.append(item);\n}\n\nconst show = createNavigator(container, loadRemote, log);\ndocument.querySelector('#variant').textContent = variantTitle;\n\nfunction navigate(name) {\n  // Chỉ đổi hash bên trong app preview, không đổi URL bài docs.\n  history.replaceState(null, '', `#/${name}`);\n  route.textContent = `#/${name}`;\n  return show(name).catch(error => log(`Lỗi tải: ${error.message}`));\n}\n\ncatalogButton.onclick = () => navigate('catalog');\ncartButton.onclick = () => navigate('cart');\n\nrunButton.onclick = async () => {\n  // Khóa nút trong một lượt thử để không trộn nhiều tình huống.\n  catalogButton.disabled = cartButton.disabled = runButton.disabled = true;\n  logList.replaceChildren();\n  try {\n    const loadingCatalog = navigate('catalog');\n    await wait(100);\n    const loadingCart = navigate('cart');\n    await Promise.all([loadingCatalog, loadingCart]);\n  } finally {\n    catalogButton.disabled = cartButton.disabled = runButton.disabled = false;\n  }\n};\n"
+    },
+    {
+      "path": "shell/src/loader.js",
+      "language": "js",
+      "code": "export function wait(ms) {\n  return new Promise(resolve => setTimeout(resolve, ms));\n}\n\nexport async function loadRemote(name) {\n  if (name === 'catalog') {\n    await wait(1500); // Giả lập catalog tải chậm.\n    return import('catalog/App');\n  }\n  if (name === 'cart') {\n    await wait(100); // Giả lập cart tải nhanh.\n    return import('cart/App');\n  }\n  throw new Error(`Remote không được hỗ trợ: ${name}`);\n}\n"
+    },
+    {
+      "path": "shell/src/navigator.js",
+      "language": "js",
+      "code": "export const variantTitle = 'Bản lỗi';\n\nexport function createNavigator(container, loadRemote, log) {\n  let currentRemote;\n\n  return async function show(name) {\n    currentRemote?.unmount();\n    currentRemote = undefined;\n    container.textContent = `Đang tải ${name}…`;\n    log(`Bắt đầu tải ${name}.`);\n\n    const remote = await loadRemote(name);\n\n    // LỖI: trong lúc await, người dùng có thể đã chuyển trang.\n    // Catalog cũ vẫn gỡ cart đang hiển thị rồi mount đè lên.\n    currentRemote?.unmount();\n    container.replaceChildren();\n    currentRemote = remote.mount(container);\n    log(`Đã mount ${name}.`);\n  };\n}\n"
+    },
+    {
+      "path": "catalog/webpack.config.cjs",
+      "language": "js",
+      "code": "const path = require('node:path');\nconst { ModuleFederationPlugin } = require('webpack').container;\n\nmodule.exports = {\n  mode: 'production',\n  devtool: false,\n  context: __dirname,\n  entry: {},\n  output: {\n    path: path.resolve(__dirname, '../dist/catalog'),\n    publicPath: 'auto',\n    uniqueName: 'mf_race_catalog',\n    chunkFilename: '[name].[contenthash].js',\n    clean: true,\n  },\n  optimization: { minimize: false },\n  plugins: [new ModuleFederationPlugin({\n    name: 'race_catalog',\n    filename: 'remoteEntry.js',\n    exposes: { './App': './src/entry.js' },\n  })],\n};\n"
+    },
+    {
+      "path": "catalog/src/entry.js",
+      "language": "js",
+      "code": "export function mount(container) {\n  const panel = document.createElement('section');\n  panel.dataset.remote = 'catalog';\n  const heading = document.createElement('h2');\n  heading.textContent = 'Catalog';\n  const detail = document.createElement('p');\n  detail.textContent = 'Áo thun — 200.000đ';\n  panel.append(heading, detail);\n  container.append(panel);\n  return {\n    unmount() { panel.remove(); },\n  };\n}\n"
+    },
+    {
+      "path": "cart/webpack.config.cjs",
+      "language": "js",
+      "code": "const path = require('node:path');\nconst { ModuleFederationPlugin } = require('webpack').container;\n\nmodule.exports = {\n  mode: 'production',\n  devtool: false,\n  context: __dirname,\n  entry: {},\n  output: {\n    path: path.resolve(__dirname, '../dist/cart'),\n    publicPath: 'auto',\n    uniqueName: 'mf_race_cart',\n    chunkFilename: '[name].[contenthash].js',\n    clean: true,\n  },\n  optimization: { minimize: false },\n  plugins: [new ModuleFederationPlugin({\n    name: 'race_cart',\n    filename: 'remoteEntry.js',\n    exposes: { './App': './src/entry.js' },\n  })],\n};\n"
+    },
+    {
+      "path": "cart/src/entry.js",
+      "language": "js",
+      "code": "export function mount(container) {\n  const panel = document.createElement('section');\n  panel.dataset.remote = 'cart';\n  const heading = document.createElement('h2');\n  heading.textContent = 'Cart';\n  const detail = document.createElement('p');\n  detail.textContent = 'Giỏ hàng có 1 áo thun.';\n  panel.append(heading, detail);\n  container.append(panel);\n  return {\n    unmount() { panel.remove(); },\n  };\n}\n"
+    }
+  ]
+}

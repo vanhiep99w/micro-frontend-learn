@@ -46,14 +46,14 @@ export function createRebuildQueue(build, { delay = 150, onError = console.error
 }
 
 export async function startSourceWatcher({ root = projectRoot, delay, log = console.log, onError = console.error } = {}) {
-  const registry = join(root, 'source-examples/registry.json');
+  const registryDirectory = join(root, 'source-examples');
   const queue = createRebuildQueue(() => buildSourceExamples({ root, prune: false, log }), { delay, onError });
-  const watcher = watch([join(root, 'content/docs'), registry], {
+  const watcher = watch([join(root, 'content/docs'), registryDirectory], {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 },
   });
   watcher.on('all', (_event, path) => {
-    if (path.endsWith('.mdx') || resolve(path) === registry) queue.invalidate();
+    if (path.endsWith('.mdx') || path.endsWith('.json')) queue.invalidate();
   });
   // A lost filesystem watcher must not silently leave dev serving stale source.
   let rejectReady;

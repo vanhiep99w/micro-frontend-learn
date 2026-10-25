@@ -541,6 +541,8 @@ Kết quả thành công là button của remote xuất hiện trong vùng catal
 
 `pagehide` chỉ minh họa cleanup cho trang đơn giản. Với router SPA, route owner phải gọi `unmount` khi rời route, đồng thời kiểm tra route còn active sau `await import()` để không mount kết quả tải muộn vào màn hình đã đổi. Với React, cần cả Suspense/loading state và error boundary thích hợp; Suspense một mình không xử lý Promise reject hay render exception.
 
+Có thể thử lỗi này và cách chặn bằng `requestId` trong [Navigation race với Module Federation thật](/docs/module-federation/co-che#navigation-race-với-module-federation-thật). Demo có đủ shell, hai remote webpack và bản trước/sau sửa; không chỉ mô phỏng bằng import file nội bộ.
+
 Nếu contract sai sau khi remote đã tạo side effects, thay DOM bằng fallback không tự cleanup timers hoặc subscriptions của remote. Contract mount cần quy định cleanup khi lỗi và tránh side effects ở top level; loader không giải quyết lifecycle thay bạn.
 
 ## Concurrency và giới hạn của timeout

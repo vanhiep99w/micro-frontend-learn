@@ -155,7 +155,7 @@ gọi catalog ở browser. Không dùng icon AngularJS cho Angular hiện đại
 lại có lý do rõ ràng (incident template, Network/Console evidence và 2 cây thư mục).
 Bài Routing giữ ba sơ đồ tập trung vào phân chia trách nhiệm, trạng thái shell
 router chưa cập nhật và Back hai lần; các sơ đồ lặp đã được gộp. Tổng curriculum:
-**135 D2, 0 Mermaid, không còn ASCII/Unicode diagram đã nhận diện chưa chuyển**,
+**134 D2, 0 Mermaid, không còn ASCII/Unicode diagram đã nhận diện chưa chuyển**,
 5 ví dụ learning components.
 
 ```bash
@@ -228,9 +228,34 @@ Thêm `sourceSnapshot="advanced"` vào metadata fence và `snapshot="advanced"` 
 **không tự xuất hiện ở mọi snapshot**. Các fence cùng đường dẫn chỉ được nối trong
 cùng snapshot; region có thể trùng tên giữa các snapshot khác nhau.
 
+Nếu một file hỗ trợ có nội dung giống nhau trong nhiều ví dụ, dùng metadata
+`sourceSnapshots="race-broken,race-fixed"` (danh sách ID cách nhau bằng dấu phẩy).
+Pipeline đưa nguyên file vào đúng các snapshot được nêu, không đưa vào snapshot mặc định.
+Không dùng đồng thời `sourceSnapshot` và `sourceSnapshots` trên một fence. Mỗi snapshot
+vẫn phải có đủ các file import của nó, không phụ thuộc file của snapshot khác.
+Bài Application shell có ba bộ source độc lập: cơ bản, race bản lỗi và race đã xử lý;
+preview của từng bản được sinh từ đúng bộ source đó. Trong mỗi bản race, cây file
+được chia thành `shell/`, `catalog/` và `cart/`: shell chỉ tải public `entry.js`
+của remote, còn các remote không import shell hoặc nhau. Đây là module boundary;
+ví dụ vẫn dùng một HTTP server, không hứa deploy độc lập chỉ vì chia thư mục.
+
 Hiện các bài Web Components, Types/contracts và Local development đã tách phương án
 thành snapshot riêng. Dropdown **Phiên bản** của drawer chọn đúng tập file, không
 trộn ambient types với generated types hoặc MSW với proxy backend.
+
+Snapshot có thể khai báo `sourceAsset: "federation-race/fixed.json"` để đọc một
+artifact JSON đã review trong `source-examples/`, thay vì sao chép cả lab vào MDX.
+Artifact phải có `schemaVersion: 1`, `sourceHash` SHA-256 của `JSON.stringify(files)`
+và danh sách file `{ path, language, code }`; loader kiểm tra hash, path và file trùng.
+Không trộn `sourceAsset` với sourceFile fences trong cùng snapshot. Watcher theo dõi
+cả JSON asset để drawer được cập nhật khi xuất lại source.
+
+Bài `/docs/module-federation/co-che#navigation-race-với-module-federation-thật`
+có hai bộ source webpack đầy đủ từ `example-learn/examples/micro-frontend/federation-race/v1`.
+Chạy demo server `example-learn` ở cổng 4175 cùng docs dev ở 3000. Có thể đặt
+`NEXT_PUBLIC_FEDERATION_DEMO_ORIGIN=http://127.0.0.1:4175` trước khi build docs để
+kiểm tra static export với app local. Không cài webpack vào site docs hoặc sửa
+snapshot JSON bằng tay; lệnh export source nằm trong README của example-learn.
 
 Assets snapshot có tên chứa content hash. Pipeline ghi assets trước rồi mới cập nhật
 manifest/revision bằng atomic rename; watcher không xóa assets cũ trong phiên dev.

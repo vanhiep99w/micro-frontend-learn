@@ -2,6 +2,8 @@ import type { ExampleDefinition } from '@vanhiep99w/docs-kit/example-explorer';
 
 const shop = 'https://example-learn.pages.dev/micro-frontend/communication/v1/';
 const source = 'https://github.com/vanhiep99w/example-learn/tree/main/examples/micro-frontend/communication/v1';
+const federationOrigin = process.env.NEXT_PUBLIC_FEDERATION_DEMO_ORIGIN
+  || (process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:4175' : 'https://example-learn.pages.dev');
 
 export const examples = [
   {
@@ -11,8 +13,26 @@ export const examples = [
     versions: [{
       id: 'document',
       title: 'Đúng code trong bài',
-      src: '/examples/application-shell/shell/',
+      src: '/examples/application-shell/shell/index.html',
     }],
+  },
+  {
+    id: 'application-shell-race',
+    title: 'Navigation race: catalog trả về sau cart',
+    defaultVersion: 'fixed',
+    versions: [
+      { id: 'broken', title: 'Bản lỗi — mount kết quả cũ', src: '/examples/application-shell/race/broken/shell/index.html' },
+      { id: 'fixed', title: 'Đã xử lý — kiểm tra lượt tải', src: '/examples/application-shell/race/fixed/shell/index.html' },
+    ],
+  },
+  {
+    id: 'federation-navigation-race',
+    title: 'Module Federation thật: navigation race',
+    defaultVersion: 'fixed',
+    versions: [
+      { id: 'broken', title: 'Module Federation — bản lỗi', src: `${federationOrigin}/micro-frontend/federation-race/v1/broken/shell/index.html` },
+      { id: 'fixed', title: 'Module Federation — đã xử lý', src: `${federationOrigin}/micro-frontend/federation-race/v1/fixed/shell/index.html` },
+    ],
   },
   {
     id: 'mfe-cart',

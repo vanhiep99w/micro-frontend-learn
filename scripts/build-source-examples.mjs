@@ -52,15 +52,36 @@ export async function buildSourceExamples({ root = projectRoot, prune = true, lo
       id, title: project.snapshotTitles.get(id), asset: assetNames.get(`${project.id}/${id}`),
     })),
   }));
-  // This trusted, dependency-free preview is generated from the same MDX
-  // snapshot as Source Explorer. Dev's existing source watcher rebuilds both.
-  const shellPreview = snapshots.get('kien-truc-application-shell/document');
-  if (shellPreview) {
-    for (const file of shellPreview.files) {
-      const path = join(root, 'public/examples/application-shell', file.path);
+  // Each trusted preview is generated from its own complete source snapshot.
+  // Dev's existing source watcher rebuilds the source drawer and apps together.
+  const previewRoot = join(root, 'public/examples/application-shell');
+  for (const [id, directory] of [
+    ['document', ''],
+    ['race-broken', 'race/broken'],
+    ['race-fixed', 'race/fixed'],
+  ]) {
+    const snapshot = snapshots.get(`kien-truc-application-shell/${id}`);
+    if (!snapshot) continue;
+    for (const file of snapshot.files) {
+      const path = join(previewRoot, directory, file.path);
       await mkdir(dirname(path), { recursive: true });
       await atomicWrite(path, file.code + '\n');
     }
+    if (id !== 'document') {
+      await atomicWrite(join(previewRoot, directory, 'index.html'), `<!doctype html>
+<html lang="vi"><meta charset="utf-8"><title>Mở shell</title>
+<a href="./shell/index.html">Mở shell của ví dụ</a>
+<script>location.replace('./shell/index.html' + location.search + location.hash);</script>
+</html>\n`);
+    }
+  }
+  // Keep previously shared local preview links working after separating examples.
+  if (snapshots.has('kien-truc-application-shell/race-broken')) {
+    await atomicWrite(join(previewRoot, 'race/index.html'), `<!doctype html>
+<html lang="vi"><meta charset="utf-8"><title>Chọn ví dụ</title>
+<a href="./broken/shell/index.html">Bản lỗi</a> · <a href="./fixed/shell/index.html">Đã xử lý</a>
+<script>const mode = new URLSearchParams(location.search).get('mode') === 'broken' ? 'broken' : 'fixed'; location.replace('./' + mode + '/shell/index.html' + location.hash);</script>
+</html>\n`);
   }
 
   const manifestJSON = JSON.stringify(manifest) + '\n';

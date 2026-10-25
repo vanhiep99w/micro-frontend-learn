@@ -36,6 +36,9 @@ Application shell giúp ghép các phần thành một trải nghiệm chung: gi
   - [Chạy và theo dõi ví dụ](#chạy-và-theo-dõi-ví-dụ)
   - [Tránh biến shell SDK thành framework thứ hai](#tránh-biến-shell-sdk-thành-framework-thứ-hai)
 - [Ngăn remote cũ mount sau navigation mới](#ngăn-remote-cũ-mount-sau-navigation-mới)
+  - [Thử bản lỗi và bản đã xử lý](#thử-bản-lỗi-và-bản-đã-xử-lý)
+  - [Code shell trước và sau khi sửa](#code-shell-trước-và-sau-khi-sửa)
+  - [Đủ code giao diện loader và hai remote](#đủ-code-giao-diện-loader-và-hai-remote)
 - [Failure boundary và trải nghiệm phục hồi](#failure-boundary-và-trải-nghiệm-phục-hồi)
   - [Phân biệt các lớp lỗi](#phân-biệt-các-lớp-lỗi)
   - [Retry timeout và fallback](#retry-timeout-và-fallback)
@@ -251,7 +254,7 @@ Unmount cũng không xóa module khỏi cache của browser. Quay lại catalog 
 
 Shell có một vùng trống để đặt catalog vào. Catalog cần cung cấp cách hiển thị vào vùng đó, đổi theme và gỡ giao diện khi không dùng nữa. **Contract ở đây chỉ là cách hai bên gọi nhau**, không cần bắt đầu bằng một loạt interface hay SDK.
 
-Mình dùng JavaScript thuần để ví dụ chỉ còn **ba file, có đủ cả shell lẫn remote**. Không có `App`, router hay hàm nào bị bỏ ngỏ. Chưa thêm React, Module Federation, gọi API hoặc xử lý hủy request; các phần đó không cần thiết để hiểu cách shell và remote phối hợp.
+Mình dùng JavaScript thuần để ví dụ chỉ còn **ba file, chia thành module `shell/` và remote `catalog/`**. Ví dụ cơ bản này chưa cần module cart. Không có `App`, router hay hàm nào bị bỏ ngỏ. Chưa thêm React, Module Federation, gọi API hoặc xử lý hủy request; các phần đó không cần thiết để hiểu cách shell và remote phối hợp.
 
 | File | Bên sở hữu | Công việc |
 | --- | --- | --- |
@@ -398,16 +401,250 @@ cart -> shell: "Load xong: mount Cart"
 catalog -> shell: "3. Load xong: bỏ kết quả cũ"
 ```
 
-Ví dụ ba file ở trên nhập module trực tiếp và hiển thị ngay, nên chưa có bước chờ tải remote khi chuyển trang. Khi thêm tải module bất đồng bộ, shell cần xử lý tình huống trong sơ đồ:
+### Thử bản lỗi và bản đã xử lý
 
-1. Đánh số mỗi lần chuyển trang: catalog là lần 1, cart là lần 2.
-2. Khi module tải xong, kiểm tra số của nó có còn là lần chuyển mới nhất không.
-3. Nếu catalog trả về cho lần 1 trong khi lần mới nhất đã là 2, bỏ kết quả đó, không hiển thị catalog đè lên cart.
-4. Nếu đã tạo giao diện cho một lần bị thay thế, gọi `unmount()` để dọn nó.
+Hai preview dưới đây có **cùng giao diện, loader và hai remote**. Chúng chỉ khác cách shell xử lý kết quả tải về. Bấm **“Chạy tình huống: Catalog → Cart”**: app mở catalog trước, rồi chuyển sang cart sau 100 ms. Catalog được cố ý cho chờ 1.500 ms, còn cart chờ 100 ms, nên cart sẵn sàng trước. Đây là độ trễ giả lập để tái hiện lỗi, không phải số đo hiệu năng.
 
-Cách đánh số này thường gọi là *generation*. Nó giúp bỏ kết quả cũ ngay cả khi việc tải module không hủy được. `AbortController` có thể bổ sung tín hiệu dừng cho tác vụ có hỗ trợ, nhưng không tự hủy `import()` hay xóa code đã chạy.
+<ExampleRef example="application-shell-race" version="broken">Preview: catalog cũ ghi đè cart — bản lỗi</ExampleRef>
 
-Đây là vấn đề cần thêm khi mở rộng ví dụ, không phải lý do để nhét cả bộ điều phối vào contract ban đầu. Đọc [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) để đi tiếp từ việc ghép giao diện sang điều phối URL và chuyển trang.
+<SourceRef project="kien-truc-application-shell" snapshot="race-broken" variant="button">Source đầy đủ — bản lỗi</SourceRef>
+
+<ExampleRef example="application-shell-race" version="fixed">Preview: bỏ kết quả cũ — đã xử lý</ExampleRef>
+
+<SourceRef project="kien-truc-application-shell" snapshot="race-fixed" variant="button">Source đầy đủ — đã xử lý</SourceRef>
+
+| Sau khi cả hai lượt tải xong | Bản lỗi | Bản đã xử lý |
+| --- | --- | --- |
+| Route trong app | `#/cart` | `#/cart` |
+| Giao diện trong vùng nội dung | **Catalog**, sai với route | **Cart**, đúng với route |
+| Dòng log cuối | `Đã mount catalog.` | `Bỏ kết quả cũ: catalog.` |
+
+Route ở đây dùng hash bên trong iframe của preview, không đổi URL bài docs. Bạn cũng có thể tự bấm hai nút Catalog và Cart. Mỗi lần tải đều có độ trễ giả lập nên thử lại vẫn tái hiện được, kể cả module đã có trong cache. Bấm tải lại preview để đưa app về trạng thái ban đầu.
+
+### Code shell trước và sau khi sửa
+
+**Bản lỗi — `shell/navigator.js`:** shell cứ thấy module tải xong là mount. Nó không kiểm tra người dùng còn ở trang đã yêu cầu module đó không.
+
+```js title="shell/navigator.js — bản lỗi" sourceFile="shell/navigator.js" sourceRegion="main" sourceSnapshot="race-broken"
+export const variantTitle = 'Bản lỗi';
+
+export function createNavigator(container, loadRemote, log) {
+  let currentRemote;
+
+  return async function show(name) {
+    currentRemote?.unmount();
+    currentRemote = undefined;
+    container.textContent = `Đang tải ${name}…`;
+    log(`Bắt đầu tải ${name}.`);
+
+    const remote = await loadRemote(name);
+
+    // LỖI: trong lúc await, người dùng có thể đã chuyển trang.
+    // Catalog cũ vẫn gỡ cart đang hiển thị rồi mount đè lên.
+    currentRemote?.unmount();
+    container.replaceChildren();
+    currentRemote = remote.mount(container);
+    log(`Đã mount ${name}.`);
+  };
+}
+```
+
+<SourceRef project="kien-truc-application-shell" snapshot="race-broken" file="shell/navigator.js" region="main">Source bản lỗi: shell không kiểm tra lượt tải</SourceRef>
+
+**Bản đã xử lý — `shell/navigator.js`:** shell đánh số mỗi lần chuyển trang. Sau `await`, chỉ lượt mới nhất được phép mount.
+
+```js title="shell/navigator.js — đã xử lý" sourceFile="shell/navigator.js" sourceRegion="main" sourceSnapshot="race-fixed"
+export const variantTitle = 'Đã xử lý';
+
+export function createNavigator(container, loadRemote, log) {
+  let currentRemote;
+  let latestRequestId = 0;
+
+  return async function show(name) {
+    // Catalog nhận số 1; lần chuyển sang cart tiếp theo nhận số 2.
+    const requestId = ++latestRequestId;
+
+    currentRemote?.unmount();
+    currentRemote = undefined;
+    container.textContent = `Đang tải ${name}…`;
+    log(`Bắt đầu tải ${name}.`);
+
+    const remote = await loadRemote(name);
+
+    // Nếu đã có lần chuyển mới hơn, không đụng vào giao diện hiện tại.
+    if (requestId !== latestRequestId) {
+      log(`Bỏ kết quả cũ: ${name}.`);
+      return;
+    }
+
+    currentRemote?.unmount();
+    container.replaceChildren();
+    currentRemote = remote.mount(container);
+    log(`Đã mount ${name}.`);
+  };
+}
+```
+
+<SourceRef project="kien-truc-application-shell" snapshot="race-fixed" file="shell/navigator.js" region="main">Source đã xử lý: kiểm tra số lượt trước khi mount</SourceRef>
+
+Điểm sửa nằm ở `requestId !== latestRequestId`. Mỗi lời gọi `show` giữ số riêng trong biến `requestId`, còn `latestRequestId` được cập nhật mỗi khi có lần chuyển mới. Khi catalog trả về với số 1 mà số mới nhất đã là 2, shell bỏ kết quả catalog. **Không cần sửa remote để xử lý lỗi thứ tự này.**
+
+Cách đánh số này thường gọi là *generation*. Nó không hủy việc tải module; nó ngăn kết quả không còn phù hợp được dùng để thay giao diện. `AbortController` có thể bổ sung tín hiệu dừng cho tác vụ có hỗ trợ, nhưng không tự hủy `import()`.
+
+### Đủ code giao diện loader và hai remote
+
+Trong Source Explorer, mỗi bản là **một ví dụ riêng gồm ba module: `shell/`, `catalog/` và `cart/`**. Mỗi module giữ code đúng trách nhiệm của nó, không để các file frontend ngang hàng lẫn nhau. Hai bản có cùng cấu trúc 6 file; chỉ `shell/navigator.js` khác cách xử lý kết quả tải. Chọn **Navigation race — bản lỗi** hoặc **Navigation race — đã xử lý** để đọc/copy trọn bộ riêng, không lẫn ví dụ cơ bản ở phần trước.
+
+| Module | File trong module | Trách nhiệm |
+| --- | --- | --- |
+| Shell | `shell/index.html`, `shell/main.js`, `shell/navigator.js`, `shell/loader.js` | Giữ khung trang, nhận navigation, tải remote và gọi mount/unmount |
+| Catalog remote | `catalog/entry.js` | Tự tạo giao diện catalog và trả hàm cleanup |
+| Cart remote | `cart/entry.js` | Tự tạo giao diện giỏ hàng và trả hàm cleanup |
+
+Shell chỉ gọi public entry của remote qua `mount(container)`; không đọc DOM hay state nội bộ để sửa thay remote. Catalog không import cart hoặc shell; cart cũng không import catalog. Lỗi trong bài nằm ở module shell, nên bản sửa chỉ đổi `shell/navigator.js`, không phải sửa hai remote.
+
+**Khung trang — `shell/index.html`:** hai remote chỉ được render trong `#outlet`, còn route và log do shell quản lý.
+
+```html title="shell/index.html" sourceFile="shell/index.html" sourceRegion="main" sourceSnapshots="race-broken,race-fixed"
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote cũ trả về sau navigation mới</title>
+  </head>
+  <body>
+    <h1 id="variant"></h1>
+    <p>Route trong app: <code id="route">#/</code></p>
+    <button id="catalog">Catalog — tải chậm</button>
+    <button id="cart">Cart — tải nhanh</button>
+    <button id="run">Chạy tình huống: Catalog → Cart</button>
+    <hr />
+    <main id="outlet">Chưa chọn trang.</main>
+    <h2>Log của shell</h2>
+    <ol id="log" aria-live="polite"></ol>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
+```
+
+**Nối nút với shell — `shell/main.js`:** chỉ import `./navigator.js` cùng module shell của ví dụ hiện tại. Nhãn bản lỗi/đã xử lý cũng được lấy từ file này, không chọn implementation qua query.
+
+```js title="shell/main.js" sourceFile="shell/main.js" sourceRegion="main" sourceSnapshots="race-broken,race-fixed"
+import { createNavigator, variantTitle } from './navigator.js';
+import { loadRemote, wait } from './loader.js';
+
+const container = document.querySelector('#outlet');
+const route = document.querySelector('#route');
+const logList = document.querySelector('#log');
+const catalogButton = document.querySelector('#catalog');
+const cartButton = document.querySelector('#cart');
+const runButton = document.querySelector('#run');
+
+function log(message) {
+  const item = document.createElement('li');
+  item.textContent = message;
+  logList.append(item);
+}
+
+const show = createNavigator(container, loadRemote, log);
+document.querySelector('#variant').textContent = variantTitle;
+
+function navigate(name) {
+  // Chỉ đổi hash bên trong app preview, không đổi URL bài docs.
+  history.replaceState(null, '', `#/${name}`);
+  route.textContent = `#/${name}`;
+  return show(name).catch(error => log(`Lỗi tải: ${error.message}`));
+}
+
+catalogButton.onclick = () => navigate('catalog');
+cartButton.onclick = () => navigate('cart');
+
+runButton.onclick = async () => {
+  // Khóa nút trong một lượt thử để không trộn nhiều tình huống.
+  catalogButton.disabled = cartButton.disabled = runButton.disabled = true;
+  logList.replaceChildren();
+  try {
+    const loadingCatalog = navigate('catalog');
+    await wait(100);
+    const loadingCart = navigate('cart');
+    await Promise.all([loadingCatalog, loadingCart]);
+  } finally {
+    catalogButton.disabled = cartButton.disabled = runButton.disabled = false;
+  }
+};
+```
+
+<SourceRef project="kien-truc-application-shell" snapshot="race-fixed" file="shell/main.js" region="main">Source đầy đủ: bắt đầu từ các nút của shell</SourceRef>
+
+**Loader — `shell/loader.js`:** thời gian chờ luôn được áp dụng trước `import`, nên cache module không làm mất tình huống tải về khác thứ tự.
+
+```js title="shell/loader.js" sourceFile="shell/loader.js" sourceRegion="main" sourceSnapshots="race-broken,race-fixed"
+export function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export async function loadRemote(name) {
+  if (name === 'catalog') {
+    await wait(1500); // Giả lập catalog tải chậm.
+    return import('../catalog/entry.js');
+  }
+  if (name === 'cart') {
+    await wait(100); // Giả lập cart tải nhanh.
+    return import('../cart/entry.js');
+  }
+  throw new Error(`Remote không được hỗ trợ: ${name}`);
+}
+```
+
+**Remote catalog — `catalog/entry.js`:** không đọc route hay tự quyết định có được mount không. Shell chịu trách nhiệm gọi nó đúng lúc.
+
+```js title="catalog/entry.js" sourceFile="catalog/entry.js" sourceRegion="main" sourceSnapshots="race-broken,race-fixed"
+export function mount(container) {
+  const panel = document.createElement('section');
+  panel.dataset.remote = 'catalog';
+  const heading = document.createElement('h2');
+  heading.textContent = 'Catalog';
+  const product = document.createElement('p');
+  product.textContent = 'Áo thun — 200.000đ';
+  panel.append(heading, product);
+  container.append(panel);
+  return {
+    unmount() {
+      panel.remove();
+    },
+  };
+}
+```
+
+**Remote cart — `cart/entry.js`:** có cùng contract `mount(container)` trả object `unmount()`, nhưng giữ giao diện riêng của giỏ hàng.
+
+```js title="cart/entry.js" sourceFile="cart/entry.js" sourceRegion="main" sourceSnapshots="race-broken,race-fixed"
+export function mount(container) {
+  const panel = document.createElement('section');
+  panel.dataset.remote = 'cart';
+  const heading = document.createElement('h2');
+  heading.textContent = 'Cart';
+  const summary = document.createElement('p');
+  summary.textContent = 'Giỏ hàng có 1 áo thun.';
+  panel.append(heading, summary);
+  container.append(panel);
+  return {
+    unmount() {
+      panel.remove();
+    },
+  };
+}
+```
+
+Để chạy riêng một bản, copy đủ 6 file của **bản đó**, giữ nguyên ba thư mục `shell/`, `catalog/`, `cart/`. Chạy `python3 -m http.server 8080` ở thư mục chứa cả ba module rồi mở `http://localhost:8080/shell/index.html`. Muốn so sánh, copy bản còn lại vào thư mục khác. Mỗi preview cũng được sinh từ đúng bộ source riêng tương ứng.
+
+Đây là ranh giới module và public entry theo vai trò micro-frontend. Để giữ ví dụ dễ chạy, cả ba module vẫn được phục vụ từ một HTTP server; việc chia thư mục này **chưa tự tạo pipeline hay khả năng deploy độc lập**.
+
+Ví dụ cố ý chỉ xử lý **kết quả loader trả về muộn**, với `mount` đồng bộ và không tự kích hoạt navigation. Nếu `mount` cũng bất đồng bộ, hoặc có request dữ liệu, timer và subscription, bạn còn phải quy định cleanup và kiểm tra lượt hiện hành ở những bước đó. Đọc [Routing và navigation](/docs/giao-tiep-va-trang-thai/routing) khi mở rộng sang điều phối URL đầy đủ.
+
+
+Ví dụ ở phần này dùng native ES modules để tập trung vào navigation. Nếu muốn thử **cùng lỗi nhưng shell tải code qua Module Federation thật**, xem [Navigation race với Module Federation thật](/docs/module-federation/co-che#navigation-race-với-module-federation-thật): có hai preview và hai bộ source webpack riêng cho bản lỗi/đã sửa.
 
 ## Failure boundary và trải nghiệm phục hồi
 
