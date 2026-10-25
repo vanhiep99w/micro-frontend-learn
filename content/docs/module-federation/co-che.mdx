@@ -438,11 +438,26 @@ Nhận định cache này áp dụng cho cùng runtime/module identity. Hai runt
 
 ### Deploy remote mới không thay code của tab cũ
 
-Giả sử document đã tải catalog `r17`; server sau đó chọn `r18` cho người dùng mới. Module `r17` đã đánh giá vẫn tồn tại trong tab cũ. Import cùng request trong tab đó không tự lấy implementation mới chỉ vì file trên server đổi.
+Giả sử catalog `r17` chưa có bộ lọc giá, còn `r18` vừa bổ sung tính năng này. **Bạn deploy `r18` lên server, nhưng người dùng đang mở catalog `r17` không tự thấy bộ lọc mới.** Vì sao?
 
-Nếu tab cũ chưa tải một lazy chunk của `r17`, nó vẫn có thể cần chunk đó khi người dùng mở chức năng khác. Xóa artifacts cũ ngay sau deploy khiến tab đang mở lỗi dù bản release mới hoàn toàn tốt.
+Deploy thay đổi những file mà server có thể phục vụ. Nó không gửi lệnh tới mọi tab đang mở để thay các hàm JavaScript đã nạp trong bộ nhớ của tab đó. Module Federation cũng không tự theo dõi release mới để thay module đang dùng.
 
-Mình mặc định giữ artifact graph bất biến theo release và một lựa chọn remote nhất quán cho mỗi document. Muốn nâng remote giữa phiên phải thiết kế riêng cho container identity, module cache, shared versions, UI instances và state; đổi URL không đủ để biến đó thành hot swap an toàn.
+Ví dụ dưới giả sử shell đọc cấu hình chọn remote khi mở trang và giữ lựa chọn đó cho tới khi reload:
+
+| Thời điểm giả định | Điều xảy ra | Bản catalog được dùng |
+| --- | --- | --- |
+| 09:00 | Tab A mở catalog, tải và chạy module từ `r17` | `r17`, chưa có bộ lọc giá |
+| 10:00 | Team deploy `r18`, cập nhật cấu hình để những lần mở trang sau chọn bản mới | Tab A vẫn chạy `r17` đã nạp |
+| 10:05 | Trong tab A, người dùng chuyển sang cart rồi quay lại catalog | Import cùng module dùng lại kết quả đã cache của `r17` |
+| 10:10 | Người dùng mở tab B; tab này nhận cấu hình mới và tải catalog | `r18`, có bộ lọc giá |
+
+Vậy “remote release riêng” nghĩa là **shell có thể tải bản catalog mới mà không cần rebuild shell**, không có nghĩa mọi tab tự cập nhật ngay. Tab A có thể nhận `r18` sau khi reload, nhưng chỉ nếu cấu hình lúc đó chọn `r18` và cache cho phép lấy cấu hình/file phù hợp. Nếu build shell vẫn trỏ cố định tới URL `r17`, reload cũng không tự chuyển sang `r18`.
+
+**Vì sao không được xóa file `r17` ngay sau deploy?** Tab A có thể mới tải trang danh sách sản phẩm, chưa tải chunk của màn hình chi tiết. Khi người dùng mở chi tiết, code `r17` vẫn yêu cầu chunk thuộc `r17`, chẳng hạn `/catalog/r17/product-details.a1b2.js`. Nếu bạn đã xóa file đó, request trả `404` và tab A lỗi, dù `r18` hoạt động bình thường.
+
+Mình mặc định giữ nguyên các file của mỗi release trong URL riêng, giữ bản cũ đủ lâu cho tab cũ và rollback, đồng thời chọn một bản remote nhất quán cho mỗi lần mở trang. Nếu cần yêu cầu người dùng cập nhật, có thể thông báo và cho reload có kiểm soát. Thay remote ngay trong tab mà không reload là bài toán riêng: phải xử lý cả UI, state và thư viện đang dùng, không chỉ đổi URL.
+
+Phạm vi nhận định này là **tab đã nạp module cũ**. Với tab chưa tải catalog lần nào, bản được tải còn phụ thuộc cấu hình và cơ chế chọn remote của ứng dụng.
 
 ## Tại sao entry tải được nhưng chunk vẫn lỗi
 
