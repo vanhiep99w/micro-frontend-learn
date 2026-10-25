@@ -116,9 +116,21 @@ URL `r17` trong ví dụ được chốt khi build host, nhưng code catalog v�
 
 ## Remote entry và container là hai thứ khác nhau
 
-Remote entry là **artifact để tải**. Container là **giao diện runtime sau khi entry đã thực thi**.
+Tên gọi dễ khiến bạn tưởng đây là hai file khác nhau. Thực ra, trong ví dụ webpack script remote ở trên, **remote entry là một file JavaScript; container là một object JavaScript mà file đó công bố khi chạy**.
 
-Trong cấu hình script remote ở trên, thực thi `remoteEntry.js` công bố container qua global tên `catalog`, thường truy cập được bằng `window.catalog`. Container không phải component; nó là object cho runtime gọi `init` và `get`.
+Cụ thể với catalog:
+
+1. Build catalog tạo file `remoteEntry.js`, rồi bạn deploy file đó cùng các chunk của catalog lên CDN.
+2. Browser tải và chạy `remoteEntry.js`. Code trong file công bố object có tên `catalog`, để host truy cập qua `window.catalog`.
+3. Host dùng object đó để yêu cầu module `./ProductPage`. Object này chính là **container**; nó có hai hàm chính là `init` và `get`.
+
+| | Remote entry | Container |
+| --- | --- | --- |
+| Trong ví dụ | File `remoteEntry.js` trên CDN | Object `window.catalog` trong browser |
+| Vai trò | Chứa code để thiết lập điểm truy cập tới remote | Cung cấp các hàm để khởi tạo sharing và lấy module |
+| Bạn quan sát ở đâu? | Request file trong Network panel | Object và các hàm của nó trong môi trường JavaScript đang chạy |
+
+Vì vậy, host **tải file entry**, rồi **gọi hàm trên container**. Container không phải component `ProductPage`, cũng không phải một Docker container.
 
 ```d2 title="Remote entry và container là hai thứ khác nhau"
 direction: right
@@ -129,7 +141,9 @@ entry -> container: "Tải và thực thi"
 container -> factory: "get('./ProductPage')"
 ```
 
-Entry không nhất thiết có tên `remoteEntry.js`; đó là convention được chọn bằng `filename`. Remote dạng ESM hoặc integration khác có thể công bố container theo cách khác. Đừng áp dụng `window.catalog` cho mọi artifact có chữ “federation”.
+Trong sơ đồ, `get('./ProductPage')` trả về một *factory* — hàm để lấy exports của module, chưa phải component để render. Phần Container API ngay dưới sẽ tách rõ hai bước này.
+
+Tên file `remoteEntry.js` đến từ cấu hình `filename`; tên object `catalog` đến từ cấu hình container `name`. Đổi tên file không tự đổi tên container. Remote dạng ESM hoặc integration khác có thể công bố container theo cách khác; `window.catalog` chỉ áp dụng cho mô hình script remote đang xét.
 
 ### Ba tên cần phân biệt
 
@@ -145,15 +159,24 @@ Alias và container name đang giống nhau để dễ đọc, nhưng không b�
 
 ### Container API
 
+Container có hai hàm chính:
+
 | API | Nhận gì | Ý nghĩa |
 | --- | --- | --- |
-| `init(shareScope)` | Object share scope từ consumer | Nối container vào cùng scope, đăng ký providers và khởi tạo sharing liên quan |
-| `get('./ProductPage')` | Public key đã expose | Trả module factory sau khi những điều kiện tải cần thiết hoàn tất |
-| `factory()` | Không có input nghiệp vụ | Đánh giá/lấy exposed module rồi trả exports |
+| `container.init(shareScope)` | Bảng thông tin thư viện dùng chung, gọi là share scope | Kết nối cơ chế chia sẻ thư viện giữa host và remote |
+| `container.get('./ProductPage')` | Tên module mà remote đã công bố | Tải các chunk cần thiết và trả về factory để lấy module |
 
-`init` và `get` là async-compatible: caller có thể `await` dù một số nhánh hoàn tất đồng bộ. Factory trong mô hình này được gọi đồng bộ; nó không phải hàm `mount` và không nhận DOM root hay props.
+`get` chưa trả thẳng component. Bạn nhận một hàm factory, gọi hàm đó mới có exports của module:
 
-Điểm phân biệt này giúp tránh một lỗi dễ mắc: gọi `container.get()` rồi cố render kết quả. Kết quả đó là factory, chưa phải export bạn định tiêu thụ.
+```js title="Sau khi container đã được khởi tạo sharing"
+const factory = await container.get('./ProductPage');
+const moduleExports = factory();
+const ProductPage = moduleExports.default;
+```
+
+Đoạn này giả sử module có default export là component. `factory` là hàm **do `get` trả về**, không phải method thứ ba của container. Gọi factory chỉ lấy exports; nó chưa render component hay gọi `mount`.
+
+`init` và `get` có thể được gọi với `await`, kể cả khi một nhánh hoàn tất đồng bộ. Factory trong mô hình này được gọi đồng bộ. Khi bạn viết `import('catalog/ProductPage')`, webpack xử lý các bước đó; không cần tự gọi lại trong component.
 
 ## Theo dõi một federated import
 
