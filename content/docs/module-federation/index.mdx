@@ -1,17 +1,11 @@
 ---
 title: "Module Federation"
-description: "Hiểu host, remote và runtime sharing; chọn public contract, shared dependencies và chính sách tương thích để các frontend có thể release riêng."
+description: "Hiểu mục đích của Module Federation, vai trò host/remote và vì sao tải module từ build riêng khác với dùng npm package hay code splitting."
 ---
 
-Giả sử catalog vừa thêm bộ lọc sản phẩm. Bạn muốn deploy catalog mà không build lại shell và cart, nhưng vẫn hiển thị catalog bên trong cùng ứng dụng. Nếu shell chỉ import catalog từ một npm package, code catalog thường đã được chốt vào bản build của shell; cập nhật package chưa làm người dùng nhận được tính năng mới.
+Giả sử shop có shell — khung ứng dụng chứa menu và điều hướng — cùng catalog và cart. Team catalog muốn thêm bộ lọc sản phẩm rồi deploy riêng, thay vì yêu cầu shell và cart cùng build lại.
 
-Module Federation cho phép một build lấy module từ một build độc lập trong lúc ứng dụng chạy. Shell có thể tải public module của catalog, còn catalog giữ pipeline và artifact riêng. Nhưng việc tải được module chỉ là bước đầu: shell cũ có hiểu API của catalog mới không, React nào sẽ được dùng, và UI còn điều hướng được khi remote lỗi?
-
-**Module Federation giải quyết việc cung cấp, tải và chia sẻ module giữa các build; nó không tự tạo một kiến trúc micro-frontend độc lập.**
-
-<Callout type="info" title="Phạm vi nhóm bài">
-  Đây là trang định hướng cho sáu bài chuyên sâu về Module Federation. Ví dụ dùng shop giả định gồm shell, catalog và cart, không phải ứng dụng có sẵn trong repository docs. Phần cấu hình minh họa dùng plugin tích hợp trong webpack 5; không phải cấu hình cho Next.js của site này.
-</Callout>
+**Module Federation cho phép các ứng dụng được build riêng cung cấp và sử dụng module của nhau khi ứng dụng chạy.** Nhờ đó, shell có thể ghép catalog vào cùng giao diện mà không phải đóng gói code catalog trong mỗi lần build shell. Các build cũng có thể chia sẻ một số thư viện chung, như React, theo cấu hình.
 
 ## Mục lục
 
@@ -19,370 +13,65 @@ Module Federation cho phép một build lấy module từ một build độc l�
   - [Khác package và code splitting](#khác-package-và-code-splitting)
   - [Khi nào nên chọn và khi nào không](#khi-nào-nên-chọn-và-khi-nào-không)
 - [Các khái niệm cần nắm](#các-khái-niệm-cần-nắm)
-- [Từ một lệnh import tới module của remote](#từ-một-lệnh-import-tới-module-của-remote)
-  - [Luồng tải trong shop](#luồng-tải-trong-shop)
-  - [Remote entry không phải toàn bộ ứng dụng](#remote-entry-không-phải-toàn-bộ-ứng-dụng)
-- [Đọc một cấu hình webpack tối thiểu](#đọc-một-cấu-hình-webpack-tối-thiểu)
-  - [Remote công bố module](#remote-công-bố-module)
-  - [Host khai báo nơi lấy module](#host-khai-báo-nơi-lấy-module)
-  - [URL cố định vẫn là tải ở runtime](#url-cố-định-vẫn-là-tải-ở-runtime)
-- [Shared dependencies là một hợp đồng riêng](#shared-dependencies-là-một-hợp-đồng-riêng)
-  - [Singleton không đồng nghĩa với tương thích](#singleton-không-đồng-nghĩa-với-tương-thích)
-  - [Chia sẻ thư viện khác chia sẻ state](#chia-sẻ-thư-viện-khác-chia-sẻ-state)
-- [Phân biệt webpack gốc và hệ sinh thái mở rộng](#phân-biệt-webpack-gốc-và-hệ-sinh-thái-mở-rộng)
-- [Release riêng cần gì ngoài federation](#release-riêng-cần-gì-ngoài-federation)
-  - [Public contract và version skew](#public-contract-và-version-skew)
-  - [Chọn artifact và giữ khả năng rollback](#chọn-artifact-và-giữ-khả-năng-rollback)
-  - [Fallback và quan sát lỗi](#fallback-và-quan-sát-lỗi)
 - [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
-- [Bài tập kiểm chứng boundary đầu tiên](#bài-tập-kiểm-chứng-boundary-đầu-tiên)
-- [Checklist trước khi nối thêm remote](#checklist-trước-khi-nối-thêm-remote)
-- [Đọc tiếp](#đọc-tiếp)
 - [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
 ## Module Federation nằm ở đâu trong kiến trúc
 
-Micro-frontend là cách chia frontend thành những phần có ownership và ranh giới tích hợp rõ. Runtime composition là cách ghép các artifact riêng khi ứng dụng chạy. Module Federation là một cơ chế có thể dùng để thực hiện việc ghép đó thông qua JavaScript modules.
+Trong shop giả định này, catalog công bố module trang sản phẩm. Shell tải module đó khi người dùng mở catalog, rồi hiển thị nó trong vùng nội dung của ứng dụng. Code trang sản phẩm đến từ bản build catalog, không phải bản build shell.
 
-Trong shop, shell quyết định catalog xuất hiện dưới `/catalog/*`. Federation runtime giúp shell lấy module công khai của catalog; shell vẫn phải quyết định khi nào render, loading UI nằm ở đâu, ai sở hữu navigation và lỗi được cô lập thế nào. Loader không thay thế application shell hay lifecycle contract.
+Mục đích là **dùng chung module giữa các build độc lập, tạo điều kiện để từng phần frontend release theo nhịp riêng**. Module có thể là component hoặc function; không bắt buộc là cả ứng dụng.
 
-Module được expose cũng không bắt buộc là một màn hình. Nó có thể là component, function, adapter hoặc API `mount`. Tuy vậy, khả năng expose mọi module không phải lý do để biến mọi helper nội bộ thành public API. Mình mặc định chọn boundary đủ lớn, như một nhánh route của domain, thay vì federate từng nút bấm.
+Module Federation lo phần kết nối và tải module. Shell vẫn chịu trách nhiệm ghép giao diện, điều hướng và xử lý khi catalog không tải được. Vì vậy, đây là một công cụ để triển khai micro-frontend, không phải toàn bộ kiến trúc micro-frontend.
 
 ### Khác package và code splitting
 
-Giả sử catalog đang hiển thị danh sách sản phẩm, còn shell là khung ứng dụng chứa menu và vùng hiển thị catalog. Bây giờ bạn thêm bộ lọc giá vào catalog. **Muốn người dùng nhận được bộ lọc mới, bạn phải build và deploy lại phần nào?** Đây là câu hỏi giúp phân biệt ba cách dưới đây.
+Vẫn với thay đổi “catalog thêm bộ lọc”, điểm khác nhau là:
 
-**1. Đóng gói catalog thành npm package**
+| Cách tích hợp | Điều xảy ra khi catalog có code mới |
+| --- | --- |
+| npm package được đóng gói vào shell | Shell cần cập nhật package, build và deploy lại để dùng code mới |
+| Code splitting trong cùng app | Code được tách thành file để tải khi cần, nhưng vẫn phải build và deploy bản app mới |
+| Module Federation | Catalog có thể build và deploy riêng; shell tải module từ bản catalog được chọn |
 
-Shell cài package `@shop/catalog` rồi dùng component của nó:
+Nói ngắn gọn: **code splitting giúp tải code muộn; Module Federation giúp lấy code từ một build khác**. Hai cơ chế có thể dùng cùng nhau.
 
-```js title="Shell dùng catalog như một dependency"
-import ProductPage from '@shop/catalog';
-```
-
-Khi build shell, bundler lấy code từ bản package đã cài và đóng gói nó vào các file JavaScript đầu ra của shell. Giả sử lần build đó dùng catalog `1.0.0`. Sau này bạn publish package `1.1.0` có bộ lọc giá, các file shell đã deploy vẫn chứa code từ `1.0.0`; browser không tự lên npm để lấy bản mới.
-
-Muốn cập nhật, bạn cần cho shell dùng package mới, build lại shell rồi deploy kết quả. Package giúp **chia sẻ source qua một dependency có version**, chứ trong cách dùng thông thường này chưa giúp catalog cập nhật riêng trong ứng dụng đã deploy.
-
-**2. Để catalog trong cùng app, nhưng tải bằng dynamic import**
-
-Shell không tải code trang sản phẩm ngay từ đầu, mà chỉ yêu cầu khi người dùng mở trang:
-
-```js title="Shell tải muộn một module trong cùng app"
-const { default: ProductPage } = await import('./ProductPage');
-```
-
-Bundler có thể tách code trang sản phẩm thành một file JavaScript riêng, gọi là *chunk*. Browser tải chunk đó khi cần. Đây là **code splitting**: chia code để không phải tải tất cả ngay lúc mở app.
-
-Điểm dễ nhầm là: file được **tải sau**, nhưng nội dung của nó vẫn do **lần build chung của app** tạo ra. Nếu bạn thêm bộ lọc giá, bạn vẫn build và deploy bản app mới, gồm các chunk tương ứng. Chỉ vì có file riêng không có nghĩa catalog đã có quy trình release riêng.
-
-Ngay cả npm package ở cách 1 cũng có thể được tải bằng `import('@shop/catalog')` để code splitting. Khi đó code vẫn lấy từ package đã cài lúc build shell; đổi sang `import()` không làm shell tự nhận package vừa publish.
-
-**3. Build catalog riêng rồi để shell lấy module qua Module Federation**
-
-Catalog có lần build và bộ file deploy riêng. Sau khi cấu hình federation ở hai bên, shell có thể viết:
-
-```js title="Shell lấy module từ build riêng của catalog"
-const { default: ProductPage } = await import('catalog/ProductPage');
-```
-
-Ở đây `catalog` là alias remote trong cấu hình, không phải npm package shell phải cài. Khi build shell, plugin ghi lại cách tìm module công khai `ProductPage`; nó không đóng gói implementation của module đó vào shell. Khi ứng dụng chạy, federation runtime — phần code phụ trách kết nối các build — tải module từ bản catalog được chọn.
-
-Với bộ lọc giá mới, bạn có thể chỉ build và deploy catalog. Shell không cần build lại **nếu nó vẫn dùng được API của catalog và cơ chế chọn remote cho phép trỏ tới bản mới mà không sửa build shell**. Ví dụ, shell có thể đọc địa chỉ bản catalog từ runtime config, tức cấu hình được lấy khi ứng dụng chạy.
-
-Nếu URL bản catalog bị ghi cố định vào build shell, chẳng hạn `/catalog/r17/remoteEntry.js`, deploy thêm bản `r18` chưa làm shell tự chuyển sang đó. Xem [URL cố định vẫn là tải ở runtime](#url-cố-định-vẫn-là-tải-ở-runtime). Federation cho phép build riêng; việc shell nhận bản remote nào vẫn cần thiết kế.
-
-Đặt ba cách cạnh nhau với cùng thay đổi “thêm bộ lọc giá”:
-
-| Cách tích hợp | Code catalog mà browser nhận đến từ đâu? | Cần làm gì để đưa bộ lọc mới tới người dùng? |
-| --- | --- | --- |
-| npm package thông thường | Package đã được đóng gói trong lần build shell | Cập nhật package ở shell, build và deploy lại shell |
-| Code splitting trong cùng app | Chunk được tạo bởi lần build chung của app | Build và deploy bản app mới; chunk riêng chỉ giúp tải muộn |
-| Module Federation | Bản build catalog riêng mà runtime của shell tìm tới | Build và deploy catalog, cho shell chọn bản đó; không cần rebuild shell nếu cấu hình và API cho phép |
-
-Hãy tách hai câu hỏi: **“Code được tải khi nào?”** và **“Code này thuộc bản build của ai?”** Code splitting chủ yếu trả lời câu đầu; Module Federation cho phép lấy module thuộc một build khác. Một remote vẫn có thể code splitting bên trong nó, nên hai cơ chế này có thể dùng cùng nhau.
+Release riêng vẫn có điều kiện: API giữa shell và catalog phải tương thích, và shell phải tìm tới đúng bản catalog mới. Nếu URL bản catalog bị ghi cố định trong build shell, đổi URL đó vẫn có thể cần rebuild shell. Chi tiết nằm ở [Dynamic remotes](/docs/module-federation/dynamic-remotes).
 
 ### Khi nào nên chọn và khi nào không
 
-Mình chọn Module Federation khi nhiều team sở hữu các domain rõ ràng, cần release theo nhịp riêng và muốn ghép module trong cùng trải nghiệm frontend. Team cũng cần chấp nhận vận hành compatibility, artifact hosting, fallback và telemetry tại boundary.
+Mình chọn Module Federation khi các team sở hữu những phần frontend rõ ràng, cần release riêng nhưng vẫn muốn ghép module trong cùng trải nghiệm người dùng.
 
-Nếu nhu cầu chỉ là chia sẻ design system hoặc helper có cùng vòng release với ứng dụng, npm package thường đơn giản hơn. Nếu mọi phần đều phải deploy cùng nhau vì cùng sửa một store nội bộ, thêm federation chưa giải quyết được coupling đó.
-
-Nếu cần cách ly code không tin cậy, Module Federation không phải lựa chọn sandbox. Nếu mỗi domain có thể phục vụ document riêng, navigation bằng link có thể đủ. Với yêu cầu isolation hoặc framework khác nhau, hãy so sánh thêm iframe, Web Components và lifecycle API thay vì mặc định dùng React component chung cây.
+Nếu chỉ cần dùng chung design system hoặc helper, npm package thường đơn giản hơn. Nếu chỉ muốn giảm lượng JavaScript tải ban đầu, hãy bắt đầu bằng code splitting. Không cần thêm federation khi chưa có nhu cầu kết nối các build riêng.
 
 ## Các khái niệm cần nắm
 
-| Khái niệm | Ý nghĩa | Ví dụ trong shop |
-| --- | --- | --- |
-| Host hoặc consumer | Build tiêu thụ module từ build khác | Shell import `catalog/ProductPage` |
-| Remote hoặc provider | Build công bố module cho consumer | Catalog expose `./ProductPage` |
-| Container | Giao diện runtime để khởi tạo sharing và lấy exposed module | Container `catalog` trong mô hình webpack script remote |
-| Remote entry | Điểm vào giúp runtime tiếp cận container | `remoteEntry.js` của catalog |
-| `exposes` | Ánh xạ tên public module tới module nội bộ | `./ProductPage` → `./src/ProductPage.jsx` |
-| `remotes` | Khai báo remote mà host có thể tiêu thụ | Alias `catalog` → container và URL entry |
-| `shared` | Chính sách cung cấp và tiêu thụ dependencies chung | React với version policy rõ ràng |
-| Share scope | Namespace runtime chứa các shared module và version được cung cấp | Scope `default` của các build tham gia |
-| Public contract | Thỏa thuận về exports, input, hành vi và lifecycle | Props của `ProductPage`, navigation callback và semantics lỗi |
-
-Host và remote là vai trò, không phải hai loại ứng dụng loại trừ nhau. Một build có thể vừa expose module, vừa consume remote khác. Nhưng remote tải remote khác cũng tạo thêm dependency và failure path; đừng thêm chuỗi phụ thuộc chỉ vì plugin cho phép.
-
-Share scope không phải một global store nghiệp vụ. Nó hỗ trợ resolution của shared modules; quyền đọc và ghi cart vẫn cần domain owner cùng API riêng.
-
-## Từ một lệnh import tới module của remote
-
-### Luồng tải trong shop
-
-Với webpack script remote, có thể hình dung đường đi như sau:
-
-```d2 title="Luồng tải trong shop"
-direction: right
-shell: Shell
-runtime: Federation runtime
-container: Catalog container
-modules: Module + chunks
-shell -> runtime: "import catalog/ProductPage"
-runtime -> container -> modules
-modules -> shell: Public exports
-```
-
-Một lần người dùng mở catalog thường có các mốc sau:
-
-1. Shell nhận route và bắt đầu tải public module, đồng thời giữ navigation cùng loading UI.
-2. Runtime dùng khai báo remote để tải container entry nếu chưa có.
-3. Runtime khởi tạo sharing giữa các build. Với container API của webpack, `init` nhận share scope; `get('./ProductPage')` lấy factory của exposed module.
-4. Runtime tải những chunk cần thiết, lấy factory và đánh giá module để trả exports cho consumer.
-5. Shell dùng public export để render component hoặc gọi API `mount`; remote tiếp tục xử lý dữ liệu và UI của domain.
-
-Đây là luồng khái niệm, không phải cam kết về từng network request. Cache, preload và cách build chia chunk có thể thay đổi việc tải. Khi dùng `remotes` thông thường, webpack sinh phần plumbing này; bạn không cần tự chèn script hay gọi `container.get` trong component.
-
-Tải code thành công chưa có nghĩa trang đã usable. Catalog còn có thể cần API sản phẩm, CSS hoặc font. Vì vậy nên phân biệt mốc “module loaded”, “UI mounted” và “nội dung sẵn sàng dùng” khi đo trải nghiệm.
-
-### Remote entry không phải toàn bộ ứng dụng
-
-`remoteEntry.js` thường là điểm vào container, không phải một file chứa sẵn mọi màn hình, dependency và asset. Entry có thể trả `200`, nhưng exposed module vẫn lỗi vì một chunk bị `404` hoặc base URL khiến chunk bị tìm nhầm ở origin của shell.
-
-Vì vậy deploy phải giữ nhất quán cả artifact graph: entry, JavaScript chunks, CSS và assets liên quan. Trong webpack, `output.publicPath` cần giúp remote tìm đúng assets của nó; `output.uniqueName` cũng cần khác giữa các build cùng xuất hiện trên trang để tránh runtime collision.
-
-<Callout type="warn" title="Đừng coi mọi entry là native ESM">
-  Một `remoteEntry.js` dạng script container không mặc nhiên export React component hay hàm `mount` qua native `import(url)`. Loader phải khớp protocol và format của artifact. Trong mô hình container của webpack, public module được lấy qua federation runtime, không bằng cách đoán exports từ tên file entry.
-</Callout>
-
-## Đọc một cấu hình webpack tối thiểu
-
-Các đoạn sau chỉ minh họa **phần plugin**, không phải hai project chạy hoàn chỉnh. Giả sử host và remote đã có entry, JSX tooling và một component `ProductPage` default export. Với component React được render bởi host, cần thêm chính sách `shared` phù hợp trước khi tích hợp thực tế; phần kế tiếp giải thích lựa chọn này.
-
-### Remote công bố module
-
-```js title="catalog/webpack.config.cjs — phần plugins"
-const { ModuleFederationPlugin } = require('webpack').container;
-
-module.exports = {
-  // Các cấu hình entry, output và loader không được trình bày ở đây.
-  plugins: [
-    new ModuleFederationPlugin({
-      name: 'catalog',
-      filename: 'remoteEntry.js',
-      exposes: {
-        './ProductPage': './src/ProductPage.jsx',
-      },
-    }),
-  ],
-};
-```
-
-`./ProductPage` là tên public mà catalog cam kết hỗ trợ. `./src/ProductPage.jsx` là đường dẫn nội bộ. Catalog có thể chuyển component sang thư mục khác mà host không cần biết, miễn mapping public và contract vẫn giữ nguyên.
-
-### Host khai báo nơi lấy module
-
-```js title="shell/webpack.config.cjs — phần plugins"
-const { ModuleFederationPlugin } = require('webpack').container;
-
-module.exports = {
-  plugins: [
-    new ModuleFederationPlugin({
-      name: 'shell',
-      remotes: {
-        catalog: 'catalog@https://assets.example.com/catalog/r17/remoteEntry.js',
-      },
-    }),
-  ],
-};
-```
-
-Trong cú pháp webpack script remote này, key `catalog` là alias host dùng trong import. Phần `catalog` trước `@` là tên container do remote công bố; phần sau `@` là URL entry. Alias và container name có thể khác nhau, nhưng container name phải khớp remote thực tế.
-
-Host tiêu thụ module qua một async boundary:
-
-```js title="shell/src/load-catalog.js"
-export async function loadCatalogPage() {
-  const remoteModule = await import('catalog/ProductPage');
-  return remoteModule.default;
-}
-```
-
-Chuỗi `catalog/ProductPage` ghép alias `catalog` của host với exposed key `./ProductPage` của remote. Đây không phải request trực tiếp tới file `ProductPage.jsx`, cũng không phải npm package tên `catalog`. Hàm chỉ tải component; shell còn phải tích hợp loading, render và xử lý Promise reject.
-
-### URL cố định vẫn là tải ở runtime
-
-Host ở ví dụ biết URL `r17` khi build, nhưng không nhúng implementation của catalog vào artifact host; runtime vẫn lấy code từ remote. Tuy nhiên, để đổi URL sang `r18`, cấu hình tĩnh này thường đòi hỏi build lại host.
-
-Bạn có thể dùng địa chỉ ổn định có nội dung thay đổi, nhưng phải xử lý cache và nguy cơ entry/chunk không đồng bộ. Mình ưu tiên artifact URL bất biến theo release, rồi đưa quyết định chọn release ra runtime config hoặc cơ chế dynamic remote khi cần rollout riêng mà không rebuild host.
-
-Webpack gốc hỗ trợ dynamic containers và promise-based remotes; các runtime mở rộng có thể cung cấp API hoặc manifest riêng. Chọn một cơ chế cụ thể rồi thiết kế cache và rollback theo nó, không trộn cú pháp giữa các plugin.
-
-## Shared dependencies là một hợp đồng riêng
-
-Federation không yêu cầu chia sẻ mọi dependency. Hai build có thể mang các thư viện riêng; `shared` cho runtime cơ hội dùng provider chung theo scope, key và version policy. Đổi lại, dependency shared trở thành một điểm tương thích giữa các build.
-
-Mình chỉ share những dependency có lý do rõ: cần cùng instance ở boundary hoặc việc tải trùng đáng để quản lý thêm coupling. Không mặc định biến toàn bộ `dependencies` thành `shared`.
-
-### Singleton không đồng nghĩa với tương thích
-
-Nếu catalog expose component React để shell render trong cùng cây, React và renderer phải tương thích và module resolution phải tránh tình trạng component dùng một React instance khác với renderer. Trong mô hình này, React và React DOM thường là ứng viên cho `singleton` ở cả hai bên.
-
-Ví dụ sau là phần `shared` thêm vào **cả host và remote**. `deps` đọc từ `package.json` tương ứng của mỗi app; range khác nhau giữa hai app vẫn cần được kiểm tra.
-
-```js title="Chính sách shared minh họa cho webpack 5"
-const deps = require('./package.json').dependencies;
-
-const shared = {
-  react: {
-    singleton: true,
-    requiredVersion: deps.react,
-    strictVersion: true,
-  },
-  'react-dom': {
-    singleton: true,
-    requiredVersion: deps['react-dom'],
-    strictVersion: true,
-  },
-};
-
-// Truyền shared vào new ModuleFederationPlugin({ ..., shared }).
-```
-
-`singleton` hướng tới một version được dùng cho shared key trong scope đó; nó không sửa breaking changes giữa các version. `requiredVersion` mô tả range consumer chấp nhận. `strictVersion: true` cho phép từ chối version không hợp lệ thay vì tiếp tục với một cảnh báo; đây là lựa chọn fail-fast cần đi kèm fallback UI và kiểm thử compatibility.
-
-Không có policy nào trong đoạn này tự upgrade package đã cài hoặc bảo đảm “luôn dùng React của host”. Provider được chọn còn phụ thuộc các version được cung cấp và trạng thái runtime, đặc biệt khi module đã được consume.
-
-Cấu hình root package cũng không mặc nhiên bao phủ mọi subpath import như `react-dom/client` hay `react/jsx-runtime`. Khi triển khai, kiểm tra các request thực tế và cách plugin xử lý chúng. Chi tiết nằm ở [Shared dependencies](/docs/module-federation/shared-dependencies).
-
-<Callout type="warn" title="Eager không phải nút sửa mọi lỗi bootstrap">
-  `eager: true` có thể đưa shared dependency cùng fallback vào initial chunk và tăng lượng code tải sớm. Không bật cho mọi package chỉ để né lỗi eager consumption. Với webpack, hãy kiểm tra async bootstrap boundary và thứ tự khởi tạo sharing trước, rồi mới quyết định dependency nào thực sự cần eager.
-</Callout>
-
-### Chia sẻ thư viện khác chia sẻ state
-
-Shell và cart cùng consume một bản thư viện store không có nghĩa chúng dùng chung một store instance. Nếu mỗi bên gọi hàm tạo store, vẫn có hai object độc lập. Điều tương tự xảy ra với query client, event bus và framework context được tạo riêng.
-
-Nếu nhiều consumer thực sự cần cùng instance, hãy xác định ai tạo nó, lifecycle của nó và cách inject public API. Module Federation có thể đưa code tạo instance tới consumer, nhưng không quyết định quyền ghi dữ liệu hay owner của state.
-
-Một React singleton cũng không nối hai root React độc lập thành một cây context chung. Provider, tree boundary và contract truyền dữ liệu vẫn cần thiết kế riêng. Xem [Giao tiếp và trạng thái](/docs/giao-tiep-va-trang-thai) trước khi expose mutable store của domain như một đường tắt.
-
-## Phân biệt webpack gốc và hệ sinh thái mở rộng
-
-“Module Federation” có thể chỉ cơ chế trong webpack 5 hoặc các plugin/runtime mở rộng trong hệ sinh thái. Cùng tên khái niệm không có nghĩa cùng package, API hay artifact format.
-
-| Lựa chọn | Điều cần phân biệt |
+| Khái niệm | Hiểu qua ví dụ shop |
 | --- | --- |
-| `webpack.container.ModuleFederationPlugin` | Plugin tích hợp trong webpack 5; ví dụ `name@url`, container và sharing ở trang này dùng mô hình đó |
-| Hệ sinh thái Module Federation mở rộng | Có thể bổ sung federation runtime, manifest, runtime plugins và hỗ trợ types; phải đọc tài liệu đúng integration và version |
-| Plugin cho bundler khác | Config, remote format, dev mode và shared resolution có thể khác; không giả định tương thích chỉ vì cùng có `exposes` và `remotes` |
+| **Host** | Bên sử dụng module từ build khác: shell tải trang sản phẩm |
+| **Remote** | Bên cung cấp module: catalog công bố trang sản phẩm cho shell dùng |
+| **Shared dependencies** | Thư viện mà các build có thể dùng chung theo cấu hình, thay vì mỗi bên luôn dùng một bản riêng |
 
-Manifest cung cấp metadata cho runtime, không phải React component để import trực tiếp. Types được sinh hoặc tải tự động giúp developer biết API khi viết code, nhưng không thay runtime validation hay chứng minh host đang chạy tương thích với remote vừa deploy.
+Một ứng dụng có thể vừa là host vừa là remote. Bạn chưa cần nhớ container, share scope hay các tùy chọn plugin ở bước này; bài cơ chế sẽ giải thích chúng theo luồng tải thực tế.
 
-Khi bắt đầu, hãy ghi rõ bundler, plugin package, version, remote format và môi trường thực thi. Component import chạy trong browser không đủ để kết luận SSR, hydration hoặc React Server Components sẽ hoạt động với cùng cấu hình.
-
-## Release riêng cần gì ngoài federation
-
-### Public contract và version skew
-
-Giả sử shell cũ truyền `onNavigate(path)` vào `ProductPage`, nhưng catalog mới đổi sang một object `navigation` bắt buộc. Remote vẫn tải được và export vẫn tồn tại; UI có thể lỗi khi người dùng bấm vào sản phẩm. Module resolution thành công không chứng minh contract tương thích.
-
-Public contract cần nói rõ exports, props/input, kết quả, lifecycle, semantics lỗi và những capability shell cung cấp. Mình ưu tiên thay đổi bổ sung có default an toàn, giữ consumer cũ hoạt động trong compatibility window được công bố, rồi mới loại bỏ API cũ sau khi có bằng chứng consumer không còn dùng.
-
-TypeScript kiểm tra lúc build. Một declaration được host dùng hôm qua không kiểm tra code remote mà browser tải hôm nay; object ép kiểu cũng không validate dữ liệu network. Hãy kiểm tra những boundary runtime cần thiết và test các tổ hợp version được hỗ trợ, bao gồm shell cũ với remote mới và đường rollback tương ứng.
-
-### Chọn artifact và giữ khả năng rollback
-
-Remote cần định danh artifact rõ, không chỉ có tên domain. Ví dụ `catalog-r17` và `catalog-r18` là hai bản build minh họa, còn version contract là một thông tin khác: hai artifact có thể cùng hỗ trợ một contract.
-
-Mình mặc định chọn một snapshot cấu hình đã validate cho mỗi document, trỏ tới artifact graph bất biến. Tab đang mở giữ lựa chọn của nó; tab mới có thể nhận config rollout mới. Muốn thay remote giữa phiên là một yêu cầu riêng, phải xử lý module cache, shared dependencies, instance và state đang tồn tại.
-
-Giữ các chunk của release cũ đủ lâu để hỗ trợ tab cũ và rollback. Chỉ đổi entry về bản trước nhưng đã xóa chunks của bản đó không phải rollback hoàn chỉnh. Đổi cấu hình trên server cũng không tự thay code đã đánh giá trong browser đang mở.
-
-### Fallback và quan sát lỗi
-
-| Phase lỗi | Ví dụ | Phản ứng cần thiết kế |
-| --- | --- | --- |
-| Resolve hoặc tải entry | Config sai, URL không được phép, CDN lỗi | Báo remote chưa tải được; giữ shell và navigation usable |
-| Khởi tạo hoặc lấy module | Shared version không hợp lệ, exposed key không tồn tại | Ghi rõ remote/build và loại lỗi; không retry mù một mismatch cố định |
-| Tải chunk | Entry có nhưng chunk thiếu, `publicPath` sai | Kiểm tra artifact graph; áp dụng retry hoặc yêu cầu reload có kiểm soát |
-| Render hoặc mount | Component lỗi, lifecycle contract sai | Cô lập tại UI boundary; cleanup tài nguyên của instance lỗi |
-| Dữ liệu domain | Product API lỗi sau khi UI đã mount | Remote hiển thị error state theo nghiệp vụ, không giả thành danh sách rỗng |
-
-Loading UI, load rejection và lỗi render là các đường xử lý khác nhau. Trong React, Suspense hỗ trợ trạng thái chờ, Error Boundary hỗ trợ các lỗi trong cây render; Promise reject của loader riêng vẫn cần được xử lý tại đường gọi tương ứng. Không kỳ vọng một boundary bắt mọi lỗi async hoặc lỗi trong event handler.
-
-Telemetry nên ghi host build, remote build, config release, module request, phase lỗi và thời gian tới usable. Từ đó bạn có thể phân biệt “CDN không tải được entry” với “catalog render được nhưng API sản phẩm lỗi”. Không đưa token hay dữ liệu nhạy cảm vào log.
-
-<Callout type="warn" title="Remote code vẫn là code trong document của bạn">
-  Remote tải từ CDN khác không vì thế có một sandbox hay origin riêng khi chạy như script của trang. Nó có thể truy cập tài nguyên của document theo quyền của môi trường thực thi. Nguồn artifact và runtime config phải được kiểm soát; backend vẫn phải enforce authorization, bất kể frontend thuộc team nào.
+<Callout type="warn" title="Build riêng chưa bảo đảm hoạt động độc lập">
+  Hai bên vẫn phải thống nhất API và thư viện dùng chung, đồng thời có cách xử lý khi remote lỗi. Federation cũng không phải sandbox để chạy code không tin cậy.
 </Callout>
 
 ## Lộ trình đọc trong nhóm
 
-Đọc theo thứ tự dưới đây nếu bạn mới bắt đầu. Nếu đã có một integration chạy được, đi thẳng tới phần shared dependencies và compatibility để kiểm tra các giả định dễ bị bỏ sót.
+Trang này chỉ định hướng. Đọc các bài sau theo thứ tự để đi từ cơ chế tới triển khai và vận hành:
 
-| Bài | Câu hỏi cần trả lời sau khi đọc |
+| Bài | Nội dung chính |
 | --- | --- |
-| [Cơ chế Module Federation](/docs/module-federation/co-che) | Container, share scope và module factory tham gia vào luồng tải thế nào? |
-| [Cấu hình exposes và remotes](/docs/module-federation/exposes-remotes) | Public key, host alias và remote location liên hệ ra sao trong bundler mình dùng? |
-| [Shared dependencies](/docs/module-federation/shared-dependencies) | Package nào cần share; singleton, version range, fallback và eager thay đổi hành vi thế nào? |
-| [Dynamic remotes](/docs/module-federation/dynamic-remotes) | Làm sao chọn artifact ở runtime mà vẫn kiểm soát URL, cache và rollback? |
-| [Types và contracts](/docs/module-federation/types-contracts) | Types hỗ trợ developer ra sao và runtime contract còn phải kiểm tra những gì? |
-| [Version compatibility](/docs/module-federation/version-compatibility) | Những cặp host/remote nào được hỗ trợ; rollout và loại bỏ API cũ theo quy tắc nào? |
-
-## Bài tập kiểm chứng boundary đầu tiên
-
-Bắt đầu với một remote catalog cho một nhánh route, chưa cần nối mọi domain. Viết một bản mô tả ngắn gồm public module, input, navigation capability, shared dependency policy, artifact selection và fallback. Nếu chưa xác định được catalog được phép gọi API nào của shell, hãy giải quyết contract trước khi thêm cấu hình plugin.
-
-Sau đó kiểm chứng bằng các tình huống cụ thể:
-
-1. Build shell với public contract của catalog hiện tại, rồi release một catalog mới chỉ đổi implementation. Shell phải dùng được bản mới theo artifact selection đã thiết kế mà không sửa source shell.
-2. Chặn request entry và một request chunk trong browser. Xác nhận shell giữ được navigation, phân biệt phase lỗi và cho người dùng đường phục hồi.
-3. Chạy một remote cố ý không tương thích shared version trong môi trường test. Quan sát policy fail-fast hoặc fallback có đúng như đã công bố không.
-4. Mở một tab trước rollout, một tab sau rollout, rồi rollback. Ghi lại artifact mỗi tab dùng thay vì giả định mọi tab đều chuyển bản cùng lúc.
-5. Vào catalog, rời route rồi quay lại. Kiểm tra listener, subscription và instance được dọn đúng; unmount UI không có nghĩa module đã bị unload khỏi runtime.
-
-Mục tiêu không phải chỉ có hai dev server giao tiếp được. Bạn cần chứng minh boundary còn đúng khi release lệch nhau và một phần hệ thống không sẵn sàng.
-
-## Checklist trước khi nối thêm remote
-
-- [ ] Có owner cho public contract và một lý do release riêng cụ thể.
-- [ ] Exposed modules là API có chủ đích, không phải đường truy cập file nội bộ tùy ý.
-- [ ] Bundler, plugin version và remote format được ghi rõ.
-- [ ] Host alias, container name và các runtime name của build không xung đột.
-- [ ] Shared dependencies có scope, key và version policy đã được kiểm chứng.
-- [ ] Loading, load rejection, render failure và domain error có cách xử lý riêng.
-- [ ] Entry, chunks, CSS và assets thuộc một artifact graph nhất quán.
-- [ ] Có chính sách cho tab cũ, retention của artifact và rollback.
-- [ ] Kiểm thử compatibility không chỉ dùng mọi ứng dụng ở version mới nhất.
-- [ ] Telemetry đủ xác định cặp host/remote và phase lỗi mà không lộ dữ liệu nhạy cảm.
-- [ ] Artifact/config chỉ đến từ nguồn tin cậy; federation không được coi là sandbox.
-
-## Đọc tiếp
-
-Nếu chưa thấy rõ phần nào do shell quản lý và phần nào do federation runtime quản lý, đọc hai bài kiến trúc trước. Sau đó quay lại luồng container và cấu hình cụ thể.
-
-<Cards>
-  <Card title="Runtime composition" href="/docs/kien-truc/runtime-composition" description="Phân biệt loader, artifact selection và trách nhiệm ghép ứng dụng." />
-  <Card title="Application shell" href="/docs/kien-truc/application-shell" description="Thiết kế route ownership, lifecycle, capabilities và failure boundary." />
-  <Card title="Cơ chế Module Federation" href="/docs/module-federation/co-che" description="Đi sâu vào remote entry, container và quá trình lấy public module." />
-  <Card title="So sánh cách tích hợp" href="/docs/cac-cach-tich-hop/so-sanh" description="Chọn cơ chế theo contract và isolation thay vì chỉ theo tên công cụ." />
-</Cards>
+| [1. Cơ chế Module Federation](/docs/module-federation/co-che) | Shell tìm, tải và nhận module từ catalog như thế nào |
+| [2. Cấu hình exposes và remotes](/docs/module-federation/exposes-remotes) | Remote công bố module nào và host tìm module đó ở đâu |
+| [3. Shared dependencies](/docs/module-federation/shared-dependencies) | Khi nào chia sẻ React hoặc thư viện khác, và chia sẻ theo chính sách nào |
+| [4. Dynamic remotes](/docs/module-federation/dynamic-remotes) | Chọn bản remote khi ứng dụng chạy, quản lý cache và rollback |
+| [5. Types và contracts](/docs/module-federation/types-contracts) | Thống nhất API giữa host và remote, kiểm tra types và dữ liệu runtime |
+| [6. Version compatibility](/docs/module-federation/version-compatibility) | Giữ shell cũ hoạt động với remote mới và kiểm thử các tổ hợp version |
 
 ## Tài liệu tham khảo
 
-- [webpack — Module Federation concepts](https://webpack.js.org/concepts/module-federation/): independent builds, container API, dynamic remotes, async boundary và các lỗi tích hợp thường gặp.
-- [webpack — ModuleFederationPlugin](https://webpack.js.org/plugins/module-federation-plugin/): `exposes`, `remotes`, remote type và các sharing hints như `singleton`, `requiredVersion`, `strictVersion`, `eager`.
-- [Module Federation — Introduction](https://module-federation.io/guide/start/): phân biệt cơ chế webpack tích hợp với hệ sinh thái mở rộng có manifest, federation runtime và runtime plugins.
+- [webpack — Module Federation concepts](https://webpack.js.org/concepts/module-federation/)
+- [Module Federation — Introduction](https://module-federation.io/guide/start/)
