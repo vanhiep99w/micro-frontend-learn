@@ -11,6 +11,7 @@ Giả sử shop có shell — khung ứng dụng chứa menu và điều hướn
 
 - [Module Federation nằm ở đâu trong kiến trúc](#module-federation-nằm-ở-đâu-trong-kiến-trúc)
   - [Khác package và code splitting](#khác-package-và-code-splitting)
+  - [Vì sao không dùng cách khác](#vì-sao-không-dùng-cách-khác)
   - [Khi nào nên chọn và khi nào không](#khi-nào-nên-chọn-và-khi-nào-không)
 - [Các khái niệm cần nắm](#các-khái-niệm-cần-nắm)
 - [Lộ trình đọc trong nhóm](#lộ-trình-đọc-trong-nhóm)
@@ -37,6 +38,20 @@ Vẫn với thay đổi “catalog thêm bộ lọc”, điểm khác nhau là:
 Nói ngắn gọn: **code splitting giúp tải code muộn; Module Federation giúp lấy code từ một build khác**. Hai cơ chế có thể dùng cùng nhau.
 
 Release riêng vẫn có điều kiện: API giữa shell và catalog phải tương thích, và shell phải tìm tới đúng bản catalog mới. Nếu URL bản catalog bị ghi cố định trong build shell, đổi URL đó vẫn có thể cần rebuild shell. Chi tiết nằm ở [Dynamic remotes](/docs/module-federation/dynamic-remotes).
+
+### Vì sao không dùng cách khác
+
+Không bắt buộc phải dùng Module Federation. Nó phù hợp khi bạn muốn đồng thời **build/deploy riêng, ghép module vào cùng trang và có cơ chế chia sẻ thư viện giữa các build**. Ví dụ, shell React render component từ catalog, còn team catalog vẫn có thể phát hành bộ lọc mới theo nhịp riêng, với các điều kiện tương thích đã nói ở trên.
+
+npm package và code splitting đơn giản hơn, nhưng tự chúng không giải quyết việc lấy module từ một bản build được deploy riêng. Các cách tích hợp khác vẫn làm được điều đó, với đánh đổi khác:
+
+| Cách khác | Khi nào phù hợp | Đánh đổi so với ghép module bằng federation |
+| --- | --- | --- |
+| iframe | Cần cách ly giao diện và môi trường chạy | Phải kết nối thêm routing, giao tiếp và layout giữa hai document |
+| Điều hướng sang site khác | Mỗi domain có thể là một site riêng | Chuyển sang document khác thay vì ghép module trong cùng trang |
+| Native ESM và loader riêng | Muốn tải module từ URL theo quy ước tự thiết kế | Phải tự thiết kế thêm cách tìm module, quản lý dependencies và tích hợp giữa các build |
+
+Lý do chọn federation không phải vì chỉ nó mới làm được, mà vì **bundler/plugin đã cung cấp cơ chế công bố, tìm, tải và chia sẻ module giữa các build**. Bạn bớt phải tự xây phần kết nối đó, nhưng vẫn phải quản lý tương thích và lỗi runtime. Xem [So sánh cách tích hợp](/docs/cac-cach-tich-hop/so-sanh) nếu cần chọn phương án cho kiến trúc cụ thể.
 
 ### Khi nào nên chọn và khi nào không
 
